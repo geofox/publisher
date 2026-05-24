@@ -1,0 +1,4 @@
+# built binaries (produced by `go build`)
+/publisher
+/cmd/publisher/publisher
+/nostr-publisher

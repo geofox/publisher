@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0d13">
+  <title>publisher</title>
+  <link rel="preload" href="fonts/plex-mono-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="app.css">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="publisher">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"><span class="caret">▍</span>publisher</span>
+      <span class="brand-sub">crosspost console</span>
+    </div>
+    <nav class="tabs">
+      <button class="tab on" data-view="compose" type="button">compose</button>
+      <button class="tab" data-view="history" type="button">history</button>
+      <button class="tab" data-view="tools" type="button">tools</button>
+    </nav>
+  </header>
+  <main>
+
+    <!-- ── Compose ──────────────────────────────────────────────────────── -->
+    <section id="compose" class="view">
+      <div class="compose-grid">
+        <div class="compose-left">
+          <div class="sec-head"><span class="lbl">master draft</span><span id="mastermeta" class="metaline"></span></div>
+          <textarea id="master" class="master" placeholder="write once — mirror to every platform…"></textarea>
+
+          <div class="sec-head"><span class="lbl">targets</span></div>
+          <div id="chips" class="chips"></div>
+
+          <div class="sec-head"><span class="lbl">media</span><span class="muted">alt per image · max 4</span></div>
+          <div id="images" class="images"></div>
+          <button id="addimg" class="ghost" type="button">+ add image</button>
+          <input id="imgfile" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+
+          <div class="sec-head"><span class="lbl">schedule</span><span class="muted">optional · Europe/Paris · empty = post now</span></div>
+          <div class="sched">
+            <input type="datetime-local" id="schedat" aria-label="schedule date and time">
+            <button id="schedclear" class="ghost sm" type="button" hidden>clear</button>
+            <span id="schednote" class="sched-note muted"></span>
+          </div>
+
+          <div class="sec-head"><span class="lbl">per-platform</span><span class="muted">mirror until edited</span></div>
+          <div id="cards"></div>
+
+          <div id="summary" class="summary"></div>
+          <button id="submit" class="submit" type="button">Post</button>
+        </div><!-- /.compose-left -->
+        <div class="compose-right">
+          <div class="sec-head"><span class="lbl">live preview</span></div>
+          <div id="preview"></div>
+        </div><!-- /.compose-right -->
+      </div><!-- /.compose-grid -->
+    </section><!-- /#compose -->
+
+    <!-- ── History ──────────────────────────────────────────────────────── -->
+    <section id="history" class="view" hidden>
+      <div class="hbar">
+        <div id="hseg">
+          <button class="on" data-status="all"       type="button">all</button>
+          <button            data-status="scheduled" type="button">scheduled</button>
+          <button            data-status="failed"    type="button">failed</button>
+          <button            data-status="sent"      type="button">sent</button>
+        </div>
+        <input id="hsearch" type="search" placeholder="search…" aria-label="search posts">
+        <button id="refresh" class="ghost sm" type="button">↻</button>
+      </div>
+      <div class="history-grid">
+        <div id="hlist" class="hlist"></div>
+        <div id="hdetail" class="hdetail"></div>
+      </div>
+    </section><!-- /#history -->
+
+    <!-- ── Tools ────────────────────────────────────────────────────────── -->
+    <section id="tools" class="view" hidden>
+      <div class="sec-head"><span class="lbl">sync relays</span><span class="muted">home: relay.geoffrey.one</span></div>
+      <div id="syncrelays"></div>
+      <div class="sec-head"><span class="lbl">reconcile</span></div>
+      <button id="syncscan" class="ghost sm" type="button"></button>
+      <button id="syncpull" class="ghost sm" type="button"></button>
+      <button id="syncpush" class="ghost sm" type="button"></button>
+      <div id="syncout"></div>
+    </section><!-- /#tools -->
+
+  </main>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
