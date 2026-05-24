@@ -137,9 +137,10 @@ signs events on request, so treat it like a credential store and read
 ### Prerequisites
 
 - A Nostr keypair. You need the secret key as 64-char hex (`NSEC_HEX`) and
-  the matching public key as 64-char hex (`OWNER_PUBKEY`). Convert
-  `nsec1…` / `npub1…` once with [`nak`](https://github.com/fiatjaf/nak):
-  `nak key decode nsec1…` and `nak key decode npub1…`.
+  the matching public key as 64-char hex (`OWNER_PUBKEY`). Derive both from
+  your `nsec1…` once with [`nak`](https://github.com/fiatjaf/nak):
+  `nak key decode nsec1…` gives the hex secret (`NSEC_HEX`) and
+  `nak key public nsec1…` gives the matching hex pubkey (`OWNER_PUBKEY`).
 - A [Blossom](https://github.com/hzrd149/blossom) server URL for media
   uploads (`BLOSSOM_URL`).
 - A writable directory for the SQLite archive (mounted at `DB_PATH`).
@@ -190,7 +191,7 @@ infrastructure and should be overridden.
 ```bash
 mkdir -p ./data
 docker run -d --name publisher \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -v "$PWD/data:/data" \
   -e NSEC_HEX=<64-char-hex-secret> \
   -e OWNER_PUBKEY=<64-char-hex-pubkey> \
@@ -209,7 +210,7 @@ services:
     container_name: publisher
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       - NSEC_HEX=${NSEC_HEX}
       - OWNER_PUBKEY=${OWNER_PUBKEY}
@@ -255,8 +256,9 @@ UI and the write endpoints (`/api/*`, `/publish`, `/upload-media`) are
 **not** authenticated by the service itself. **Do not expose it directly to
 the internet.** Put it behind an authenticating reverse proxy (Authelia,
 oauth2-proxy, Basic Auth) or keep it on a private network / VPN. The
-`docker run` and compose examples above publish port 8080 for local use
-only.
+`docker run` and compose examples above bind port 8080 to `127.0.0.1`
+(localhost only), so nothing is exposed until you deliberately place a proxy
+in front of it.
 
 ## Logging
 
