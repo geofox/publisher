@@ -45,6 +45,9 @@ type Config struct {
 	AlertWebhookPass string
 
 	SyncRelaysDefault []string
+
+	PLCDirectoryURL   string
+	VerifyHTTPTimeout time.Duration
 }
 
 func Load() (Config, error) {
@@ -64,6 +67,7 @@ func Load() (Config, error) {
 		AlertWebhookURL:     getEnv("ALERT_WEBHOOK_URL", ""),
 		AlertWebhookUser:    getEnv("ALERT_WEBHOOK_USER", "alertmanager"),
 		AlertWebhookPass:    getEnv("ALERT_WEBHOOK_PASS", ""),
+		PLCDirectoryURL:     getEnv("PLC_DIRECTORY_URL", "https://plc.directory"),
 	}
 	c.FallbackRelays = splitCSV(getEnv("FALLBACK_RELAYS",
 		"wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io"))
@@ -88,6 +92,9 @@ func Load() (Config, error) {
 	}
 	if c.ScheduleGrace, err = time.ParseDuration(getEnv("SCHEDULE_GRACE", "2h")); err != nil {
 		return c, fmt.Errorf("SCHEDULE_GRACE: %w", err)
+	}
+	if c.VerifyHTTPTimeout, err = time.ParseDuration(getEnv("VERIFY_HTTP_TIMEOUT", "10s")); err != nil {
+		return c, fmt.Errorf("VERIFY_HTTP_TIMEOUT: %w", err)
 	}
 
 	nsecHex := getEnv("NSEC_HEX", "")

@@ -27,6 +27,7 @@
       <button class="tab on" data-view="compose" type="button">compose</button>
       <button class="tab" data-view="history" type="button">history</button>
       <button class="tab" data-view="tools" type="button">tools</button>
+      <button class="tab" data-view="verify" type="button">verify</button>
     </nav>
   </header>
   <main>
@@ -94,6 +95,16 @@
       <button id="syncpush" class="ghost sm" type="button"></button>
       <div id="syncout"></div>
     </section><!-- /#tools -->
+
+    <!-- ── Verify ───────────────────────────────────────────────────────── -->
+    <section id="verify" class="view" hidden>
+      <div class="sec-head"><span class="lbl">verify a post</span><span class="muted">paste a Nostr event, or a Bluesky / Mastodon URL</span></div>
+      <textarea id="vinput" class="master" placeholder="paste event JSON, or https://bsky.app/… / https://mastodon.…/…"></textarea>
+      <div class="sec-head"><span class="lbl">expected identity</span><span class="muted">optional · npub / handle / @user@domain</span></div>
+      <input id="vexpected" type="text" placeholder="optional — who do you think posted this?">
+      <button id="vsubmit" class="submit" type="button">Verify</button>
+      <div id="vresult"></div>
+    </section><!-- /#verify -->
 
   </main>
   <script type="module" src="main.js"></script>

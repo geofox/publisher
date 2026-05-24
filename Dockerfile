@@ -3,7 +3,8 @@
 # ---- build ----
 # go-nostr v0.52.3 requires Go >= 1.24.1
 # golang.org/x/image v0.40.0 requires Go >= 1.25.0
-FROM golang:1.25-alpine AS build
+# bluesky-social/indigo (atproto SDK) requires Go >= 1.26
+FROM golang:1.26-alpine AS build
 
 WORKDIR /src
 

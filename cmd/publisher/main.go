@@ -23,6 +23,7 @@ import (
 	"github.com/geofox/publisher/internal/relaysync"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/threads"
+	"github.com/geofox/publisher/internal/verify"
 )
 
 func main() {
@@ -75,6 +76,12 @@ func main() {
 	}
 	a.Sync = relaysync.New(relaysync.NewLiveIO(), cfg.NIP65BootstrapRelay, cfg.OwnerPubkey)
 	a.HomeRelay = cfg.NIP65BootstrapRelay
+	a.Verify = &verify.Service{
+		Nostr:    verify.NewNostrVerifier(cfg.VerifyHTTPTimeout),
+		Bluesky:  verify.NewBlueskyVerifier(cfg.PLCDirectoryURL, cfg.VerifyHTTPTimeout),
+		Mastodon: verify.NewMastodonVerifier(cfg.VerifyHTTPTimeout),
+		Threads:  verify.NewThreadsVerifier(cfg.VerifyHTTPTimeout),
+	}
 	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
 	if cfg.ThreadsToken != "" {
 		mgr := threads.NewTokenManager(st, tc, notifier, cfg.ThreadsToken)

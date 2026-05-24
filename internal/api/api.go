@@ -23,6 +23,7 @@ import (
 	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/relaysync"
 	"github.com/geofox/publisher/internal/store"
+	"github.com/geofox/publisher/internal/verify"
 	"github.com/geofox/publisher/internal/web"
 )
 
@@ -42,6 +43,7 @@ const (
 	maxPublishRequestBytes int64 = 256 << 10 // 256 KB
 	maxUploadRequestBytes  int64 = 64 << 20  // 64 MB
 	maxPostRequestBytes    int64 = 64 << 20  // 64 MB (spec + up to 4 images)
+	maxVerifyRequestBytes  int64 = 512 << 10 // 512 KB (pasted event JSON or a URL)
 )
 
 // Dispatcher is implemented by dispatch.Dispatcher; extracted as an interface
@@ -60,6 +62,12 @@ type Syncer interface {
 	Apply(ctx context.Context, targets []relaysync.Target, direction string) []relaysync.ApplyResult
 }
 
+// Verifier is implemented by *verify.Service; extracted so the api package can
+// be tested with a stub and has no hard dependency on the concrete verify service.
+type Verifier interface {
+	Verify(ctx context.Context, in verify.Input) verify.Verdict
+}
+
 // API holds the dependencies for the HTTP handlers.
 type API struct {
 	np        *pubnostr.Publisher
@@ -68,6 +76,7 @@ type API struct {
 	Store     *store.Store // set by cmd/publisher; used by history endpoints
 	Sync      Syncer       // set by cmd/publisher; used by relay-sync endpoints
 	HomeRelay string       // set by cmd/publisher; the home relay URL
+	Verify    Verifier     // set by cmd/publisher; verifies pasted events / post URLs
 }
 
 // New creates a new API with the given publisher and media pipeline.
@@ -96,6 +105,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/sync/targets", a.handleSyncTargets)
 	mux.HandleFunc("POST /api/sync/scan", a.handleSyncScan)
 	mux.HandleFunc("POST /api/sync/apply", a.handleSyncApply)
+	mux.HandleFunc("POST /api/verify", a.handleVerify)
 	mux.Handle("/", web.Handler())
 	return withSecurityHeaders(withCSRFGuard(mux))
 }
@@ -779,4 +789,41 @@ func (a *API) handleSyncApply(w http.ResponseWriter, r *http.Request) {
 	}
 	out := a.Sync.Apply(r.Context(), a.filteredSyncTargets(b.Relays), b.Direction)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"results": out})
+}
+
+// ─── POST /api/verify ────────────────────────────────────────────────────
+
+func (a *API) handleVerify(w http.ResponseWriter, r *http.Request) {
+	if a.Verify == nil {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "verification not configured")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxVerifyRequestBytes)
+	var req struct {
+		Input    string `json:"input"`
+		Platform string `json:"platform"`
+		Expected string `json:"expected"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			httpx.WriteError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("request body exceeds %d bytes", maxVerifyRequestBytes))
+			return
+		}
+		httpx.WriteError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Input) == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "input is required")
+		return
+	}
+	v := a.Verify.Verify(r.Context(), verify.Input{
+		Raw: req.Input, Platform: req.Platform, Expected: req.Expected,
+	})
+	status := http.StatusOK
+	if v.Status == verify.StatusError {
+		status = http.StatusBadGateway
+	}
+	httpx.WriteJSON(w, status, v)
 }

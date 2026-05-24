@@ -3,6 +3,7 @@ import { $ } from "./common.js";
 import { composeInit } from "./compose.js";
 import { historyInit, loadHistory } from "./history.js";
 import { toolsInit, loadTools } from "./tools.js";
+import { verifyInit } from "./verify.js";
 
 // ---------------------------------------------------------------------------
 // Tab routing
@@ -23,6 +24,7 @@ function init() {
   composeInit();
   historyInit();
   toolsInit();
+  verifyInit();
   document.querySelectorAll(".tab").forEach(b =>
     b.addEventListener("click", () => switchTab(b.dataset.view)));
 }

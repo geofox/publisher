@@ -103,11 +103,48 @@ Response:
 `dim` and `blurhash` are omitted for non-image MIME types (the imeta tag in
 that case carries only `url`, `m`, and `x`).
 
+### `POST /api/verify`
+
+Verify that a post is authentically signed by the claimed author. Read-only;
+uses no credentials and never touches the signing key.
+
+```json
+{ "input": "<pasted Nostr event JSON | Bluesky/Mastodon post URL | at:// URI>",
+  "platform": "",   // optional: nostr|bluesky|mastodon (else auto-detected)
+  "expected": "" }  // optional: npub / handle / @user@domain to match the signer
+```
+
+Response is a verdict with a tri-state `status` (`verified` / `failed` /
+`error`), an `assurance` level (`cryptographic` for Nostr, Bluesky, and
+FEP-8b32-signed Mastodon posts; `origin` for plain Mastodon), the resolved
+`signer`, an optional `expected` match, and a transparent `checks` list.
+
+- **Nostr:** verifies the event id and Schnorr signature (offline).
+- **Bluesky:** verifies the repo commit signature and the record's MST inclusion
+  proof, fetched from the author's PDS.
+- **Mastodon:** verifies origin authority (the actor's domain serves the object),
+  plus a FEP-8b32 `eddsa-jcs-2022` integrity proof when present.
+- **Threads:** same ActivityPub origin-authority check as Mastodon, for
+  `threads.com`/`threads.net` URLs (Threads has no native per-post signature and
+  emits no FEP-8b32 proofs, so it never exceeds `origin` assurance). Only works
+  for fediverse-federated Threads accounts whose posts expose an ActivityPub
+  representation; a normal Threads web URL serves HTML, not ActivityPub, and
+  returns `error`.
+
+`status` semantics: `verified` = authentic; `failed` = the check completed and
+the signature/inclusion is invalid (tampering/impersonation); `error` = the
+check could not complete (network, unresolvable identity, deleted post) — NOT a
+forgery signal.
+
+HTTP 200 for any completed verdict (including `failed`); 400 for malformed
+input; 413 if the body exceeds 512 KB; 502 when the verifier itself could not
+complete (network/timeout).
+
 ### Web UI & `/api`
 
 The container embeds a mobile-first web UI (the crosspost composer, post
-history, scheduled posts, and relay tools) served from the root path, backed
-by a JSON `/api/*` surface. These endpoints are unauthenticated by the
+history, scheduled posts, relay tools, and verify) served from the root path,
+backed by a JSON `/api/*` surface. These endpoints are unauthenticated by the
 service itself — see [Security](#security).
 
 ### `GET /healthz`
@@ -182,6 +219,8 @@ infrastructure and should be overridden.
 | `ALERT_WEBHOOK_PASS` | no | — | Basic-auth password for the alert webhook (**secret**) |
 | `PORT` | no | `8080` | Listen port |
 | `LOG_LEVEL` | no | `info` | `debug` / `info` / `warn` / `error` |
+| `PLC_DIRECTORY_URL` | no | `https://plc.directory` | did:plc resolver for Bluesky identity lookups |
+| `VERIFY_HTTP_TIMEOUT` | no | `10s` | Per-request timeout for verification fetches |
 
 > **Note:** `OWNER_PUBKEY` must be the public key derived from `NSEC_HEX`;
 > the process exits at startup if they don't match.

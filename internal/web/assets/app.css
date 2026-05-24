@@ -317,3 +317,27 @@ main{max-width:1200px;margin:0 auto;padding:14px 14px 60px}
 .sched-when{color:var(--accent,#caa)}
 .sched-missed{color:var(--muted)}
 .sched-ctrls{display:flex;gap:8px;margin-top:4px}
+
+/* ── Verify tab ─────────────────────────────────────────────────────────── */
+#vexpected{
+  width:100%;font:inherit;font-size:13px;padding:10px 12px;margin:6px 0 14px;color:var(--ink);
+  background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r);
+}
+#vexpected::placeholder{color:var(--muted)}
+#vexpected:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+.vcard{border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:12px}
+.vhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.vchip{font-weight:600;padding:2px 8px;border-radius:6px}
+.vchip.ok{background:#0e2a18;color:var(--ok)}
+.vchip.err{background:#2a0e12;color:var(--bad)}
+.vchip.warn{background:#2a230e;color:var(--warn)}
+.vbadge{font-size:0.8em;padding:1px 6px;border:1px solid var(--line);border-radius:6px;color:var(--muted)}
+.vsigner,.vmatch,.vexcerpt,.verr,.vwarn{margin-top:8px}
+.vexcerpt{color:var(--muted);white-space:pre-wrap}
+.verr{color:var(--bad)}
+.vwarn{color:var(--warn)}
+.vchecks{margin-top:8px}
+.vchecks ul{margin:6px 0 0;padding-left:16px}
+.vcheck.pass{color:var(--ok)}
+.vcheck.fail{color:var(--bad)}
+.vcheck.skip{color:var(--muted)}
