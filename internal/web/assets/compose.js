@@ -1,6 +1,6 @@
 "use strict";
 import { el, $, gcount, wcount, flash, confirmModal, META, ORDER } from "./common.js";
-import { state, effectiveText, buildSpec, buildInteractSpec, defaultOv } from "./state.js";
+import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv } from "./state.js";
 import { renderPreview } from "./preview.js";
 import { resultRow, openDetail } from "./history.js";
 
@@ -159,12 +159,12 @@ function renderCards() {
 // override cards — which is expensive and would collapse expanded cards as you
 // type. Edited cards track their own text, so they're left untouched.
 function refreshCounts() {
-  const n = gcount(state.master);
   for (const p of ORDER) {
     if (!state.platforms.has(p) || state.ov[p].text != null) continue;
     const card = $(`#cards .ocard.p-${p}`);
     if (!card) continue;
     const limit = META[p].limit;
+    const n = gcount(postedText(p)); // full posted text (reproduction on fan-out) — matches the preview
     const span = card.querySelector(".cnt");
     if (span) { span.textContent = limit ? `${n}/${limit}` : "∞"; span.className = counterClass(n, limit); }
     const ta = card.querySelector("textarea");
@@ -175,7 +175,9 @@ function refreshCounts() {
 function overrideCard(p) {
   const ov = state.ov[p], meta = META[p];
   const edited = ov.text != null;
-  const text = effectiveText(p), n = gcount(text);
+  // textarea/snippet show your editable commentary; the count reflects the full
+  // posted text (the reproduction on a fan-out platform), matching the preview.
+  const text = effectiveText(p), n = gcount(postedText(p));
   const card = el("div", { class: "ocard p-" + p + (edited ? " edited" : "") });
 
   // collapsed summary row (always visible, clickable to expand)
@@ -200,7 +202,7 @@ function overrideCard(p) {
   const ta = el("textarea", {
     oninput: e => {
       ov.text = e.target.value;
-      const m = gcount(e.target.value);
+      const m = gcount(postedText(p));
       cnt.textContent = meta.limit ? `${m}/${meta.limit}` : "∞";
       cnt.className = counterClass(m, meta.limit);
       card.classList.add("edited");
@@ -286,7 +288,7 @@ function overLimitPlatforms() {
   const out = [];
   for (const p of ORDER) {
     if (!state.platforms.has(p) || !META[p].limit) continue;
-    const n = gcount(effectiveText(p));
+    const n = gcount(postedText(p));
     if (n > META[p].limit) out.push({ label: META[p].label, over: n - META[p].limit });
   }
   return out;

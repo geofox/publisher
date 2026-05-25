@@ -1,21 +1,6 @@
 "use strict";
 import { el, $, gcount, graphemes, META } from "./common.js";
-import { state, effectiveText, focusedPlatform, assembleReproduction } from "./state.js";
-
-// previewText returns the text the preview should render/count for platform p:
-// normal compose or the source platform's native action → your commentary;
-// a fan-out platform in interaction mode → the assembled reproduction (what is
-// actually posted there).
-function previewText(p) {
-  const it = state.interaction;
-  if (!it) return effectiveText(p);
-  // Match Go's interactText/Post: an empty per-platform override ("") falls back
-  // to the master commentary (effectiveText treats "" as a real override).
-  const ovText = state.ov[p] && state.ov[p].text;
-  const commentary = ovText != null && ovText !== "" ? ovText : state.master;
-  if (p === it.platform) return commentary; // source: native reply/quote, commentary only
-  return assembleReproduction(commentary, it.sourcePreview, it.sourceURL); // fan-out reproduction
-}
+import { state, focusedPlatform, postedText } from "./state.js";
 
 // mediaMax mirrors Go dispatch.mediaMax (per-platform attachment cap; 0 = none).
 function mediaMax(p) {
@@ -41,7 +26,7 @@ function previewMedia(p) {
 
 // quotedCard renders the source post being quoted/replied-to (shown under the
 // source-platform preview; on fan-out platforms the original is already inline in
-// previewText so no card is needed).
+// postedText so no card is needed).
 function quotedCard() {
   const it = state.interaction;
   const sp = (it && it.sourcePreview) || {};
@@ -149,7 +134,7 @@ function truncate(text, limit) {
 // _renderSinglePost renders the existing single-post preview card into host.
 function _renderSinglePost(host, p) {
   const meta = META[p], ov = state.ov[p];
-  const text = previewText(p), n = gcount(text);
+  const text = postedText(p), n = gcount(text);
   const cwText = p === "mastodon" ? ov.spoiler_text : p === "nostr" ? ov.content_warning : "";
 
   const card = el("div", { class: "pv-card p-" + p });
@@ -227,7 +212,7 @@ export function renderPreview() {
   // request per keystroke. If the server says it's a multi-segment thread, we
   // swap the host content for the threaded view; otherwise the single-post
   // preview already rendered above stays in place.
-  const text = previewText(p);
+  const text = postedText(p);
   const number = document.getElementById("threadnum")?.checked ?? true;
   // A draft can only become a thread if it has a manual `---` marker line or
   // exceeds the platform's limit. Otherwise the synchronous single-post card

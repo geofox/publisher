@@ -36,6 +36,22 @@ export function assembleReproduction(commentary, sp, sourceURL) {
   return parts.join("\n\n");
 }
 
+// postedText returns the full text platform p will actually post — the single
+// source of truth shared by the live preview AND the per-platform counts so they
+// always agree. Normal compose → your commentary (effectiveText). Interaction
+// mode → the source platform posts your commentary (native reply/quote), while a
+// fan-out platform posts the assembled reproduction. Mirrors Go interactText/Post:
+// an empty per-platform override ("") falls back to master (effectiveText treats
+// "" as a real override, so we don't reuse it here).
+export function postedText(p) {
+  const it = state.interaction;
+  if (!it) return effectiveText(p);
+  const ovText = state.ov[p] && state.ov[p].text;
+  const commentary = ovText != null && ovText !== "" ? ovText : state.master;
+  if (p === it.platform) return commentary; // source: native reply/quote, commentary only
+  return assembleReproduction(commentary, it.sourcePreview, it.sourceURL); // fan-out reproduction
+}
+
 // focusedPlatform returns state.focus if still selected, else the first selected
 // platform (in ORDER), else null.
 export function focusedPlatform() {
