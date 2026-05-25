@@ -40,6 +40,9 @@ func (c *Client) ResolveStatus(ctx context.Context, postURL string) (*SourceStat
 	if err := c.getJSON(ctx, "/api/v2/search", url.Values{
 		"q": {postURL}, "type": {"statuses"}, "resolve": {"true"}, "limit": {"1"},
 	}, &search); err != nil {
+		if strings.Contains(err.Error(), "outside the authorized scopes") {
+			return nil, fmt.Errorf("the Mastodon token is missing the read:search scope (needed to resolve posts)")
+		}
 		return nil, fmt.Errorf("search: %w", err)
 	}
 	if len(search.Statuses) == 0 {

@@ -4,8 +4,28 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+func TestResolveStatusScopeError(t *testing.T) {
+	// A token lacking read:search → Mastodon 403 "outside the authorized scopes".
+	// ResolveStatus should surface an actionable hint, not the raw 403.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/search" {
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"error":"This action is outside the authorized scopes"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "tok")
+	_, err := c.ResolveStatus(context.Background(), "https://other.instance/@a/9")
+	if err == nil || !strings.Contains(err.Error(), "read:search") {
+		t.Fatalf("expected a read:search scope hint, got: %v", err)
+	}
+}
 
 func TestResolveStatusMapsFields(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
