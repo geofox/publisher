@@ -8,18 +8,27 @@ import (
 	"time"
 )
 
+// Interaction records that a Post is a reply/repost/quote of an external source.
+type Interaction struct {
+	Action         string `json:"action"`          // reply|repost|quote
+	SourcePlatform string `json:"source_platform"`
+	SourceURL      string `json:"source_url"`
+	SourceAuthor   string `json:"source_author"`
+}
+
 type Post struct {
-	ID           string    `json:"id"`
-	CreatedAt    time.Time `json:"created_at"`
-	MasterText   string    `json:"master_text"`
-	Platforms    []string  `json:"platforms"`
-	DelaySeconds int       `json:"delay_seconds"`
-	Source       string    `json:"source"`
-	Status       string     `json:"status"`
-	ScheduledAt  *time.Time `json:"scheduled_at,omitempty"`
-	FiredAt      *time.Time `json:"fired_at,omitempty"` // list view: latest target attempt time (actual publish/retry)
-	Targets      []Target   `json:"targets,omitempty"`
-	Media        []Media   `json:"media,omitempty"`
+	ID           string       `json:"id"`
+	CreatedAt    time.Time    `json:"created_at"`
+	MasterText   string       `json:"master_text"`
+	Platforms    []string     `json:"platforms"`
+	DelaySeconds int          `json:"delay_seconds"`
+	Source       string       `json:"source"`
+	Status       string       `json:"status"`
+	ScheduledAt  *time.Time   `json:"scheduled_at,omitempty"`
+	FiredAt      *time.Time   `json:"fired_at,omitempty"` // list view: latest target attempt time (actual publish/retry)
+	Targets      []Target     `json:"targets,omitempty"`
+	Media        []Media      `json:"media,omitempty"`
+	Interaction  *Interaction `json:"interaction,omitempty"`
 }
 
 type Target struct {
@@ -90,10 +99,15 @@ func (s *Store) SavePost(p *Post) error {
 	if err != nil {
 		return err
 	}
+	var interactionJSON string
+	if p.Interaction != nil {
+		b, _ := json.Marshal(p.Interaction)
+		interactionJSON = string(b)
+	}
 	if _, err = tx.Exec(
-		`INSERT INTO posts(id,created_at,master_text,platforms,delay_seconds,source,status,scheduled_at)
-		 VALUES(?,?,?,?,?,?,?,?)`,
-		p.ID, p.CreatedAt, p.MasterText, string(platforms), p.DelaySeconds, p.Source, p.Status, p.ScheduledAt,
+		`INSERT INTO posts(id,created_at,master_text,platforms,delay_seconds,source,status,scheduled_at,interaction_json)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		p.ID, p.CreatedAt, p.MasterText, string(platforms), p.DelaySeconds, p.Source, p.Status, p.ScheduledAt, interactionJSON,
 	); err != nil {
 		return err
 	}
@@ -152,9 +166,10 @@ func (s *Store) GetPost(id string) (*Post, error) {
 	p := &Post{}
 	var platforms string
 	var schedAt sql.NullTime
+	var interactionJSON sql.NullString // NULL on rows that predate the column migration
 	err := s.sql.QueryRow(
-		`SELECT id,created_at,master_text,platforms,delay_seconds,source,status,scheduled_at FROM posts WHERE id=?`, id,
-	).Scan(&p.ID, &p.CreatedAt, &p.MasterText, &platforms, &p.DelaySeconds, &p.Source, &p.Status, &schedAt)
+		`SELECT id,created_at,master_text,platforms,delay_seconds,source,status,scheduled_at,interaction_json FROM posts WHERE id=?`, id,
+	).Scan(&p.ID, &p.CreatedAt, &p.MasterText, &platforms, &p.DelaySeconds, &p.Source, &p.Status, &schedAt, &interactionJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -163,6 +178,12 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		p.ScheduledAt = &t
 	}
 	_ = json.Unmarshal([]byte(platforms), &p.Platforms)
+	if interactionJSON.String != "" {
+		var ix Interaction
+		if json.Unmarshal([]byte(interactionJSON.String), &ix) == nil {
+			p.Interaction = &ix
+		}
+	}
 
 	mrows, err := s.sql.Query(`SELECT ordinal,blossom_url,sha256,mime,dim,blurhash,size_bytes,alt FROM media WHERE post_id=? ORDER BY ordinal`, id)
 	if err != nil {
@@ -655,7 +676,7 @@ func (s *Store) ListPostsFiltered(f PostFilter) ([]Post, error) {
 	where := "WHERE " + strings.Join(predicates, " AND ")
 	args = append(args, f.Limit, f.Offset)
 
-	q := `SELECT p.id,p.created_at,p.master_text,p.platforms,p.source,p.status,p.scheduled_at,
+	q := `SELECT p.id,p.created_at,p.master_text,p.platforms,p.source,p.status,p.scheduled_at,p.interaction_json,
 		        (SELECT MAX(ta.attempted_at) FROM target_attempts ta
 		           JOIN post_targets pt ON ta.target_id=pt.id
 		          WHERE pt.post_id=p.id) AS fired_at
@@ -677,10 +698,17 @@ func (s *Store) ListPostsFiltered(f PostFilter) ([]Post, error) {
 		var platforms string
 		var sa sql.NullTime
 		var fa sql.NullString // MAX() loses the column's TIMESTAMP affinity → comes back as a Go time.String()
-		if err := rows.Scan(&p.ID, &p.CreatedAt, &p.MasterText, &platforms, &p.Source, &p.Status, &sa, &fa); err != nil {
+		var interactionJSON sql.NullString
+		if err := rows.Scan(&p.ID, &p.CreatedAt, &p.MasterText, &platforms, &p.Source, &p.Status, &sa, &interactionJSON, &fa); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(platforms), &p.Platforms)
+		if interactionJSON.String != "" {
+			var ix Interaction
+			if json.Unmarshal([]byte(interactionJSON.String), &ix) == nil {
+				p.Interaction = &ix
+			}
+		}
 		if sa.Valid {
 			t := sa.Time.UTC()
 			p.ScheduledAt = &t

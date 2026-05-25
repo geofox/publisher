@@ -108,6 +108,20 @@ export function resultRow(t, stop) {
   return relays ? el("div", { class: "res-wrap" }, row, relays) : row;
 }
 
+// interactionBadge renders "↩ replied to / ❝ quoted / 🔁 reposted <author>" with a
+// link to the source, for posts created via the Interact tab. Returns null for
+// normal posts.
+function interactionBadge(post) {
+  const i = post.interaction;
+  if (!i) return null;
+  const verb = i.action === "reply" ? "↩ replied to" : i.action === "quote" ? "❝ quoted" : "🔁 reposted";
+  const who = i.source_author || i.source_platform || "source";
+  const link = i.source_url
+    ? el("a", { href: i.source_url, target: "_blank", rel: "noopener", text: who })
+    : el("span", { text: who });
+  return el("div", { class: "hist-interaction" }, el("span", { text: verb + " " }), link);
+}
+
 // ---------------------------------------------------------------------------
 // List state
 // ---------------------------------------------------------------------------
@@ -221,8 +235,10 @@ function historyItem(p) {
   if (fail) when.append(el("span", { class: "dot", text: "·" }), el("span", { class: "bad tot", text: "✗" + fail }));
   if (pend) when.append(el("span", { class: "dot", text: "·" }), el("span", { class: "muted tot", text: "⏳" + pend }));
   const sl = schedLine(p);
+  const listIb = interactionBadge(p);
   const item = el("div", { class: "hitem", "data-id": p.id, onclick: () => openDetail(p.id) },
     when,
+    listIb,
     el("div", { class: "txt", text: (p.master_text || "").slice(0, 160) }),
     sl,
     badges);
@@ -304,6 +320,8 @@ function renderDetail(post) {
   if (sl) d.append(sl);
   const sc = schedControls(post, () => loadHistory(true));
   if (sc) d.append(sc);
+  const ib = interactionBadge(post);
+  if (ib) d.append(ib);
 
   if (post.master_text) {
     d.append(el("div", { class: "sec-head" }, el("span", { class: "lbl", text: "text" })));

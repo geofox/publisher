@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +38,7 @@ type TargetResult struct {
 // Mastodon/Threads, event ids for Nostr (cids unused there).
 type ReplyRef struct {
 	RootID, RootCID, ParentID, ParentCID string
+	AuthorPubkey                         string // nostr: replied-to author hex (external replies)
 }
 
 type Overrides struct {
@@ -73,15 +76,56 @@ type Img struct {
 type NostrPoster interface {
 	PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error)
 	RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (ok bool, message string)
+	NostrActor
 }
 type MastodonPoster interface {
 	PostText(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error)
+	MastodonActor
 }
 type BlueskyPoster interface {
 	PostBsky(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error)
+	BlueskyActor
 }
 type ThreadsPoster interface {
 	PostThreads(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error)
+}
+
+// Interaction action kinds for runAction.
+const (
+	actionReply  = "reply"
+	actionRepost = "repost"
+	actionQuote  = "quote"
+)
+
+// InteractRef is the platform-native identity of the source post (mirrors
+// resolve.PlatformRef; json tags MATCH it so the UI can pass /api/resolve's `ref`
+// straight back). reply_root_* are bluesky-only (thread root for replies).
+type InteractRef struct {
+	URI          string   `json:"uri,omitempty"`
+	CID          string   `json:"cid,omitempty"`
+	ReplyRootURI string   `json:"reply_root_uri,omitempty"`
+	ReplyRootCID string   `json:"reply_root_cid,omitempty"`
+	LocalID      string   `json:"local_id,omitempty"`
+	EventID      string   `json:"event_id,omitempty"`
+	Author       string   `json:"author,omitempty"`
+	RelayHints   []string `json:"relay_hints,omitempty"`
+	Kind         int      `json:"kind,omitempty"`
+}
+
+// Actor interfaces add native repost/quote of an external post, embedded into the
+// per-platform poster interfaces. Threads has no native repost/quote of an
+// external post, so ThreadsPoster gains no actor.
+type NostrActor interface {
+	Repost(ctx context.Context, eventID, author string, kind int, relayHint string) (TargetResult, error)
+	Quote(ctx context.Context, text, eventID, author, relayHint string) (TargetResult, error)
+}
+type BlueskyActor interface {
+	RepostBsky(ctx context.Context, subjectURI, subjectCID string) (TargetResult, error)
+	QuoteBsky(ctx context.Context, text string, o Overrides, imgs []Img, quoteURI, quoteCID string) (TargetResult, error)
+}
+type MastodonActor interface {
+	Reblog(ctx context.Context, statusID string) (TargetResult, error)
+	QuoteStatus(ctx context.Context, text, quotedID string) (TargetResult, error)
 }
 
 type PostSpec struct {
@@ -157,6 +201,73 @@ func (d *Dispatcher) runPlatform(ctx context.Context, plat, text string, ov Over
 		r.LatencyMS = int(time.Since(start).Milliseconds())
 	}
 	return r
+}
+
+// runAction executes one native interaction (repost/quote) on one platform and
+// returns a normalized TargetResult, mirroring runPlatform's normalization.
+func (d *Dispatcher) runAction(ctx context.Context, action, plat, text string, ov Overrides, imgs []Img, ref InteractRef) TargetResult {
+	start := time.Now()
+	var r TargetResult
+	var err error
+	switch {
+	case action == actionRepost && plat == "bluesky":
+		if d.Bluesky != nil {
+			r, err = d.Bluesky.RepostBsky(ctx, ref.URI, ref.CID)
+		} else {
+			err = errors.New("bluesky not configured")
+		}
+	case action == actionQuote && plat == "bluesky":
+		if d.Bluesky != nil {
+			r, err = d.Bluesky.QuoteBsky(ctx, text, ov, imgs, ref.URI, ref.CID)
+		} else {
+			err = errors.New("bluesky not configured")
+		}
+	case action == actionRepost && plat == "mastodon":
+		if d.Mastodon != nil {
+			r, err = d.Mastodon.Reblog(ctx, ref.LocalID)
+		} else {
+			err = errors.New("mastodon not configured")
+		}
+	case action == actionQuote && plat == "mastodon":
+		if d.Mastodon != nil {
+			r, err = d.Mastodon.QuoteStatus(ctx, text, ref.LocalID)
+		} else {
+			err = errors.New("mastodon not configured")
+		}
+	case action == actionRepost && plat == "nostr":
+		if d.Nostr != nil {
+			r, err = d.Nostr.Repost(ctx, ref.EventID, ref.Author, ref.Kind, relayHint(ref.RelayHints))
+		} else {
+			err = errors.New("nostr not configured")
+		}
+	case action == actionQuote && plat == "nostr":
+		if d.Nostr != nil {
+			r, err = d.Nostr.Quote(ctx, text, ref.EventID, ref.Author, relayHint(ref.RelayHints))
+		} else {
+			err = errors.New("nostr not configured")
+		}
+	default:
+		err = fmt.Errorf("unsupported action %q for %q", action, plat)
+	}
+	r.Platform = plat
+	r.LatencyMS = int(time.Since(start).Milliseconds())
+	if err != nil {
+		r.Status, r.Error = "failed", err.Error()
+	} else if r.Status == "" {
+		r.Status = "failed"
+		if r.Error == "" {
+			r.Error = "adapter returned empty status"
+		}
+	}
+	return r
+}
+
+// relayHint returns the first relay hint, or "" when none are present.
+func relayHint(hints []string) string {
+	if len(hints) > 0 {
+		return hints[0]
+	}
+	return ""
 }
 
 // chainOutcome is the result of posting one platform's (possibly single-segment)
@@ -391,6 +502,124 @@ func (d *Dispatcher) Post(ctx context.Context, spec PostSpec) *store.Post {
 		}
 	}
 	return rec
+}
+
+type InteractSpec struct {
+	Action         string // reply|repost|quote
+	SourcePlatform string
+	Ref            InteractRef
+	SourceURL      string
+	SourceAuthor   string
+	Text           string
+	Overrides      map[string]Overrides // keyed by platform
+	Fanout         []string             // quote only: other platforms for link-quotes
+	Force          bool
+	Images         []Img
+	MediaRecords   []store.Media
+}
+
+// Interact performs reply/repost/quote and records it as a store.Post carrying an
+// interaction descriptor. Reply/repost act only on the source platform; quote
+// also link-quotes (commentary + source URL) to each Fanout platform.
+func (d *Dispatcher) Interact(ctx context.Context, spec InteractSpec) *store.Post {
+	rec := &store.Post{
+		ID: newID(), CreatedAt: time.Now().UTC(), MasterText: spec.Text,
+		Source: "web", Media: spec.MediaRecords,
+		Interaction: &store.Interaction{
+			Action: spec.Action, SourcePlatform: spec.SourcePlatform,
+			SourceURL: spec.SourceURL, SourceAuthor: spec.SourceAuthor,
+		},
+	}
+	imetas := buildImetas(spec.MediaRecords)
+	ov := spec.Overrides[spec.SourcePlatform]
+
+	var results []TargetResult
+	switch spec.Action {
+	case actionReply:
+		results = append(results, d.runPlatform(ctx, spec.SourcePlatform, spec.Text, ov, spec.Images, imetas, buildReplyRef(spec)))
+	case actionRepost:
+		results = append(results, d.runAction(ctx, actionRepost, spec.SourcePlatform, "", ov, nil, spec.Ref))
+	case actionQuote:
+		results = append(results, d.runAction(ctx, actionQuote, spec.SourcePlatform, spec.Text, ov, spec.Images, spec.Ref))
+		for _, p := range spec.Fanout {
+			if p == spec.SourcePlatform {
+				continue
+			}
+			lov := spec.Overrides[p]
+			results = append(results, d.runPlatform(ctx, p, linkQuoteText(spec.Text, spec.SourceURL), lov, spec.Images, imetas, nil))
+		}
+	}
+
+	succ, failed := 0, 0
+	for i, r := range results {
+		rec.Platforms = append(rec.Platforms, r.Platform)
+		// FinalText records what was actually sent: results[0] is the source-platform
+		// action (repost has no text), and i>0 are quote fan-out link-quotes
+		// (commentary + source URL).
+		finalText := spec.Text
+		switch {
+		case spec.Action == actionRepost:
+			finalText = ""
+		case i > 0:
+			finalText = linkQuoteText(spec.Text, spec.SourceURL)
+		}
+		rec.Targets = append(rec.Targets, store.Target{
+			Platform: r.Platform, FinalText: finalText, Status: r.Status,
+			RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, LatencyMS: r.LatencyMS,
+			Relays: r.Relays, SignedEventJSON: r.SignedEventJSON,
+			Attempts: []store.Attempt{{AttemptNo: 1, Status: r.Status, Error: r.Error, LatencyMS: r.LatencyMS,
+				RemoteID: r.RemoteID, RequestJSON: r.RequestJSON, ResponseJSON: r.ResponseJSON, AttemptedAt: time.Now().UTC()}},
+		})
+		switch r.Status {
+		case "success":
+			succ++
+		case "failed":
+			failed++
+		}
+	}
+	switch total := len(results); {
+	case total == 0 || failed == total:
+		rec.Status = "failed"
+	case succ == total:
+		rec.Status = "success"
+	default:
+		rec.Status = "partial"
+	}
+	if d.Store != nil {
+		if err := d.Store.SavePost(rec); err != nil {
+			slog.Error("savepost (interact) failed", "post_id", rec.ID, "err", err)
+		}
+	}
+	return rec
+}
+
+// buildReplyRef derives the platform reply ref from the source. Bluesky: parent =
+// source, root = its thread root (or source if top-level). Mastodon: parent id =
+// local id. Nostr: parent = event id with the external author for the p-tag.
+func buildReplyRef(spec InteractSpec) *ReplyRef {
+	ref := spec.Ref
+	switch spec.SourcePlatform {
+	case "bluesky":
+		root, rootCID := ref.ReplyRootURI, ref.ReplyRootCID
+		if root == "" {
+			root, rootCID = ref.URI, ref.CID
+		}
+		return &ReplyRef{RootID: root, RootCID: rootCID, ParentID: ref.URI, ParentCID: ref.CID}
+	case "mastodon":
+		return &ReplyRef{ParentID: ref.LocalID}
+	case "nostr":
+		return &ReplyRef{RootID: ref.EventID, ParentID: ref.EventID, AuthorPubkey: ref.Author}
+	}
+	return nil
+}
+
+// linkQuoteText appends the source URL to the commentary for a fan-out link-quote.
+func linkQuoteText(text, url string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return url
+	}
+	return text + "\n\n" + url
 }
 
 func finalText(spec PostSpec, plat string) string {

@@ -3,6 +3,9 @@ package mastodon
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"strings"
+	"time"
 
 	gomast "github.com/mattn/go-mastodon"
 )
@@ -29,10 +32,20 @@ type Result struct {
 	RemoteURL string
 }
 
-type Client struct{ c *gomast.Client }
+type Client struct {
+	c       *gomast.Client
+	baseURL string
+	token   string
+	http    *http.Client
+}
 
 func New(baseURL, token string) *Client {
-	return &Client{c: gomast.NewClient(&gomast.Config{Server: baseURL, AccessToken: token})}
+	return &Client{
+		c:       gomast.NewClient(&gomast.Config{Server: baseURL, AccessToken: token}),
+		baseURL: strings.TrimRight(baseURL, "/"),
+		token:   token,
+		http:    &http.Client{Timeout: 15 * time.Second},
+	}
 }
 
 func (cl *Client) Post(ctx context.Context, p Post) (Result, error) {

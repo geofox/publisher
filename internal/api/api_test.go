@@ -32,6 +32,7 @@ func (fakeDispatcher) RetryRelay(ctx context.Context, id, relay string) (*store.
 func (fakeDispatcher) Schedule(ctx context.Context, spec dispatch.PostSpec, at time.Time) (*store.Post, error) {
 	return &store.Post{ID: "sch", Status: "scheduled"}, nil
 }
+func (fakeDispatcher) Interact(context.Context, dispatch.InteractSpec) *store.Post { return nil }
 
 func TestAPIPost(t *testing.T) {
 	a := &API{Dispatch: fakeDispatcher{}}

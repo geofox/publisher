@@ -135,6 +135,85 @@ func TestSavePostNoSegmentsIsEmpty(t *testing.T) {
 	}
 }
 
+func TestPostInteractionRoundTrip(t *testing.T) {
+	db, _ := Open(filepath.Join(t.TempDir(), "i.db"))
+	defer db.Close()
+	rec := &Post{
+		ID: "i1", CreatedAt: time.Now().UTC().Truncate(time.Second),
+		Platforms: []string{"bluesky"}, Source: "web", Status: "success",
+		Interaction: &Interaction{Action: "quote", SourcePlatform: "bluesky",
+			SourceURL: "https://bsky.app/x", SourceAuthor: "@alice"},
+		Targets: []Target{{Platform: "bluesky", Status: "success"}},
+	}
+	if err := db.SavePost(rec); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.GetPost("i1")
+	if got.Interaction == nil || got.Interaction.Action != "quote" ||
+		got.Interaction.SourceAuthor != "@alice" || got.Interaction.SourceURL != "https://bsky.app/x" {
+		t.Fatalf("interaction not round-tripped: %+v", got.Interaction)
+	}
+}
+
+func TestListPostsCarriesInteraction(t *testing.T) {
+	// The list view (not just detail) must load the interaction descriptor so the
+	// history badge renders in the list.
+	db, _ := Open(filepath.Join(t.TempDir(), "li.db"))
+	defer db.Close()
+	rec := &Post{ID: "li1", CreatedAt: time.Now().UTC().Truncate(time.Second),
+		Platforms: []string{"bluesky"}, Source: "web", Status: "success",
+		Interaction: &Interaction{Action: "repost", SourcePlatform: "bluesky", SourceAuthor: "@bob"},
+		Targets: []Target{{Platform: "bluesky", Status: "success"}}}
+	if err := db.SavePost(rec); err != nil {
+		t.Fatal(err)
+	}
+	list, err := db.ListPosts(10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Interaction == nil || list[0].Interaction.Action != "repost" || list[0].Interaction.SourceAuthor != "@bob" {
+		t.Fatalf("list view should carry interaction: %+v", list)
+	}
+}
+
+func TestGetPostHandlesLegacyNullInteraction(t *testing.T) {
+	// Rows that predate the interaction_json column have it as SQL NULL; GetPost
+	// must read them without error and leave Interaction nil.
+	db, _ := Open(filepath.Join(t.TempDir(), "legacy.db"))
+	defer db.Close()
+	rec := &Post{ID: "l1", CreatedAt: time.Now().UTC().Truncate(time.Second),
+		Platforms: []string{"nostr"}, Source: "web", Status: "success",
+		Targets: []Target{{Platform: "nostr", Status: "success"}}}
+	if err := db.SavePost(rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.Exec(`UPDATE posts SET interaction_json=NULL WHERE id=?`, "l1"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetPost("l1")
+	if err != nil {
+		t.Fatalf("GetPost must tolerate NULL interaction_json: %v", err)
+	}
+	if got.Interaction != nil {
+		t.Errorf("NULL interaction should load as nil, got %+v", got.Interaction)
+	}
+}
+
+func TestPostWithoutInteractionLoadsNil(t *testing.T) {
+	db, _ := Open(filepath.Join(t.TempDir(), "n.db"))
+	defer db.Close()
+	rec := &Post{ID: "n1", CreatedAt: time.Now().UTC().Truncate(time.Second),
+		Platforms: []string{"nostr"}, Source: "web", Status: "success",
+		Targets: []Target{{Platform: "nostr", Status: "success"}}}
+	if err := db.SavePost(rec); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.GetPost("n1")
+	if got.Interaction != nil {
+		t.Fatalf("normal post should have nil interaction, got %+v", got.Interaction)
+	}
+}
+
 func TestUpdateTargetSegments(t *testing.T) {
 	db, _ := Open(filepath.Join(t.TempDir(), "upd.db"))
 	defer db.Close()

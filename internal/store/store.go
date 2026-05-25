@@ -47,7 +47,10 @@ func (s *Store) migrate() error {
 	if err := s.addColumnIfMissing("post_targets", "segments_json", "TEXT"); err != nil {
 		return err
 	}
-	return s.addColumnIfMissing("posts", "hidden", "INTEGER NOT NULL DEFAULT 0")
+	if err := s.addColumnIfMissing("posts", "hidden", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return s.addColumnIfMissing("posts", "interaction_json", "TEXT")
 }
 
 // addColumnIfMissing performs an idempotent ALTER TABLE ADD COLUMN (SQLite has

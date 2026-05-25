@@ -22,6 +22,12 @@ func (f fakeNostr) PublishText(ctx context.Context, text string, pow *int, imeta
 func (fakeNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (bool, string) {
 	return true, ""
 }
+func (fakeNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
+	return TargetResult{Platform: "nostr", Status: "success"}, nil
+}
+func (fakeNostr) Quote(context.Context, string, string, string, string) (TargetResult, error) {
+	return TargetResult{Platform: "nostr", Status: "success"}, nil
+}
 
 // capturingNostr records the imeta tags it was handed so tests can assert the
 // dispatcher rebuilt NIP-92 tags from the archived media records.
@@ -34,6 +40,12 @@ func (c *capturingNostr) PublishText(ctx context.Context, text string, pow *int,
 
 func (*capturingNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (bool, string) {
 	return true, ""
+}
+func (*capturingNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
+	return TargetResult{Platform: "nostr", Status: "success"}, nil
+}
+func (*capturingNostr) Quote(context.Context, string, string, string, string) (TargetResult, error) {
+	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
 
 func TestDispatchNostrImeta(t *testing.T) {
@@ -73,6 +85,12 @@ type fakeMasto struct{}
 
 func (fakeMasto) PostText(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
 	return TargetResult{Platform: "mastodon", Status: "success", RemoteID: "st1", RemoteURL: "https://m/1"}, nil
+}
+func (fakeMasto) Reblog(context.Context, string) (TargetResult, error) {
+	return TargetResult{Platform: "mastodon", Status: "success"}, nil
+}
+func (fakeMasto) QuoteStatus(context.Context, string, string) (TargetResult, error) {
+	return TargetResult{Platform: "mastodon", Status: "success"}, nil
 }
 
 func TestDispatchFanOut(t *testing.T) {
@@ -125,6 +143,12 @@ type simpleFakeBsky struct{}
 func (simpleFakeBsky) PostBsky(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
 	return TargetResult{Platform: "bluesky", Status: "success", RemoteID: "at://x", RemoteURL: "https://bsky.app/x"}, nil
 }
+func (simpleFakeBsky) RepostBsky(context.Context, string, string) (TargetResult, error) {
+	return TargetResult{Platform: "bluesky", Status: "success"}, nil
+}
+func (simpleFakeBsky) QuoteBsky(context.Context, string, Overrides, []Img, string, string) (TargetResult, error) {
+	return TargetResult{Platform: "bluesky", Status: "success"}, nil
+}
 
 func TestDispatchBluesky(t *testing.T) {
 	d := &Dispatcher{Bluesky: simpleFakeBsky{}}
@@ -164,6 +188,12 @@ func (partialNostr) PublishText(ctx context.Context, text string, pow *int, imet
 }
 func (partialNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (bool, string) {
 	return true, ""
+}
+func (partialNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
+	return TargetResult{Platform: "nostr", Status: "success"}, nil
+}
+func (partialNostr) Quote(context.Context, string, string, string, string) (TargetResult, error) {
+	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
 
 // A single partial target must make the whole post partial (not failed) — the

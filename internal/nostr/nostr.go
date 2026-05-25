@@ -22,6 +22,11 @@ import (
 // ErrInvalidInput is returned by Publish when the caller supplies an empty text field.
 var ErrInvalidInput = errors.New("text is required")
 
+// requiresText reports whether an event of this kind must have non-empty content.
+// NIP-18 reposts (kind 6 / generic 16) legitimately carry empty content, so they
+// are exempt; everything else (text notes etc.) requires text.
+func requiresText(kind int) bool { return kind != 6 && kind != 16 }
+
 // RelayResult captures the outcome of a single relay publish attempt.
 type RelayResult struct {
 	URL     string `json:"url"`
@@ -35,6 +40,7 @@ type RelayResult struct {
 // RootID when replying directly to the root). RelayHint is an optional relay URL.
 type NostrReply struct {
 	RootID, ParentID, RelayHint string
+	AuthorPubkey                string // replied-to author (hex); empty → self-thread, p-tag the owner
 }
 
 // PublishInput carries everything needed to build and publish a Nostr event.
@@ -44,6 +50,7 @@ type PublishInput struct {
 	Imetas  []gonostr.Tag // optional NIP-92, one tag per attached media
 	POW     *int          // nil → use Config.POWDifficultyDefault
 	ReplyTo *NostrReply   // when set, adds NIP-10 e/p tags (threading)
+	Tags    []gonostr.Tag // extra tags appended before signing (e.g. NIP-18 q/e/p/k)
 }
 
 // PublishResult summarises the event that was broadcast.
@@ -99,7 +106,7 @@ func New(cfg Config) *Publisher {
 // It returns PublishResult even on partial relay failure — the caller
 // decides how to interpret the relay results slice.
 func (p *Publisher) Publish(ctx context.Context, in PublishInput) (PublishResult, error) {
-	if strings.TrimSpace(in.Text) == "" {
+	if strings.TrimSpace(in.Text) == "" && requiresText(in.Kind) {
 		return PublishResult{}, ErrInvalidInput
 	}
 	kind := in.Kind
@@ -136,6 +143,9 @@ func (p *Publisher) Publish(ctx context.Context, in PublishInput) (PublishResult
 		}
 	}
 	for _, tg := range replyTags(in.ReplyTo, p.cfg.OwnerPubkey.Hex()) {
+		event.Tags = append(event.Tags, tg)
+	}
+	for _, tg := range in.Tags {
 		event.Tags = append(event.Tags, tg)
 	}
 
@@ -241,25 +251,32 @@ func (p *Publisher) RebroadcastToRelay(ctx context.Context, signedEventJSON, rel
 }
 
 // replyTags builds NIP-10 tags: an "e" root marker, an optional "e" reply
-// marker, and a "p" tag for the replied-to author (here, the owner — a
-// self-thread). When ParentID equals RootID (replying directly to the root) or
-// ParentID is empty, only a single root e-tag is emitted (canonical NIP-10).
-func replyTags(r *NostrReply, authorPubkeyHex string) []gonostr.Tag {
+// marker, and a "p" tag for the replied-to author. When AuthorPubkey is set
+// (replying to an external note), the p-tag carries that author and each e-tag
+// carries the author hex as a 5th element (NIP-10 author hint); otherwise this
+// is a self-thread and the p-tag is the owner with no 5th element. When
+// ParentID equals RootID (replying directly to the root) or ParentID is empty,
+// only a single root e-tag is emitted (canonical NIP-10).
+func replyTags(r *NostrReply, ownerPubkeyHex string) []gonostr.Tag {
 	if r == nil {
 		return nil
 	}
+	pAuthor := r.AuthorPubkey
+	if pAuthor == "" {
+		pAuthor = ownerPubkeyHex // self-thread: p-tag the owner (self)
+	}
+	rootE := gonostr.Tag{"e", r.RootID, r.RelayHint, "root"}
+	if r.AuthorPubkey != "" {
+		rootE = append(rootE, r.AuthorPubkey) // NIP-10 author hint (5th element)
+	}
 	if r.ParentID == "" || r.ParentID == r.RootID {
-		// Replying directly to the root (or no distinct parent): single root marker.
-		return []gonostr.Tag{
-			{"e", r.RootID, r.RelayHint, "root"},
-			{"p", authorPubkeyHex},
-		}
+		return []gonostr.Tag{rootE, {"p", pAuthor}}
 	}
-	return []gonostr.Tag{
-		{"e", r.RootID, r.RelayHint, "root"},
-		{"e", r.ParentID, r.RelayHint, "reply"},
-		{"p", authorPubkeyHex},
+	replyE := gonostr.Tag{"e", r.ParentID, r.RelayHint, "reply"}
+	if r.AuthorPubkey != "" {
+		replyE = append(replyE, r.AuthorPubkey)
 	}
+	return []gonostr.Tag{rootE, replyE, {"p", pAuthor}}
 }
 
 // extractImetaURL returns the "url ..." value from a NIP-92 imeta tag, or

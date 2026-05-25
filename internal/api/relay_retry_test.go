@@ -27,6 +27,7 @@ func (f *relayFakeDispatch) RetryRelay(ctx context.Context, id, relay string) (*
 func (f *relayFakeDispatch) Schedule(ctx context.Context, spec dispatch.PostSpec, at time.Time) (*store.Post, error) {
 	return &store.Post{ID: "sch", Status: "scheduled"}, nil
 }
+func (f *relayFakeDispatch) Interact(context.Context, dispatch.InteractSpec) *store.Post { return nil }
 
 func TestRelayRetryEndpoint(t *testing.T) {
 	fd := &relayFakeDispatch{}

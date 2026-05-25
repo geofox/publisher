@@ -28,6 +28,12 @@ func (s stubNostr) PublishText(ctx context.Context, text string, pow *int, imeta
 func (stubNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (bool, string) {
 	return true, ""
 }
+func (stubNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
+	return TargetResult{Platform: "nostr", Status: "success"}, nil
+}
+func (stubNostr) Quote(context.Context, string, string, string, string) (TargetResult, error) {
+	return TargetResult{Platform: "nostr", Status: "success"}, nil
+}
 
 func TestOverdue(t *testing.T) {
 	now := time.Unix(1_000_000, 0)

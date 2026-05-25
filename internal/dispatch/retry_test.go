@@ -24,6 +24,12 @@ func (m *retryMasto) PostText(ctx context.Context, text string, o Overrides, img
 	m.calls++
 	return TargetResult{Platform: "mastodon", Status: "success", RemoteID: "st2", RemoteURL: "https://m/2"}, nil
 }
+func (m *retryMasto) Reblog(context.Context, string) (TargetResult, error) {
+	return TargetResult{Platform: "mastodon", Status: "success"}, nil
+}
+func (m *retryMasto) QuoteStatus(context.Context, string, string) (TargetResult, error) {
+	return TargetResult{Platform: "mastodon", Status: "success"}, nil
+}
 
 func TestDispatcherRetry(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
@@ -95,6 +101,12 @@ func (b *retryBsky) PostBsky(ctx context.Context, text string, o Overrides, imgs
 	b.calls++
 	return TargetResult{Platform: "bluesky", Status: "success", RemoteID: "bb"}, nil
 }
+func (b *retryBsky) RepostBsky(context.Context, string, string) (TargetResult, error) {
+	return TargetResult{Platform: "bluesky", Status: "success"}, nil
+}
+func (b *retryBsky) QuoteBsky(context.Context, string, Overrides, []Img, string, string) (TargetResult, error) {
+	return TargetResult{Platform: "bluesky", Status: "success"}, nil
+}
 
 type relayFakeNostr struct {
 	rebroadcastOK bool
@@ -102,6 +114,12 @@ type relayFakeNostr struct {
 }
 
 func (f *relayFakeNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error) {
+	return TargetResult{Platform: "nostr", Status: "success"}, nil
+}
+func (f *relayFakeNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
+	return TargetResult{Platform: "nostr", Status: "success"}, nil
+}
+func (f *relayFakeNostr) Quote(context.Context, string, string, string, string) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
 func (f *relayFakeNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (bool, string) {
@@ -209,6 +227,12 @@ func (refreshNostr) PublishText(ctx context.Context, text string, pow *int, imet
 }
 func (refreshNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (bool, string) {
 	return true, ""
+}
+func (refreshNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
+	return TargetResult{Platform: "nostr", Status: "success"}, nil
+}
+func (refreshNostr) Quote(context.Context, string, string, string, string) (TargetResult, error) {
+	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
 
 func TestRetryNostrRefreshesRelays(t *testing.T) {

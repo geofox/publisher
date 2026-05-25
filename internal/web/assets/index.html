@@ -25,6 +25,7 @@
     </div>
     <nav class="tabs">
       <button class="tab on" data-view="compose" type="button">compose</button>
+      <button class="tab" data-view="interact" type="button">interact</button>
       <button class="tab" data-view="history" type="button">history</button>
       <button class="tab" data-view="tools" type="button">tools</button>
       <button class="tab" data-view="verify" type="button">verify</button>
@@ -106,6 +107,14 @@
       <button id="vsubmit" class="submit" type="button">Verify</button>
       <div id="vresult"></div>
     </section><!-- /#verify -->
+
+    <!-- ── Interact ───────────────────────────────────────────────────────── -->
+    <section id="interact" class="view" hidden>
+      <label class="fl" for="srcinput">Paste a post URL (or a Nostr nevent/note id)</label>
+      <input id="srcinput" type="text" placeholder="https://bsky.app/… · https://mastodon… · nevent1…" autocomplete="off">
+      <div id="srcstatus" class="muted"></div>
+      <div id="srccard"></div>
+    </section><!-- /#interact -->
 
   </main>
   <script type="module" src="main.js"></script>

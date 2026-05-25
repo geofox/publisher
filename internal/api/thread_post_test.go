@@ -40,6 +40,9 @@ func (c *capturingDispatcher) RetryRelay(context.Context, string, string) (*stor
 func (c *capturingDispatcher) Schedule(context.Context, dispatch.PostSpec, time.Time) (*store.Post, error) {
 	return nil, nil
 }
+func (c *capturingDispatcher) Interact(context.Context, dispatch.InteractSpec) *store.Post {
+	return nil
+}
 
 func TestAPIPostForwardsNumberAndReturnsSegments(t *testing.T) {
 	cap := &capturingDispatcher{}

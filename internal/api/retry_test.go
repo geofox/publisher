@@ -26,6 +26,7 @@ func (retryFakeDispatcher) RetryRelay(ctx context.Context, id, relay string) (*s
 func (retryFakeDispatcher) Schedule(ctx context.Context, spec dispatch.PostSpec, at time.Time) (*store.Post, error) {
 	return &store.Post{ID: "sch", Status: "scheduled"}, nil
 }
+func (retryFakeDispatcher) Interact(context.Context, dispatch.InteractSpec) *store.Post { return nil }
 
 func TestAPIRetry(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))

@@ -21,6 +21,7 @@ import (
 	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/notify"
 	"github.com/geofox/publisher/internal/relaysync"
+	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/threads"
 	"github.com/geofox/publisher/internal/verify"
@@ -60,10 +61,12 @@ func main() {
 	defer st.Close()
 
 	tc := threads.New(cfg.ThreadsToken, cfg.ThreadsUserID)
+	mc := mastodon.New(cfg.MastodonBaseURL, cfg.MastodonToken)
+	bc := bluesky.New(cfg.BlueskyPDSURL, cfg.BlueskyIdentifier, cfg.BlueskyAppPassword)
 	d := &dispatch.Dispatcher{
 		Nostr:    dispatch.NostrAdapter{P: np},
-		Mastodon: dispatch.MastodonAdapter{C: mastodon.New(cfg.MastodonBaseURL, cfg.MastodonToken)},
-		Bluesky:  dispatch.BlueskyAdapter{C: bluesky.New(cfg.BlueskyPDSURL, cfg.BlueskyIdentifier, cfg.BlueskyAppPassword)},
+		Mastodon: dispatch.MastodonAdapter{C: mc},
+		Bluesky:  dispatch.BlueskyAdapter{C: bc},
 		Threads:  dispatch.ThreadsAdapter{C: tc},
 		Store:    st,
 		Fetcher:  mp,
@@ -81,6 +84,11 @@ func main() {
 		Bluesky:  verify.NewBlueskyVerifier(cfg.PLCDirectoryURL, cfg.VerifyHTTPTimeout),
 		Mastodon: verify.NewMastodonVerifier(cfg.VerifyHTTPTimeout),
 		Threads:  verify.NewThreadsVerifier(cfg.VerifyHTTPTimeout),
+	}
+	a.Resolve = &resolve.Service{
+		Bluesky:  resolve.BlueskyAdapter{C: bc},
+		Mastodon: resolve.MastodonAdapter{C: mc},
+		Nostr:    resolve.NostrAdapter{P: np},
 	}
 	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
 	if cfg.ThreadsToken != "" {

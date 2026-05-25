@@ -34,6 +34,13 @@ func (f *fakeBsky) PostBsky(_ context.Context, text string, _ Overrides, imgs []
 	}, nil
 }
 
+func (f *fakeBsky) RepostBsky(context.Context, string, string) (TargetResult, error) {
+	return TargetResult{Platform: "bluesky", Status: "success"}, nil
+}
+func (f *fakeBsky) QuoteBsky(context.Context, string, Overrides, []Img, string, string) (TargetResult, error) {
+	return TargetResult{Platform: "bluesky", Status: "success"}, nil
+}
+
 func itoa(n int) string { return strconv.Itoa(n) }
 
 func TestRunPlatformForwardsReplyAndCID(t *testing.T) {

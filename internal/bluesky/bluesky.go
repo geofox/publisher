@@ -34,6 +34,7 @@ type Post struct {
 	DisableQuotes bool
 	// Reply, when non-nil, makes this post a reply (used for threading).
 	Reply *ReplyRef
+	Quote *QuoteRef // when set, embeds the quoted post
 }
 
 // ReplyRef threads a post into an existing conversation. For a self-thread the
@@ -41,6 +42,9 @@ type Post struct {
 type ReplyRef struct {
 	RootURI, RootCID, ParentURI, ParentCID string
 }
+
+// QuoteRef, when set on a Post, embeds a quoted post (app.bsky.embed.record).
+type QuoteRef struct{ URI, CID string }
 
 // ReplyGate selects the app.bsky.feed.threadgate allow rules. All-false = nobody.
 type ReplyGate struct {
@@ -146,6 +150,12 @@ func buildPostRecord(p Post) map[string]any {
 			"parent": map[string]any{"uri": p.Reply.ParentURI, "cid": p.Reply.ParentCID},
 		}
 	}
+	if p.Quote != nil {
+		record["embed"] = map[string]any{
+			"$type":  "app.bsky.embed.record",
+			"record": map[string]any{"uri": p.Quote.URI, "cid": p.Quote.CID},
+		}
+	}
 	return record
 }
 
@@ -177,7 +187,16 @@ func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 
 	record := buildPostRecord(p)
 	if len(images) > 0 {
-		record["embed"] = map[string]any{"$type": "app.bsky.embed.images", "images": images}
+		imageEmbed := map[string]any{"$type": "app.bsky.embed.images", "images": images}
+		if p.Quote != nil {
+			record["embed"] = map[string]any{
+				"$type":  "app.bsky.embed.recordWithMedia",
+				"record": map[string]any{"$type": "app.bsky.embed.record", "record": map[string]any{"uri": p.Quote.URI, "cid": p.Quote.CID}},
+				"media":  imageEmbed,
+			}
+		} else {
+			record["embed"] = imageEmbed
+		}
 	}
 
 	uri, cid, err := c.createRecord(ctx, s, "app.bsky.feed.post", "", record)
@@ -214,6 +233,28 @@ func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 		}
 	}
 	return res, nil
+}
+
+// repostRecord builds an app.bsky.feed.repost record for the given subject.
+func repostRecord(subjectURI, subjectCID string) map[string]any {
+	return map[string]any{
+		"$type":     "app.bsky.feed.repost",
+		"subject":   map[string]any{"uri": subjectURI, "cid": subjectCID},
+		"createdAt": time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+// Repost creates an app.bsky.feed.repost of the subject post.
+func (c *Client) Repost(ctx context.Context, subjectURI, subjectCID string) (Result, error) {
+	s, err := c.createSession(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	uri, cid, err := c.createRecord(ctx, s, "app.bsky.feed.repost", "", repostRecord(subjectURI, subjectCID))
+	if err != nil {
+		return Result{}, fmt.Errorf("repost: %w", err)
+	}
+	return Result{RemoteID: uri, RemoteURL: webURL(s.Handle, uri), CID: cid}, nil
 }
 
 func (c *Client) createSession(ctx context.Context) (session, error) {

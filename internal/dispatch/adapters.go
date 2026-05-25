@@ -3,8 +3,11 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"strconv"
+	"strings"
 
 	gonostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip19"
 	"github.com/geofox/publisher/internal/bluesky"
 	"github.com/geofox/publisher/internal/mastodon"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
@@ -27,13 +30,23 @@ func (a NostrAdapter) PublishText(ctx context.Context, text string, pow *int, im
 	if replyTo != nil {
 		// RelayHint is intentionally left empty: ReplyRef carries no relay hint
 		// (NIP-10 hints are optional). Revisit if ReplyRef gains a RelayHint field.
-		in.ReplyTo = &pubnostr.NostrReply{RootID: replyTo.RootID, ParentID: replyTo.ParentID}
+		in.ReplyTo = &pubnostr.NostrReply{RootID: replyTo.RootID, ParentID: replyTo.ParentID, AuthorPubkey: replyTo.AuthorPubkey}
 	}
 	r := TargetResult{Platform: "nostr"}
 	reqB, _ := json.Marshal(map[string]any{"text": text, "pow": pow, "imeta": imetas})
 	r.RequestJSON = string(reqB)
 
 	res, err := a.P.Publish(ctx, in)
+	out, err := nostrResult(res, err)
+	out.RequestJSON = r.RequestJSON
+	return out, err
+}
+
+// nostrResult maps a nostr PublishResult/err into a normalized TargetResult,
+// deriving status from the per-relay outcomes (success/partial/failed). Shared by
+// PublishText, Repost and Quote so they agree on relay/signed-event/status mapping.
+func nostrResult(res pubnostr.PublishResult, err error) (TargetResult, error) {
+	r := TargetResult{Platform: "nostr"}
 	if err != nil {
 		r.Status, r.Error = "failed", err.Error()
 		return r, err
@@ -170,6 +183,93 @@ func (a ThreadsAdapter) PostThreads(ctx context.Context, text string, o Override
 	respB, _ := json.Marshal(res) // Result is JSON-safe
 	r.Status, r.RemoteID, r.RemoteURL, r.ResponseJSON = "success", res.RemoteID, res.RemoteURL, string(respB)
 	return r, nil
+}
+
+func (a BlueskyAdapter) RepostBsky(ctx context.Context, uri, cid string) (TargetResult, error) {
+	res, err := a.C.Repost(ctx, uri, cid)
+	if err != nil {
+		return TargetResult{Platform: "bluesky"}, err
+	}
+	return TargetResult{Platform: "bluesky", Status: "success", RemoteID: res.RemoteID, RemoteURL: res.RemoteURL, CID: res.CID}, nil
+}
+
+func (a BlueskyAdapter) QuoteBsky(ctx context.Context, text string, o Overrides, _ []Img, uri, cid string) (TargetResult, error) {
+	// v1: native quote carries commentary + embed only (no attached images;
+	// symmetric with Mastodon native quote).
+	bp := bluesky.Post{
+		Text: text, Langs: o.Langs, Quote: &bluesky.QuoteRef{URI: uri, CID: cid},
+		ReplyGate: bluesky.ParseReplyGate(o.BlueskyReply), DisableQuotes: o.BlueskyDisableQuotes,
+	}
+	res, err := a.C.Post(ctx, bp)
+	if err != nil {
+		return TargetResult{Platform: "bluesky"}, err
+	}
+	return TargetResult{Platform: "bluesky", Status: "success", RemoteID: res.RemoteID, RemoteURL: res.RemoteURL, CID: res.CID}, nil
+}
+
+func (a MastodonAdapter) Reblog(ctx context.Context, id string) (TargetResult, error) {
+	res, err := a.C.Reblog(ctx, id)
+	if err != nil {
+		return TargetResult{Platform: "mastodon"}, err
+	}
+	return TargetResult{Platform: "mastodon", Status: "success", RemoteID: res.RemoteID, RemoteURL: res.RemoteURL}, nil
+}
+
+func (a MastodonAdapter) QuoteStatus(ctx context.Context, text, quotedID string) (TargetResult, error) {
+	res, err := a.C.QuotePost(ctx, text, quotedID)
+	if err != nil {
+		return TargetResult{Platform: "mastodon"}, err
+	}
+	return TargetResult{Platform: "mastodon", Status: "success", RemoteID: res.RemoteID, RemoteURL: res.RemoteURL}, nil
+}
+
+// Repost publishes a NIP-18 repost: kind 6 for a kind-1 note, kind 16 (generic
+// repost, carrying a "k" tag) for any other kind.
+func (a NostrAdapter) Repost(ctx context.Context, eventID, author string, kind int, relayHint string) (TargetResult, error) {
+	k := 6
+	tags := []gonostr.Tag{{"e", eventID, relayHint}, {"p", author}}
+	if kind != 1 {
+		k = 16
+		tags = append(tags, gonostr.Tag{"k", strconv.Itoa(kind)})
+	}
+	res, err := a.P.Publish(ctx, pubnostr.PublishInput{Kind: k, Text: "", Tags: tags})
+	return nostrResult(res, err)
+}
+
+// Quote publishes a NIP-18 quote (kind 1 with a "q" tag), appending an
+// nostr:nevent mention of the quoted event to the commentary.
+func (a NostrAdapter) Quote(ctx context.Context, text, eventID, author, relayHint string) (TargetResult, error) {
+	content := strings.TrimSpace(text)
+	if mention := neventMention(eventID, author, relayHint); mention != "" {
+		if content == "" {
+			content = mention
+		} else {
+			content = content + "\n" + mention
+		}
+	}
+	tags := []gonostr.Tag{{"q", eventID, relayHint, author}}
+	res, err := a.P.Publish(ctx, pubnostr.PublishInput{Kind: 1, Text: content, Tags: tags})
+	return nostrResult(res, err)
+}
+
+// neventMention builds a "nostr:nevent…" mention for the quoted event, or "" on
+// error. nip19.EncodeNevent returns "" on failure (it has no error return), so a
+// bad event id simply yields no mention.
+func neventMention(eventID, author, relayHint string) string {
+	id, err := gonostr.IDFromHex(eventID)
+	if err != nil {
+		return ""
+	}
+	var relays []string
+	if relayHint != "" {
+		relays = []string{relayHint}
+	}
+	pk, _ := gonostr.PubKeyFromHex(author) // zero pk is acceptable to EncodeNevent
+	nevent := nip19.EncodeNevent(id, relays, pk)
+	if nevent == "" {
+		return ""
+	}
+	return "nostr:" + nevent
 }
 
 func firstNonEmpty(a, b string) string {

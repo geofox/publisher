@@ -22,6 +22,7 @@ import (
 	"github.com/geofox/publisher/internal/media"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/relaysync"
+	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/thread"
 	"github.com/geofox/publisher/internal/verify"
@@ -56,6 +57,7 @@ type Dispatcher interface {
 	Retry(ctx context.Context, id string, platforms []string) (*store.Post, error)
 	RetryRelay(ctx context.Context, id, relay string) (*store.Post, error)
 	Schedule(ctx context.Context, spec dispatch.PostSpec, at time.Time) (*store.Post, error)
+	Interact(ctx context.Context, spec dispatch.InteractSpec) *store.Post
 }
 
 // Syncer is implemented by *relaysync.Sync.
@@ -70,6 +72,11 @@ type Verifier interface {
 	Verify(ctx context.Context, in verify.Input) verify.Verdict
 }
 
+// Resolver is implemented by *resolve.Service; resolves a pasted URL/identifier.
+type Resolver interface {
+	Resolve(ctx context.Context, input string) (*resolve.SourceRef, error)
+}
+
 // API holds the dependencies for the HTTP handlers.
 type API struct {
 	np        *pubnostr.Publisher
@@ -79,6 +86,7 @@ type API struct {
 	Sync      Syncer       // set by cmd/publisher; used by relay-sync endpoints
 	HomeRelay string       // set by cmd/publisher; the home relay URL
 	Verify    Verifier     // set by cmd/publisher; verifies pasted events / post URLs
+	Resolve   Resolver     // set by cmd/publisher; resolves pasted post URLs/ids
 }
 
 // New creates a new API with the given publisher and media pipeline.
@@ -109,6 +117,8 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sync/apply", a.handleSyncApply)
 	mux.HandleFunc("POST /api/verify", a.handleVerify)
 	mux.HandleFunc("POST /api/thread-preview", a.handleThreadPreview)
+	mux.HandleFunc("POST /api/resolve", a.handleResolve)
+	mux.HandleFunc("POST /api/interact", a.handleInteract)
 	mux.Handle("/", web.Handler())
 	return withSecurityHeaders(withCSRFGuard(mux))
 }
@@ -874,4 +884,74 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
+}
+
+// ─── POST /api/resolve ───────────────────────────────────────────────────────
+
+func (a *API) handleResolve(w http.ResponseWriter, r *http.Request) {
+	if a.Resolve == nil {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "resolve not configured")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxVerifyRequestBytes)
+	var req struct {
+		Input string `json:"input"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Input) == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "input is required")
+		return
+	}
+	ref, err := a.Resolve.Resolve(r.Context(), req.Input)
+	if err != nil {
+		// Resolution problems (unsupported platform, not found, bad input) are
+		// client-facing 400s with the reason; never a 500.
+		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, ref)
+}
+
+// ─── POST /api/interact ──────────────────────────────────────────────────────
+
+func (a *API) handleInteract(w http.ResponseWriter, r *http.Request) {
+	if a.Dispatch == nil {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "dispatch not configured")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxPostRequestBytes)
+	var req struct {
+		Action       string                        `json:"action"`
+		Platform     string                        `json:"platform"`
+		Ref          dispatch.InteractRef          `json:"ref"`
+		SourceURL    string                        `json:"source_url"`
+		SourceAuthor string                        `json:"source_author"`
+		Text         string                        `json:"text"`
+		Overrides    map[string]dispatch.Overrides `json:"overrides"`
+		Fanout       []string                      `json:"fanout"`
+		Force        bool                          `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	switch req.Action {
+	case "reply", "repost", "quote":
+	default:
+		httpx.WriteError(w, http.StatusBadRequest, "action must be reply, repost, or quote")
+		return
+	}
+	if req.Platform == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "platform is required")
+		return
+	}
+	post := a.Dispatch.Interact(r.Context(), dispatch.InteractSpec{
+		Action: req.Action, SourcePlatform: req.Platform, Ref: req.Ref,
+		SourceURL: req.SourceURL, SourceAuthor: req.SourceAuthor, Text: req.Text,
+		Overrides: req.Overrides, Fanout: req.Fanout, Force: req.Force,
+	})
+	httpx.WriteJSON(w, http.StatusOK, post)
 }

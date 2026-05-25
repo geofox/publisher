@@ -51,3 +51,36 @@ func TestReplyTagsNil(t *testing.T) {
 		t.Errorf("nil reply → nil tags, got %v", tags)
 	}
 }
+
+func TestReplyTagsExternalAuthor(t *testing.T) {
+	// Replying to an external author: p-tag is the replied-to author, and the
+	// root e-tag carries that author as the 5th element (NIP-10).
+	r := &NostrReply{RootID: "root1", ParentID: "root1", RelayHint: "wss://r", AuthorPubkey: "extpub"}
+	tags := replyTags(r, "ownerpub")
+	var eTag, pTag []string
+	for _, tg := range tags {
+		switch tg[0] {
+		case "e":
+			eTag = tg
+		case "p":
+			pTag = tg
+		}
+	}
+	if pTag == nil || pTag[1] != "extpub" {
+		t.Fatalf("p-tag should be the external author, got %v", pTag)
+	}
+	if len(eTag) < 5 || eTag[4] != "extpub" {
+		t.Errorf("root e-tag should carry author as 5th element: %v", eTag)
+	}
+}
+
+func TestReplyTagsFallsBackToOwnerWhenNoAuthor(t *testing.T) {
+	// Self-thread (no AuthorPubkey): p-tag stays the owner, e-tags need no 5th elem.
+	r := &NostrReply{RootID: "x", ParentID: "x", RelayHint: "wss://r"}
+	tags := replyTags(r, "ownerpub")
+	for _, tg := range tags {
+		if tg[0] == "p" && tg[1] != "ownerpub" {
+			t.Errorf("self-thread p-tag should be owner, got %v", tg)
+		}
+	}
+}

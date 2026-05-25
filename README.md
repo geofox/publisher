@@ -165,12 +165,40 @@ A chain that fails mid-way is recorded as `partial`; **resume** from history
 re-posts only the not-yet-sent segments (already-delivered segments are never
 re-sent). With `number`, segments get per-platform ` k/n` counters.
 
+### `POST /api/resolve`
+
+Resolve a pasted post URL (Bluesky/Mastodon) or a Nostr identifier
+(`nevent`/`note`/`nostr:`/hex) into a preview + capability report (read-only;
+no posting). Used by the **Interact** tab.
+
+Body: `{ "input": "<url-or-nostr-id>" }`. Returns `{ platform, ref, preview,
+caps }` where `caps.{reply,quote,repost}` each carry `{allowed, reason}`.
+Threads URLs return 400 (the API has no URL→id lookup). Resolution failures
+(not found, unfederated, bad input) return 400 with a reason.
+
+### `POST /api/interact`
+
+Reply to, repost, or quote a resolved source post. Body:
+`{ action, platform, ref, source_url, source_author, text, fanout, force }`,
+where `ref` is the `ref` object returned by `/api/resolve`. `reply` and `repost`
+act only on the source `platform`; `quote` does a native quote on the source and
+also **link-quotes** (your commentary + the source URL) to each `fanout`
+platform. `force: true` overrides a blocked capability (e.g. a Bluesky post that
+disabled quotes — note Bluesky may then silently drop it). Returns the resulting
+`store.Post` (one target per platform acted on, each with its own status). Used
+by the **Interact** tab.
+
 ### Web UI & `/api`
 
 The container embeds a mobile-first web UI (the crosspost composer, post
-history, scheduled posts, relay tools, and verify) served from the root path,
-backed by a JSON `/api/*` surface. These endpoints are unauthenticated by the
-service itself — see [Security](#security).
+history, scheduled posts, relay tools, verify, and interact) served from the
+root path, backed by a JSON `/api/*` surface. These endpoints are
+unauthenticated by the service itself — see [Security](#security).
+
+The **Interact** tab accepts a pasted post URL or Nostr identifier, previews
+the source post, reports which of reply/quote/repost the post allows on its
+platform, and performs the chosen action (with a quote fan-out to your other
+platforms and a "try anyway" override for blocked actions).
 
 ### `GET /healthz`
 

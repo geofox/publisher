@@ -64,3 +64,30 @@ func TestRebroadcastToRelayBadJSON(t *testing.T) {
 		t.Errorf("bad event JSON should fail with a message, got %+v", r)
 	}
 }
+
+func TestRequiresText(t *testing.T) {
+	// NIP-18 reposts (kind 6/16) may have empty content; everything else requires text.
+	for k, want := range map[int]bool{0: true, 1: true, 6: false, 16: false, 30023: true} {
+		if got := requiresText(k); got != want {
+			t.Errorf("requiresText(%d) = %v, want %v", k, got, want)
+		}
+	}
+}
+
+func TestReplyTagsCarriesAuthorOnDistinctParent(t *testing.T) {
+	// Distinct root and parent: both e-tags carry the author 5th element.
+	r := &NostrReply{RootID: "root", ParentID: "parent", RelayHint: "wss://r", AuthorPubkey: "auth"}
+	tags := replyTags(r, "owner")
+	count := 0
+	for _, tg := range tags {
+		if tg[0] == "e" {
+			if len(tg) < 5 || tg[4] != "auth" {
+				t.Errorf("e-tag missing author 5th elem: %v", tg)
+			}
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("want 2 e-tags for distinct root/parent, got %d", count)
+	}
+}
