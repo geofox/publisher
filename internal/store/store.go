@@ -44,6 +44,9 @@ func (s *Store) migrate() error {
 	if err := s.addColumnIfMissing("posts", "scheduled_at", "TIMESTAMP"); err != nil {
 		return err
 	}
+	if err := s.addColumnIfMissing("post_targets", "segments_json", "TEXT"); err != nil {
+		return err
+	}
 	return s.addColumnIfMissing("posts", "hidden", "INTEGER NOT NULL DEFAULT 0")
 }
 

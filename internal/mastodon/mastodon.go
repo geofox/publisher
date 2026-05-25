@@ -21,6 +21,7 @@ type Post struct {
 	Visibility  string // public|unlisted|private|direct ("" → instance default)
 	Language    string
 	Images      []Image
+	InReplyToID string // when set, posts as a reply (threading)
 }
 
 type Result struct {
@@ -48,6 +49,7 @@ func (cl *Client) Post(ctx context.Context, p Post) (Result, error) {
 	st, err := cl.c.PostStatus(ctx, &gomast.Toot{
 		Status: p.Text, SpoilerText: p.SpoilerText, Sensitive: p.Sensitive,
 		Visibility: p.Visibility, Language: p.Language, MediaIDs: mediaIDs,
+		InReplyToID: gomast.ID(p.InReplyToID),
 	})
 	if err != nil {
 		return Result{}, err

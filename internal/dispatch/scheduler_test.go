@@ -19,7 +19,7 @@ func (f *fakeNotifier) Alert(ctx context.Context, summary, body string) error {
 // fires without needing media bytes). newTestStore is defined in schedule_test.go.
 type stubNostr struct{ calls *int }
 
-func (s stubNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag) (TargetResult, error) {
+func (s stubNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error) {
 	if s.calls != nil {
 		*s.calls++
 	}

@@ -46,6 +46,8 @@ export function buildSpec() {
     delay_seconds: 0,
     overrides,
     images: state.images.map(i => ({ alt: i.alt })),
+    // mirror the preview's numbering toggle so the posted thread matches what was shown
+    number: document.getElementById("threadnum")?.checked ?? true,
   };
   const sa = document.querySelector("#schedat")?.value;
   if (sa) spec.scheduled_at = new Date(sa).toISOString();

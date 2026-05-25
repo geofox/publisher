@@ -14,6 +14,49 @@ export function tgBadge(s) {
   return { cls: "f", mark: "✗" };
 }
 
+// segmentChain renders a threaded post's per-segment delivery list. When the
+// target is "partial", a Resume button re-posts only the missing segments.
+function segmentChain(post, t) {
+  if (!t.segments || !t.segments.length) return null;
+  const wrap = el("div", { class: "seg-chain" });
+  for (const s of t.segments) {
+    const row = el("div", { class: "seg-row" + (s.status === "failed" ? " seg-failed" : "") });
+    row.append(el("span", { class: "seg-n", text: `${s.ordinal + 1}.` }));
+    const body = el("span", { class: "seg-text", text: s.text });
+    if (s.remote_url) {
+      const a = el("a", { href: s.remote_url, target: "_blank", rel: "noopener", text: "↗" });
+      row.append(body, a);
+    } else {
+      row.append(body);
+    }
+    if (s.error) row.append(el("span", { class: "seg-err", text: s.error }));
+    wrap.append(row);
+  }
+  if (t.status === "partial") {
+    const plat = t.platform;
+    const btn = el("button", { class: "ghost sm", type: "button", text: "Resume" });
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        const rr = await fetch(`/api/posts/${encodeURIComponent(post.id)}/retry`, {
+          method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ platforms: [plat] }),
+        });
+        const np = await rr.json(); if (!rr.ok) throw new Error(np.error || ("HTTP " + rr.status));
+        const st = targetStatus(np, plat);
+        renderDetail(np);
+        flash(`${plat}: resume ${st === "success" ? "succeeded ✓" : "still failing ✗"}`);
+      } catch (e) {
+        btn.disabled = false;
+        flash("Resume error: " + e.message);
+      }
+    });
+    wrap.append(btn);
+  }
+  return wrap;
+}
+
 // relayBlock renders a nostr target's per-relay delivery. retryFn(relayUrl, btn)
 // is optional; when provided, failed relays get a [↻] button (history detail only).
 export function relayBlock(t, retryFn) {
@@ -320,6 +363,8 @@ function renderDetail(post) {
       }));
     }
     d.append(row);
+    const chain = segmentChain(post, t);
+    if (chain) d.append(chain);
     if (t.final_text && t.final_text !== post.master_text) {
       d.append(el("div", { class: "dtext alt", text: t.final_text }));
     }

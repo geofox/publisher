@@ -20,7 +20,7 @@ func (fakeFetcher) Fetch(ctx context.Context, url string) ([]byte, string, error
 
 type retryMasto struct{ calls int }
 
-func (m *retryMasto) PostText(ctx context.Context, text string, o Overrides, imgs []Img) (TargetResult, error) {
+func (m *retryMasto) PostText(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
 	m.calls++
 	return TargetResult{Platform: "mastodon", Status: "success", RemoteID: "st2", RemoteURL: "https://m/2"}, nil
 }
@@ -91,7 +91,7 @@ func TestRetryNostrImeta(t *testing.T) {
 
 type retryBsky struct{ calls int }
 
-func (b *retryBsky) PostBsky(ctx context.Context, text string, o Overrides, imgs []Img) (TargetResult, error) {
+func (b *retryBsky) PostBsky(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
 	b.calls++
 	return TargetResult{Platform: "bluesky", Status: "success", RemoteID: "bb"}, nil
 }
@@ -101,7 +101,7 @@ type relayFakeNostr struct {
 	gotRelay      string
 }
 
-func (f *relayFakeNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag) (TargetResult, error) {
+func (f *relayFakeNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
 func (f *relayFakeNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (bool, string) {
@@ -198,7 +198,7 @@ func TestRetryRelayRejectsIneligible(t *testing.T) {
 // the stored relay rows and signed event.
 type refreshNostr struct{}
 
-func (refreshNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag) (TargetResult, error) {
+func (refreshNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error) {
 	return TargetResult{
 		Platform: "nostr", Status: "success", RemoteID: "newev", SignedEventJSON: `{"id":"newev"}`,
 		Relays: []store.RelayState{

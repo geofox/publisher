@@ -47,6 +47,24 @@ function renderCards() {
   renderMeta();
 }
 
+// refreshCounts updates the per-platform counts (and any open mirroring card's
+// textarea) in place on every master keystroke, instead of rebuilding all the
+// override cards — which is expensive and would collapse expanded cards as you
+// type. Edited cards track their own text, so they're left untouched.
+function refreshCounts() {
+  const n = gcount(state.master);
+  for (const p of ORDER) {
+    if (!state.platforms.has(p) || state.ov[p].text != null) continue;
+    const card = $(`#cards .ocard.p-${p}`);
+    if (!card) continue;
+    const limit = META[p].limit;
+    const span = card.querySelector(".cnt");
+    if (span) { span.textContent = limit ? `${n}/${limit}` : "∞"; span.className = counterClass(n, limit); }
+    const ta = card.querySelector("textarea");
+    if (ta && document.activeElement !== ta) ta.value = state.master;
+  }
+}
+
 function overrideCard(p) {
   const ov = state.ov[p], meta = META[p];
   const edited = ov.text != null;
@@ -289,7 +307,7 @@ function showResultModal(data) {
 // ---------------------------------------------------------------------------
 
 export function composeInit() {
-  $("#master").addEventListener("input", e => { state.master = e.target.value; renderCards(); renderPreview(); });
+  $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); renderMeta(); renderPreview(); });
   $("#addimg").addEventListener("click", () => $("#imgfile").click());
   $("#imgfile").addEventListener("change", e => {
     const file = e.target.files[0]; if (!file) return;
@@ -300,5 +318,6 @@ export function composeInit() {
   $("#schedat").addEventListener("input", updateSched);
   $("#schedclear").addEventListener("click", () => { $("#schedat").value = ""; updateSched(); });
   $("#submit").addEventListener("click", submit);
+  document.getElementById("threadnum")?.addEventListener("change", renderPreview);
   renderChips(); renderImages(); renderCards(); renderMeta(); renderPreview();
 }

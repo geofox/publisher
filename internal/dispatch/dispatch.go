@@ -13,6 +13,7 @@ import (
 	gonostr "fiatjaf.com/nostr"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/store"
+	"github.com/geofox/publisher/internal/thread"
 )
 
 type TargetResult struct {
@@ -21,11 +22,20 @@ type TargetResult struct {
 	Error           string
 	RemoteID        string
 	RemoteURL       string
+	CID             string // bluesky content-hash of the created record (for threading the next reply)
 	LatencyMS       int
 	RequestJSON     string
 	ResponseJSON    string
 	Relays          []store.RelayState
 	SignedEventJSON string
+}
+
+// ReplyRef threads one segment onto the previous in a chain. RootID/RootCID
+// identify the chain head; ParentID/ParentCID the immediately-preceding segment.
+// IDs are platform-native: at:// URIs (+ cids) for Bluesky, status/media ids for
+// Mastodon/Threads, event ids for Nostr (cids unused there).
+type ReplyRef struct {
+	RootID, RootCID, ParentID, ParentCID string
 }
 
 type Overrides struct {
@@ -61,17 +71,17 @@ type Img struct {
 // (using the returned error for the message) so a misbehaving adapter can't be
 // silently counted as success.
 type NostrPoster interface {
-	PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag) (TargetResult, error)
+	PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error)
 	RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (ok bool, message string)
 }
 type MastodonPoster interface {
-	PostText(ctx context.Context, text string, o Overrides, imgs []Img) (TargetResult, error)
+	PostText(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error)
 }
 type BlueskyPoster interface {
-	PostBsky(ctx context.Context, text string, o Overrides, imgs []Img) (TargetResult, error)
+	PostBsky(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error)
 }
 type ThreadsPoster interface {
-	PostThreads(ctx context.Context, text string, o Overrides, imgs []Img) (TargetResult, error)
+	PostThreads(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error)
 }
 
 type PostSpec struct {
@@ -82,6 +92,7 @@ type PostSpec struct {
 	Overrides    map[string]Overrides // keyed by platform
 	Images       []Img
 	MediaRecords []store.Media // already uploaded to Blossom, for archival
+	Number       bool          // append k/n counters to threaded segments
 }
 
 type Fetcher interface {
@@ -98,32 +109,32 @@ type Dispatcher struct {
 }
 
 // runPlatform executes one platform and returns a normalized TargetResult.
-func (d *Dispatcher) runPlatform(ctx context.Context, plat, text string, ov Overrides, imgs []Img, imetas []gonostr.Tag) TargetResult {
+func (d *Dispatcher) runPlatform(ctx context.Context, plat, text string, ov Overrides, imgs []Img, imetas []gonostr.Tag, replyTo *ReplyRef) TargetResult {
 	start := time.Now()
 	var r TargetResult
 	var err error
 	switch plat {
 	case "nostr":
 		if d.Nostr != nil {
-			r, err = d.Nostr.PublishText(ctx, text, ov.POW, imetas)
+			r, err = d.Nostr.PublishText(ctx, text, ov.POW, imetas, replyTo)
 		} else {
 			err = errors.New("nostr not configured")
 		}
 	case "mastodon":
 		if d.Mastodon != nil {
-			r, err = d.Mastodon.PostText(ctx, text, ov, imgs)
+			r, err = d.Mastodon.PostText(ctx, text, ov, imgs, replyTo)
 		} else {
 			err = errors.New("mastodon not configured")
 		}
 	case "bluesky":
 		if d.Bluesky != nil {
-			r, err = d.Bluesky.PostBsky(ctx, text, ov, imgs)
+			r, err = d.Bluesky.PostBsky(ctx, text, ov, imgs, replyTo)
 		} else {
 			err = errors.New("bluesky not configured")
 		}
 	case "threads":
 		if d.Threads != nil {
-			r, err = d.Threads.PostThreads(ctx, text, ov, imgs)
+			r, err = d.Threads.PostThreads(ctx, text, ov, imgs, replyTo)
 		} else {
 			err = errors.New("threads not configured")
 		}
@@ -146,6 +157,152 @@ func (d *Dispatcher) runPlatform(ctx context.Context, plat, text string, ov Over
 		r.LatencyMS = int(time.Since(start).Milliseconds())
 	}
 	return r
+}
+
+// chainOutcome is the result of posting one platform's (possibly single-segment)
+// chain. Segments is empty for a single post (preserving non-threaded behavior).
+type chainOutcome struct {
+	Platform                    string
+	Status                      string
+	Error                       string
+	HeadRemoteID, HeadRemoteURL string
+	LatencyMS                   int
+	Relays                      []store.RelayState
+	SignedEventJSON             string
+	RequestJSON, ResponseJSON   string
+	Segments                    []store.Segment
+}
+
+// runChain splits text to the platform's limit and posts the segments as a
+// reply-chain (segment k+1 replies to segment k; media on the head only). A
+// single segment posts exactly as before, with no Segments recorded.
+func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrides, imgs []Img, imetas []gonostr.Tag, number bool) chainOutcome {
+	segTexts, _ := thread.Split(text, thread.LimitFor(plat), thread.Opts{Number: number})
+	if len(segTexts) <= 1 {
+		r := d.runPlatform(ctx, plat, text, ov, imgs, imetas, nil)
+		return chainOutcome{
+			Platform: plat, Status: r.Status, Error: r.Error,
+			HeadRemoteID: r.RemoteID, HeadRemoteURL: r.RemoteURL, LatencyMS: r.LatencyMS,
+			Relays: r.Relays, SignedEventJSON: r.SignedEventJSON,
+			RequestJSON: r.RequestJSON, ResponseJSON: r.ResponseJSON,
+		}
+	}
+	out := chainOutcome{Platform: plat}
+	// Record every planned segment up front (pending) so a mid-chain stop still
+	// preserves the not-yet-sent tail for resume; each is updated in place as it
+	// posts.
+	for i, st := range segTexts {
+		out.Segments = append(out.Segments, store.Segment{Ordinal: i, Text: st, Status: "pending"})
+	}
+	var rootID, rootCID, parentID, parentCID string
+	for i, st := range segTexts {
+		var replyTo *ReplyRef
+		if i > 0 {
+			replyTo = &ReplyRef{RootID: rootID, RootCID: rootCID, ParentID: parentID, ParentCID: parentCID}
+		}
+		var segImgs []Img
+		var segImetas []gonostr.Tag
+		if i == 0 {
+			segImgs, segImetas = imgs, imetas // media + imeta on the head only
+		}
+		r := d.runPlatform(ctx, plat, st, ov, segImgs, segImetas, replyTo)
+		out.Segments[i] = store.Segment{
+			Ordinal: i, Text: st, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID,
+			Status: r.Status, Error: r.Error,
+		}
+		if i == 0 {
+			rootID, rootCID = r.RemoteID, r.CID
+			out.HeadRemoteID, out.HeadRemoteURL = r.RemoteID, r.RemoteURL
+			out.Relays, out.SignedEventJSON = r.Relays, r.SignedEventJSON
+			out.RequestJSON, out.ResponseJSON, out.LatencyMS = r.RequestJSON, r.ResponseJSON, r.LatencyMS
+		}
+		parentID, parentCID = r.RemoteID, r.CID
+		out.Error = r.Error
+		if r.RemoteID == "" { // no id to reply to → cannot continue the chain
+			break
+		}
+	}
+	out.Status = chainStatus(out.Segments, len(segTexts))
+	return out
+}
+
+// resumeSegments re-posts a partial chain's segments from the first non-success
+// segment, threading from the last successful one (root stays segment 0). If the
+// head (segment 0) isn't success, the whole chain is re-posted from scratch.
+// No store writes — returns the updated outcome.
+func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag) chainOutcome {
+	segs := append([]store.Segment(nil), tg.Segments...)
+	start := 0
+	// A segment with a RemoteID is already live on-platform (success, or partial —
+	// e.g. nostr posted but a relay flapped, or bluesky posted but a gate write
+	// failed). Never re-post a live segment; resume from the first without an id.
+	for start < len(segs) && segs[start].RemoteID != "" {
+		start++
+	}
+	out := chainOutcome{Platform: tg.Platform, Segments: segs}
+	if start == len(segs) { // already complete
+		out.Status = chainStatus(segs, len(segs))
+		if len(segs) > 0 {
+			out.HeadRemoteID, out.HeadRemoteURL = segs[0].RemoteID, segs[0].RemoteURL
+		}
+		return out
+	}
+	var rootID, rootCID, parentID, parentCID string
+	if start > 0 {
+		rootID, rootCID = segs[0].RemoteID, segs[0].CID
+		parentID, parentCID = segs[start-1].RemoteID, segs[start-1].CID
+	}
+	for i := start; i < len(segs); i++ {
+		var replyTo *ReplyRef
+		if i > 0 {
+			replyTo = &ReplyRef{RootID: rootID, RootCID: rootCID, ParentID: parentID, ParentCID: parentCID}
+		}
+		var segImgs []Img
+		var segImetas []gonostr.Tag
+		// i==0 (start==0) means the stored head itself failed: re-post the whole
+		// chain from scratch, carrying media/imeta on the head.
+		if i == 0 {
+			segImgs, segImetas = imgs, imetas
+		}
+		r := d.runPlatform(ctx, tg.Platform, segs[i].Text, ov, segImgs, segImetas, replyTo)
+		segs[i] = store.Segment{Ordinal: i, Text: segs[i].Text, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID, Status: r.Status, Error: r.Error}
+		if i == 0 {
+			rootID, rootCID = r.RemoteID, r.CID
+			out.Relays, out.SignedEventJSON, out.LatencyMS = r.Relays, r.SignedEventJSON, r.LatencyMS
+		}
+		parentID, parentCID = r.RemoteID, r.CID
+		out.Error = r.Error
+		if r.RemoteID == "" {
+			break
+		}
+	}
+	out.Status = chainStatus(segs, len(segs))
+	out.HeadRemoteID, out.HeadRemoteURL = segs[0].RemoteID, segs[0].RemoteURL
+	return out
+}
+
+// resumeChain resumes a partial threaded target and persists the result.
+func (d *Dispatcher) resumeChain(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag) error {
+	out := d.resumeSegments(ctx, tg, ov, imgs, imetas)
+	return d.Store.UpdateTargetSegments(tg.ID, out.Segments, out.Status, out.HeadRemoteID, out.HeadRemoteURL, out.LatencyMS, out.Error)
+}
+
+// chainStatus aggregates a chain's segment statuses. expected is the planned
+// segment count; fewer attempted (a stop) or any non-success ⇒ partial.
+func chainStatus(segs []store.Segment, expected int) string {
+	if len(segs) == 0 || segs[0].RemoteID == "" || segs[0].Status == "failed" {
+		return "failed"
+	}
+	complete := len(segs) == expected
+	for _, s := range segs {
+		if s.Status != "success" {
+			complete = false
+		}
+	}
+	if complete {
+		return "success"
+	}
+	return "partial"
 }
 
 func newID() string {
@@ -180,7 +337,7 @@ func (d *Dispatcher) Post(ctx context.Context, spec PostSpec) *store.Post {
 
 	// One result slot per platform, written by its own goroutine (distinct
 	// indices → no mutex, and rec.Targets stays in platforms order).
-	results := make([]TargetResult, len(platforms))
+	outcomes := make([]chainOutcome, len(platforms))
 	var wg sync.WaitGroup
 	for i, plat := range platforms {
 		ov := spec.Overrides[plat]
@@ -191,25 +348,25 @@ func (d *Dispatcher) Post(ctx context.Context, spec PostSpec) *store.Post {
 		wg.Add(1)
 		go func(i int, plat, text string, ov Overrides) {
 			defer wg.Done()
-			results[i] = d.runPlatform(ctx, plat, text, ov, spec.Images, imetas)
+			outcomes[i] = d.runChain(ctx, plat, text, ov, spec.Images, imetas, spec.Number)
 		}(i, plat, text, ov)
 	}
 	wg.Wait()
 
 	succ, failed := 0, 0
-	for _, r := range results {
-		fields, _ := json.Marshal(ov2fields(spec.Overrides[r.Platform]))
+	for _, o := range outcomes {
+		fields, _ := json.Marshal(ov2fields(spec.Overrides[o.Platform]))
 		tg := store.Target{
-			Platform: r.Platform, FinalText: finalText(spec, r.Platform), FieldsJSON: string(fields),
-			Status: r.Status, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, LatencyMS: r.LatencyMS,
-			Relays: r.Relays, SignedEventJSON: r.SignedEventJSON,
+			Platform: o.Platform, FinalText: finalText(spec, o.Platform), FieldsJSON: string(fields),
+			Status: o.Status, RemoteID: o.HeadRemoteID, RemoteURL: o.HeadRemoteURL, LatencyMS: o.LatencyMS,
+			Relays: o.Relays, SignedEventJSON: o.SignedEventJSON, Segments: o.Segments,
 			Attempts: []store.Attempt{{
-				AttemptNo: 1, Status: r.Status, Error: r.Error, LatencyMS: r.LatencyMS, RemoteID: r.RemoteID,
-				RequestJSON: r.RequestJSON, ResponseJSON: r.ResponseJSON, AttemptedAt: time.Now().UTC(),
+				AttemptNo: 1, Status: o.Status, Error: o.Error, LatencyMS: o.LatencyMS, RemoteID: o.HeadRemoteID,
+				RequestJSON: o.RequestJSON, ResponseJSON: o.ResponseJSON, AttemptedAt: time.Now().UTC(),
 			}},
 		}
 		rec.Targets = append(rec.Targets, tg)
-		switch r.Status {
+		switch o.Status {
 		case "success":
 			succ++
 		case "failed":
@@ -219,7 +376,7 @@ func (d *Dispatcher) Post(ctx context.Context, spec PostSpec) *store.Post {
 	// Partial-aware aggregation, mirroring store.recomputeStatus so the in-memory
 	// rec.Status (returned to the API/modal) and the persisted status agree: a
 	// partial target (e.g. nostr with some relays down) keeps the post partial.
-	total := len(results)
+	total := len(outcomes)
 	switch {
 	case total == 0 || failed == total:
 		rec.Status = "failed"
@@ -278,7 +435,13 @@ func (d *Dispatcher) dispatchTargets(ctx context.Context, post *store.Post, want
 				slog.Warn("dispatchTargets: bad fields_json, using zero overrides", "target_id", tg.ID, "err", err)
 			}
 		}
-		r := d.runPlatform(ctx, tg.Platform, tg.FinalText, ov, imgs, imetas)
+		if len(tg.Segments) > 1 { // threaded target → resume the chain
+			if err := d.resumeChain(ctx, tg, ov, imgs, imetas); err != nil {
+				return err
+			}
+			continue
+		}
+		r := d.runPlatform(ctx, tg.Platform, tg.FinalText, ov, imgs, imetas, nil)
 		if err := d.Store.AppendTargetAttempt(tg.ID, r.Status, r.Error, r.RemoteID, r.RemoteURL, r.LatencyMS, r.RequestJSON, r.ResponseJSON, r.Relays, r.SignedEventJSON); err != nil {
 			return err
 		}
@@ -346,8 +509,11 @@ func (d *Dispatcher) Retry(ctx context.Context, postID string, platforms []strin
 	}
 	if err := d.dispatchTargets(ctx, post, func(t store.Target) bool {
 		// 'missed' targets (scheduled posts past the grace window) are re-postable
-		// through the same retry path as failed ones.
-		return (t.Status == "failed" || t.Status == "missed") && (len(platforms) == 0 || want[t.Platform])
+		// through the same retry path as failed ones. Partial threaded targets
+		// (len(Segments) > 1) can also be resumed; single-post partials (e.g. nostr
+		// with some relays down) use RetryRelay to avoid duplicating the note.
+		retryable := t.Status == "failed" || t.Status == "missed" || (t.Status == "partial" && len(t.Segments) > 1)
+		return retryable && (len(platforms) == 0 || want[t.Platform])
 	}); err != nil {
 		return nil, err
 	}

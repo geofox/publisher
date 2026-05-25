@@ -140,6 +140,31 @@ HTTP 200 for any completed verdict (including `failed`); 400 for malformed
 input; 413 if the body exceeds 512 KB; 502 when the verifier itself could not
 complete (network/timeout).
 
+### `POST /api/thread-preview`
+
+Preview how a draft would split into a per-platform reply-chain (read-only; no
+posting). Used by the compose preview.
+
+```json
+{ "text": "<master draft>", "platforms": ["bluesky","mastodon","threads","nostr"], "number": true }
+```
+
+Returns one entry per platform with the computed `segments` (each ≤ that
+platform's limit — Bluesky 300 graphemes, Mastodon/Threads 500, Nostr
+unlimited), the `count`, and any `warnings` (e.g. a URL longer than the limit
+had to be hard-split). With `number`, a chain of ≥2 segments gets per-platform
+` k/n` counters. Manual `---` lines in the text force breaks.
+
+**Size cap: 256 KB.** Over-cap requests get `413 Request Entity Too Large`.
+
+**Threaded posting:** when a draft exceeds a platform's limit (or contains `---`
+break markers), the post is delivered as a native reply-chain per platform —
+Bluesky/Mastodon/Threads wrap to their limits, Nostr stays one note unless
+explicitly marked. Media and (for Nostr) `imeta` ride on the head segment only.
+A chain that fails mid-way is recorded as `partial`; **resume** from history
+re-posts only the not-yet-sent segments (already-delivered segments are never
+re-sent). With `number`, segments get per-platform ` k/n` counters.
+
 ### Web UI & `/api`
 
 The container embeds a mobile-first web UI (the crosspost composer, post

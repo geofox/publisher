@@ -35,6 +35,7 @@ type Target struct {
 	LastAttempt     time.Time    `json:"last_attempt"`
 	Attempts        []Attempt    `json:"attempts,omitempty"`
 	Relays          []RelayState `json:"relays,omitempty"`
+	Segments        []Segment    `json:"segments,omitempty"`
 	SignedEventJSON string       `json:"-"` // nostr only; never sent to the client
 }
 
@@ -66,6 +67,18 @@ type RelayState struct {
 	Message string `json:"message,omitempty"`
 }
 
+// Segment is one post in a platform's reply-chain. A non-threaded target has no
+// segments; a threaded one has an ordered slice (ordinal 0 = the chain head).
+type Segment struct {
+	Ordinal   int    `json:"ordinal"`
+	Text      string `json:"text"`
+	RemoteID  string `json:"remote_id,omitempty"`
+	RemoteURL string `json:"remote_url,omitempty"`
+	CID       string `json:"cid,omitempty"` // bluesky only
+	Status    string `json:"status"`        // success | failed | pending
+	Error     string `json:"error,omitempty"`
+}
+
 func (s *Store) SavePost(p *Post) error {
 	tx, err := s.sql.Begin()
 	if err != nil {
@@ -94,11 +107,19 @@ func (s *Store) SavePost(p *Post) error {
 		}
 	}
 	for _, tg := range p.Targets {
+		segJSON := ""
+		if len(tg.Segments) > 0 {
+			b, mErr := json.Marshal(tg.Segments)
+			if mErr != nil {
+				return mErr
+			}
+			segJSON = string(b)
+		}
 		res, err := tx.Exec(
-			`INSERT INTO post_targets(post_id,platform,final_text,fields_json,status,remote_id,remote_url,latency_ms,attempt_count,last_attempt_at,signed_event_json)
-			 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			`INSERT INTO post_targets(post_id,platform,final_text,fields_json,status,remote_id,remote_url,latency_ms,attempt_count,last_attempt_at,signed_event_json,segments_json)
+			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 			p.ID, tg.Platform, tg.FinalText, tg.FieldsJSON, tg.Status, tg.RemoteID, tg.RemoteURL,
-			tg.LatencyMS, len(tg.Attempts), time.Now().UTC(), tg.SignedEventJSON,
+			tg.LatencyMS, len(tg.Attempts), time.Now().UTC(), tg.SignedEventJSON, segJSON,
 		)
 		if err != nil {
 			return err
@@ -159,18 +180,23 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		return nil, err
 	}
 
-	trows, err := s.sql.Query(`SELECT id,platform,final_text,fields_json,status,remote_id,remote_url,latency_ms,attempt_count,signed_event_json FROM post_targets WHERE post_id=? ORDER BY id`, id)
+	trows, err := s.sql.Query(`SELECT id,platform,final_text,fields_json,status,remote_id,remote_url,latency_ms,attempt_count,signed_event_json,segments_json FROM post_targets WHERE post_id=? ORDER BY id`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer trows.Close()
 	for trows.Next() {
 		var tg Target
-		var fields, rid, rurl, sej sql.NullString
-		if err := trows.Scan(&tg.ID, &tg.Platform, &tg.FinalText, &fields, &tg.Status, &rid, &rurl, &tg.LatencyMS, &tg.AttemptCount, &sej); err != nil {
+		var fields, rid, rurl, sej, segs sql.NullString
+		if err := trows.Scan(&tg.ID, &tg.Platform, &tg.FinalText, &fields, &tg.Status, &rid, &rurl, &tg.LatencyMS, &tg.AttemptCount, &sej, &segs); err != nil {
 			return nil, err
 		}
 		tg.FieldsJSON, tg.RemoteID, tg.RemoteURL, tg.SignedEventJSON = fields.String, rid.String, rurl.String, sej.String
+		if segs.String != "" {
+			if err := json.Unmarshal([]byte(segs.String), &tg.Segments); err != nil {
+				return nil, err
+			}
+		}
 		p.Targets = append(p.Targets, tg)
 	}
 	if err := trows.Err(); err != nil {
@@ -377,6 +403,49 @@ func (s *Store) AppendTargetAttempt(targetID int64, status, errMsg, remoteID, re
 				return err
 			}
 		}
+	}
+	var postID string
+	if err := tx.QueryRow(`SELECT post_id FROM post_targets WHERE id=?`, targetID).Scan(&postID); err != nil {
+		return err
+	}
+	if err := recomputeStatus(tx, postID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// UpdateTargetSegments overwrites a threaded target's segment chain + status
+// (used when resuming a partial thread), records a new attempt, and recomputes
+// the post's aggregate status. Mirrors AppendTargetAttempt's bookkeeping.
+func (s *Store) UpdateTargetSegments(targetID int64, segments []Segment, status, headRemoteID, headRemoteURL string, latencyMS int, errMsg string) error {
+	tx, err := s.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	segJSON, err := json.Marshal(segments)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	var n int
+	if err := tx.QueryRow(`SELECT attempt_count FROM post_targets WHERE id=?`, targetID).Scan(&n); err != nil {
+		return err
+	}
+	n++
+	if _, err := tx.Exec(
+		`INSERT INTO target_attempts(target_id,attempt_no,status,error,latency_ms,remote_id,request_json,response_json,attempted_at)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		targetID, n, status, errMsg, latencyMS, headRemoteID, "", "", now,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`UPDATE post_targets SET status=?, remote_id=?, remote_url=?, latency_ms=?, attempt_count=?, last_attempt_at=?, segments_json=? WHERE id=?`,
+		status, headRemoteID, headRemoteURL, latencyMS, n, now, string(segJSON), targetID,
+	); err != nil {
+		return err
 	}
 	var postID string
 	if err := tx.QueryRow(`SELECT post_id FROM post_targets WHERE id=?`, targetID).Scan(&postID); err != nil {

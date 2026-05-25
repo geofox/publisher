@@ -33,9 +33,34 @@ export function el(tag, attrs = {}, ...kids) {
   return n;
 }
 
+// Intl.Segmenter construction is costly and grapheme counting runs several times
+// per keystroke, so build one segmenter lazily and reuse it. `false` means the
+// engine lacks Intl.Segmenter → fall back to code points.
+let _seg;
+function segmenter() {
+  if (_seg === undefined) {
+    try { _seg = new Intl.Segmenter(undefined, { granularity: "grapheme" }); }
+    catch (_) { _seg = false; }
+  }
+  return _seg;
+}
+
+// gcount counts graphemes without materializing an array.
 export function gcount(s) {
-  try { return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(s)].length; }
-  catch (_) { return [...s].length; }
+  const seg = segmenter();
+  if (!seg) return [...s].length;
+  let n = 0;
+  for (const _ of seg.segment(s)) n++;
+  return n;
+}
+
+// graphemes returns the grapheme clusters of s (for truncation/slicing).
+export function graphemes(s) {
+  const seg = segmenter();
+  if (!seg) return [...s];
+  const out = [];
+  for (const g of seg.segment(s)) out.push(g.segment);
+  return out;
 }
 export function wcount(s) { const t = s.trim(); return t ? t.split(/\s+/).length : 0; }
 export function shortID(id) { return (id || "").slice(0, 8); }

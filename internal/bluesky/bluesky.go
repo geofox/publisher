@@ -32,6 +32,14 @@ type Post struct {
 	// DisableQuotes writes an app.bsky.feed.postgate#disableRule, blocking
 	// quote-posts of this post.
 	DisableQuotes bool
+	// Reply, when non-nil, makes this post a reply (used for threading).
+	Reply *ReplyRef
+}
+
+// ReplyRef threads a post into an existing conversation. For a self-thread the
+// root is the chain's first post and the parent is the immediately-preceding one.
+type ReplyRef struct {
+	RootURI, RootCID, ParentURI, ParentCID string
 }
 
 // ReplyGate selects the app.bsky.feed.threadgate allow rules. All-false = nobody.
@@ -117,6 +125,30 @@ type session struct {
 	Handle     string `json:"handle"`
 }
 
+// buildPostRecord assembles the text/langs/facets/reply portion of an
+// app.bsky.feed.post record. The image embed is added by the caller (it needs
+// uploaded blobs), keeping this helper pure and network-free.
+func buildPostRecord(p Post) map[string]any {
+	record := map[string]any{
+		"$type":     "app.bsky.feed.post",
+		"text":      p.Text,
+		"createdAt": time.Now().UTC().Format(time.RFC3339),
+	}
+	if len(p.Langs) > 0 {
+		record["langs"] = p.Langs
+	}
+	if f := parseFacets(p.Text); len(f) > 0 {
+		record["facets"] = f
+	}
+	if p.Reply != nil {
+		record["reply"] = map[string]any{
+			"root":   map[string]any{"uri": p.Reply.RootURI, "cid": p.Reply.RootCID},
+			"parent": map[string]any{"uri": p.Reply.ParentURI, "cid": p.Reply.ParentCID},
+		}
+	}
+	return record
+}
+
 func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 	if uniseg.GraphemeClusterCount(p.Text) > maxGraphemes {
 		return Result{}, fmt.Errorf("text exceeds %d graphemes", maxGraphemes)
@@ -143,17 +175,7 @@ func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 		images = append(images, entry)
 	}
 
-	record := map[string]any{
-		"$type":     "app.bsky.feed.post",
-		"text":      p.Text,
-		"createdAt": time.Now().UTC().Format(time.RFC3339),
-	}
-	if len(p.Langs) > 0 {
-		record["langs"] = p.Langs
-	}
-	if f := parseFacets(p.Text); len(f) > 0 {
-		record["facets"] = f
-	}
+	record := buildPostRecord(p)
 	if len(images) > 0 {
 		record["embed"] = map[string]any{"$type": "app.bsky.embed.images", "images": images}
 	}

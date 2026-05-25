@@ -30,12 +30,20 @@ type RelayResult struct {
 	Message string `json:"message,omitempty"`
 }
 
+// NostrReply carries NIP-10 reply context for a threaded event. RootID is the
+// chain's first event; ParentID is the immediately-preceding one (equal to
+// RootID when replying directly to the root). RelayHint is an optional relay URL.
+type NostrReply struct {
+	RootID, ParentID, RelayHint string
+}
+
 // PublishInput carries everything needed to build and publish a Nostr event.
 type PublishInput struct {
-	Text   string
-	Kind   int
-	Imetas []gonostr.Tag // optional NIP-92, one tag per attached media
-	POW    *int          // nil → use Config.POWDifficultyDefault
+	Text    string
+	Kind    int
+	Imetas  []gonostr.Tag // optional NIP-92, one tag per attached media
+	POW     *int          // nil → use Config.POWDifficultyDefault
+	ReplyTo *NostrReply   // when set, adds NIP-10 e/p tags (threading)
 }
 
 // PublishResult summarises the event that was broadcast.
@@ -126,6 +134,9 @@ func (p *Publisher) Publish(ctx context.Context, in PublishInput) (PublishResult
 		if len(im) > 0 {
 			event.Tags = append(event.Tags, im)
 		}
+	}
+	for _, tg := range replyTags(in.ReplyTo, p.cfg.OwnerPubkey.Hex()) {
+		event.Tags = append(event.Tags, tg)
 	}
 
 	var minedMS int64
@@ -227,6 +238,28 @@ func (p *Publisher) RebroadcastToRelay(ctx context.Context, signedEventJSON, rel
 		return RelayResult{URL: relayURL, OK: false, Message: "no result from relay"}
 	}
 	return res[0]
+}
+
+// replyTags builds NIP-10 tags: an "e" root marker, an optional "e" reply
+// marker, and a "p" tag for the replied-to author (here, the owner — a
+// self-thread). When ParentID equals RootID (replying directly to the root) or
+// ParentID is empty, only a single root e-tag is emitted (canonical NIP-10).
+func replyTags(r *NostrReply, authorPubkeyHex string) []gonostr.Tag {
+	if r == nil {
+		return nil
+	}
+	if r.ParentID == "" || r.ParentID == r.RootID {
+		// Replying directly to the root (or no distinct parent): single root marker.
+		return []gonostr.Tag{
+			{"e", r.RootID, r.RelayHint, "root"},
+			{"p", authorPubkeyHex},
+		}
+	}
+	return []gonostr.Tag{
+		{"e", r.RootID, r.RelayHint, "root"},
+		{"e", r.ParentID, r.RelayHint, "reply"},
+		{"p", authorPubkeyHex},
+	}
 }
 
 // extractImetaURL returns the "url ..." value from a NIP-92 imeta tag, or

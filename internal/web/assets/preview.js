@@ -1,6 +1,59 @@
 "use strict";
-import { el, $, gcount, META } from "./common.js";
+import { el, $, gcount, graphemes, META } from "./common.js";
 import { state, effectiveText, focusedPlatform } from "./state.js";
+
+// threadPreview fetches the per-platform split for the focused platform and
+// renders the segment chain into `container`. Returns true if it rendered a
+// multi-segment thread, false if the draft fits in one post (caller renders the
+// normal single-post preview).
+export async function threadPreview(container, text, platform, number) {
+  if (!text.trim()) return false;
+  let data;
+  try {
+    const resp = await fetch("/api/thread-preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text, platforms: [platform], number }),
+    });
+    data = await resp.json();
+  } catch {
+    return false; // network hiccup → fall back to normal preview
+  }
+  const pv = (data.previews || []).find((p) => p.platform === platform);
+  if (!pv || pv.count < 2) return false;
+
+  container.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "pv-thread-head";
+  head.textContent = `${pv.count} posts`;
+  container.appendChild(head);
+  pv.segments.forEach((seg, i) => {
+    const card = document.createElement("div");
+    card.className = "pv-seg";
+    const n = document.createElement("span");
+    n.className = "pv-seg-n";
+    n.textContent = `${i + 1}/${pv.count}`;
+    const body = document.createElement("div");
+    body.className = "pv-seg-body";
+    body.textContent = seg; // textContent => no HTML injection
+    card.appendChild(n);
+    card.appendChild(body);
+    container.appendChild(card);
+  });
+  (pv.warnings || []).forEach((wmsg) => {
+    const wd = document.createElement("div");
+    wd.className = "pv-warn";
+    wd.textContent = wmsg;
+    container.appendChild(wd);
+  });
+  return true;
+}
+
+// _threadDebounce holds the pending debounce timer for thread-preview fetches.
+let _threadDebounce = null;
+// _threadSeq is incremented on every renderPreview() call so in-flight async
+// responses that resolve after a newer render can detect they are stale.
+let _threadSeq = 0;
 
 // escapeHTML-free: we build text nodes via el(); highlight() returns an array of
 // nodes (plain text + accent spans) for hashtags, @mentions, and URLs.
@@ -23,21 +76,13 @@ function highlight(text) {
 // limit 0 (Nostr) → no truncation.
 function truncate(text, limit) {
   if (!limit) return { head: text, tail: "", over: 0 };
-  let segs;
-  try { segs = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map(s => s.segment); }
-  catch (_) { segs = [...text]; } // codepoint fallback, mirrors gcount()
+  const segs = graphemes(text);
   if (segs.length <= limit) return { head: text, tail: "", over: 0 };
   return { head: segs.slice(0, limit).join(""), tail: segs.slice(limit).join(""), over: segs.length - limit };
 }
 
-// renderPreview paints the focused platform's preview into #preview.
-export function renderPreview() {
-  const host = $("#preview");
-  if (!host) return;
-  host.innerHTML = "";
-  const p = focusedPlatform();
-  if (!p) { host.append(el("p", { class: "muted", text: "no targets selected" })); return; }
-
+// _renderSinglePost renders the existing single-post preview card into host.
+function _renderSinglePost(host, p) {
   const meta = META[p], ov = state.ov[p];
   const text = effectiveText(p), n = gcount(text);
   const cwText = p === "mastodon" ? ov.spoiler_text : p === "nostr" ? ov.content_warning : "";
@@ -92,4 +137,55 @@ export function renderPreview() {
   if (line) card.append(el("div", { class: "pv-settings", text: line }));
 
   host.append(card);
+}
+
+// renderPreview paints the focused platform's preview into #preview.
+// For multi-segment threads it shows the thread chain (debounced network call);
+// for single posts it renders the existing single-post card immediately.
+export function renderPreview() {
+  const host = $("#preview");
+  if (!host) return;
+  host.innerHTML = "";
+  const p = focusedPlatform();
+  // Increment the sequence counter on every call so any in-flight async response
+  // that resolves after this render can detect it is stale and discard its write.
+  const seq = ++_threadSeq;
+  if (!p) { host.append(el("p", { class: "muted", text: "no targets selected" })); return; }
+
+  // Render the single-post preview immediately (synchronous, no flicker).
+  _renderSinglePost(host, p);
+
+  // Debounce the thread-preview network call (~250 ms) so we don't fire a
+  // request per keystroke. If the server says it's a multi-segment thread, we
+  // swap the host content for the threaded view; otherwise the single-post
+  // preview already rendered above stays in place.
+  const text = effectiveText(p);
+  const number = document.getElementById("threadnum")?.checked ?? true;
+  // A draft can only become a thread if it has a manual `---` marker line or
+  // exceeds the platform's limit. Otherwise the synchronous single-post card
+  // above is already correct — skip the network round-trip so typing stays snappy
+  // (the seq bump above discards any thread fetch still in flight from a longer
+  // earlier state).
+  const limit = META[p].limit;
+  if (!/^[ \t]*---[ \t]*$/m.test(text) && (!limit || gcount(text) <= limit)) {
+    clearTimeout(_threadDebounce);
+    return;
+  }
+  clearTimeout(_threadDebounce);
+  _threadDebounce = setTimeout(() => {
+    _threadDebounce = null;
+    threadPreview(host, text, p, number).then(rendered => {
+      // Discard the response if a newer renderPreview() call owns the view now.
+      if (seq !== _threadSeq) return;
+      // If threadPreview returned false the single-post preview is still showing
+      // — nothing to do. If it returned true it already replaced host's content.
+      if (!rendered) {
+        // Defensive: the synchronous single-post render at the top of this
+        // renderPreview() call already shows the single post, so re-assert it to
+        // ensure a prior thread view can never linger when the draft now fits.
+        host.innerHTML = "";
+        _renderSinglePost(host, p);
+      }
+    }).catch(() => { /* network error — single-post preview remains */ });
+  }, 250);
 }

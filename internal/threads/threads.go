@@ -27,6 +27,7 @@ type Post struct {
 	// of the threadsReplyControls values, otherwise omitted (Threads defaults to
 	// everyone).
 	ReplyControl string
+	ReplyToID    string // when set, posts as a reply to this media id (threading)
 }
 
 // threadsReplyControls is the set of accepted reply_control values (Threads API).
@@ -99,6 +100,7 @@ func (c *Client) createMain(ctx context.Context, p Post, deadline time.Time) (st
 		v := url.Values{"media_type": {"TEXT"}, "text": {p.Text}}
 		c.addTopic(v, p.TopicTag)
 		c.addReplyControl(v, p.ReplyControl)
+		c.addReplyTo(v, p.ReplyToID)
 		return c.createContainer(ctx, v)
 
 	case 1:
@@ -112,6 +114,7 @@ func (c *Client) createMain(ctx context.Context, p Post, deadline time.Time) (st
 		}
 		c.addTopic(v, p.TopicTag)
 		c.addReplyControl(v, p.ReplyControl)
+		c.addReplyTo(v, p.ReplyToID)
 		return c.createContainer(ctx, v)
 
 	default:
@@ -142,6 +145,7 @@ func (c *Client) createMain(ctx context.Context, p Post, deadline time.Time) (st
 		}
 		c.addTopic(pv, p.TopicTag)
 		c.addReplyControl(pv, p.ReplyControl)
+		c.addReplyTo(pv, p.ReplyToID)
 		return c.createContainer(ctx, pv)
 	}
 }
@@ -158,6 +162,13 @@ func (c *Client) addTopic(v url.Values, tag string) {
 func (c *Client) addReplyControl(v url.Values, rc string) {
 	if threadsReplyControls[rc] {
 		v.Set("reply_control", rc)
+	}
+}
+
+// addReplyTo sets reply_to_id when id is non-empty, making the container a reply.
+func (c *Client) addReplyTo(v url.Values, id string) {
+	if id != "" {
+		v.Set("reply_to_id", id)
 	}
 }
 

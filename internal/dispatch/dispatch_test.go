@@ -12,7 +12,7 @@ import (
 
 type fakeNostr struct{ fail bool }
 
-func (f fakeNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag) (TargetResult, error) {
+func (f fakeNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error) {
 	if f.fail {
 		return TargetResult{Platform: "nostr", Status: "failed", Error: "boom"}, errors.New("boom")
 	}
@@ -27,7 +27,7 @@ func (fakeNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayU
 // dispatcher rebuilt NIP-92 tags from the archived media records.
 type capturingNostr struct{ gotImetas []gonostr.Tag }
 
-func (c *capturingNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag) (TargetResult, error) {
+func (c *capturingNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error) {
 	c.gotImetas = imetas
 	return TargetResult{Platform: "nostr", Status: "success", RemoteID: "ev1"}, nil
 }
@@ -71,7 +71,7 @@ func TestDispatchNostrNoMedia(t *testing.T) {
 
 type fakeMasto struct{}
 
-func (fakeMasto) PostText(ctx context.Context, text string, o Overrides, imgs []Img) (TargetResult, error) {
+func (fakeMasto) PostText(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
 	return TargetResult{Platform: "mastodon", Status: "success", RemoteID: "st1", RemoteURL: "https://m/1"}, nil
 }
 
@@ -120,14 +120,14 @@ func TestDispatchDedupsPlatforms(t *testing.T) {
 	}
 }
 
-type fakeBsky struct{}
+type simpleFakeBsky struct{}
 
-func (fakeBsky) PostBsky(ctx context.Context, text string, o Overrides, imgs []Img) (TargetResult, error) {
+func (simpleFakeBsky) PostBsky(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
 	return TargetResult{Platform: "bluesky", Status: "success", RemoteID: "at://x", RemoteURL: "https://bsky.app/x"}, nil
 }
 
 func TestDispatchBluesky(t *testing.T) {
-	d := &Dispatcher{Bluesky: fakeBsky{}}
+	d := &Dispatcher{Bluesky: simpleFakeBsky{}}
 	rec := d.Post(context.Background(), PostSpec{
 		MasterText: "hi", Platforms: []string{"bluesky"}, Source: "web",
 		Overrides: map[string]Overrides{"bluesky": {Langs: []string{"en"}}},
@@ -139,7 +139,7 @@ func TestDispatchBluesky(t *testing.T) {
 
 type fakeThreads struct{}
 
-func (fakeThreads) PostThreads(ctx context.Context, text string, o Overrides, imgs []Img) (TargetResult, error) {
+func (fakeThreads) PostThreads(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
 	return TargetResult{Platform: "threads", Status: "success", RemoteID: "med1", RemoteURL: "https://t/p"}, nil
 }
 
@@ -156,7 +156,7 @@ func TestDispatchThreads(t *testing.T) {
 
 type partialNostr struct{}
 
-func (partialNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag) (TargetResult, error) {
+func (partialNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error) {
 	return TargetResult{
 		Platform: "nostr", Status: "partial", RemoteID: "ev", RemoteURL: "https://njump.me/x",
 		Relays: []store.RelayState{{URL: "wss://a", Status: "ok"}, {URL: "wss://b", Status: "failed"}},

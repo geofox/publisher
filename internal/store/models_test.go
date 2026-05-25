@@ -77,3 +77,101 @@ func TestSavePostScrubsAttemptSecrets(t *testing.T) {
 		t.Errorf("over-scrubbed: %s", rj)
 	}
 }
+
+func TestSavePostWithSegments(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "seg.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	rec := &Post{
+		ID: "seg1", CreatedAt: time.Now().UTC().Truncate(time.Second),
+		MasterText: "long", Platforms: []string{"bluesky"}, Source: "web", Status: "partial",
+		Targets: []Target{{
+			Platform: "bluesky", FinalText: "long", Status: "partial",
+			RemoteID: "at://seg0", RemoteURL: "https://bsky/0",
+			Segments: []Segment{
+				{Ordinal: 0, Text: "seg zero 1/2", RemoteID: "at://seg0", RemoteURL: "https://bsky/0", CID: "cid0", Status: "success"},
+				{Ordinal: 1, Text: "seg one 2/2", Status: "failed", Error: "boom"},
+			},
+			Attempts: []Attempt{{AttemptNo: 1, Status: "partial", AttemptedAt: time.Now()}},
+		}},
+	}
+	if err := db.SavePost(rec); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetPost("seg1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Targets) != 1 {
+		t.Fatalf("targets: %+v", got.Targets)
+	}
+	segs := got.Targets[0].Segments
+	if len(segs) != 2 {
+		t.Fatalf("segments not round-tripped: %+v", segs)
+	}
+	if segs[0].CID != "cid0" || segs[0].Status != "success" || segs[1].Status != "failed" || segs[1].Error != "boom" {
+		t.Errorf("segment fields wrong: %+v", segs)
+	}
+}
+
+func TestSavePostNoSegmentsIsEmpty(t *testing.T) {
+	db, _ := Open(filepath.Join(t.TempDir(), "noseg.db"))
+	defer db.Close()
+	rec := &Post{
+		ID: "ns1", CreatedAt: time.Now().UTC().Truncate(time.Second),
+		Platforms: []string{"mastodon"}, Source: "web", Status: "success",
+		Targets: []Target{{Platform: "mastodon", Status: "success", RemoteID: "m1",
+			Attempts: []Attempt{{AttemptNo: 1, Status: "success", AttemptedAt: time.Now()}}}},
+	}
+	if err := db.SavePost(rec); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.GetPost("ns1")
+	if len(got.Targets[0].Segments) != 0 {
+		t.Fatalf("expected no segments, got %+v", got.Targets[0].Segments)
+	}
+}
+
+func TestUpdateTargetSegments(t *testing.T) {
+	db, _ := Open(filepath.Join(t.TempDir(), "upd.db"))
+	defer db.Close()
+	rec := &Post{
+		ID: "u1", CreatedAt: time.Now().UTC().Truncate(time.Second),
+		Platforms: []string{"bluesky"}, Source: "web", Status: "partial",
+		Targets: []Target{{
+			Platform: "bluesky", Status: "partial", RemoteID: "at://0", RemoteURL: "https://b/0",
+			Segments: []Segment{
+				{Ordinal: 0, Text: "a", RemoteID: "at://0", CID: "c0", Status: "success"},
+				{Ordinal: 1, Text: "b", Status: "failed", Error: "x"},
+			},
+			Attempts: []Attempt{{AttemptNo: 1, Status: "partial", AttemptedAt: time.Now()}},
+		}},
+	}
+	if err := db.SavePost(rec); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.GetPost("u1")
+	tid := got.Targets[0].ID
+
+	resumed := []Segment{
+		{Ordinal: 0, Text: "a", RemoteID: "at://0", CID: "c0", Status: "success"},
+		{Ordinal: 1, Text: "b", RemoteID: "at://1", CID: "c1", Status: "success"},
+	}
+	if err := db.UpdateTargetSegments(tid, resumed, "success", "at://0", "https://b/0", 12, ""); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := db.GetPost("u1")
+	tg := after.Targets[0]
+	if tg.Status != "success" || len(tg.Segments) != 2 || tg.Segments[1].Status != "success" || tg.Segments[1].RemoteID != "at://1" {
+		t.Fatalf("segments not updated: status=%s segs=%+v", tg.Status, tg.Segments)
+	}
+	if tg.AttemptCount < 2 {
+		t.Errorf("attempt_count should bump: %d", tg.AttemptCount)
+	}
+	if after.Status != "success" {
+		t.Errorf("post status should recompute to success: %s", after.Status)
+	}
+}

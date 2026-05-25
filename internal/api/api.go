@@ -23,6 +23,7 @@ import (
 	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/relaysync"
 	"github.com/geofox/publisher/internal/store"
+	"github.com/geofox/publisher/internal/thread"
 	"github.com/geofox/publisher/internal/verify"
 	"github.com/geofox/publisher/internal/web"
 )
@@ -44,6 +45,7 @@ const (
 	maxUploadRequestBytes  int64 = 64 << 20  // 64 MB
 	maxPostRequestBytes    int64 = 64 << 20  // 64 MB (spec + up to 4 images)
 	maxVerifyRequestBytes  int64 = 512 << 10 // 512 KB (pasted event JSON or a URL)
+	maxThreadPreviewBytes  int64 = 256 << 10 // 256 KB (draft text for split preview)
 )
 
 // Dispatcher is implemented by dispatch.Dispatcher; extracted as an interface
@@ -106,6 +108,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sync/scan", a.handleSyncScan)
 	mux.HandleFunc("POST /api/sync/apply", a.handleSyncApply)
 	mux.HandleFunc("POST /api/verify", a.handleVerify)
+	mux.HandleFunc("POST /api/thread-preview", a.handleThreadPreview)
 	mux.Handle("/", web.Handler())
 	return withSecurityHeaders(withCSRFGuard(mux))
 }
@@ -350,6 +353,7 @@ type postSpecJSON struct {
 		Alt string `json:"alt"`
 	} `json:"images"`
 	ScheduledAt string `json:"scheduled_at"`
+	Number      bool   `json:"number"`
 }
 
 func (a *API) handleAPIPost(w http.ResponseWriter, r *http.Request) {
@@ -422,6 +426,7 @@ func (a *API) handleAPIPost(w http.ResponseWriter, r *http.Request) {
 	spec := dispatch.PostSpec{
 		MasterText: sj.MasterText, Platforms: sj.Platforms, DelaySeconds: sj.DelaySeconds,
 		Source: "web", Overrides: sj.Overrides, Images: imgs, MediaRecords: mediaRecs,
+		Number: sj.Number,
 	}
 	if sj.ScheduledAt != "" {
 		at, err := time.Parse(time.RFC3339, sj.ScheduledAt)
@@ -452,6 +457,7 @@ func (a *API) handleAPIPost(w http.ResponseWriter, r *http.Request) {
 		RemoteURL string             `json:"remote_url,omitempty"`
 		LatencyMS int                `json:"latency_ms"`
 		Relays    []store.RelayState `json:"relays,omitempty"`
+		Segments  []store.Segment    `json:"segments,omitempty"`
 	}
 	out := struct {
 		PostID  string      `json:"post_id"`
@@ -466,6 +472,7 @@ func (a *API) handleAPIPost(w http.ResponseWriter, r *http.Request) {
 			RemoteURL: tg.RemoteURL,
 			LatencyMS: tg.LatencyMS,
 			Relays:    tg.Relays,
+			Segments:  tg.Segments,
 		})
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
@@ -826,4 +833,45 @@ func (a *API) handleVerify(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusBadGateway
 	}
 	httpx.WriteJSON(w, status, v)
+}
+
+// ─── POST /api/thread-preview ──────────────────────────────────────────────
+
+func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxThreadPreviewBytes)
+	var req struct {
+		Text      string   `json:"text"`
+		Platforms []string `json:"platforms"`
+		Number    bool     `json:"number"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			httpx.WriteError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("request body exceeds %d bytes", maxThreadPreviewBytes))
+			return
+		}
+		httpx.WriteError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "text is required")
+		return
+	}
+	type preview struct {
+		Platform string   `json:"platform"`
+		Count    int      `json:"count"`
+		Segments []string `json:"segments"`
+		Warnings []string `json:"warnings,omitempty"`
+	}
+	out := struct {
+		Previews []preview `json:"previews"`
+	}{Previews: []preview{}}
+	for _, p := range req.Platforms {
+		segs, warns := thread.Split(req.Text, thread.LimitFor(p), thread.Opts{Number: req.Number})
+		out.Previews = append(out.Previews, preview{
+			Platform: p, Count: len(segs), Segments: segs, Warnings: warns,
+		})
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }

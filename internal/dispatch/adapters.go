@@ -22,8 +22,13 @@ var (
 
 type NostrAdapter struct{ P *pubnostr.Publisher }
 
-func (a NostrAdapter) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag) (TargetResult, error) {
+func (a NostrAdapter) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error) {
 	in := pubnostr.PublishInput{Text: text, POW: pow, Imetas: imetas}
+	if replyTo != nil {
+		// RelayHint is intentionally left empty: ReplyRef carries no relay hint
+		// (NIP-10 hints are optional). Revisit if ReplyRef gains a RelayHint field.
+		in.ReplyTo = &pubnostr.NostrReply{RootID: replyTo.RootID, ParentID: replyTo.ParentID}
+	}
 	r := TargetResult{Platform: "nostr"}
 	reqB, _ := json.Marshal(map[string]any{"text": text, "pow": pow, "imeta": imetas})
 	r.RequestJSON = string(reqB)
@@ -65,7 +70,7 @@ func (a NostrAdapter) RebroadcastToRelay(ctx context.Context, signedEventJSON, r
 
 type MastodonAdapter struct{ C *mastodon.Client }
 
-func (a MastodonAdapter) PostText(ctx context.Context, text string, o Overrides, imgs []Img) (TargetResult, error) {
+func (a MastodonAdapter) PostText(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
 	var mi []mastodon.Image
 	for _, im := range imgs {
 		mi = append(mi, mastodon.Image{Bytes: im.Bytes, Alt: im.Alt})
@@ -73,6 +78,9 @@ func (a MastodonAdapter) PostText(ctx context.Context, text string, o Overrides,
 	p := mastodon.Post{
 		Text: text, SpoilerText: firstNonEmpty(o.SpoilerText, o.ContentWarning),
 		Sensitive: o.Sensitive, Visibility: o.Visibility, Language: o.Language, Images: mi,
+	}
+	if replyTo != nil {
+		p.InReplyToID = replyTo.ParentID
 	}
 	r := TargetResult{Platform: "mastodon"}
 	reqB, _ := json.Marshal(map[string]any{
@@ -92,7 +100,7 @@ func (a MastodonAdapter) PostText(ctx context.Context, text string, o Overrides,
 
 type BlueskyAdapter struct{ C *bluesky.Client }
 
-func (a BlueskyAdapter) PostBsky(ctx context.Context, text string, o Overrides, imgs []Img) (TargetResult, error) {
+func (a BlueskyAdapter) PostBsky(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
 	var bi []bluesky.Image
 	for _, im := range imgs {
 		bi = append(bi, bluesky.Image{Bytes: im.Bytes, Mime: im.Mime, Alt: im.Alt})
@@ -104,14 +112,21 @@ func (a BlueskyAdapter) PostBsky(ctx context.Context, text string, o Overrides, 
 	})
 	r.RequestJSON = string(reqB)
 
-	res, err := a.C.Post(ctx, bluesky.Post{
+	bp := bluesky.Post{
 		Text: text, Langs: o.Langs, Images: bi,
 		ReplyGate:     bluesky.ParseReplyGate(o.BlueskyReply),
 		DisableQuotes: o.BlueskyDisableQuotes,
-	})
+	}
+	if replyTo != nil {
+		bp.Reply = &bluesky.ReplyRef{
+			RootURI: replyTo.RootID, RootCID: replyTo.RootCID,
+			ParentURI: replyTo.ParentID, ParentCID: replyTo.ParentCID,
+		}
+	}
+	res, err := a.C.Post(ctx, bp)
 	// Post returns the published-post Result even when a gate write fails, so
 	// record the link regardless.
-	r.RemoteID, r.RemoteURL = res.RemoteID, res.RemoteURL
+	r.RemoteID, r.RemoteURL, r.CID = res.RemoteID, res.RemoteURL, res.CID
 	if respB, mErr := json.Marshal(res); mErr == nil {
 		r.ResponseJSON = string(respB)
 	}
@@ -132,7 +147,7 @@ func (a BlueskyAdapter) PostBsky(ctx context.Context, text string, o Overrides, 
 
 type ThreadsAdapter struct{ C *threads.Client }
 
-func (a ThreadsAdapter) PostThreads(ctx context.Context, text string, o Overrides, imgs []Img) (TargetResult, error) {
+func (a ThreadsAdapter) PostThreads(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
 	var ti []threads.Image
 	for _, im := range imgs {
 		ti = append(ti, threads.Image{URL: im.BlossomURL, Alt: im.Alt})
@@ -143,7 +158,11 @@ func (a ThreadsAdapter) PostThreads(ctx context.Context, text string, o Override
 	})
 	r.RequestJSON = string(reqB)
 
-	res, err := a.C.Post(ctx, threads.Post{Text: text, TopicTag: o.TopicTag, Images: ti, ReplyControl: o.ThreadsReplyControl})
+	tp := threads.Post{Text: text, TopicTag: o.TopicTag, Images: ti, ReplyControl: o.ThreadsReplyControl}
+	if replyTo != nil {
+		tp.ReplyToID = replyTo.ParentID
+	}
+	res, err := a.C.Post(ctx, tp)
 	if err != nil {
 		r.Status, r.Error = "failed", err.Error()
 		return r, err
