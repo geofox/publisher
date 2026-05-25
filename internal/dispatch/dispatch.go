@@ -117,7 +117,7 @@ type InteractRef struct {
 // external post, so ThreadsPoster gains no actor.
 type NostrActor interface {
 	Repost(ctx context.Context, eventID, author string, kind int, relayHint string) (TargetResult, error)
-	Quote(ctx context.Context, text, eventID, author, relayHint string) (TargetResult, error)
+	Quote(ctx context.Context, text, eventID, author, relayHint string, imetas []gonostr.Tag) (TargetResult, error)
 }
 type BlueskyActor interface {
 	RepostBsky(ctx context.Context, subjectURI, subjectCID string) (TargetResult, error)
@@ -125,7 +125,7 @@ type BlueskyActor interface {
 }
 type MastodonActor interface {
 	Reblog(ctx context.Context, statusID string) (TargetResult, error)
-	QuoteStatus(ctx context.Context, text, quotedID string) (TargetResult, error)
+	QuoteStatus(ctx context.Context, text, quotedID string, imgs []Img) (TargetResult, error)
 }
 
 type PostSpec struct {
@@ -205,7 +205,7 @@ func (d *Dispatcher) runPlatform(ctx context.Context, plat, text string, ov Over
 
 // runAction executes one native interaction (repost/quote) on one platform and
 // returns a normalized TargetResult, mirroring runPlatform's normalization.
-func (d *Dispatcher) runAction(ctx context.Context, action, plat, text string, ov Overrides, imgs []Img, ref InteractRef) TargetResult {
+func (d *Dispatcher) runAction(ctx context.Context, action, plat, text string, ov Overrides, imgs []Img, imetas []gonostr.Tag, ref InteractRef) TargetResult {
 	start := time.Now()
 	var r TargetResult
 	var err error
@@ -230,7 +230,7 @@ func (d *Dispatcher) runAction(ctx context.Context, action, plat, text string, o
 		}
 	case action == actionQuote && plat == "mastodon":
 		if d.Mastodon != nil {
-			r, err = d.Mastodon.QuoteStatus(ctx, text, ref.LocalID)
+			r, err = d.Mastodon.QuoteStatus(ctx, text, ref.LocalID, imgs)
 		} else {
 			err = errors.New("mastodon not configured")
 		}
@@ -242,7 +242,7 @@ func (d *Dispatcher) runAction(ctx context.Context, action, plat, text string, o
 		}
 	case action == actionQuote && plat == "nostr":
 		if d.Nostr != nil {
-			r, err = d.Nostr.Quote(ctx, text, ref.EventID, ref.Author, relayHint(ref.RelayHints))
+			r, err = d.Nostr.Quote(ctx, text, ref.EventID, ref.Author, relayHint(ref.RelayHints), imetas)
 		} else {
 			err = errors.New("nostr not configured")
 		}
@@ -296,7 +296,7 @@ type headSpec struct {
 // runHead posts the head segment per the headSpec (reply / quote / plain).
 func (d *Dispatcher) runHead(ctx context.Context, plat, text string, ov Overrides, imgs []Img, imetas []gonostr.Tag, head *headSpec) TargetResult {
 	if head != nil && head.quote != nil {
-		return d.runAction(ctx, actionQuote, plat, text, ov, imgs, *head.quote)
+		return d.runAction(ctx, actionQuote, plat, text, ov, imgs, imetas, *head.quote)
 	}
 	var replyTo *ReplyRef
 	if head != nil {
@@ -645,7 +645,7 @@ func (d *Dispatcher) Interact(ctx context.Context, spec InteractSpec) *store.Pos
 	var outcomes []chainOutcome
 	switch spec.Action {
 	case actionRepost:
-		r := d.runAction(ctx, actionRepost, spec.SourcePlatform, "", spec.Overrides[spec.SourcePlatform], nil, spec.Ref)
+		r := d.runAction(ctx, actionRepost, spec.SourcePlatform, "", spec.Overrides[spec.SourcePlatform], nil, nil, spec.Ref)
 		outcomes = append(outcomes, chainOutcome{
 			Platform: r.Platform, Status: r.Status, Error: r.Error,
 			HeadRemoteID: r.RemoteID, HeadRemoteURL: r.RemoteURL, LatencyMS: r.LatencyMS,
@@ -659,12 +659,7 @@ func (d *Dispatcher) Interact(ctx context.Context, spec InteractSpec) *store.Pos
 		} else {
 			head.quote = &spec.Ref
 		}
-		// Mastodon native quote can't carry media → degrade to fan-out reproduction.
-		if spec.Action == actionQuote && spec.SourcePlatform == "mastodon" && len(spec.Images) > 0 {
-			outcomes = append(outcomes, d.fanoutChain(ctx, "mastodon", spec))
-		} else {
-			outcomes = append(outcomes, d.runChain(ctx, spec.SourcePlatform, interactText(spec, spec.SourcePlatform), ov, spec.Images, buildImetas(spec.MediaRecords), spec.Number, head))
-		}
+		outcomes = append(outcomes, d.runChain(ctx, spec.SourcePlatform, interactText(spec, spec.SourcePlatform), ov, spec.Images, buildImetas(spec.MediaRecords), spec.Number, head))
 		for _, p := range spec.Fanout {
 			if p == spec.SourcePlatform {
 				continue

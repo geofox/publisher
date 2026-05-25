@@ -1,6 +1,7 @@
 package mastodon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	gomast "github.com/mattn/go-mastodon"
 )
 
 type SourceStatus struct {
@@ -121,13 +124,22 @@ func (c *Client) Reblog(ctx context.Context, id string) (Result, error) {
 }
 
 // QuotePost creates a native quote post (server 4.5+). text is the commentary;
-// quotedID is the LOCAL status id to quote.
-func (c *Client) QuotePost(ctx context.Context, text, quotedID string) (Result, error) {
+// quotedID is the LOCAL status id to quote; imgs are attached as media.
+func (c *Client) QuotePost(ctx context.Context, text, quotedID string, imgs []Image) (Result, error) {
+	form := url.Values{"status": {text}, "quoted_status_id": {quotedID}}
+	for _, img := range imgs {
+		att, err := c.c.UploadMediaFromMedia(ctx, &gomast.Media{
+			File: bytes.NewReader(img.Bytes), Description: img.Alt,
+		})
+		if err != nil {
+			return Result{}, fmt.Errorf("quote media: %w", err)
+		}
+		form.Add("media_ids[]", string(att.ID))
+	}
 	var st struct {
 		ID  string `json:"id"`
 		URL string `json:"url"`
 	}
-	form := url.Values{"status": {text}, "quoted_status_id": {quotedID}}
 	if err := c.postForm(ctx, "/api/v1/statuses", form, &st); err != nil {
 		return Result{}, fmt.Errorf("quote: %w", err)
 	}

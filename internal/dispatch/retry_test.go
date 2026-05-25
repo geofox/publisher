@@ -27,7 +27,7 @@ func (m *retryMasto) PostText(ctx context.Context, text string, o Overrides, img
 func (m *retryMasto) Reblog(context.Context, string) (TargetResult, error) {
 	return TargetResult{Platform: "mastodon", Status: "success"}, nil
 }
-func (m *retryMasto) QuoteStatus(context.Context, string, string) (TargetResult, error) {
+func (m *retryMasto) QuoteStatus(context.Context, string, string, []Img) (TargetResult, error) {
 	return TargetResult{Platform: "mastodon", Status: "success"}, nil
 }
 
@@ -119,7 +119,7 @@ func (f *relayFakeNostr) PublishText(ctx context.Context, text string, pow *int,
 func (f *relayFakeNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
-func (f *relayFakeNostr) Quote(context.Context, string, string, string, string) (TargetResult, error) {
+func (f *relayFakeNostr) Quote(context.Context, string, string, string, string, []gonostr.Tag) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
 func (f *relayFakeNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (bool, string) {
@@ -231,7 +231,7 @@ func (refreshNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, rel
 func (refreshNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
-func (refreshNostr) Quote(context.Context, string, string, string, string) (TargetResult, error) {
+func (refreshNostr) Quote(context.Context, string, string, string, string, []gonostr.Tag) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
 

@@ -193,11 +193,13 @@ func (a BlueskyAdapter) RepostBsky(ctx context.Context, uri, cid string) (Target
 	return TargetResult{Platform: "bluesky", Status: "success", RemoteID: res.RemoteID, RemoteURL: res.RemoteURL, CID: res.CID}, nil
 }
 
-func (a BlueskyAdapter) QuoteBsky(ctx context.Context, text string, o Overrides, _ []Img, uri, cid string) (TargetResult, error) {
-	// v1: native quote carries commentary + embed only (no attached images;
-	// symmetric with Mastodon native quote).
+func (a BlueskyAdapter) QuoteBsky(ctx context.Context, text string, o Overrides, imgs []Img, uri, cid string) (TargetResult, error) {
+	var bi []bluesky.Image
+	for _, im := range imgs {
+		bi = append(bi, bluesky.Image{Bytes: im.Bytes, Mime: im.Mime, Alt: im.Alt})
+	}
 	bp := bluesky.Post{
-		Text: text, Langs: o.Langs, Quote: &bluesky.QuoteRef{URI: uri, CID: cid},
+		Text: text, Langs: o.Langs, Images: bi, Quote: &bluesky.QuoteRef{URI: uri, CID: cid},
 		ReplyGate: bluesky.ParseReplyGate(o.BlueskyReply), DisableQuotes: o.BlueskyDisableQuotes,
 	}
 	res, err := a.C.Post(ctx, bp)
@@ -215,8 +217,12 @@ func (a MastodonAdapter) Reblog(ctx context.Context, id string) (TargetResult, e
 	return TargetResult{Platform: "mastodon", Status: "success", RemoteID: res.RemoteID, RemoteURL: res.RemoteURL}, nil
 }
 
-func (a MastodonAdapter) QuoteStatus(ctx context.Context, text, quotedID string) (TargetResult, error) {
-	res, err := a.C.QuotePost(ctx, text, quotedID)
+func (a MastodonAdapter) QuoteStatus(ctx context.Context, text, quotedID string, imgs []Img) (TargetResult, error) {
+	var mi []mastodon.Image
+	for _, im := range imgs {
+		mi = append(mi, mastodon.Image{Bytes: im.Bytes, Alt: im.Alt})
+	}
+	res, err := a.C.QuotePost(ctx, text, quotedID, mi)
 	if err != nil {
 		return TargetResult{Platform: "mastodon"}, err
 	}
@@ -238,7 +244,7 @@ func (a NostrAdapter) Repost(ctx context.Context, eventID, author string, kind i
 
 // Quote publishes a NIP-18 quote (kind 1 with a "q" tag), appending an
 // nostr:nevent mention of the quoted event to the commentary.
-func (a NostrAdapter) Quote(ctx context.Context, text, eventID, author, relayHint string) (TargetResult, error) {
+func (a NostrAdapter) Quote(ctx context.Context, text, eventID, author, relayHint string, imetas []gonostr.Tag) (TargetResult, error) {
 	content := strings.TrimSpace(text)
 	if mention := neventMention(eventID, author, relayHint); mention != "" {
 		if content == "" {
@@ -248,7 +254,7 @@ func (a NostrAdapter) Quote(ctx context.Context, text, eventID, author, relayHin
 		}
 	}
 	tags := []gonostr.Tag{{"q", eventID, relayHint, author}}
-	res, err := a.P.Publish(ctx, pubnostr.PublishInput{Kind: 1, Text: content, Tags: tags})
+	res, err := a.P.Publish(ctx, pubnostr.PublishInput{Kind: 1, Text: content, Tags: tags, Imetas: imetas})
 	return nostrResult(res, err)
 }
 

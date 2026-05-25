@@ -7,11 +7,13 @@ import (
 
 	gonostr "fiatjaf.com/nostr"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
+	"github.com/geofox/publisher/internal/store"
 )
 
 // fakeNostrActor records the ReplyRef forwarded to PublishText.
 type fakeNostrActor struct {
 	lastReply *ReplyRef
+	gotImetas []gonostr.Tag
 }
 
 func (f *fakeNostrActor) PublishText(_ context.Context, _ string, _ *int, _ []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error) {
@@ -22,8 +24,9 @@ func (f *fakeNostrActor) RebroadcastToRelay(context.Context, string, string) (bo
 func (f *fakeNostrActor) Repost(context.Context, string, string, int, string) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
-func (f *fakeNostrActor) Quote(context.Context, string, string, string, string) (TargetResult, error) {
-	return TargetResult{Platform: "nostr", Status: "success"}, nil
+func (f *fakeNostrActor) Quote(_ context.Context, _ string, _ string, _ string, _ string, imetas []gonostr.Tag) (TargetResult, error) {
+	f.gotImetas = imetas
+	return TargetResult{Platform: "nostr", Status: "success", RemoteID: "nq"}, nil
 }
 
 func TestReplyRefCarriesAuthorToNostr(t *testing.T) {
@@ -59,7 +62,7 @@ func (f *fakeBskyActor) QuoteBsky(_ context.Context, text string, _ Overrides, _
 func TestRunActionRepostBsky(t *testing.T) {
 	f := &fakeBskyActor{}
 	d := &Dispatcher{Bluesky: f}
-	r := d.runAction(context.Background(), actionRepost, "bluesky", "", Overrides{}, nil,
+	r := d.runAction(context.Background(), actionRepost, "bluesky", "", Overrides{}, nil, nil,
 		InteractRef{URI: "at://x", CID: "cidx"})
 	if r.Status != "success" || f.reposted != [2]string{"at://x", "cidx"} {
 		t.Fatalf("repost not wired: %+v / %v", r, f.reposted)
@@ -69,7 +72,7 @@ func TestRunActionRepostBsky(t *testing.T) {
 func TestRunActionQuoteBsky(t *testing.T) {
 	f := &fakeBskyActor{}
 	d := &Dispatcher{Bluesky: f}
-	r := d.runAction(context.Background(), actionQuote, "bluesky", "my take", Overrides{}, nil,
+	r := d.runAction(context.Background(), actionQuote, "bluesky", "my take", Overrides{}, nil, nil,
 		InteractRef{URI: "at://x", CID: "cidx"})
 	if r.Status != "success" || f.quoted != "my take" || f.quoteRef != [2]string{"at://x", "cidx"} {
 		t.Fatalf("quote not wired: %+v / %q / %v", r, f.quoted, f.quoteRef)
@@ -81,7 +84,10 @@ type strHolder struct{ s string }
 
 func (h strHolder) contains(sub string) bool { return strings.Contains(h.s, sub) }
 
-type fakeMastoActor struct{ lastPostText strHolder }
+type fakeMastoActor struct {
+	lastPostText strHolder
+	quoteImgs    []Img
+}
 
 func (f *fakeMastoActor) PostText(_ context.Context, text string, _ Overrides, _ []Img, _ *ReplyRef) (TargetResult, error) {
 	f.lastPostText = strHolder{s: text}
@@ -90,8 +96,9 @@ func (f *fakeMastoActor) PostText(_ context.Context, text string, _ Overrides, _
 func (f *fakeMastoActor) Reblog(context.Context, string) (TargetResult, error) {
 	return TargetResult{Platform: "mastodon", Status: "success"}, nil
 }
-func (f *fakeMastoActor) QuoteStatus(_ context.Context, text, _ string) (TargetResult, error) {
+func (f *fakeMastoActor) QuoteStatus(_ context.Context, text, _ string, imgs []Img) (TargetResult, error) {
 	f.lastPostText = strHolder{s: text}
+	f.quoteImgs = imgs
 	return TargetResult{Platform: "mastodon", Status: "success", RemoteID: "mq1"}, nil
 }
 
@@ -283,22 +290,35 @@ func TestInteractHonorsPerPlatformTextOverride(t *testing.T) {
 	}
 }
 
-func TestInteractMastodonQuoteWithMediaDegrades(t *testing.T) {
+func TestInteractMastodonQuoteCarriesMedia(t *testing.T) {
 	masto := &fakeMastoActor{}
 	d := &Dispatcher{Mastodon: masto}
 	post := d.Interact(context.Background(), InteractSpec{
 		Action: actionQuote, SourcePlatform: "mastodon",
-		Ref: InteractRef{LocalID: "9"}, SourceURL: "https://m/9", SourceAuthor: "@a",
-		SourcePreview: SourcePreview{Author: "@a", Text: "tweet text"},
-		Text:          "look", Images: []Img{{Alt: "x"}}, // native quote can't carry media → degrade
+		Ref:    InteractRef{LocalID: "42"},
+		Text:   "look", Images: []Img{{Alt: "x"}},
 	})
-	if len(post.Targets) != 1 {
-		t.Fatalf("want 1 target, got %d", len(post.Targets))
+	if len(masto.quoteImgs) != 1 || masto.quoteImgs[0].Alt != "x" {
+		t.Errorf("mastodon native quote should carry the attached media, got %#v", masto.quoteImgs)
 	}
-	// Degrade path posts a reproduction (commentary + original text + url) via PostText;
-	// a native QuoteStatus would only carry "look".
-	body := masto.lastPostText.s
-	if !strings.Contains(body, "tweet text") || !strings.Contains(body, "https://m/9") {
-		t.Errorf("mastodon quote+media should degrade to a reproduction post: %q", body)
+	if masto.lastPostText.s != "look" {
+		t.Errorf("native quote text should be the commentary only, got %q", masto.lastPostText.s)
+	}
+	if len(post.Targets) != 1 || post.Targets[0].FinalText != "look" {
+		t.Errorf("expected 1 target with commentary-only final text, got %+v", post.Targets)
+	}
+}
+
+func TestInteractNostrQuoteCarriesImetas(t *testing.T) {
+	na := &fakeNostrActor{}
+	d := &Dispatcher{Nostr: na}
+	d.Interact(context.Background(), InteractSpec{
+		Action: actionQuote, SourcePlatform: "nostr",
+		Ref:          InteractRef{EventID: "ev", Author: "auth"},
+		Text:         "see this",
+		MediaRecords: []store.Media{{BlossomURL: "https://blossom/x.jpg", Mime: "image/jpeg"}},
+	})
+	if len(na.gotImetas) != 1 {
+		t.Fatalf("nostr quote should forward 1 imeta, got %d", len(na.gotImetas))
 	}
 }

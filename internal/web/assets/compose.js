@@ -1,6 +1,6 @@
 "use strict";
 import { el, $, gcount, wcount, flash, confirmModal, META, ORDER } from "./common.js";
-import { state, effectiveText, buildSpec, buildInteractSpec } from "./state.js";
+import { state, effectiveText, buildSpec, buildInteractSpec, defaultOv } from "./state.js";
 import { renderPreview } from "./preview.js";
 import { resultRow, openDetail } from "./history.js";
 
@@ -26,7 +26,7 @@ function renderChips() {
     const on = state.platforms.has(p);
     const locked = it != null && p === it.platform;
     let label = META[p].label;
-    if (it) label += p === it.platform ? " · source" : " · link";
+    if (it) label += p === it.platform ? " · native" : " · copy";
     c.append(el("button", {
       class: "chip p-" + p + (on ? " on" : "") + (locked ? " locked" : ""), type: "button", text: label,
       onclick: () => {
@@ -47,25 +47,53 @@ function renderChips() {
 // (src is a /api/resolve SourceRef) and switches to the Compose tab. action is
 // "reply" | "quote".
 export function startInteraction(src, action) {
-  state.interaction = {
-    action, platform: src.platform, ref: src.ref,
-    sourcePreview: src.preview, sourceURL: src.preview.web_url, sourceAuthor: src.preview.author_handle,
-    caps: src.caps, force: false,
+  const begin = () => {
+    state.interaction = {
+      action, platform: src.platform, ref: src.ref,
+      sourcePreview: src.preview, sourceURL: src.preview.web_url, sourceAuthor: src.preview.author_handle,
+      caps: src.caps, force: false,
+      // restored on exit; preserve the pre-interaction selection across a nested
+      // re-entry (starting a new interaction while already in one).
+      prevPlatforms: state.interaction && state.interaction.prevPlatforms
+        ? state.interaction.prevPlatforms : new Set(state.platforms),
+    };
+    state.master = "";
+    state.images.forEach((i) => URL.revokeObjectURL(i.url));
+    state.images = [];
+    ORDER.forEach((p) => { state.ov[p] = defaultOv(p); }); // drop stale per-platform overrides
+    state.platforms = new Set([src.platform]);
+    state.focus = src.platform;
+    const tab = document.querySelector('.tab[data-view="compose"]');
+    if (tab) tab.click();
+    const m = $("#master"); if (m) m.value = "";
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    flash((action === "quote" ? "Quoting " : "Replying to ") + (src.preview.author_handle || src.platform));
+    renderImages(); // entry cleared state.images → refresh the thumbnail strip (symmetric with exit)
+    renderInteractionUI();
   };
-  state.master = "";
-  state.images = [];
-  state.platforms = new Set([src.platform]); // source locked on; user toggles fan-out
-  state.focus = src.platform;
-  const tab = document.querySelector('.tab[data-view="compose"]');
-  if (tab) tab.click();
-  const m = $("#master"); if (m) m.value = "";
-  renderInteractionUI();
+  if (state.master.trim() || state.images.length) {
+    confirmModal({
+      title: "Replace your current draft?",
+      body: "Starting a " + action + " will clear what you've written in Compose.",
+      confirmText: "Replace draft",
+      onConfirm: async () => { begin(); return true; },
+    });
+    return;
+  }
+  begin();
 }
 
 // exitInteraction returns Compose to a normal new post.
 export function exitInteraction() {
+  const prev = state.interaction && state.interaction.prevPlatforms;
   state.interaction = null;
-  state.platforms = new Set(ORDER);
+  state.master = "";
+  state.images.forEach((i) => URL.revokeObjectURL(i.url));
+  state.images = [];
+  const m = $("#master"); if (m) m.value = "";
+  state.platforms = prev && prev.size ? new Set(prev) : new Set(ORDER);
+  if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
+  renderImages();
   renderInteractionUI();
 }
 
@@ -88,9 +116,21 @@ function renderSrcBanner() {
   host.append(el("div", { class: "srcb-head" },
     el("span", { class: "srcb-verb", text: verb + " " }),
     el("span", { class: "srcb-author", text: it.sourceAuthor || it.platform }),
-    el("button", { class: "srcb-x", type: "button", text: "× exit", onclick: exitInteraction }),
+    el("button", { class: "srcb-x", type: "button", text: "← cancel", onclick: exitInteraction }),
   ));
   host.append(el("div", { class: "srcb-text", text: (it.sourcePreview && it.sourcePreview.text) || "" }));
+  const sp = it.sourcePreview || {};
+  if (sp.media && sp.media.length) {
+    const g = el("div", { class: "srcb-media" });
+    for (const m of sp.media) g.append(el("img", { src: m.url, alt: m.alt || "" }));
+    host.append(g);
+  }
+  const foot = el("div", { class: "srcb-foot" });
+  foot.append(el("span", { class: "srcb-hint muted",
+    text: it.platform.charAt(0).toUpperCase() + it.platform.slice(1) +
+      " gets a native " + it.action + "; toggle other targets to also post a copy there." }));
+  if (it.sourceURL) foot.append(el("a", { class: "srcb-link", href: it.sourceURL, target: "_blank", rel: "noopener", text: "open original ↗" }));
+  host.append(foot);
   const cap = it.caps && it.caps[it.action];
   if (cap && !cap.allowed) {
     const cb = el("input", { type: "checkbox", onchange: (e) => { it.force = e.target.checked; } });
@@ -380,7 +420,7 @@ function submit() {
 // by DOM click to avoid compose↔main import cycle
 // ---------------------------------------------------------------------------
 
-function showResultModal(data) {
+export function showResultModal(data) {
   const bk = el("div", { class: "modal-bk" });
   const close = () => bk.remove();
   bk.addEventListener("click", e => { if (e.target === bk) close(); });

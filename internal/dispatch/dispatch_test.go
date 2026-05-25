@@ -25,7 +25,7 @@ func (fakeNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayU
 func (fakeNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
-func (fakeNostr) Quote(context.Context, string, string, string, string) (TargetResult, error) {
+func (fakeNostr) Quote(context.Context, string, string, string, string, []gonostr.Tag) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
 
@@ -44,7 +44,7 @@ func (*capturingNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, 
 func (*capturingNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
-func (*capturingNostr) Quote(context.Context, string, string, string, string) (TargetResult, error) {
+func (*capturingNostr) Quote(context.Context, string, string, string, string, []gonostr.Tag) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
 
@@ -89,7 +89,7 @@ func (fakeMasto) PostText(ctx context.Context, text string, o Overrides, imgs []
 func (fakeMasto) Reblog(context.Context, string) (TargetResult, error) {
 	return TargetResult{Platform: "mastodon", Status: "success"}, nil
 }
-func (fakeMasto) QuoteStatus(context.Context, string, string) (TargetResult, error) {
+func (fakeMasto) QuoteStatus(context.Context, string, string, []Img) (TargetResult, error) {
 	return TargetResult{Platform: "mastodon", Status: "success"}, nil
 }
 
@@ -192,7 +192,7 @@ func (partialNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, rel
 func (partialNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
-func (partialNostr) Quote(context.Context, string, string, string, string) (TargetResult, error) {
+func (partialNostr) Quote(context.Context, string, string, string, string, []gonostr.Tag) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
 

@@ -31,7 +31,7 @@ func (stubNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayU
 func (stubNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
-func (stubNostr) Quote(context.Context, string, string, string, string) (TargetResult, error) {
+func (stubNostr) Quote(context.Context, string, string, string, string, []gonostr.Tag) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
 

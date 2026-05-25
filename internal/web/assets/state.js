@@ -22,6 +22,20 @@ ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
 
 export function effectiveText(p) { return state.ov[p].text != null ? state.ov[p].text : state.master; }
 
+// assembleReproduction mirrors Go dispatch.assembleReproduction so a fan-out
+// target's live preview matches what gets posted: commentary, an attributed copy
+// of the original's text, then the source URL (blank-line separated). `sp` is the
+// interaction sourcePreview; author attribution uses its author_handle.
+export function assembleReproduction(commentary, sp, sourceURL) {
+  const parts = [];
+  const c = (commentary || "").trim();
+  if (c) parts.push(c);
+  sp = sp || {};
+  if ((sp.text || "").trim()) parts.push("— " + (sp.author_handle || "") + ":\n" + sp.text);
+  if (sourceURL) parts.push(sourceURL);
+  return parts.join("\n\n");
+}
+
 // focusedPlatform returns state.focus if still selected, else the first selected
 // platform (in ORDER), else null.
 export function focusedPlatform() {

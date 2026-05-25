@@ -92,6 +92,51 @@ func TestPostCreatesRecordWithImageAndFacets(t *testing.T) {
 	}
 }
 
+func TestPostQuoteWithMediaUsesRecordWithMedia(t *testing.T) {
+	var record map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/xrpc/com.atproto.server.createSession", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"did": "did:plc:abc", "handle": "me.example.com", "accessJwt": "AAA"})
+	})
+	mux.HandleFunc("/xrpc/com.atproto.repo.uploadBlob", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"blob": map[string]any{"$type": "blob", "ref": map[string]any{"$link": "bafkX"}, "mimeType": "image/jpeg", "size": 1}})
+	})
+	mux.HandleFunc("/xrpc/com.atproto.repo.createRecord", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Record map[string]any }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		record = body.Record
+		_ = json.NewEncoder(w).Encode(map[string]any{"uri": "at://did:plc:abc/app.bsky.feed.post/k", "cid": "bafy"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var pbuf bytes.Buffer
+	_ = png.Encode(&pbuf, image.NewRGBA(image.Rect(0, 0, 8, 8)))
+
+	c := New(srv.URL, "me.example.com", "app-pw")
+	_, err := c.Post(context.Background(), Post{
+		Text:   "my take",
+		Quote:  &QuoteRef{URI: "at://did/app.bsky.feed.post/x", CID: "cidq"},
+		Images: []Image{{Bytes: pbuf.Bytes(), Mime: "image/png", Alt: "a square"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	embed, _ := record["embed"].(map[string]any)
+	if embed["$type"] != "app.bsky.embed.recordWithMedia" {
+		t.Fatalf("expected recordWithMedia, got %v", embed["$type"])
+	}
+	media, _ := embed["media"].(map[string]any)
+	if media["$type"] != "app.bsky.embed.images" {
+		t.Errorf("media embed wrong: %v", media)
+	}
+	rec, _ := embed["record"].(map[string]any)
+	inner, _ := rec["record"].(map[string]any)
+	if inner["uri"] != "at://did/app.bsky.feed.post/x" {
+		t.Errorf("quoted strongRef wrong: %v", rec)
+	}
+}
+
 func TestPostRejectsOverlongText(t *testing.T) {
 	c := New("http://unused", "id", "pw")
 	long := strings.Repeat("a", 301)

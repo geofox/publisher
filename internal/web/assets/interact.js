@@ -1,6 +1,6 @@
 "use strict";
-import { el, $, api, flash } from "./common.js";
-import { startInteraction } from "./compose.js";
+import { el, $, api, flash, confirmModal } from "./common.js";
+import { startInteraction, showResultModal } from "./compose.js";
 
 const PLAT_LABEL = { bluesky: "Bluesky", mastodon: "Mastodon", nostr: "Nostr", threads: "Threads" };
 
@@ -71,18 +71,22 @@ async function doRepost(s, cap) {
       action: "repost", platform: s.platform, ref: s.ref,
       source_url: s.preview.web_url, source_author: s.preview.author_handle, force: !!force,
     }));
-    try {
-      const r = await fetch("/api/interact", { method: "POST", body: fd, credentials: "same-origin" });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
-      flash("repost " + data.status);
-    } catch (e) { flash("Error: " + e.message); }
+    const r = await fetch("/api/interact", { method: "POST", body: fd, credentials: "same-origin" });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+    showResultModal({ post_id: data.id, status: data.status, targets: data.targets });
   };
   if (!cap.allowed) {
-    if (window.confirm("repost: " + (cap.reason || "blocked") + " — try anyway?")) send(true); // eslint-disable-line no-alert
+    confirmModal({
+      title: "Repost blocked",
+      body: (cap.reason || "This repost is blocked") +
+        (s.platform === "bluesky" ? " (Bluesky may silently drop it)." : "") + " Repost anyway?",
+      confirmText: "Repost anyway",
+      onConfirm: async () => { try { await send(true); } catch (e) { flash("Error: " + e.message); } return true; },
+    });
     return;
   }
-  send(false);
+  try { await send(false); } catch (e) { flash("Error: " + e.message); }
 }
 
 // interactInit wires the smart input (debounced).
