@@ -36,12 +36,14 @@ func isBlockedIP(ip net.IP) bool {
 	return false
 }
 
-// newSafeClient builds an http.Client whose dialer rejects any connection to a
-// blocked IP. The check runs in the dialer Control hook, which fires AFTER DNS
-// resolution on the concrete IP about to be dialed — so it also defeats DNS
-// rebinding (a hostname that resolves to a public IP first and a private IP on
-// a later lookup is still checked per-connection).
-func newSafeClient(timeout time.Duration) *http.Client {
+// NewSafeClient returns an SSRF-guarded *http.Client that refuses
+// loopback/private/link-local/CGNAT targets.
+//
+// The check runs in the dialer Control hook, which fires AFTER DNS resolution
+// on the concrete IP about to be dialed — so it also defeats DNS rebinding (a
+// hostname that resolves to a public IP first and a private IP on a later
+// lookup is still checked per-connection).
+func NewSafeClient(timeout time.Duration) *http.Client {
 	dialer := &net.Dialer{
 		Timeout: timeout,
 		Control: func(network, address string, _ syscall.RawConn) error {

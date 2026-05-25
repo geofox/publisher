@@ -30,14 +30,14 @@ type MastodonVerifier struct {
 
 // NewMastodonVerifier builds an ActivityPub verifier labeled "mastodon".
 func NewMastodonVerifier(timeout time.Duration) *MastodonVerifier {
-	return &MastodonVerifier{platform: "mastodon", http: newSafeClient(timeout)}
+	return &MastodonVerifier{platform: "mastodon", http: NewSafeClient(timeout)}
 }
 
 // NewThreadsVerifier builds an ActivityPub verifier labeled "threads". Threads
 // has no native per-post signature, so this only confirms origin authority for
 // fediverse-federated Threads accounts (origin assurance, never cryptographic).
 func NewThreadsVerifier(timeout time.Duration) *MastodonVerifier {
-	return &MastodonVerifier{platform: "threads", http: newSafeClient(timeout)}
+	return &MastodonVerifier{platform: "threads", http: NewSafeClient(timeout)}
 }
 
 type apObject struct {

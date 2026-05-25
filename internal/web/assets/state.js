@@ -16,6 +16,7 @@ export const state = {
   ov: {},
   images: [],
   focus: "bluesky", // platform shown in the live preview
+  interaction: null, // null = normal compose; else {action, platform, ref, sourcePreview, sourceURL, sourceAuthor, caps, force}
 };
 ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
 
@@ -29,17 +30,21 @@ export function focusedPlatform() {
   return null;
 }
 
+// ovFor returns the API override object for one platform (shared by buildSpec
+// and buildInteractSpec).
+function ovFor(p) {
+  const ov = state.ov[p], o = {};
+  if (ov.text != null) o.text = ov.text;
+  if (p === "bluesky")  { o.langs = ov.langs.split(",").map((s) => s.trim()).filter(Boolean); o.bluesky_reply = ov.reply; o.bluesky_disable_quotes = ov.disable_quotes; }
+  if (p === "mastodon") { o.spoiler_text = ov.spoiler_text; o.sensitive = ov.sensitive; o.visibility = ov.visibility; o.language = ov.language; }
+  if (p === "threads")  { o.topic_tag = ov.topic_tag; o.threads_reply_control = ov.reply_control; }
+  if (p === "nostr")    { o.pow = ov.pow; o.content_warning = ov.content_warning; }
+  return o;
+}
+
 export function buildSpec() {
   const overrides = {};
-  for (const p of state.platforms) {
-    const ov = state.ov[p], o = {};
-    if (ov.text != null) o.text = ov.text;
-    if (p === "bluesky")  { o.langs = ov.langs.split(",").map(s => s.trim()).filter(Boolean); o.bluesky_reply = ov.reply; o.bluesky_disable_quotes = ov.disable_quotes; }
-    if (p === "mastodon") { o.spoiler_text = ov.spoiler_text; o.sensitive = ov.sensitive; o.visibility = ov.visibility; o.language = ov.language; }
-    if (p === "threads")  { o.topic_tag = ov.topic_tag; o.threads_reply_control = ov.reply_control; }
-    if (p === "nostr")    { o.pow = ov.pow; o.content_warning = ov.content_warning; }
-    overrides[p] = o;
-  }
+  for (const p of state.platforms) overrides[p] = ovFor(p);
   const spec = {
     master_text: state.master,
     platforms: [...state.platforms],
@@ -52,4 +57,32 @@ export function buildSpec() {
   const sa = document.querySelector("#schedat")?.value;
   if (sa) spec.scheduled_at = new Date(sa).toISOString();
   return spec;
+}
+
+// buildInteractSpec assembles the /api/interact spec (reply/quote) from the
+// interaction state: the source platform is the locked native target; the other
+// selected platforms are fan-out reproductions.
+export function buildInteractSpec() {
+  const it = state.interaction;
+  const fanout = [...state.platforms].filter((p) => p !== it.platform);
+  const overrides = {};
+  for (const p of state.platforms) overrides[p] = ovFor(p);
+  return {
+    action: it.action,
+    platform: it.platform,
+    ref: it.ref,
+    source_url: it.sourceURL,
+    source_author: it.sourceAuthor,
+    source_preview: {
+      author: it.sourceAuthor,
+      text: (it.sourcePreview && it.sourcePreview.text) || "",
+      media: ((it.sourcePreview && it.sourcePreview.media) || []).map((m) => ({ url: m.url, alt: m.alt || "" })),
+    },
+    text: state.master,
+    overrides,
+    fanout,
+    number: document.getElementById("threadnum")?.checked ?? true,
+    force: !!it.force,
+    images: state.images.map((i) => ({ alt: i.alt })),
+  };
 }

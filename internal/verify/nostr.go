@@ -25,7 +25,7 @@ type NostrVerifier struct {
 // NewNostrVerifier builds a Nostr verifier whose NIP-05 lookups use an
 // SSRF-guarded client with the given timeout.
 func NewNostrVerifier(timeout time.Duration) *NostrVerifier {
-	return &NostrVerifier{HTTP: newSafeClient(timeout)}
+	return &NostrVerifier{HTTP: NewSafeClient(timeout)}
 }
 
 func (nv *NostrVerifier) Verify(ctx context.Context, in Input) Verdict {

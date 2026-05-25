@@ -43,7 +43,7 @@ func TestSafeClientRefusesLoopback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newSafeClient(2 * time.Second)
+	c := NewSafeClient(2 * time.Second)
 	_, err := c.Get(srv.URL) // srv.URL is http://127.0.0.1:PORT
 	if err == nil {
 		t.Fatal("expected loopback dial to be blocked, got nil error")
@@ -51,7 +51,7 @@ func TestSafeClientRefusesLoopback(t *testing.T) {
 }
 
 func TestSafeClientContextDeadline(t *testing.T) {
-	c := newSafeClient(time.Second)
+	c := NewSafeClient(time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://8.8.8.8", nil)
@@ -77,7 +77,7 @@ func TestSafeClientRefusesRedirectToLoopback(t *testing.T) {
 	// already blocked — which still proves loopback dials never succeed. To make
 	// the assertion specifically about the redirect hop being guarded, we rely on
 	// the Control hook firing per-connection (same guard on every hop).
-	c := newSafeClient(2 * time.Second)
+	c := NewSafeClient(2 * time.Second)
 	if _, err := c.Get(redirector.URL); err == nil {
 		t.Fatal("expected redirect-to-loopback chain to be blocked, got nil error")
 	}

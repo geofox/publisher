@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -34,13 +35,21 @@ func (f *fakeInteractDispatcher) Interact(_ context.Context, spec dispatch.Inter
 func TestAPIInteractForwardsSpec(t *testing.T) {
 	fd := &fakeInteractDispatcher{}
 	a := &API{Dispatch: fd}
-	body, _ := json.Marshal(map[string]any{
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	spec, _ := json.Marshal(map[string]any{
 		"action": "quote", "platform": "bluesky",
-		"ref":           map[string]any{"uri": "at://x", "cid": "cidx"},
-		"source_url":    "https://bsky.app/x", "source_author": "@a",
-		"text":          "hi", "fanout": []string{"mastodon"},
+		"ref":            map[string]any{"uri": "at://x", "cid": "cidx"},
+		"source_url":     "https://bsky/9", "source_author": "@a",
+		"source_preview": map[string]any{"author": "@a", "text": "orig"},
+		"text":           "hi", "fanout": []string{"mastodon"}, "number": true,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/interact", bytes.NewReader(body))
+	_ = mw.WriteField("spec", string(spec))
+	mw.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/interact", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
 	rec := httptest.NewRecorder()
 	a.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -49,15 +58,20 @@ func TestAPIInteractForwardsSpec(t *testing.T) {
 	if fd.got.Action != "quote" || fd.got.SourcePlatform != "bluesky" || fd.got.Ref.URI != "at://x" {
 		t.Fatalf("spec not forwarded: %+v", fd.got)
 	}
-	if len(fd.got.Fanout) != 1 || fd.got.Fanout[0] != "mastodon" {
-		t.Errorf("fanout not forwarded: %+v", fd.got.Fanout)
+	if !fd.got.Number || fd.got.SourcePreview.Text != "orig" || len(fd.got.Fanout) != 1 || fd.got.Fanout[0] != "mastodon" {
+		t.Errorf("number/source_preview/fanout not forwarded: %+v", fd.got)
 	}
 }
 
 func TestAPIInteractRejectsBadAction(t *testing.T) {
 	a := &API{Dispatch: &fakeInteractDispatcher{}}
-	body, _ := json.Marshal(map[string]any{"action": "bogus", "platform": "bluesky"})
-	req := httptest.NewRequest(http.MethodPost, "/api/interact", bytes.NewReader(body))
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	spec, _ := json.Marshal(map[string]any{"action": "bogus", "platform": "bluesky"})
+	_ = mw.WriteField("spec", string(spec))
+	mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/interact", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
 	rec := httptest.NewRecorder()
 	a.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {

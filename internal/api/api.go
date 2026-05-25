@@ -353,17 +353,23 @@ func (a *API) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 
 // ─── /api/post ───────────────────────────────────────────────────────────
 
+// imageAlt is the per-image metadata carried in a "spec" field's "images"
+// array; the uploaded file order maps positionally to this slice for alt text.
+// Named (not anonymous) so it can be shared between the spec structs and the
+// processFormImages helper without struct-tag identity pitfalls.
+type imageAlt struct {
+	Alt string `json:"alt"`
+}
+
 // postSpecJSON is the JSON object expected in the "spec" multipart field.
 type postSpecJSON struct {
 	MasterText   string                        `json:"master_text"`
 	Platforms    []string                      `json:"platforms"`
 	DelaySeconds int                           `json:"delay_seconds"`
 	Overrides    map[string]dispatch.Overrides `json:"overrides"`
-	Images       []struct {
-		Alt string `json:"alt"`
-	} `json:"images"`
-	ScheduledAt string `json:"scheduled_at"`
-	Number      bool   `json:"number"`
+	Images       []imageAlt                    `json:"images"`
+	ScheduledAt  string                        `json:"scheduled_at"`
+	Number       bool                          `json:"number"`
 }
 
 func (a *API) handleAPIPost(w http.ResponseWriter, r *http.Request) {
@@ -917,41 +923,162 @@ func (a *API) handleResolve(w http.ResponseWriter, r *http.Request) {
 
 // ─── POST /api/interact ──────────────────────────────────────────────────────
 
+// sourceMediaClient is SSRF-guarded: source media URLs come from a pasted
+// (untrusted) post, so a fetch must never reach internal/loopback addresses.
+var sourceMediaClient = verify.NewSafeClient(20 * time.Second)
+
 func (a *API) handleInteract(w http.ResponseWriter, r *http.Request) {
 	if a.Dispatch == nil {
 		httpx.WriteError(w, http.StatusServiceUnavailable, "dispatch not configured")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxPostRequestBytes)
-	var req struct {
-		Action       string                        `json:"action"`
-		Platform     string                        `json:"platform"`
-		Ref          dispatch.InteractRef          `json:"ref"`
-		SourceURL    string                        `json:"source_url"`
-		SourceAuthor string                        `json:"source_author"`
-		Text         string                        `json:"text"`
-		Overrides    map[string]dispatch.Overrides `json:"overrides"`
-		Fanout       []string                      `json:"fanout"`
-		Force        bool                          `json:"force"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid request body")
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			httpx.WriteError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("request exceeds %d bytes", maxPostRequestBytes))
+			return
+		}
+		httpx.WriteError(w, http.StatusBadRequest, "parse multipart: "+err.Error())
 		return
 	}
-	switch req.Action {
+	var sj struct {
+		Action        string               `json:"action"`
+		Platform      string               `json:"platform"`
+		Ref           dispatch.InteractRef `json:"ref"`
+		SourceURL     string               `json:"source_url"`
+		SourceAuthor  string               `json:"source_author"`
+		SourcePreview struct {
+			Author string `json:"author"`
+			Text   string `json:"text"`
+			Media  []struct {
+				URL string `json:"url"`
+				Alt string `json:"alt"`
+			} `json:"media"`
+		} `json:"source_preview"`
+		Text      string                        `json:"text"`
+		Overrides map[string]dispatch.Overrides `json:"overrides"`
+		Fanout    []string                      `json:"fanout"`
+		Number    bool                          `json:"number"`
+		Force     bool                          `json:"force"`
+		Images    []imageAlt                    `json:"images"`
+	}
+	if err := json.Unmarshal([]byte(r.FormValue("spec")), &sj); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid spec json: "+err.Error())
+		return
+	}
+	switch sj.Action {
 	case "reply", "repost", "quote":
 	default:
 		httpx.WriteError(w, http.StatusBadRequest, "action must be reply, repost, or quote")
 		return
 	}
-	if req.Platform == "" {
+	if sj.Platform == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "platform is required")
 		return
 	}
+
+	userImgs, userRecs, err := a.processFormImages(r, sj.Images)
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Re-host the original's media so fan-out targets show the embedded media
+	// rather than a hotlink. Best-effort: a source URL that won't fetch (or
+	// is SSRF-blocked) is skipped, never failing the whole interaction.
+	var srcImgs []dispatch.Img
+	var srcRecs []store.Media
+	for i, m := range sj.SourcePreview.Media {
+		body, mime, ferr := a.fetchSourceMedia(r.Context(), m.URL)
+		if ferr != nil {
+			continue
+		}
+		res, perr := a.media.Process(r.Context(), body, mime)
+		if perr != nil {
+			continue
+		}
+		srcImgs = append(srcImgs, dispatch.Img{Bytes: res.Bytes, Mime: res.Mime, Alt: m.Alt, BlossomURL: res.URL})
+		srcRecs = append(srcRecs, store.Media{
+			Ordinal: i, BlossomURL: res.URL, SHA256: res.SHA256, Mime: res.Mime,
+			Dim: res.Dim, Blurhash: res.Blurhash, SizeBytes: res.Size, Alt: m.Alt,
+		})
+	}
+
 	post := a.Dispatch.Interact(r.Context(), dispatch.InteractSpec{
-		Action: req.Action, SourcePlatform: req.Platform, Ref: req.Ref,
-		SourceURL: req.SourceURL, SourceAuthor: req.SourceAuthor, Text: req.Text,
-		Overrides: req.Overrides, Fanout: req.Fanout, Force: req.Force,
+		Action: sj.Action, SourcePlatform: sj.Platform, Ref: sj.Ref,
+		SourceURL: sj.SourceURL, SourceAuthor: sj.SourceAuthor, Text: sj.Text,
+		Overrides: sj.Overrides, Fanout: sj.Fanout, Force: sj.Force, Number: sj.Number,
+		Images: userImgs, MediaRecords: userRecs,
+		SourcePreview:      dispatch.SourcePreview{Author: sj.SourcePreview.Author, Text: sj.SourcePreview.Text},
+		SourceImages:       srcImgs,
+		SourceMediaRecords: srcRecs,
 	})
 	httpx.WriteJSON(w, http.StatusOK, post)
+}
+
+// processFormImages reads the multipart "image" files, runs each through the
+// media pipeline, and returns dispatch.Img + store.Media (alt from imageAlts[i]).
+func (a *API) processFormImages(r *http.Request, imageAlts []imageAlt) ([]dispatch.Img, []store.Media, error) {
+	if r.MultipartForm == nil {
+		return nil, nil, nil
+	}
+	files := r.MultipartForm.File["image"]
+	if len(files) > 4 {
+		return nil, nil, fmt.Errorf("max 4 images")
+	}
+	var imgs []dispatch.Img
+	var recs []store.Media
+	for i, fh := range files {
+		f, err := fh.Open()
+		if err != nil {
+			return nil, nil, fmt.Errorf("open image: %w", err)
+		}
+		body, err := io.ReadAll(f)
+		f.Close()
+		if err != nil {
+			return nil, nil, fmt.Errorf("read image: %w", err)
+		}
+		res, err := a.media.Process(r.Context(), body, fh.Header.Get("Content-Type"))
+		if err != nil {
+			return nil, nil, fmt.Errorf("media: %w", err)
+		}
+		alt := ""
+		if i < len(imageAlts) {
+			alt = imageAlts[i].Alt
+		}
+		imgs = append(imgs, dispatch.Img{Bytes: res.Bytes, Mime: res.Mime, Alt: alt, BlossomURL: res.URL})
+		recs = append(recs, store.Media{
+			Ordinal: i, BlossomURL: res.URL, SHA256: res.SHA256, Mime: res.Mime,
+			Dim: res.Dim, Blurhash: res.Blurhash, SizeBytes: res.Size, Alt: alt,
+		})
+	}
+	return imgs, recs, nil
+}
+
+// fetchSourceMedia downloads a source media URL for re-hosting (https-only,
+// size-limited, SSRF-guarded). Best-effort: callers skip on error.
+func (a *API) fetchSourceMedia(ctx context.Context, rawURL string) ([]byte, string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" {
+		return nil, "", fmt.Errorf("bad media url")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := sourceMediaClient.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("media fetch %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxUploadRequestBytes))
+	if err != nil {
+		return nil, "", err
+	}
+	return body, resp.Header.Get("Content-Type"), nil
 }

@@ -1,6 +1,6 @@
 "use strict";
 import { el, $, gcount, wcount, flash, confirmModal, META, ORDER } from "./common.js";
-import { state, effectiveText, buildSpec } from "./state.js";
+import { state, effectiveText, buildSpec, buildInteractSpec } from "./state.js";
 import { renderPreview } from "./preview.js";
 import { resultRow, openDetail } from "./history.js";
 
@@ -21,16 +21,83 @@ function counterClass(n, limit) {
 
 function renderChips() {
   const c = $("#chips"); c.innerHTML = "";
+  const it = state.interaction;
   for (const p of ORDER) {
     const on = state.platforms.has(p);
+    const locked = it != null && p === it.platform;
+    let label = META[p].label;
+    if (it) label += p === it.platform ? " · source" : " · link";
     c.append(el("button", {
-      class: "chip p-" + p + (on ? " on" : ""), type: "button", text: META[p].label,
+      class: "chip p-" + p + (on ? " on" : "") + (locked ? " locked" : ""), type: "button", text: label,
       onclick: () => {
+        if (locked) return; // source platform stays selected in interaction mode
         on ? state.platforms.delete(p) : state.platforms.add(p);
         if (!state.platforms.has(state.focus)) state.focus = p;
         renderChips(); renderCards(); renderPreview();
       },
     }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Interaction mode — source banner + constrained chips
+// ---------------------------------------------------------------------------
+
+// startInteraction puts Compose into interaction mode for a resolved source post
+// (src is a /api/resolve SourceRef) and switches to the Compose tab. action is
+// "reply" | "quote".
+export function startInteraction(src, action) {
+  state.interaction = {
+    action, platform: src.platform, ref: src.ref,
+    sourcePreview: src.preview, sourceURL: src.preview.web_url, sourceAuthor: src.preview.author_handle,
+    caps: src.caps, force: false,
+  };
+  state.master = "";
+  state.images = [];
+  state.platforms = new Set([src.platform]); // source locked on; user toggles fan-out
+  state.focus = src.platform;
+  const tab = document.querySelector('.tab[data-view="compose"]');
+  if (tab) tab.click();
+  const m = $("#master"); if (m) m.value = "";
+  renderInteractionUI();
+}
+
+// exitInteraction returns Compose to a normal new post.
+export function exitInteraction() {
+  state.interaction = null;
+  state.platforms = new Set(ORDER);
+  renderInteractionUI();
+}
+
+// renderInteractionUI re-renders the compose chrome for the current mode.
+function renderInteractionUI() {
+  renderSrcBanner();
+  const sched = $("#schedrow"); if (sched) sched.hidden = state.interaction != null;
+  $("#submit").textContent = state.interaction ? (state.interaction.action === "quote" ? "Quote" : "Reply") : "Post";
+  renderChips(); renderCards(); renderMeta(); renderPreview();
+}
+
+// renderSrcBanner shows the source post being replied-to / quoted (or hides it).
+function renderSrcBanner() {
+  const host = $("#srcbanner"); if (!host) return;
+  host.innerHTML = "";
+  const it = state.interaction;
+  if (!it) { host.hidden = true; return; }
+  host.hidden = false;
+  const verb = it.action === "quote" ? "Quoting" : "Replying to";
+  host.append(el("div", { class: "srcb-head" },
+    el("span", { class: "srcb-verb", text: verb + " " }),
+    el("span", { class: "srcb-author", text: it.sourceAuthor || it.platform }),
+    el("button", { class: "srcb-x", type: "button", text: "× exit", onclick: exitInteraction }),
+  ));
+  host.append(el("div", { class: "srcb-text", text: (it.sourcePreview && it.sourcePreview.text) || "" }));
+  const cap = it.caps && it.caps[it.action];
+  if (cap && !cap.allowed) {
+    const cb = el("input", { type: "checkbox", onchange: (e) => { it.force = e.target.checked; } });
+    cb.checked = !!it.force;
+    host.append(el("label", { class: "srcb-force" }, cb,
+      el("span", { text: " " + (cap.reason || "blocked") + " — try anyway" +
+        (it.platform === "bluesky" ? " (Bluesky may silently drop it)" : "") })));
   }
 }
 
@@ -255,10 +322,44 @@ async function doPost() {
   } finally { btn.disabled = false; btn.textContent = isScheduled ? "Schedule" : "Post"; }
 }
 
+async function doInteract() {
+  const it = state.interaction;
+  const label = it.action === "quote" ? "Quote" : "Reply";
+  const btn = $("#submit");
+  btn.disabled = true; btn.textContent = label + "ing…";
+  const fd = new FormData();
+  fd.append("spec", JSON.stringify(buildInteractSpec()));
+  for (const img of state.images) fd.append("image", img.file);
+  try {
+    const r = await fetch("/api/interact", { method: "POST", body: fd, credentials: "same-origin" });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+    showResultModal({ post_id: data.id, status: data.status, targets: data.targets });
+    exitInteraction(); // back to a normal composer after a successful interaction
+  } catch (e) {
+    flash("Error: " + e.message);
+  } finally {
+    btn.disabled = false;
+    // exitInteraction() (on success) already reset the label via renderInteractionUI;
+    // on error we stay in interaction mode, so restore the action label.
+    if (state.interaction) btn.textContent = label;
+  }
+}
+
 // submit guards against posting over a platform's limit: if any selected platform
 // is over, confirm first (those targets may be cut/rejected — the rest still post).
 // Otherwise post immediately.
 function submit() {
+  if (state.interaction) {
+    const it = state.interaction;
+    const cap = it.caps && it.caps[it.action];
+    if (cap && !cap.allowed && !it.force) {
+      flash((cap.reason || "This action is blocked") + " — tick “try anyway” to override");
+      return;
+    }
+    doInteract();
+    return;
+  }
   if (state.platforms.size === 0) { flash("Select at least one platform."); return; }
   const over = overLimitPlatforms();
   if (over.length) {

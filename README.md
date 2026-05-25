@@ -178,15 +178,22 @@ Threads URLs return 400 (the API has no URL→id lookup). Resolution failures
 
 ### `POST /api/interact`
 
-Reply to, repost, or quote a resolved source post. Body:
-`{ action, platform, ref, source_url, source_author, text, fanout, force }`,
-where `ref` is the `ref` object returned by `/api/resolve`. `reply` and `repost`
-act only on the source `platform`; `quote` does a native quote on the source and
-also **link-quotes** (your commentary + the source URL) to each `fanout`
-platform. `force: true` overrides a blocked capability (e.g. a Bluesky post that
-disabled quotes — note Bluesky may then silently drop it). Returns the resulting
-`store.Post` (one target per platform acted on, each with its own status). Used
-by the **Interact** tab.
+Reply to, repost, or quote a resolved source post. **`multipart/form-data`** with
+a `spec` JSON field + optional `image` files (mirrors `/api/post`). The `spec`:
+`{ action, platform, ref, source_url, source_author, source_preview:{author,text,
+media:[{url,alt}]}, text, overrides, fanout, number, force, images:[{alt}] }` —
+`ref` is the `ref` object returned by `/api/resolve`.
+
+`reply` and `repost` act on the source `platform`; `reply`/`quote` commentary that
+exceeds a platform's limit is **auto-threaded** (head = the native reply/quote,
+tail = a reply-chain), with `number` adding `k/n` counters. `quote` (and a fanned-
+out `reply`) does the native action on the source and a **fan-out reproduction** on
+each `fanout` platform: your commentary + an attributed copy of the original's
+text + re-hosted media + the source URL (the original isn't native there). Source
+media is downloaded through an SSRF-guarded client and re-uploaded; failures are
+skipped. `force: true` overrides a blocked capability (Bluesky may then silently
+drop it). Returns the resulting `store.Post` (one threaded target per platform).
+Used by the **Interact** tab.
 
 ### Web UI & `/api`
 
@@ -196,9 +203,14 @@ root path, backed by a JSON `/api/*` surface. These endpoints are
 unauthenticated by the service itself — see [Security](#security).
 
 The **Interact** tab accepts a pasted post URL or Nostr identifier, previews
-the source post, reports which of reply/quote/repost the post allows on its
-platform, and performs the chosen action (with a quote fan-out to your other
-platforms and a "try anyway" override for blocked actions).
+the source post, and reports which of reply/quote/repost the post allows.
+**Repost** is one-click. **Reply** and **Quote** open the **Compose** tab in
+interaction mode — a source banner over the full composer, so your reply/quote
+gets the live preview, auto-threading, media, and per-platform overrides. The
+source platform is locked on (native reply/quote); selecting your other
+platforms fans the action out as a reproduction (your commentary + the
+original's text + re-hosted media + link). Blocked actions show a "try anyway"
+override in the banner.
 
 ### `GET /healthz`
 

@@ -26,7 +26,7 @@ type BlueskyVerifier struct {
 // NewBlueskyVerifier builds a verifier whose DID directory and PDS fetches both
 // use the SSRF-guarded client. plcURL is the did:plc resolver base URL.
 func NewBlueskyVerifier(plcURL string, timeout time.Duration) *BlueskyVerifier {
-	client := newSafeClient(timeout)
+	client := NewSafeClient(timeout)
 	dir := &identity.BaseDirectory{
 		PLCURL:     strings.TrimRight(plcURL, "/"),
 		HTTPClient: *client,

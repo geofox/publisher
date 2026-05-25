@@ -101,10 +101,11 @@ func TestInteractQuoteFansOut(t *testing.T) {
 	d := &Dispatcher{Bluesky: bsky, Mastodon: masto}
 	post := d.Interact(context.Background(), InteractSpec{
 		Action: actionQuote, SourcePlatform: "bluesky",
-		Ref:       InteractRef{URI: "at://x", CID: "cidx"},
-		SourceURL: "https://bsky.app/x", SourceAuthor: "@alice",
-		Text:      "great point",
-		Fanout:    []string{"mastodon"},
+		Ref:           InteractRef{URI: "at://x", CID: "cidx"},
+		SourceURL:     "https://bsky.app/x", SourceAuthor: "@alice",
+		SourcePreview: SourcePreview{Author: "@alice", Text: "the original"},
+		Text:          "great point",
+		Fanout:        []string{"mastodon"},
 	})
 	if post.Interaction == nil || post.Interaction.Action != "quote" || post.Interaction.SourceAuthor != "@alice" {
 		t.Fatalf("missing/incorrect interaction descriptor: %+v", post.Interaction)
@@ -115,8 +116,11 @@ func TestInteractQuoteFansOut(t *testing.T) {
 	if bsky.quoted != "great point" {
 		t.Errorf("bluesky native quote text wrong: %q", bsky.quoted)
 	}
-	if !masto.lastPostText.contains("https://bsky.app/x") {
-		t.Errorf("mastodon link-quote should include the source URL: %q", masto.lastPostText.s)
+	// Fan-out now reproduces commentary + the original's text + the source URL,
+	// not just the URL.
+	if !masto.lastPostText.contains("great point") || !masto.lastPostText.contains("the original") ||
+		!masto.lastPostText.contains("https://bsky.app/x") {
+		t.Errorf("mastodon fan-out should reproduce commentary + original text + url: %q", masto.lastPostText.s)
 	}
 }
 
@@ -148,5 +152,153 @@ func TestInteractRepostSingleTarget(t *testing.T) {
 	}
 	if bsky.reposted != [2]string{"at://x", "cidx"} {
 		t.Errorf("repost not performed: %v", bsky.reposted)
+	}
+}
+
+func TestInteractReplyThreads(t *testing.T) {
+	f := &fakeBsky{failAt: -1}
+	d := &Dispatcher{Bluesky: f}
+	post := d.Interact(context.Background(), InteractSpec{
+		Action: actionReply, SourcePlatform: "bluesky",
+		Ref:  InteractRef{URI: "at://src", CID: "csrc", ReplyRootURI: "at://src", ReplyRootCID: "csrc"},
+		Text: "aaa\n---\nbbb",
+	})
+	if len(post.Targets) != 1 {
+		t.Fatalf("reply → 1 target, got %d", len(post.Targets))
+	}
+	if len(post.Targets[0].Segments) != 2 {
+		t.Fatalf("long reply should thread: %+v", post.Targets[0].Segments)
+	}
+	if f.calls[0].replyTo == nil || f.calls[0].replyTo.ParentID != "at://src" {
+		t.Errorf("head must reply to the source: %+v", f.calls[0].replyTo)
+	}
+	if post.Interaction == nil || post.Interaction.Action != "reply" {
+		t.Errorf("interaction descriptor wrong: %+v", post.Interaction)
+	}
+}
+
+func TestInteractQuoteFanoutReproduces(t *testing.T) {
+	bsky := &fakeBsky{failAt: -1}
+	masto := &fakeMastoActor{}
+	d := &Dispatcher{Bluesky: bsky, Mastodon: masto}
+	post := d.Interact(context.Background(), InteractSpec{
+		Action: actionQuote, SourcePlatform: "bluesky",
+		Ref:           InteractRef{URI: "at://src", CID: "csrc"},
+		SourceURL:     "https://bsky/9", SourceAuthor: "@bird",
+		SourcePreview: SourcePreview{Author: "@bird", Text: "tweet text"},
+		Text:          "look", Fanout: []string{"mastodon"},
+	})
+	if len(post.Targets) != 2 {
+		t.Fatalf("quote+fanout → 2 targets, got %d", len(post.Targets))
+	}
+	body := masto.lastPostText.s
+	if !strings.Contains(body, "look") || !strings.Contains(body, "tweet text") || !strings.Contains(body, "https://bsky/9") {
+		t.Errorf("fan-out should reproduce commentary + original text + url: %q", body)
+	}
+}
+
+func TestInteractRepostUnchanged(t *testing.T) {
+	f := &fakeBsky{failAt: -1}
+	d := &Dispatcher{Bluesky: f}
+	post := d.Interact(context.Background(), InteractSpec{
+		Action: actionRepost, SourcePlatform: "bluesky", Ref: InteractRef{URI: "at://src", CID: "csrc"},
+	})
+	if len(post.Targets) != 1 || post.Targets[0].Status != "success" {
+		t.Fatalf("repost target wrong: %+v", post.Targets)
+	}
+}
+
+func TestRunChainReplyHead(t *testing.T) {
+	f := &fakeBsky{failAt: -1}
+	d := &Dispatcher{Bluesky: f}
+	head := &headSpec{reply: &ReplyRef{RootID: "at://src", RootCID: "csrc", ParentID: "at://src", ParentCID: "csrc"}}
+	out := d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb", Overrides{}, nil, nil, false, head)
+	if out.Status != "success" || len(out.Segments) != 2 {
+		t.Fatalf("want 2-seg success, got %s %+v", out.Status, out.Segments)
+	}
+	if f.calls[0].replyTo == nil || f.calls[0].replyTo.ParentID != "at://src" {
+		t.Errorf("head must reply to source: %+v", f.calls[0].replyTo)
+	}
+	if f.calls[1].replyTo == nil || f.calls[1].replyTo.ParentID != "at://post0" {
+		t.Errorf("seg2 must reply to the head: %+v", f.calls[1].replyTo)
+	}
+}
+
+func TestRunChainPlainHeadUnchanged(t *testing.T) {
+	f := &fakeBsky{failAt: -1}
+	d := &Dispatcher{Bluesky: f}
+	out := d.runChain(context.Background(), "bluesky", "solo", Overrides{}, nil, nil, false, nil)
+	if out.Status != "success" || len(out.Segments) != 0 {
+		t.Fatalf("plain single post changed: %s %+v", out.Status, out.Segments)
+	}
+	if f.calls[0].replyTo != nil {
+		t.Errorf("plain head must not reply: %+v", f.calls[0].replyTo)
+	}
+}
+
+func TestAssembleReproduction(t *testing.T) {
+	sp := SourcePreview{Author: "@bird", Text: "the original"}
+	got := assembleReproduction("my take", sp, "https://x/9")
+	want := "my take\n\n— @bird:\nthe original\n\nhttps://x/9"
+	if got != want {
+		t.Fatalf("assembleReproduction:\n got %q\nwant %q", got, want)
+	}
+	if g := assembleReproduction("", sp, "https://x/9"); g != "— @bird:\nthe original\n\nhttps://x/9" {
+		t.Errorf("empty commentary wrong: %q", g)
+	}
+}
+
+func TestCapMedia(t *testing.T) {
+	user := []Img{{Alt: "u1"}, {Alt: "u2"}}
+	src := []Img{{Alt: "s1"}, {Alt: "s2"}, {Alt: "s3"}}
+	out := capMedia(user, src, 4)
+	if len(out) != 4 || out[0].Alt != "u1" || out[1].Alt != "u2" || out[2].Alt != "s1" || out[3].Alt != "s2" {
+		t.Fatalf("cap should keep user first then fill from source up to max: %+v", out)
+	}
+	// max<=0 → no cap (nostr)
+	if all := capMedia(user, src, 0); len(all) != 5 {
+		t.Errorf("max<=0 means no cap, got %d", len(all))
+	}
+}
+
+func TestMediaMax(t *testing.T) {
+	for p, want := range map[string]int{"bluesky": 4, "mastodon": 4, "threads": 4, "nostr": 0} {
+		if mediaMax(p) != want {
+			t.Errorf("mediaMax(%q)=%d want %d", p, mediaMax(p), want)
+		}
+	}
+}
+
+func TestInteractHonorsPerPlatformTextOverride(t *testing.T) {
+	f := &fakeBsky{failAt: -1}
+	d := &Dispatcher{Bluesky: f}
+	d.Interact(context.Background(), InteractSpec{
+		Action: actionReply, SourcePlatform: "bluesky",
+		Ref:       InteractRef{URI: "at://s", CID: "cs"},
+		Text:      "master text",
+		Overrides: map[string]Overrides{"bluesky": {Text: "edited per-platform"}},
+	})
+	if f.calls[0].text != "edited per-platform" {
+		t.Errorf("source chain should use the per-platform override text, got %q", f.calls[0].text)
+	}
+}
+
+func TestInteractMastodonQuoteWithMediaDegrades(t *testing.T) {
+	masto := &fakeMastoActor{}
+	d := &Dispatcher{Mastodon: masto}
+	post := d.Interact(context.Background(), InteractSpec{
+		Action: actionQuote, SourcePlatform: "mastodon",
+		Ref: InteractRef{LocalID: "9"}, SourceURL: "https://m/9", SourceAuthor: "@a",
+		SourcePreview: SourcePreview{Author: "@a", Text: "tweet text"},
+		Text:          "look", Images: []Img{{Alt: "x"}}, // native quote can't carry media → degrade
+	})
+	if len(post.Targets) != 1 {
+		t.Fatalf("want 1 target, got %d", len(post.Targets))
+	}
+	// Degrade path posts a reproduction (commentary + original text + url) via PostText;
+	// a native QuoteStatus would only carry "look".
+	body := masto.lastPostText.s
+	if !strings.Contains(body, "tweet text") || !strings.Contains(body, "https://m/9") {
+		t.Errorf("mastodon quote+media should degrade to a reproduction post: %q", body)
 	}
 }

@@ -76,6 +76,16 @@ main{max-width:1200px;margin:0 auto;padding:14px 14px 60px}
 .chip::before{content:"○ ";color:var(--muted)}
 .chip.on{color:var(--ink);border-color:var(--pa,var(--accent));background:color-mix(in srgb,var(--pa,var(--accent)) 15%,var(--bg-2))}
 .chip.on::before{content:"● ";color:var(--pa,var(--accent))}
+.chip.locked{opacity:.9;cursor:default}
+
+/* ── Compose interaction-mode source banner ─────────────────────────────── */
+#srcbanner{border:1px solid var(--accent-dim);background:var(--bg-2);border-radius:8px;padding:10px;margin-bottom:10px}
+.srcb-head{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.srcb-verb{color:var(--muted)}
+.srcb-author{font-weight:600;color:var(--accent)}
+.srcb-x{margin-left:auto;font:inherit;font-size:12px;background:none;border:0;color:var(--muted);cursor:pointer}
+.srcb-text{white-space:pre-wrap;color:var(--ink);margin-top:6px;font-size:13px;max-height:6em;overflow:auto}
+.srcb-force{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;color:var(--bad)}
 
 /* ── Images ─────────────────────────────────────────────────────────────── */
 .images{display:flex;gap:9px;flex-wrap:wrap}
@@ -385,12 +395,3 @@ main{max-width:1200px;margin:0 auto;padding:14px 14px 60px}
 .act-btn{font:inherit;font-size:12px;text-transform:uppercase;letter-spacing:.08em;cursor:pointer;padding:6px 13px;border-radius:7px;border:1px solid var(--line-2);background:var(--bg-3);color:var(--ink)}
 .act-btn:hover{border-color:var(--accent);color:var(--accent)}
 .act-btn.blocked{opacity:.55}
-.act-go{font:inherit;font-size:12px;text-transform:uppercase;letter-spacing:.08em;cursor:pointer;padding:6px 13px;border-radius:7px;border:0;background:var(--accent);color:#04122e;font-weight:600}
-.act-go:hover{filter:brightness(1.07)}
-.act-compose{width:100%;display:flex;flex-direction:column;gap:6px;margin-top:8px}
-.act-text{width:100%;min-height:60px;padding:9px;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;resize:vertical}
-.act-text:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
-.act-fanout{display:flex;gap:10px;flex-wrap:wrap;font-size:13px;align-items:center}
-.act-fan{display:flex;align-items:center;gap:4px;cursor:pointer;color:var(--ink-2)}
-.act-fan input{accent-color:var(--accent)}
-.act-status{width:100%;font-size:13px;margin-top:6px;color:var(--muted)}

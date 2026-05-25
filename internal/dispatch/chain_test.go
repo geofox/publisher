@@ -60,7 +60,7 @@ func TestRunChainThreadsSegments(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	d := &Dispatcher{Bluesky: f}
 	text := "aaa\n---\nbbb\n---\nccc" // 3 segments via --- markers (deterministic)
-	out := d.runChain(context.Background(), "bluesky", text, Overrides{}, nil, nil, false)
+	out := d.runChain(context.Background(), "bluesky", text, Overrides{}, nil, nil, false, nil)
 
 	if out.Status != "success" {
 		t.Fatalf("status=%s segs=%+v", out.Status, out.Segments)
@@ -88,7 +88,7 @@ func TestRunChainThreadsSegments(t *testing.T) {
 func TestRunChainStopsOnFailure(t *testing.T) {
 	f := &fakeBsky{failAt: 1} // segment 0 ok, segment 1 fails
 	d := &Dispatcher{Bluesky: f}
-	out := d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb\n---\nccc", Overrides{}, nil, nil, false)
+	out := d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb\n---\nccc", Overrides{}, nil, nil, false, nil)
 	if out.Status != "partial" {
 		t.Fatalf("status=%s", out.Status)
 	}
@@ -162,7 +162,7 @@ func TestResumePostsPendingTail(t *testing.T) {
 func TestRunChainSingleSegmentNoChain(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	d := &Dispatcher{Bluesky: f}
-	out := d.runChain(context.Background(), "bluesky", "short", Overrides{}, nil, nil, false)
+	out := d.runChain(context.Background(), "bluesky", "short", Overrides{}, nil, nil, false, nil)
 	if len(out.Segments) != 0 {
 		t.Fatalf("single post must have no Segments: %+v", out.Segments)
 	}
@@ -178,7 +178,7 @@ func TestRunChainMediaOnHeadOnly(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	d := &Dispatcher{Bluesky: f}
 	imgs := []Img{{BlossomURL: "https://b/x"}}
-	d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb", Overrides{}, imgs, nil, false)
+	d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb", Overrides{}, imgs, nil, false, nil)
 	if f.calls[0].nImgs != 1 {
 		t.Errorf("head should carry images: %d", f.calls[0].nImgs)
 	}

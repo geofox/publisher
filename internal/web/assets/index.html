@@ -35,6 +35,7 @@
 
     <!-- ── Compose ──────────────────────────────────────────────────────── -->
     <section id="compose" class="view">
+      <div id="srcbanner" hidden></div>
       <div class="compose-grid">
         <div class="compose-left">
           <div class="sec-head"><span class="lbl">master draft</span><span id="mastermeta" class="metaline"></span></div>
@@ -49,7 +50,7 @@
           <input id="imgfile" type="file" accept="image/jpeg,image/png,image/webp" hidden>
 
           <div class="sec-head"><span class="lbl">schedule</span><span class="muted">optional · Europe/Paris · empty = post now</span></div>
-          <div class="sched">
+          <div id="schedrow" class="sched">
             <input type="datetime-local" id="schedat" aria-label="schedule date and time">
             <button id="schedclear" class="ghost sm" type="button" hidden>clear</button>
             <span id="schednote" class="sched-note muted"></span>

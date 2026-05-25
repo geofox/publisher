@@ -1,5 +1,6 @@
 "use strict";
-import { el, $, api, flash, confirmModal } from "./common.js";
+import { el, $, api, flash } from "./common.js";
+import { startInteraction } from "./compose.js";
 
 const PLAT_LABEL = { bluesky: "Bluesky", mastodon: "Mastodon", nostr: "Nostr", threads: "Threads" };
 
@@ -28,7 +29,7 @@ async function resolveInput(input) {
   card.append(renderSource(data));
 }
 
-// renderSource builds the preview card + action panel.
+// renderSource builds the preview card + action row.
 function renderSource(s) {
   const card = el("div", { class: "src-card p-" + s.platform });
   const p = s.preview;
@@ -44,79 +45,44 @@ function renderSource(s) {
     card.append(g);
   }
   if (p.web_url) card.append(el("a", { class: "src-link", href: p.web_url, target: "_blank", rel: "noopener", text: "open original ↗" }));
-  card.append(actionPanel(s));
+  card.append(actionRow(s));
   return card;
 }
 
-function actionPanel(s) {
-  const wrap = el("div", { class: "act-panel" });
-  const compose = el("div", { class: "act-compose", hidden: true });
-  const text = el("textarea", { class: "act-text", placeholder: "add your comment…" });
-  const fanout = el("div", { class: "act-fanout", hidden: true });
-  const status = el("div", { class: "act-status muted" });
-  const fanBoxes = {};
-  for (const p of ["bluesky", "mastodon", "nostr", "threads"]) {
-    if (p === s.platform) continue;
-    const cb = el("input", { type: "checkbox" });
-    fanBoxes[p] = cb;
-    fanout.append(el("label", { class: "act-fan" }, cb, el("span", { text: " " + p })));
-  }
-
-  async function send(action, force) {
-    status.textContent = "Working…";
-    const fan = action === "quote" ? Object.keys(fanBoxes).filter((p) => fanBoxes[p].checked) : [];
-    try {
-      const post = await api("/api/interact", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          action, platform: s.platform, ref: s.ref,
-          source_url: s.preview.web_url, source_author: s.preview.author_handle,
-          text: text.value, fanout: fan, force: !!force,
-        }),
-      });
-      const parts = (post.targets || []).map((t) => t.platform + ":" + t.status).join(", ");
-      status.textContent = post.status + " — " + parts;
-      flash(action + " " + post.status);
-    } catch (e) {
-      status.textContent = "✗ " + e.message;
-    }
-  }
-
-  let pending = null; // the action whose Send button will fire
+function actionRow(s) {
+  const row = el("div", { class: "act-panel" });
   for (const [action, cap] of [["reply", s.caps.reply], ["repost", s.caps.repost], ["quote", s.caps.quote]]) {
     const btn = el("button", { class: "act-btn", type: "button", text: action[0].toUpperCase() + action.slice(1) });
     if (!cap.allowed) { btn.classList.add("blocked"); btn.title = cap.reason || "not allowed"; }
     btn.addEventListener("click", () => {
-      const proceed = (force) => {
-        if (action === "repost") { send("repost", force); return; }
-        pending = action;
-        compose.hidden = false;
-        fanout.hidden = action !== "quote";
-        text.focus();
-        wrap._force = force;
-      };
-      if (!cap.allowed) {
-        let body = (cap.reason || "not allowed") + " — try anyway?";
-        if (s.platform === "bluesky") {
-          body += " (Bluesky may silently drop it without an error.)";
-        }
-        confirmModal({
-          title: action[0].toUpperCase() + action.slice(1) + " blocked",
-          body,
-          confirmText: "Try anyway",
-          onConfirm: () => { proceed(true); return true; },
-        });
-      } else {
-        proceed(false);
-      }
+      if (action === "repost") { doRepost(s, cap); return; }
+      startInteraction(s, action); // reply/quote → Compose interaction mode (override handled in the banner)
     });
-    wrap.append(btn);
+    row.append(btn);
   }
-  const go = el("button", { class: "act-go", type: "button", text: "Send",
-    onclick: () => { if (pending) send(pending, wrap._force); } });
-  compose.append(text, fanout, go);
-  wrap.append(compose, status);
-  return wrap;
+  return row;
+}
+
+// doRepost posts a one-click repost via /api/interact (multipart spec, no media).
+async function doRepost(s, cap) {
+  const send = async (force) => {
+    const fd = new FormData();
+    fd.append("spec", JSON.stringify({
+      action: "repost", platform: s.platform, ref: s.ref,
+      source_url: s.preview.web_url, source_author: s.preview.author_handle, force: !!force,
+    }));
+    try {
+      const r = await fetch("/api/interact", { method: "POST", body: fd, credentials: "same-origin" });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+      flash("repost " + data.status);
+    } catch (e) { flash("Error: " + e.message); }
+  };
+  if (!cap.allowed) {
+    if (window.confirm("repost: " + (cap.reason || "blocked") + " — try anyway?")) send(true); // eslint-disable-line no-alert
+    return;
+  }
+  send(false);
 }
 
 // interactInit wires the smart input (debounced).
