@@ -416,3 +416,14 @@ main{max-width:1200px;margin:0 auto;padding:14px 14px 60px}
 .act-btn{font:inherit;font-size:12px;text-transform:uppercase;letter-spacing:.08em;cursor:pointer;padding:6px 13px;border-radius:7px;border:1px solid var(--line-2);background:var(--bg-3);color:var(--ink)}
 .act-btn:hover{border-color:var(--accent);color:var(--accent)}
 .act-btn.blocked{opacity:.55}
+
+/* iOS/iPadOS zoom in (shifting the viewport) when you focus a form control whose
+   font-size is under 16px — most noticeable as a PWA. Bump the focusable text
+   inputs to 16px on touch devices only; desktop (fine pointer) keeps its compact
+   sizing. Selectors mirror the originals so equal specificity + later source
+   order wins without !important. */
+@media (pointer: coarse) {
+  .master, #srcinput, .ocard-body textarea,
+  .fields input[type=text], .fields input[type=number], .fields select,
+  .sched input[type=datetime-local], .thumb input { font-size: 16px; }
+}
