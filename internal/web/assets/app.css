@@ -185,6 +185,10 @@ main{max-width:1200px;margin:0 auto;padding:14px 14px 60px}
 
 /* ── History two-column grid ────────────────────────────────────────────── */
 .history-grid{display:grid;grid-template-columns:1fr;gap:0}
+/* 1fr tracks default to min-width:auto, so a long unbreakable token (URL, at://
+   URI, nevent, JSON) sizes the column to itself and pushes the box past the
+   viewport. min-width:0 lets the column shrink so its text wraps instead. */
+.history-grid > *{min-width:0}
 @media(min-width:760px){
   .history-grid{grid-template-columns:1fr 1fr;gap:16px;align-items:start}
   .hdetail{position:sticky;top:72px;max-height:calc(100vh - 90px);overflow-y:auto}
@@ -253,7 +257,7 @@ main{max-width:1200px;margin:0 auto;padding:14px 14px 60px}
 .meta{font-size:11px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
 
 /* ── History list ───────────────────────────────────────────────────────── */
-#hdetail{margin-top:16px}
+#hdetail{margin-top:16px;overflow-wrap:anywhere}
 .hitem{position:relative;background:var(--bg-2);border:1px solid var(--line);border-radius:10px;padding:11px 34px 11px 13px;margin:8px 0;cursor:pointer}
 .hitem:hover{border-color:var(--line-2)}
 .hide-x{position:absolute;top:8px;right:8px;width:22px;height:22px;display:flex;align-items:center;justify-content:center;
@@ -385,7 +389,7 @@ main{max-width:1200px;margin:0 auto;padding:14px 14px 60px}
 .seg-chain { display:flex; flex-direction:column; gap:4px; margin-top:6px; }
 .seg-row { display:flex; align-items:baseline; gap:6px; font-size:13px; }
 .seg-n { color:var(--muted); font-variant-numeric:tabular-nums; }
-.seg-text { color:var(--ink); white-space:pre-wrap; }
+.seg-text { color:var(--ink); white-space:pre-wrap; min-width:0; }
 .seg-row.seg-failed .seg-text { color:var(--bad); }
 .seg-err { color:var(--bad); font-size:12px; }
 
