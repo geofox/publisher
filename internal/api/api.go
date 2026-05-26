@@ -87,6 +87,11 @@ type API struct {
 	HomeRelay string       // set by cmd/publisher; the home relay URL
 	Verify    Verifier     // set by cmd/publisher; verifies pasted events / post URLs
 	Resolve   Resolver     // set by cmd/publisher; resolves pasted post URLs/ids
+
+	// UserLanguages is the operator's spoken-languages list (ISO 639-1 codes);
+	// exposed via GET /api/config so the frontend can default the Bluesky and
+	// Mastodon language fields and offer a dropdown when there's more than one.
+	UserLanguages []string
 }
 
 // New creates a new API with the given publisher and media pipeline.
@@ -119,6 +124,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/thread-preview", a.handleThreadPreview)
 	mux.HandleFunc("POST /api/resolve", a.handleResolve)
 	mux.HandleFunc("POST /api/interact", a.handleInteract)
+	mux.HandleFunc("GET /api/config", a.handleConfig)
 	mux.Handle("/", web.Handler())
 	return withSecurityHeaders(withCSRFGuard(mux))
 }
@@ -189,6 +195,20 @@ func (a *API) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("content-type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+// ─── GET /api/config ─────────────────────────────────────────────────────
+//
+// Operator preferences the frontend needs on boot. Currently just the spoken-
+// languages list (drives the Bluesky/Mastodon language defaults + dropdown).
+// Always returns an array (possibly empty) so the JS can treat it uniformly.
+
+func (a *API) handleConfig(w http.ResponseWriter, _ *http.Request) {
+	langs := a.UserLanguages
+	if langs == nil {
+		langs = []string{}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"user_languages": langs})
 }
 
 // ─── /publish ────────────────────────────────────────────────────────────

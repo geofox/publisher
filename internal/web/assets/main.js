@@ -1,10 +1,27 @@
 "use strict";
-import { $ } from "./common.js";
+import { $, ORDER } from "./common.js";
+import { state, defaultOv } from "./state.js";
 import { composeInit } from "./compose.js";
 import { historyInit, loadHistory } from "./history.js";
 import { toolsInit, loadTools } from "./tools.js";
 import { verifyInit } from "./verify.js";
 import { interactInit } from "./interact.js";
+
+// loadConfig fetches operator preferences (currently just USER_LANGUAGES) and
+// rebuilds the per-platform overrides so the Bluesky/Mastodon language fields
+// default to the operator's first configured language. Failures fall back to
+// the "en" default already in defaultOv.
+async function loadConfig() {
+  try {
+    const r = await fetch("/api/config", { credentials: "same-origin" });
+    if (!r.ok) return;
+    const data = await r.json();
+    if (Array.isArray(data.user_languages) && data.user_languages.length) {
+      state.userLanguages = data.user_languages;
+      ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
+    }
+  } catch (_) { /* keep the "en" defaults */ }
+}
 
 // ---------------------------------------------------------------------------
 // Tab routing
@@ -21,7 +38,8 @@ function switchTab(view) {
 // Boot
 // ---------------------------------------------------------------------------
 
-function init() {
+async function init() {
+  await loadConfig();
   composeInit();
   historyInit();
   toolsInit();

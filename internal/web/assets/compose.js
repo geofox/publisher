@@ -223,10 +223,26 @@ function overrideCard(p) {
 
 function lbl(t, input) { return el("label", {}, el("span", { class: "fl", text: t }), input); }
 
+// langField builds the per-platform language widget. When the operator has
+// configured 2+ languages (USER_LANGUAGES env, surfaced via /api/config →
+// state.userLanguages), it's a dropdown of those codes; with 0 or 1 it's a
+// static muted line — the value is still set (via defaultOv) just not editable.
+// onChange receives the new code; renderPreview re-runs after a pick.
+function langField(value, onChange) {
+  const langs = state.userLanguages;
+  if (langs.length > 1) {
+    const sel = el("select", { onchange: e => { onChange(e.target.value); renderPreview(); } });
+    for (const code of langs) sel.append(el("option", { value: code, text: code }));
+    sel.value = langs.includes(value) ? value : langs[0];
+    return sel;
+  }
+  return el("span", { class: "lang-static muted", text: value });
+}
+
 function fieldsFor(p, ov) {
   const f = el("div", { class: "fields" });
   if (p === "bluesky") {
-    f.append(lbl("langs", el("input", { type: "text", value: ov.langs, oninput: e => { ov.langs = e.target.value; } })));
+    f.append(lbl("lang (ISO 639-1)", langField(ov.langs, v => { ov.langs = v; })));
     const rsel = el("select", { onchange: e => { ov.reply = e.target.value; renderPreview(); } });
     [["", "anyone"], ["nobody", "nobody"], ["following", "following"], ["follower", "followers"], ["mention", "mentioned"]]
       .forEach(([v, t]) => rsel.append(el("option", { value: v, text: t })));
@@ -242,7 +258,7 @@ function fieldsFor(p, ov) {
       .forEach(([v, t]) => sel.append(el("option", { value: v, text: t })));
     sel.value = ov.visibility;
     f.append(lbl("visibility", sel));
-    f.append(lbl("lang", el("input", { type: "text", value: ov.language, oninput: e => { ov.language = e.target.value; } })));
+    f.append(lbl("lang (ISO 639-1)", langField(ov.language, v => { ov.language = v; })));
   }
   if (p === "threads") {
     f.append(lbl("topic", el("input", { type: "text", value: ov.topic_tag, oninput: e => { ov.topic_tag = e.target.value; renderPreview(); } })));

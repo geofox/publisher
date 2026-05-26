@@ -48,6 +48,12 @@ type Config struct {
 
 	PLCDirectoryURL   string
 	VerifyHTTPTimeout time.Duration
+
+	// UserLanguages is the operator's spoken-languages list (ISO 639-1 codes,
+	// e.g. ["en", "fr"]). The frontend uses the first as the default for the
+	// Bluesky and Mastodon language fields and offers a dropdown when there's
+	// more than one. Unset → empty (frontend falls back to "en").
+	UserLanguages []string
 }
 
 func Load() (Config, error) {
@@ -73,6 +79,7 @@ func Load() (Config, error) {
 		"wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io"))
 	c.SyncRelaysDefault = splitCSV(getEnv("SYNC_RELAYS",
 		"wss://nos.lol,wss://relay.damus.io,wss://nostr.wine,wss://nostr.land,wss://relay.nostr.band,wss://purplepag.es,wss://relay.snort.social,wss://nostr.mom"))
+	c.UserLanguages = splitCSV(getEnv("USER_LANGUAGES", ""))
 
 	var err error
 	if c.POWDifficultyDefault, err = strconv.Atoi(getEnv("POW_DIFFICULTY_DEFAULT", "16")); err != nil {

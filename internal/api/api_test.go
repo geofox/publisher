@@ -119,3 +119,31 @@ func TestAPIPostMediaError(t *testing.T) {
 		t.Errorf("media error: code = %d, want 502", rec.Code)
 	}
 }
+
+func TestHandleConfigReturnsUserLanguages(t *testing.T) {
+	a := &API{UserLanguages: []string{"en", "fr"}}
+	rec := httptest.NewRecorder()
+	a.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var got struct {
+		UserLanguages []string `json:"user_languages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.UserLanguages) != 2 || got.UserLanguages[0] != "en" || got.UserLanguages[1] != "fr" {
+		t.Errorf("user_languages = %v, want [en fr]", got.UserLanguages)
+	}
+}
+
+func TestHandleConfigUnsetEmitsEmptyArray(t *testing.T) {
+	a := &API{} // UserLanguages nil
+	rec := httptest.NewRecorder()
+	a.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	// Must marshal as an array (not null) so the JS can treat it uniformly.
+	if got := rec.Body.String(); !bytes.Contains([]byte(got), []byte(`"user_languages":[]`)) {
+		t.Errorf("body = %s, want user_languages:[]", got)
+	}
+}

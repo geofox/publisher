@@ -74,6 +74,7 @@ func main() {
 	a := api.New(np, mp)
 	a.Store = st
 	a.Dispatch = d
+	a.UserLanguages = cfg.UserLanguages
 	if err := st.SeedSyncRelaysIfEmpty(cfg.SyncRelaysDefault); err != nil {
 		slog.Error("seed sync relays failed", "err", err)
 	}

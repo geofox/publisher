@@ -2,9 +2,13 @@
 import { ORDER } from "./common.js";
 
 export function defaultOv(p) {
+  // Read state.userLanguages at call time so callers (initial module load,
+  // post-/api/config init, startInteraction reset) all pick up the operator's
+  // first configured language as the default. Falls back to "en" pre-fetch.
+  const lang = (state.userLanguages && state.userLanguages[0]) || "en";
   const o = { text: null };
-  if (p === "bluesky")  { o.langs = "en"; o.reply = ""; o.disable_quotes = false; }
-  if (p === "mastodon") { o.spoiler_text = ""; o.sensitive = false; o.visibility = ""; o.language = "en"; }
+  if (p === "bluesky")  { o.langs = lang; o.reply = ""; o.disable_quotes = false; }
+  if (p === "mastodon") { o.spoiler_text = ""; o.sensitive = false; o.visibility = ""; o.language = lang; }
   if (p === "threads")  { o.topic_tag = ""; o.reply_control = ""; }
   if (p === "nostr")    { o.pow = 20; o.content_warning = ""; }
   return o;
@@ -17,6 +21,9 @@ export const state = {
   images: [],
   focus: "bluesky", // platform shown in the live preview
   interaction: null, // null = normal compose; else {action, platform, ref, sourcePreview, sourceURL, sourceAuthor, caps, force}
+  // Operator-configured ISO 639-1 codes (USER_LANGUAGES env). Empty until
+  // /api/config resolves on boot; defaultOv falls back to "en" until then.
+  userLanguages: [],
 };
 ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
 
