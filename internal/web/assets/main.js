@@ -20,7 +20,10 @@ async function loadConfig() {
       state.userLanguages = data.user_languages;
       ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
     }
-  } catch (_) { /* keep the "en" defaults */ }
+    if (Array.isArray(data.translate_targets)) {
+      state.translateTargets = data.translate_targets;
+    }
+  } catch (_) { /* keep the "en" defaults; translate button stays hidden */ }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,7 @@
 "use strict";
 import { el, $, api, flash, relTime, shortID, shortRef, META, ORDER, confirmModal } from "./common.js";
+import { state } from "./state.js";
+import { loadDraft } from "./compose.js";
 
 // ---------------------------------------------------------------------------
 // Shared result-row primitives (also imported by compose.js for the result modal)
@@ -301,6 +303,38 @@ async function relayRetry(postID, relayURL, btn) {
   } catch (e) { btn.disabled = false; btn.textContent = "↻"; flash("Relay retry error: " + e.message); }
 }
 
+// translateSelect builds the small inline dropdown next to the "text" header in
+// the detail view. Picking a target fires POST /api/translate and hands the
+// result off to compose.loadDraft (which confirms before replacing any in-
+// progress draft). Reset to the placeholder on completion so the same row can
+// trigger another translation.
+function translateSelect(sourceText) {
+  const sel = el("select", { class: "translate-sel", "aria-label": "Translate post" });
+  sel.append(el("option", { value: "", text: "translate to…" }));
+  for (const code of state.translateTargets) {
+    sel.append(el("option", { value: code, text: "→ " + code }));
+  }
+  sel.addEventListener("change", async (e) => {
+    const target = e.target.value;
+    if (!target) return;
+    sel.disabled = true;
+    try {
+      const data = await api("/api/translate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: sourceText, target_lang: target }),
+      });
+      loadDraft({ text: data.text, lang: target });
+    } catch (err) {
+      flash("Translation failed: " + err.message);
+    } finally {
+      sel.value = "";
+      sel.disabled = false;
+    }
+  });
+  return sel;
+}
+
 function renderDetail(post) {
   const d = $("#hdetail"); d.innerHTML = ""; d.dataset.id = post.id;
   const tg = post.targets || [];
@@ -324,7 +358,11 @@ function renderDetail(post) {
   if (ib) d.append(ib);
 
   if (post.master_text) {
-    d.append(el("div", { class: "sec-head" }, el("span", { class: "lbl", text: "text" })));
+    const head = el("div", { class: "sec-head" }, el("span", { class: "lbl", text: "text" }));
+    if (state.translateTargets && state.translateTargets.length) {
+      head.append(translateSelect(post.master_text));
+    }
+    d.append(head);
     d.append(el("div", { class: "dtext", text: post.master_text }));
   }
 

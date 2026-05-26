@@ -54,6 +54,11 @@ type Config struct {
 	// Bluesky and Mastodon language fields and offers a dropdown when there's
 	// more than one. Unset → empty (frontend falls back to "en").
 	UserLanguages []string
+
+	// DeepLAPIKey enables /api/translate (translate-a-history-post → Compose).
+	// Free vs Pro is auto-detected from the key suffix (":fx" → Free). Unset
+	// → translation disabled (the UI hides the button).
+	DeepLAPIKey string
 }
 
 func Load() (Config, error) {
@@ -80,6 +85,7 @@ func Load() (Config, error) {
 	c.SyncRelaysDefault = splitCSV(getEnv("SYNC_RELAYS",
 		"wss://nos.lol,wss://relay.damus.io,wss://nostr.wine,wss://nostr.land,wss://relay.nostr.band,wss://purplepag.es,wss://relay.snort.social,wss://nostr.mom"))
 	c.UserLanguages = splitCSV(getEnv("USER_LANGUAGES", ""))
+	c.DeepLAPIKey = getEnv("DEEPL_API_KEY", "")
 
 	var err error
 	if c.POWDifficultyDefault, err = strconv.Atoi(getEnv("POW_DIFFICULTY_DEFAULT", "16")); err != nil {

@@ -24,6 +24,11 @@ export const state = {
   // Operator-configured ISO 639-1 codes (USER_LANGUAGES env). Empty until
   // /api/config resolves on boot; defaultOv falls back to "en" until then.
   userLanguages: [],
+  // ISO 639-1 codes the operator can translate INTO via DeepL — userLanguages
+  // intersected with DeepL's supported targets, server-side. Empty when the
+  // operator has no DEEPL_API_KEY configured; the history Translate button
+  // is hidden in that case.
+  translateTargets: [],
 };
 ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
 

@@ -25,6 +25,7 @@ import (
 	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/thread"
+	"github.com/geofox/publisher/internal/translate"
 	"github.com/geofox/publisher/internal/verify"
 	"github.com/geofox/publisher/internal/web"
 )
@@ -77,6 +78,14 @@ type Resolver interface {
 	Resolve(ctx context.Context, input string) (*resolve.SourceRef, error)
 }
 
+// Translator proxies a text-translation request to an upstream provider (DeepL).
+// target is ISO 639-1 (lowercase). Returns the translated text and the provider's
+// detected source language (lowercase). nil when DEEPL_API_KEY is not configured;
+// /api/translate then returns 503 and the UI hides the action.
+type Translator interface {
+	Translate(ctx context.Context, text, target string) (translated, detectedSource string, err error)
+}
+
 // API holds the dependencies for the HTTP handlers.
 type API struct {
 	np        *pubnostr.Publisher
@@ -92,6 +101,10 @@ type API struct {
 	// exposed via GET /api/config so the frontend can default the Bluesky and
 	// Mastodon language fields and offer a dropdown when there's more than one.
 	UserLanguages []string
+
+	// Translator powers POST /api/translate. nil → feature disabled (handler
+	// returns 503 and /api/config emits an empty translate_targets array).
+	Translator Translator
 }
 
 // New creates a new API with the given publisher and media pipeline.
@@ -125,6 +138,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/resolve", a.handleResolve)
 	mux.HandleFunc("POST /api/interact", a.handleInteract)
 	mux.HandleFunc("GET /api/config", a.handleConfig)
+	mux.HandleFunc("POST /api/translate", a.handleTranslate)
 	mux.Handle("/", web.Handler())
 	return withSecurityHeaders(withCSRFGuard(mux))
 }
@@ -208,7 +222,59 @@ func (a *API) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	if langs == nil {
 		langs = []string{}
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"user_languages": langs})
+	// translate_targets = user_languages ∩ DeepL-supported, preserving the
+	// operator's ordering. Empty when no Translator is configured (the UI
+	// hides the Translate button in that case).
+	targets := []string{}
+	if a.Translator != nil {
+		targets = translate.Intersect(langs)
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"user_languages":    langs,
+		"translate_targets": targets,
+	})
+}
+
+// ─── POST /api/translate ─────────────────────────────────────────────────
+//
+// Body: {"text":"...","target_lang":"fr"} where target_lang is ISO 639-1.
+// Returns {"text":"...","detected_source_language":"en"}. 503 when no
+// Translator is configured (i.e. DEEPL_API_KEY unset).
+
+type translateReq struct {
+	Text       string `json:"text"`
+	TargetLang string `json:"target_lang"`
+}
+
+type translateResp struct {
+	Text                   string `json:"text"`
+	DetectedSourceLanguage string `json:"detected_source_language"`
+}
+
+func (a *API) handleTranslate(w http.ResponseWriter, r *http.Request) {
+	if a.Translator == nil {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "translation is not configured (DEEPL_API_KEY)")
+		return
+	}
+	var req translateReq
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "text is required")
+		return
+	}
+	if !translate.IsSupported(req.TargetLang) {
+		httpx.WriteError(w, http.StatusBadRequest, "unsupported target_lang: "+req.TargetLang)
+		return
+	}
+	text, src, err := a.Translator.Translate(r.Context(), req.Text, req.TargetLang)
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, translateResp{Text: text, DetectedSourceLanguage: src})
 }
 
 // ─── /publish ────────────────────────────────────────────────────────────

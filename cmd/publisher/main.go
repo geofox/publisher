@@ -24,6 +24,7 @@ import (
 	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/threads"
+	"github.com/geofox/publisher/internal/translate"
 	"github.com/geofox/publisher/internal/verify"
 )
 
@@ -75,6 +76,9 @@ func main() {
 	a.Store = st
 	a.Dispatch = d
 	a.UserLanguages = cfg.UserLanguages
+	if cfg.DeepLAPIKey != "" {
+		a.Translator = translate.NewDeepL(cfg.DeepLAPIKey)
+	}
 	if err := st.SeedSyncRelaysIfEmpty(cfg.SyncRelaysDefault); err != nil {
 		slog.Error("seed sync relays failed", "err", err)
 	}

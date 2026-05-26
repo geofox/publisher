@@ -97,6 +97,44 @@ export function exitInteraction() {
   renderInteractionUI();
 }
 
+// loadDraft replaces the Compose state with a fresh draft (used by the History
+// Translate action). Confirms first if the user has unsaved content (same
+// guard as the Reply/Quote hand-off). Exits any active interaction mode — the
+// result is a normal new post. {text} is the new master; {lang} (ISO 639-1) is
+// applied to the Bluesky/Mastodon language fields so the post is tagged in the
+// language it was translated INTO.
+export function loadDraft({ text, lang }) {
+  const apply = () => {
+    state.interaction = null;
+    state.master = text || "";
+    state.images.forEach((i) => URL.revokeObjectURL(i.url));
+    state.images = [];
+    if (lang) {
+      state.ov.bluesky.langs = lang;
+      state.ov.mastodon.language = lang;
+    }
+    state.platforms = new Set(ORDER);
+    if (!state.platforms.has(state.focus)) state.focus = "bluesky";
+    const tab = document.querySelector('.tab[data-view="compose"]');
+    if (tab) tab.click();
+    const m = $("#master"); if (m) m.value = state.master;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    renderImages();
+    renderInteractionUI(); // re-renders chips/cards/preview and hides the banner
+    flash("Translated draft loaded" + (lang ? " · lang " + lang : ""));
+  };
+  if (state.master.trim() || state.images.length || state.interaction) {
+    confirmModal({
+      title: "Replace your current draft?",
+      body: "The translated text will replace what's in Compose.",
+      confirmText: "Replace",
+      onConfirm: async () => { apply(); return true; },
+    });
+    return;
+  }
+  apply();
+}
+
 // renderInteractionUI re-renders the compose chrome for the current mode.
 function renderInteractionUI() {
   renderSrcBanner();
