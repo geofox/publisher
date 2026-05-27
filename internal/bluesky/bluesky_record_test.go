@@ -1,6 +1,9 @@
 package bluesky
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBuildPostRecordNoReply(t *testing.T) {
 	rec := buildPostRecord(Post{Text: "hi"})
@@ -9,6 +12,18 @@ func TestBuildPostRecordNoReply(t *testing.T) {
 	}
 	if _, ok := rec["reply"]; ok {
 		t.Errorf("no reply expected: %+v", rec["reply"])
+	}
+}
+
+// createdAt must include sub-second precision: Bluesky's getAuthorFeed dedupes
+// posts sharing the same (author, createdAt). With second-precision timestamps,
+// rapidly-published chain segments collide and the head can vanish from the
+// "Posts" tab — only the highest-rkey record per second survives the dedup.
+func TestBuildPostRecordCreatedAtHasSubSecondPrecision(t *testing.T) {
+	rec := buildPostRecord(Post{Text: "hi"})
+	ts, _ := rec["createdAt"].(string)
+	if !strings.Contains(ts, ".") {
+		t.Errorf("createdAt missing fractional seconds: %q", ts)
 	}
 }
 
