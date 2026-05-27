@@ -39,7 +39,22 @@
         <aside class="drafts-sidebar" id="drafts-sidebar">
           <div class="drafts-header">
             <strong>Drafts</strong>
+            <span style="flex:1"></span>
             <button id="draft-new" class="ghost sm" type="button">+ New</button>
+            <button id="drafts-close" class="ghost sm mobile-only" type="button" aria-label="close drafts">✕</button>
+          </div>
+          <div class="compose-toolbar">
+            <button id="draft-save" class="primary sm" type="button" disabled>💾 Save draft</button>
+            <select id="draft-translate" class="ghost sm" aria-label="Translate draft" hidden></select>
+            <button id="draft-delete" class="ghost sm" type="button" hidden>🗑</button>
+            <span id="draft-status" class="draft-status muted"></span>
+          </div>
+          <div class="tags-input-row">
+            <label for="draft-tags-input"><small>Draft tags</small></label>
+            <div id="draft-tags-input" class="draft-tags-input">
+              <span class="tag-chips"></span>
+              <input type="text" placeholder="add tag…">
+            </div>
           </div>
           <input id="draft-search" class="draft-search" type="search" placeholder="search drafts…">
           <div id="draft-tags" class="draft-tags"></div>
@@ -47,25 +62,12 @@
         </aside>
         <div class="compose-main">
           <div id="srcbanner" hidden></div>
-          <div class="compose-toolbar">
-            <button id="drafts-toggle" class="ghost sm mobile-only" type="button" aria-expanded="false">📋 Drafts</button>
-            <button id="draft-save" class="primary sm" type="button" disabled>💾 Save draft</button>
-            <select id="draft-translate" class="ghost sm" aria-label="Translate draft" hidden></select>
-            <button id="draft-delete" class="ghost sm" type="button" hidden>🗑</button>
-            <span id="draft-status" class="draft-status muted"></span>
-          </div>
           <div id="draft-recovery-banner" class="recovery-banner" hidden>
             ↻ Unsaved work from your last session was found.
             <button id="draft-recovery-restore" class="primary sm" type="button">Restore</button>
             <button id="draft-recovery-discard" class="ghost sm" type="button">Discard</button>
           </div>
-          <div class="tags-input-row">
-            <label for="draft-tags-input"><small>Tags</small></label>
-            <div id="draft-tags-input" class="draft-tags-input">
-              <span class="tag-chips"></span>
-              <input type="text" placeholder="add tag…">
-            </div>
-          </div>
+          <button id="drafts-toggle" class="ghost sm mobile-only" type="button" aria-expanded="false" style="margin-bottom:8px">📋 Drafts</button>
           <div class="compose-grid">
             <div class="compose-left">
               <div class="sec-head"><span class="lbl">master draft</span><span id="mastermeta" class="metaline"></span></div>

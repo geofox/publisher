@@ -5,6 +5,15 @@ import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
+function closeMobileSidebar() {
+  const sb = document.getElementById("drafts-sidebar");
+  const toggle = document.getElementById("drafts-toggle");
+  if (sb && sb.classList.contains("open")) {
+    sb.classList.remove("open");
+    if (toggle) toggle.setAttribute("aria-expanded", "false");
+  }
+}
+
 let activeFilters = { q: "", tags: new Set() };
 let drafts = []; // last loaded list
 
@@ -98,6 +107,7 @@ async function openDraft(id) {
     renderTagChips(d.tags || []);
     clearRecovery();
     renderList();
+    closeMobileSidebar();
     refreshActiveControls();
   } catch (e) {
     alert("Failed to load draft: " + e.message);
@@ -283,6 +293,8 @@ export function installDraftsSidebar() {
       toggle.setAttribute("aria-expanded", String(open));
     });
   }
+  const closeBtn = document.getElementById("drafts-close");
+  if (closeBtn) closeBtn.addEventListener("click", closeMobileSidebar);
 
   installTagsInput();
   populateTranslateMenu();
