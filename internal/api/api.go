@@ -139,6 +139,12 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/interact", a.handleInteract)
 	mux.HandleFunc("GET /api/config", a.handleConfig)
 	mux.HandleFunc("POST /api/translate", a.handleTranslate)
+	mux.HandleFunc("GET /api/drafts", a.handleListDrafts)
+	mux.HandleFunc("POST /api/drafts", a.handleCreateDraft)
+	mux.HandleFunc("GET /api/drafts/{id}", a.handleGetDraft)
+	mux.HandleFunc("PUT /api/drafts/{id}", a.handleUpdateDraft)
+	mux.HandleFunc("DELETE /api/drafts/{id}", a.handleDeleteDraft)
+	mux.HandleFunc("POST /api/drafts/{id}/translate", a.handleTranslateDraft)
 	mux.Handle("/", web.Handler())
 	return withSecurityHeaders(withCSRFGuard(mux))
 }
