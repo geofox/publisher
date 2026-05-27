@@ -273,6 +273,15 @@ export function installDraftsSidebar() {
     }
   });
 
+  const toggle = document.getElementById("drafts-toggle");
+  const sidebar = document.getElementById("drafts-sidebar");
+  if (toggle && sidebar) {
+    toggle.addEventListener("click", () => {
+      const open = sidebar.classList.toggle("open");
+      toggle.setAttribute("aria-expanded", String(open));
+    });
+  }
+
   installTagsInput();
   populateTranslateMenu();
   maybeShowRecoveryBanner();

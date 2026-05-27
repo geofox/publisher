@@ -494,3 +494,8 @@ main{max-width:1200px;margin:0 auto;padding:14px 14px 60px}
   .drafts-sidebar { display: none; }
   .drafts-sidebar.open { display: flex; position: fixed; inset: 0; z-index: 9; background: var(--bg); padding: 12px; overflow-y: auto; }
 }
+
+.mobile-only { display: none; }
+@media (max-width: 720px) {
+  .mobile-only { display: inline-flex; }
+}
