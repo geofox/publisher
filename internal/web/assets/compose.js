@@ -460,6 +460,14 @@ async function doPost() {
     } else {
       showResultModal(data);
     }
+    // Drafts integration: if we just published a saved draft, clear the
+    // active-draft state and the recovery snapshot, then refresh the sidebar.
+    if (state.activeDraftId) {
+      state.activeDraftId = null;
+    }
+    state.dirty = false;
+    import("./drafts_recovery.js").then(m => m.clearRecovery());
+    import("./drafts.js").then(m => m.loadDraftList && m.loadDraftList());
   } catch (e) {
     flash("Error: " + e.message);
   } finally { btn.disabled = false; btn.textContent = isScheduled ? "Schedule" : "Post"; }
