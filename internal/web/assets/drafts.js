@@ -1,7 +1,7 @@
 "use strict";
 import { state, buildSpec, defaultOv } from "./state.js";
 import { loadDraft, markDirty } from "./compose.js";
-import { clearRecovery, snapshot } from "./drafts_recovery.js";
+import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -225,6 +225,24 @@ function installTagsInput() {
   });
 }
 
+function maybeShowRecoveryBanner() {
+  const banner = document.getElementById("draft-recovery-banner");
+  if (!banner) return;
+  if (state.activeDraftId) { banner.hidden = true; return; }
+  const recovered = loadRecovery();
+  if (!recovered) { banner.hidden = true; return; }
+  banner.hidden = false;
+  document.getElementById("draft-recovery-restore").onclick = () => {
+    loadDraft(recovered);
+    markDirty();
+    banner.hidden = true;
+  };
+  document.getElementById("draft-recovery-discard").onclick = () => {
+    clearRecovery();
+    banner.hidden = true;
+  };
+}
+
 export function installDraftsSidebar() {
   const search = $("#draft-search");
   if (search) {
@@ -257,6 +275,7 @@ export function installDraftsSidebar() {
 
   installTagsInput();
   populateTranslateMenu();
+  maybeShowRecoveryBanner();
   loadDraftList();
 }
 
