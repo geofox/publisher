@@ -97,42 +97,81 @@ export function exitInteraction() {
   renderInteractionUI();
 }
 
-// loadDraft replaces the Compose state with a fresh draft (used by the History
-// Translate action). Confirms first if the user has unsaved content (same
-// guard as the Reply/Quote hand-off). Exits any active interaction mode — the
-// result is a normal new post. {text} is the new master; {lang} (ISO 639-1) is
-// applied to the Bluesky/Mastodon language fields so the post is tagged in the
-// language it was translated INTO.
-export function loadDraft({ text, lang }) {
-  const apply = () => {
-    state.interaction = null;
-    state.master = text || "";
-    state.images.forEach((i) => URL.revokeObjectURL(i.url));
-    state.images = [];
-    if (lang) {
-      state.ov.bluesky.langs = lang;
-      state.ov.mastodon.language = lang;
+// loadDraft hydrates Compose from a saved draft spec (the server's draftSpecJSON
+// shape — master_text, platforms, overrides, interaction, plus a media[] array
+// of already-uploaded blossom_url references). Passing { text, lang } is
+// supported as a legacy shape for the History translate-to-Compose flow.
+export function loadDraft(input) {
+  if (!input) return;
+
+  const doLoad = () => {
+    // legacy {text, lang}
+    if (input.text !== undefined && input.master_text === undefined) {
+      state.interaction = null;
+      state.master = input.text || "";
+      state.images.forEach((i) => URL.revokeObjectURL(i.url));
+      state.images = [];
+      if (input.lang) {
+        state.ov.bluesky.langs = input.lang;
+        state.ov.mastodon.language = input.lang;
+      }
+      state.platforms = new Set(ORDER);
+      if (!state.platforms.has(state.focus)) state.focus = "bluesky";
+      state.activeDraftId = null;
+      state.dirty = true;
+      const tab = document.querySelector('.tab[data-view="compose"]');
+      if (tab) tab.click();
+      const m = $("#master"); if (m) m.value = state.master;
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      renderImages();
+      renderInteractionUI(); // re-renders chips/cards/preview and hides the banner
+      flash("Translated draft loaded" + (input.lang ? " · lang " + input.lang : ""));
+      return;
     }
-    state.platforms = new Set(ORDER);
-    if (!state.platforms.has(state.focus)) state.focus = "bluesky";
+
+    // full spec shape
+    state.interaction = input.interaction || null;
+    state.master = input.master_text || "";
+    state.images.forEach((i) => URL.revokeObjectURL(i.url));
+    state.platforms = new Set(input.platforms && input.platforms.length ? input.platforms : ORDER);
+    if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
+    // reset overrides to defaults, then apply saved overrides
+    ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
+    if (input.overrides) {
+      for (const p of Object.keys(input.overrides)) {
+        if (!state.ov[p]) continue;
+        Object.assign(state.ov[p], input.overrides[p]);
+      }
+    }
+    // images come from input.media (hydrated draft) — already-uploaded references
+    state.images = (input.media || []).map(m => ({
+      blossom_url: m.blossom_url, sha256: m.sha256, mime: m.mime,
+      dim: m.dim, blurhash: m.blurhash, size_bytes: m.size_bytes, alt: m.alt || "",
+      ordinal: m.ordinal, file: null,
+      // derive a displayable URL from blossom_url for the thumbnail strip
+      url: m.blossom_url || "",
+    }));
+    state.activeDraftId = input.id || null;
+    state.dirty = false;
     const tab = document.querySelector('.tab[data-view="compose"]');
     if (tab) tab.click();
-    const m = $("#master"); if (m) m.value = state.master;
+    const master = $("#master"); if (master) master.value = state.master;
     window.scrollTo({ top: 0, behavior: "smooth" });
     renderImages();
     renderInteractionUI(); // re-renders chips/cards/preview and hides the banner
-    flash("Translated draft loaded" + (lang ? " · lang " + lang : ""));
+    flash("Draft loaded");
   };
+
   if (state.master.trim() || state.images.length || state.interaction) {
     confirmModal({
       title: "Replace your current draft?",
-      body: "The translated text will replace what's in Compose.",
+      body: "Loading this draft will replace what's in Compose.",
       confirmText: "Replace",
-      onConfirm: async () => { apply(); return true; },
+      onConfirm: async () => { doLoad(); return true; },
     });
     return;
   }
-  apply();
+  doLoad();
 }
 
 // renderInteractionUI re-renders the compose chrome for the current mode.

@@ -90,17 +90,28 @@ function ovFor(p) {
 export function buildSpec() {
   const overrides = {};
   for (const p of state.platforms) overrides[p] = ovFor(p);
+  const images = state.images.map((i, idx) => {
+    if (i.file) {
+      return { ordinal: idx, ref: "img_" + idx, alt: i.alt };
+    }
+    return {
+      ordinal: idx, blossom_url: i.blossom_url, sha256: i.sha256,
+      mime: i.mime, dim: i.dim, blurhash: i.blurhash, size_bytes: i.size_bytes,
+      alt: i.alt,
+    };
+  });
   const spec = {
     master_text: state.master,
     platforms: [...state.platforms],
     delay_seconds: 0,
     overrides,
-    images: state.images.map(i => ({ alt: i.alt })),
+    images,
     // mirror the preview's numbering toggle so the posted thread matches what was shown
     number: document.getElementById("threadnum")?.checked ?? true,
   };
   const sa = document.querySelector("#schedat")?.value;
   if (sa) spec.scheduled_at = new Date(sa).toISOString();
+  if (state.activeDraftId) spec.draft_id = state.activeDraftId;
   return spec;
 }
 
