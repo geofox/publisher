@@ -229,3 +229,86 @@ func (s *Store) DeleteDraft(id string) error {
 	}
 	return nil
 }
+
+// DraftFilter selects drafts for ListDraftsFiltered. Tags are AND-combined
+// (a draft must contain every requested tag). Tags are normalized by the caller.
+type DraftFilter struct {
+	Query  string
+	Tags   []string
+	Limit  int
+	Offset int
+}
+
+// ListDraftsFiltered returns lightweight DraftListItem rows ordered by
+// updated_at DESC. The full spec is not loaded; only the first media row's
+// URL is included for thumbnail rendering.
+func (s *Store) ListDraftsFiltered(f DraftFilter) ([]DraftListItem, error) {
+	if f.Limit <= 0 {
+		f.Limit = 50
+	}
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+	where := []string{"1=1"}
+	args := []any{}
+	if q := strings.TrimSpace(f.Query); q != "" {
+		where = append(where, "master_text LIKE ?")
+		args = append(args, "%"+escapeLike(q)+"%")
+	}
+	for _, tag := range NormalizeTags(f.Tags) {
+		where = append(where, "tags_json LIKE ?")
+		args = append(args, `%"`+tag+`"%`)
+	}
+	args = append(args, f.Limit, f.Offset)
+	sqlStr := `SELECT id, title, master_text, tags_json, updated_at
+	           FROM drafts WHERE ` + strings.Join(where, " AND ") + `
+	           ORDER BY updated_at DESC
+	           LIMIT ? OFFSET ?`
+	rows, err := s.sql.Query(sqlStr, args...)
+	if err != nil {
+		return nil, fmt.Errorf("ListDraftsFiltered: %w", err)
+	}
+	defer rows.Close()
+	out := make([]DraftListItem, 0)
+	for rows.Next() {
+		var it DraftListItem
+		var master, tagsJSON string
+		if err := rows.Scan(&it.ID, &it.Title, &master, &tagsJSON, &it.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if tagsJSON != "" {
+			_ = json.Unmarshal([]byte(tagsJSON), &it.Tags)
+		}
+		if it.Tags == nil {
+			it.Tags = []string{}
+		}
+		if it.Title == "" {
+			it.Title = DeriveTitle(master)
+		}
+		// short preview (first 120 chars, single-line)
+		oneLine := strings.ReplaceAll(strings.ReplaceAll(master, "\n", " "), "\r", " ")
+		oneLine = strings.TrimSpace(oneLine)
+		if len(oneLine) > 120 {
+			oneLine = oneLine[:120]
+		}
+		it.Preview = oneLine
+		out = append(out, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Augment with first media URL (one extra query per row — fine at single-user scale)
+	for i := range out {
+		var url string
+		err := s.sql.QueryRow(
+			`SELECT blossom_url FROM draft_media WHERE draft_id=? ORDER BY ordinal LIMIT 1`,
+			out[i].ID,
+		).Scan(&url)
+		if err == nil {
+			out[i].FirstMediaURL = url
+		} else if err != sql.ErrNoRows {
+			return nil, err
+		}
+	}
+	return out, nil
+}
