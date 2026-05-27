@@ -4,6 +4,14 @@ import { state, effectiveText, postedText, buildSpec, buildInteractSpec, default
 import { renderPreview } from "./preview.js";
 import { resultRow, openDetail } from "./history.js";
 
+export function markDirty() {
+  state.dirty = true;
+  const el2 = document.getElementById("draft-status");
+  if (el2) { el2.className = "draft-status dirty"; el2.textContent = "unsaved changes"; }
+  const save = document.getElementById("draft-save");
+  if (save) save.disabled = false;
+}
+
 // ---------------------------------------------------------------------------
 // Counter / character class
 // ---------------------------------------------------------------------------

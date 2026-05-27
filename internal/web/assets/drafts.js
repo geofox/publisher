@@ -1,7 +1,7 @@
 "use strict";
-import { state } from "./state.js";
-import { loadDraft } from "./compose.js";
-import { clearRecovery } from "./drafts_recovery.js";
+import { state, buildSpec, defaultOv } from "./state.js";
+import { loadDraft, markDirty } from "./compose.js";
+import { clearRecovery, snapshot } from "./drafts_recovery.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -104,6 +104,80 @@ function escapeHTML(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+function setStatus(kind, text) {
+  const el = document.getElementById("draft-status");
+  if (!el) return;
+  el.className = "draft-status " + (kind || "");
+  el.textContent = text || "";
+}
+
+export async function saveActiveDraft() {
+  const save = document.getElementById("draft-save");
+  if (save) save.disabled = true;
+  setStatus("saving", "saving…");
+  const spec = buildSpec();
+  const fd = new FormData();
+  fd.append("spec", JSON.stringify(spec));
+  state.images.forEach((img, idx) => {
+    if (img.file) fd.append("img_" + idx, img.file);
+  });
+  try {
+    let url = "/api/drafts";
+    let method = "POST";
+    if (state.activeDraftId) {
+      url = "/api/drafts/" + encodeURIComponent(state.activeDraftId);
+      method = "PUT";
+    }
+    const r = await fetch(url, { method, body: fd, credentials: "same-origin" });
+    if (!r.ok) {
+      if (r.status === 404 && state.activeDraftId) {
+        // stale id — fall through to a POST
+        state.activeDraftId = null;
+        return saveActiveDraft();
+      }
+      throw new Error("HTTP " + r.status);
+    }
+    const saved = await r.json();
+    state.activeDraftId = saved.id;
+    state.dirty = false;
+    // refresh state.images to use the server-returned media (so subsequent saves don't re-upload)
+    state.images = (saved.media || []).map(m => ({
+      blossom_url: m.blossom_url, sha256: m.sha256, mime: m.mime,
+      dim: m.dim, blurhash: m.blurhash, size_bytes: m.size_bytes,
+      alt: m.alt || "", ordinal: m.ordinal, file: null,
+      url: m.blossom_url || "",
+    }));
+    setStatus("saved", "saved just now");
+    snapshot(); // clears recovery (since activeDraftId is now set)
+    loadDraftList();
+  } catch (e) {
+    setStatus("error", "save failed — retry");
+    console.warn("saveActiveDraft:", e);
+  } finally {
+    if (save) save.disabled = false;
+  }
+}
+
+export function newDraft() {
+  if (state.dirty) {
+    const choice = confirm("You have unsaved changes. OK to discard and start a new draft? (Cancel to keep editing.)");
+    if (!choice) return;
+  }
+  // reset state
+  state.master = "";
+  state.activeDraftId = null;
+  state.dirty = false;
+  state.images = [];
+  state.interaction = null;
+  // reset overrides to defaults — iterate state.ov keys for safety
+  for (const p of Object.keys(state.ov)) state.ov[p] = defaultOv(p);
+  // best-effort UI refresh
+  const ta = document.getElementById("master") || document.getElementById("m");
+  if (ta) ta.value = "";
+  setStatus("", "");
+  loadDraftList();
+}
+
 export function installDraftsSidebar() {
   const search = $("#draft-search");
   if (search) {
@@ -114,5 +188,22 @@ export function installDraftsSidebar() {
       t = setTimeout(loadDraftList, 200);
     });
   }
+
+  const saveBtn = $("#draft-save");
+  if (saveBtn) saveBtn.addEventListener("click", saveActiveDraft);
+  const newBtn = $("#draft-new");
+  if (newBtn) newBtn.addEventListener("click", newDraft);
+
+  // Ctrl/Cmd+S only when the Compose view is active
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+      const composeSec = document.getElementById("compose");
+      if (composeSec && composeSec.offsetParent !== null) {
+        e.preventDefault();
+        saveActiveDraft();
+      }
+    }
+  });
+
   loadDraftList();
 }

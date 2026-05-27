@@ -1,5 +1,6 @@
 "use strict";
 import { state, buildSpec } from "./state.js";
+import { markDirty } from "./compose.js";
 
 const KEY = "compose_recovery_v1";
 
@@ -51,9 +52,9 @@ export function installRecoveryAutosave() {
     t = setTimeout(snapshot, 250);
   };
   document.addEventListener("input", (e) => {
-    if (e.target.closest("#compose")) fire();
+    if (e.target.closest("#compose")) { fire(); markDirty(); }
   });
   document.addEventListener("change", (e) => {
-    if (e.target.closest("#compose")) fire();
+    if (e.target.closest("#compose")) { fire(); markDirty(); }
   });
 }
