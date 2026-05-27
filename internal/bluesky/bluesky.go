@@ -15,6 +15,13 @@ import (
 
 const maxGraphemes = 300
 
+// isoMillis is RFC 3339 with always-three fractional digits. Bluesky's
+// getAuthorFeed dedupes records sharing the same (author, createdAt), so
+// second-precision timestamps make rapid chain segments collide — only the
+// highest-rkey record per second survives, hiding the chain head from the
+// "Posts" tab.
+const isoMillis = "2006-01-02T15:04:05.000Z07:00"
+
 type Image struct {
 	Bytes []byte
 	Mime  string
@@ -136,7 +143,7 @@ func buildPostRecord(p Post) map[string]any {
 	record := map[string]any{
 		"$type":     "app.bsky.feed.post",
 		"text":      p.Text,
-		"createdAt": time.Now().UTC().Format(time.RFC3339),
+		"createdAt": time.Now().UTC().Format(isoMillis),
 	}
 	if len(p.Langs) > 0 {
 		record["langs"] = p.Langs
@@ -215,7 +222,7 @@ func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 			"$type":     "app.bsky.feed.threadgate",
 			"post":      uri,
 			"allow":     p.ReplyGate.allowRules(),
-			"createdAt": time.Now().UTC().Format(time.RFC3339),
+			"createdAt": time.Now().UTC().Format(isoMillis),
 		}
 		if _, _, err := c.createRecord(ctx, s, "app.bsky.feed.threadgate", rkey, tg); err != nil {
 			return res, fmt.Errorf("threadgate: %w", err)
@@ -226,7 +233,7 @@ func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 			"$type":          "app.bsky.feed.postgate",
 			"post":           uri,
 			"embeddingRules": []map[string]any{{"$type": "app.bsky.feed.postgate#disableRule"}},
-			"createdAt":      time.Now().UTC().Format(time.RFC3339),
+			"createdAt":      time.Now().UTC().Format(isoMillis),
 		}
 		if _, _, err := c.createRecord(ctx, s, "app.bsky.feed.postgate", rkey, pg); err != nil {
 			return res, fmt.Errorf("postgate: %w", err)
@@ -240,7 +247,7 @@ func repostRecord(subjectURI, subjectCID string) map[string]any {
 	return map[string]any{
 		"$type":     "app.bsky.feed.repost",
 		"subject":   map[string]any{"uri": subjectURI, "cid": subjectCID},
-		"createdAt": time.Now().UTC().Format(time.RFC3339),
+		"createdAt": time.Now().UTC().Format(isoMillis),
 	}
 }
 
