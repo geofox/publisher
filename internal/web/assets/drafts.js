@@ -95,6 +95,7 @@ async function openDraft(id) {
     spec.id = d.id;
     spec.media = d.media || [];
     loadDraft(spec);
+    renderTagChips(d.tags || []);
     clearRecovery();
     renderList();
     refreshActiveControls();
@@ -119,6 +120,7 @@ export async function saveActiveDraft() {
   if (save) save.disabled = true;
   setStatus("saving", "saving…");
   const spec = buildSpec();
+  spec.tags = currentTagChips();
   const fd = new FormData();
   fd.append("spec", JSON.stringify(spec));
   state.images.forEach((img, idx) => {
@@ -178,9 +180,49 @@ export function newDraft() {
   // best-effort UI refresh
   const ta = document.getElementById("master") || document.getElementById("m");
   if (ta) ta.value = "";
+  renderTagChips([]);
   setStatus("", "");
   loadDraftList();
   refreshActiveControls();
+}
+
+function currentTagChips() {
+  return Array.from(document.querySelectorAll("#draft-tags-input .tag-chip"))
+    .map(el => el.dataset.tag);
+}
+
+function renderTagChips(tags) {
+  const host = document.querySelector("#draft-tags-input .tag-chips");
+  if (!host) return;
+  host.innerHTML = "";
+  for (const t of tags) {
+    const chip = document.createElement("span");
+    chip.className = "tag-chip";
+    chip.dataset.tag = t;
+    chip.textContent = "#" + t + " ✕";
+    chip.addEventListener("click", () => {
+      chip.remove();
+      markDirty();
+    });
+    host.appendChild(chip);
+  }
+}
+
+function installTagsInput() {
+  const input = document.querySelector("#draft-tags-input input");
+  if (!input) return;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      const raw = input.value.trim();
+      if (!raw) return;
+      const tags = new Set(currentTagChips());
+      tags.add(raw.replace(/^#+/, "").toLowerCase().slice(0, 32));
+      renderTagChips(Array.from(tags));
+      input.value = "";
+      markDirty();
+    }
+  });
 }
 
 export function installDraftsSidebar() {
@@ -213,6 +255,7 @@ export function installDraftsSidebar() {
     }
   });
 
+  installTagsInput();
   loadDraftList();
 }
 
