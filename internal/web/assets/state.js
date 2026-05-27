@@ -29,6 +29,9 @@ export const state = {
   // operator has no DEEPL_API_KEY configured; the history Translate button
   // is hidden in that case.
   translateTargets: [],
+  // Drafts integration
+  activeDraftId: null, // id of the draft currently loaded into Compose, or null
+  dirty: false,        // true when in-memory spec differs from last saved state
 };
 ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
 
