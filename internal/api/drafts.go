@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/geofox/publisher/internal/httpx"
@@ -208,6 +209,69 @@ func (a *API) handleDeleteDraft(w http.ResponseWriter, r *http.Request) {
 // errorsIsNotFound centralizes the wrapped-error check for ErrDraftNotFound.
 func errorsIsNotFound(err error) bool { return errors.Is(err, store.ErrDraftNotFound) }
 
+type translateDraftReq struct {
+	Target string `json:"target"`
+}
+
 func (a *API) handleTranslateDraft(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteError(w, http.StatusNotImplemented, "handleTranslateDraft: not yet implemented")
+	if a.Translator == nil {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "translation is not configured")
+		return
+	}
+	id := r.PathValue("id")
+	src, err := a.Store.GetDraft(id)
+	if err != nil {
+		if errorsIsNotFound(err) {
+			httpx.WriteError(w, http.StatusNotFound, "draft not found")
+			return
+		}
+		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var req translateDraftReq
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Target) == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "missing target")
+		return
+	}
+	translated, _, err := a.Translator.Translate(r.Context(), src.MasterText, req.Target)
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadGateway, "translate: "+err.Error())
+		return
+	}
+
+	// Build a new spec by copying the original spec's platforms/interaction,
+	// dropping overrides (they'll be re-derived in the editor), and replacing
+	// master_text with the translation.
+	var origSpec draftSpecJSON
+	_ = json.Unmarshal([]byte(src.Spec), &origSpec)
+	newSpec := draftSpecJSON{
+		MasterText:  translated,
+		Platforms:   origSpec.Platforms,
+		Interaction: origSpec.Interaction,
+		Tags:        src.Tags,
+		Overrides:   json.RawMessage("{}"),
+	}
+	specJSON, _ := json.Marshal(newSpec)
+
+	now := time.Now().UTC()
+	d := &store.Draft{
+		ID:         newDraftID(),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Title:      store.DeriveTitle(translated),
+		MasterText: translated,
+		Tags:       src.Tags,
+		Spec:       string(specJSON),
+		// Copy media references — content-addressed, no re-upload.
+		Media: append([]store.Media(nil), src.Media...),
+	}
+	if err := a.Store.CreateDraft(d); err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, d)
 }

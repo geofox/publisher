@@ -158,3 +158,36 @@ func TestCreateAndListDraft(t *testing.T) {
 		t.Errorf("list mismatch: %+v", items)
 	}
 }
+
+func TestTranslateDraftHandler(t *testing.T) {
+	a := newDraftAPI(t)
+	// fakeTranslator is declared in api_test.go; use it here with canned output.
+	a.Translator = &fakeTranslator{out: "[de] hello", src: "en"}
+	rec := postMultipart(t, a, "/api/drafts", map[string]any{
+		"master_text": "hello", "platforms": []string{"nostr"},
+		"tags": []string{"essay"},
+		"overrides": map[string]any{}, "images": []any{},
+	}, nil)
+	var created store.Draft
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+
+	body := bytes.NewBufferString(`{"target":"de"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/drafts/"+created.ID+"/translate", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	a.Routes().ServeHTTP(rec2, req)
+	if rec2.Code != 200 {
+		t.Fatalf("translate: %d %s", rec2.Code, rec2.Body.String())
+	}
+	var got store.Draft
+	_ = json.Unmarshal(rec2.Body.Bytes(), &got)
+	if got.ID == created.ID {
+		t.Errorf("new draft should have different id")
+	}
+	if got.MasterText != "[de] hello" {
+		t.Errorf("master not translated: %q", got.MasterText)
+	}
+	if len(got.Tags) != 1 || got.Tags[0] != "essay" {
+		t.Errorf("tags not copied: %v", got.Tags)
+	}
+}
