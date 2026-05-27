@@ -60,6 +60,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer st.Close()
+	mp.Lookup = st.LookupMediaURL
 
 	tc := threads.New(cfg.ThreadsToken, cfg.ThreadsUserID)
 	mc := mastodon.New(cfg.MastodonBaseURL, cfg.MastodonToken)

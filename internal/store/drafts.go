@@ -230,6 +230,35 @@ func (s *Store) DeleteDraft(id string) error {
 	return nil
 }
 
+// LookupMediaURL returns the Blossom URL of any media row (post or draft) that
+// already holds the given sha256. Used by the media pipeline to short-circuit
+// re-uploads of content-addressed blobs.
+func (s *Store) LookupMediaURL(sha256 string) (string, bool, error) {
+	if sha256 == "" {
+		return "", false, nil
+	}
+	var url string
+	err := s.sql.QueryRow(
+		`SELECT blossom_url FROM media WHERE sha256=? LIMIT 1`, sha256,
+	).Scan(&url)
+	if err == nil {
+		return url, true, nil
+	}
+	if err != sql.ErrNoRows {
+		return "", false, fmt.Errorf("LookupMediaURL posts: %w", err)
+	}
+	err = s.sql.QueryRow(
+		`SELECT blossom_url FROM draft_media WHERE sha256=? LIMIT 1`, sha256,
+	).Scan(&url)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("LookupMediaURL drafts: %w", err)
+	}
+	return url, true, nil
+}
+
 // DraftFilter selects drafts for ListDraftsFiltered. Tags are AND-combined
 // (a draft must contain every requested tag). Tags are normalized by the caller.
 type DraftFilter struct {
