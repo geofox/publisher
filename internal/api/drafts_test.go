@@ -44,6 +44,84 @@ func postMultipart(t *testing.T, a *API, path string, spec map[string]any, files
 	return rec
 }
 
+func TestGetDraftHandler(t *testing.T) {
+	a := newDraftAPI(t)
+	rec := postMultipart(t, a, "/api/drafts", map[string]any{
+		"master_text": "x", "platforms": []string{"nostr"},
+		"overrides": map[string]any{}, "images": []any{},
+	}, nil)
+	if rec.Code != 200 {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	var created store.Draft
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/drafts/"+created.ID, nil)
+	rec2 := httptest.NewRecorder()
+	a.Routes().ServeHTTP(rec2, req)
+	if rec2.Code != 200 {
+		t.Fatalf("get: %d %s", rec2.Code, rec2.Body.String())
+	}
+	var got store.Draft
+	_ = json.Unmarshal(rec2.Body.Bytes(), &got)
+	if got.ID != created.ID {
+		t.Errorf("got=%q want=%q", got.ID, created.ID)
+	}
+}
+
+func TestUpdateDraftHandler(t *testing.T) {
+	a := newDraftAPI(t)
+	rec := postMultipart(t, a, "/api/drafts", map[string]any{
+		"master_text": "v1", "platforms": []string{"nostr"},
+		"overrides": map[string]any{}, "images": []any{},
+	}, nil)
+	var created store.Draft
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+
+	// PUT requires a different verb than postMultipart provides, so build inline:
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	b, _ := json.Marshal(map[string]any{
+		"master_text": "v2", "platforms": []string{"nostr"},
+		"overrides": map[string]any{}, "images": []any{},
+	})
+	_ = mw.WriteField("spec", string(b))
+	mw.Close()
+	req := httptest.NewRequest(http.MethodPut, "/api/drafts/"+created.ID, &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec3 := httptest.NewRecorder()
+	a.Routes().ServeHTTP(rec3, req)
+	if rec3.Code != 200 {
+		t.Fatalf("put: %d %s", rec3.Code, rec3.Body.String())
+	}
+
+	got, _ := a.Store.GetDraft(created.ID)
+	if got.MasterText != "v2" {
+		t.Errorf("master not updated: %q", got.MasterText)
+	}
+}
+
+func TestDeleteDraftHandler(t *testing.T) {
+	a := newDraftAPI(t)
+	rec := postMultipart(t, a, "/api/drafts", map[string]any{
+		"master_text": "bye", "platforms": []string{"nostr"},
+		"overrides": map[string]any{}, "images": []any{},
+	}, nil)
+	var created store.Draft
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/drafts/"+created.ID, nil)
+	rec2 := httptest.NewRecorder()
+	a.Routes().ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", rec2.Code, rec2.Body.String())
+	}
+
+	if _, err := a.Store.GetDraft(created.ID); err == nil {
+		t.Error("draft still exists after delete")
+	}
+}
+
 func TestCreateAndListDraft(t *testing.T) {
 	a := newDraftAPI(t)
 	spec := map[string]any{

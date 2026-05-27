@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -152,14 +153,61 @@ func (a *API) buildDraftFromRequest(r *http.Request, id string) (*store.Draft, s
 }
 
 func (a *API) handleGetDraft(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteError(w, http.StatusNotImplemented, "handleGetDraft: not yet implemented")
+	id := r.PathValue("id")
+	d, err := a.Store.GetDraft(id)
+	if err != nil {
+		if errorsIsNotFound(err) {
+			httpx.WriteError(w, http.StatusNotFound, "draft not found")
+			return
+		}
+		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, d)
 }
+
 func (a *API) handleUpdateDraft(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteError(w, http.StatusNotImplemented, "handleUpdateDraft: not yet implemented")
+	id := r.PathValue("id")
+	if id == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "missing draft id")
+		return
+	}
+	d, _, status, msg := a.buildDraftFromRequest(r, id)
+	if status != 0 {
+		httpx.WriteError(w, status, msg)
+		return
+	}
+	// preserve original CreatedAt (not editable)
+	if existing, err := a.Store.GetDraft(id); err == nil {
+		d.CreatedAt = existing.CreatedAt
+	}
+	if err := a.Store.UpdateDraft(d); err != nil {
+		if errorsIsNotFound(err) {
+			httpx.WriteError(w, http.StatusNotFound, "draft not found")
+			return
+		}
+		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, d)
 }
+
 func (a *API) handleDeleteDraft(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteError(w, http.StatusNotImplemented, "handleDeleteDraft: not yet implemented")
+	id := r.PathValue("id")
+	if err := a.Store.DeleteDraft(id); err != nil {
+		if errorsIsNotFound(err) {
+			httpx.WriteError(w, http.StatusNotFound, "draft not found")
+			return
+		}
+		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
+
+// errorsIsNotFound centralizes the wrapped-error check for ErrDraftNotFound.
+func errorsIsNotFound(err error) bool { return errors.Is(err, store.ErrDraftNotFound) }
+
 func (a *API) handleTranslateDraft(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteError(w, http.StatusNotImplemented, "handleTranslateDraft: not yet implemented")
 }
