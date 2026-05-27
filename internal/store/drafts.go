@@ -175,3 +175,57 @@ func (s *Store) getDraftMedia(draftID string) ([]Media, error) {
 	}
 	return out, rows.Err()
 }
+
+// UpdateDraft replaces the row's mutable fields and fully replaces the
+// draft_media set in a single transaction. UpdatedAt should be set by the
+// caller. Returns ErrDraftNotFound (wrapped) if the row doesn't exist.
+func (s *Store) UpdateDraft(d *Draft) error {
+	if d.ID == "" {
+		return errors.New("UpdateDraft: empty id")
+	}
+	d.Tags = NormalizeTags(d.Tags)
+	tagsJSON, err := json.Marshal(d.Tags)
+	if err != nil {
+		return fmt.Errorf("UpdateDraft: marshal tags: %w", err)
+	}
+	if d.Title == "" {
+		d.Title = DeriveTitle(d.MasterText)
+	}
+	tx, err := s.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(
+		`UPDATE drafts SET updated_at=?, title=?, master_text=?, tags_json=?, spec_json=? WHERE id=?`,
+		d.UpdatedAt.UTC(), d.Title, d.MasterText, string(tagsJSON), d.Spec, d.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("UpdateDraft: update: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("UpdateDraft %q: %w", d.ID, ErrDraftNotFound)
+	}
+	if _, err := tx.Exec(`DELETE FROM draft_media WHERE draft_id=?`, d.ID); err != nil {
+		return fmt.Errorf("UpdateDraft: clear media: %w", err)
+	}
+	if err := insertDraftMedia(tx, d.ID, d.Media); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// DeleteDraft removes a draft and (via ON DELETE CASCADE) its media rows.
+// Returns ErrDraftNotFound (wrapped) if no row matches.
+func (s *Store) DeleteDraft(id string) error {
+	res, err := s.sql.Exec(`DELETE FROM drafts WHERE id=?`, id)
+	if err != nil {
+		return fmt.Errorf("DeleteDraft %q: %w", id, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("DeleteDraft %q: %w", id, ErrDraftNotFound)
+	}
+	return nil
+}
