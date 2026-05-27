@@ -484,6 +484,7 @@ main{max-width:1200px;margin:0 auto;padding:14px 14px 60px}
 .draft-status.saving::before { content: "● "; color: #88c; }
 .draft-status.error::before { content: "● "; color: #c44; }
 .recovery-banner { background: rgba(255,200,80,0.15); border: 1px dashed var(--warn); padding: 8px; border-radius: 4px; font-size: 0.9em; display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.recovery-banner[hidden] { display: none; }
 .tags-input-row { margin: 8px 0; }
 .draft-tags-input { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px; border: 1px solid var(--line); border-radius: 4px; }
 .draft-tags-input .tag-chips { display: flex; flex-wrap: wrap; gap: 4px; }

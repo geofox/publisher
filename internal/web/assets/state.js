@@ -80,7 +80,14 @@ export function focusedPlatform() {
 function ovFor(p) {
   const ov = state.ov[p], o = {};
   if (ov.text != null) o.text = ov.text;
-  if (p === "bluesky")  { o.langs = ov.langs.split(",").map((s) => s.trim()).filter(Boolean); o.bluesky_reply = ov.reply; o.bluesky_disable_quotes = ov.disable_quotes; }
+  if (p === "bluesky") {
+    // langs may be a string (editor input) or an array (a draft rehydrated
+    // from a stored spec where buildSpec previously serialized it as []).
+    const langsStr = Array.isArray(ov.langs) ? ov.langs.join(",") : (ov.langs || "");
+    o.langs = langsStr.split(",").map((s) => s.trim()).filter(Boolean);
+    o.bluesky_reply = ov.reply;
+    o.bluesky_disable_quotes = ov.disable_quotes;
+  }
   if (p === "mastodon") { o.spoiler_text = ov.spoiler_text; o.sensitive = ov.sensitive; o.visibility = ov.visibility; o.language = ov.language; }
   if (p === "threads")  { o.topic_tag = ov.topic_tag; o.threads_reply_control = ov.reply_control; }
   if (p === "nostr")    { o.pow = ov.pow; o.content_warning = ov.content_warning; }

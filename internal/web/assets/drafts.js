@@ -232,15 +232,17 @@ function maybeShowRecoveryBanner() {
   const recovered = loadRecovery();
   if (!recovered) { banner.hidden = true; return; }
   banner.hidden = false;
-  document.getElementById("draft-recovery-restore").onclick = () => {
+  const r = document.getElementById("draft-recovery-restore");
+  const d = document.getElementById("draft-recovery-discard");
+  if (r) r.addEventListener("click", () => {
     loadDraft(recovered);
     markDirty();
     banner.hidden = true;
-  };
-  document.getElementById("draft-recovery-discard").onclick = () => {
+  });
+  if (d) d.addEventListener("click", () => {
     clearRecovery();
     banner.hidden = true;
-  };
+  });
 }
 
 export function installDraftsSidebar() {

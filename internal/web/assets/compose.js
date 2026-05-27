@@ -150,6 +150,12 @@ export function loadDraft(input) {
         if (!state.ov[p]) continue;
         Object.assign(state.ov[p], input.overrides[p]);
       }
+      // buildSpec serializes bluesky.langs as a JSON array; the editor input
+      // holds it as a comma-separated string. Convert back so the field round-
+      // trips cleanly through save → load → save.
+      if (state.ov.bluesky && Array.isArray(state.ov.bluesky.langs)) {
+        state.ov.bluesky.langs = state.ov.bluesky.langs.join(",");
+      }
     }
     // images come from input.media (hydrated draft) — already-uploaded references
     state.images = (input.media || []).map(m => ({
