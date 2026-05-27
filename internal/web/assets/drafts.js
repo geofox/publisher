@@ -43,6 +43,7 @@ function renderList() {
     empty.style.padding = "8px";
     empty.textContent = "No drafts yet.";
     list.appendChild(empty);
+    refreshActiveControls();
     return;
   }
   for (const d of drafts) {
@@ -60,6 +61,7 @@ function renderList() {
     row.addEventListener("click", () => openDraft(d.id));
     list.appendChild(row);
   }
+  refreshActiveControls();
 }
 
 function renderTagFilters() {
@@ -95,6 +97,7 @@ async function openDraft(id) {
     loadDraft(spec);
     clearRecovery();
     renderList();
+    refreshActiveControls();
   } catch (e) {
     alert("Failed to load draft: " + e.message);
   }
@@ -150,6 +153,7 @@ export async function saveActiveDraft() {
     setStatus("saved", "saved just now");
     snapshot(); // clears recovery (since activeDraftId is now set)
     loadDraftList();
+    refreshActiveControls();
   } catch (e) {
     setStatus("error", "save failed — retry");
     console.warn("saveActiveDraft:", e);
@@ -176,6 +180,7 @@ export function newDraft() {
   if (ta) ta.value = "";
   setStatus("", "");
   loadDraftList();
+  refreshActiveControls();
 }
 
 export function installDraftsSidebar() {
@@ -193,6 +198,9 @@ export function installDraftsSidebar() {
   if (saveBtn) saveBtn.addEventListener("click", saveActiveDraft);
   const newBtn = $("#draft-new");
   if (newBtn) newBtn.addEventListener("click", newDraft);
+  const delBtn = $("#draft-delete");
+  if (delBtn) delBtn.addEventListener("click", deleteActiveDraft);
+  refreshActiveControls(); // initial state
 
   // Ctrl/Cmd+S only when the Compose view is active
   document.addEventListener("keydown", (e) => {
@@ -206,4 +214,32 @@ export function installDraftsSidebar() {
   });
 
   loadDraftList();
+}
+
+export async function deleteActiveDraft() {
+  if (!state.activeDraftId) return;
+  if (!confirm("Delete this draft? This cannot be undone.")) return;
+  try {
+    const r = await fetch("/api/drafts/" + encodeURIComponent(state.activeDraftId), {
+      method: "DELETE", credentials: "same-origin",
+    });
+    if (!r.ok && r.status !== 204) throw new Error("HTTP " + r.status);
+    state.activeDraftId = null;
+    state.dirty = false;
+    state.master = "";
+    state.images = [];
+    const ta = document.getElementById("master") || document.getElementById("m");
+    if (ta) ta.value = "";
+    setStatus("", "");
+    loadDraftList();
+    refreshActiveControls();
+  } catch (e) {
+    setStatus("error", "delete failed");
+    console.warn("deleteActiveDraft:", e);
+  }
+}
+
+function refreshActiveControls() {
+  const del = document.getElementById("draft-delete");
+  if (del) del.hidden = !state.activeDraftId;
 }
