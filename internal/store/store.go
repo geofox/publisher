@@ -149,7 +149,30 @@ CREATE TABLE IF NOT EXISTS threads_token (
   seed_hash    TEXT NOT NULL,
   refreshed_at TIMESTAMP NOT NULL
 );
+CREATE TABLE IF NOT EXISTS drafts (
+  id          TEXT PRIMARY KEY,
+  created_at  TIMESTAMP NOT NULL,
+  updated_at  TIMESTAMP NOT NULL,
+  title       TEXT NOT NULL DEFAULT '',
+  master_text TEXT NOT NULL DEFAULT '',
+  tags_json   TEXT NOT NULL DEFAULT '[]',
+  spec_json   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS draft_media (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  draft_id    TEXT NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+  ordinal     INTEGER NOT NULL,
+  blossom_url TEXT NOT NULL,
+  sha256      TEXT NOT NULL,
+  mime        TEXT,
+  dim         TEXT,
+  blurhash    TEXT,
+  size_bytes  INTEGER,
+  alt         TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_targets_post ON post_targets(post_id);
 CREATE INDEX IF NOT EXISTS idx_target_relays_target ON target_relays(target_id);
+CREATE INDEX IF NOT EXISTS idx_drafts_updated_at ON drafts(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_draft_media_draft_id ON draft_media(draft_id);
 `

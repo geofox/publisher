@@ -29,6 +29,9 @@ export const state = {
   // operator has no DEEPL_API_KEY configured; the history Translate button
   // is hidden in that case.
   translateTargets: [],
+  // Drafts integration
+  activeDraftId: null, // id of the draft currently loaded into Compose, or null
+  dirty: false,        // true when in-memory spec differs from last saved state
 };
 ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
 
@@ -77,7 +80,14 @@ export function focusedPlatform() {
 function ovFor(p) {
   const ov = state.ov[p], o = {};
   if (ov.text != null) o.text = ov.text;
-  if (p === "bluesky")  { o.langs = ov.langs.split(",").map((s) => s.trim()).filter(Boolean); o.bluesky_reply = ov.reply; o.bluesky_disable_quotes = ov.disable_quotes; }
+  if (p === "bluesky") {
+    // langs may be a string (editor input) or an array (a draft rehydrated
+    // from a stored spec where buildSpec previously serialized it as []).
+    const langsStr = Array.isArray(ov.langs) ? ov.langs.join(",") : (ov.langs || "");
+    o.langs = langsStr.split(",").map((s) => s.trim()).filter(Boolean);
+    o.bluesky_reply = ov.reply;
+    o.bluesky_disable_quotes = ov.disable_quotes;
+  }
   if (p === "mastodon") { o.spoiler_text = ov.spoiler_text; o.sensitive = ov.sensitive; o.visibility = ov.visibility; o.language = ov.language; }
   if (p === "threads")  { o.topic_tag = ov.topic_tag; o.threads_reply_control = ov.reply_control; }
   if (p === "nostr")    { o.pow = ov.pow; o.content_warning = ov.content_warning; }
@@ -87,17 +97,28 @@ function ovFor(p) {
 export function buildSpec() {
   const overrides = {};
   for (const p of state.platforms) overrides[p] = ovFor(p);
+  const images = state.images.map((i, idx) => {
+    if (i.file) {
+      return { ordinal: idx, ref: "img_" + idx, alt: i.alt };
+    }
+    return {
+      ordinal: idx, blossom_url: i.blossom_url, sha256: i.sha256,
+      mime: i.mime, dim: i.dim, blurhash: i.blurhash, size_bytes: i.size_bytes,
+      alt: i.alt,
+    };
+  });
   const spec = {
     master_text: state.master,
     platforms: [...state.platforms],
     delay_seconds: 0,
     overrides,
-    images: state.images.map(i => ({ alt: i.alt })),
+    images,
     // mirror the preview's numbering toggle so the posted thread matches what was shown
     number: document.getElementById("threadnum")?.checked ?? true,
   };
   const sa = document.querySelector("#schedat")?.value;
   if (sa) spec.scheduled_at = new Date(sa).toISOString();
+  if (state.activeDraftId) spec.draft_id = state.activeDraftId;
   return spec;
 }
 

@@ -195,6 +195,37 @@ skipped. `force: true` overrides a blocked capability (Bluesky may then silently
 drop it). Returns the resulting `store.Post` (one threaded target per platform).
 Used by the **Interact** tab.
 
+### `/api/drafts`
+
+Persistent scratchpad for work-in-progress posts. Lives in the Compose tab as a
+left sidebar; saves are explicit; publishing consumes the draft.
+
+- `GET /api/drafts?q=&tag=&tag=&limit=&offset=` — list (lightweight projection
+  with `id, title, preview, tags, updated_at, first_media_url?`). Repeated
+  `tag` params filter AND. `q` matches `master_text` (LIKE).
+- `GET /api/drafts/{id}` — full draft hydrated with media references.
+- `POST /api/drafts` — create. `multipart/form-data` with a `spec` JSON field
+  + zero or more newly-attached image files keyed by `ref` (`img_0`, `img_1`,
+  …). The `spec`: `{ master_text, platforms, overrides, interaction?, tags[],
+  images:[{ordinal, ref?, blossom_url?, sha256?, mime?, alt?}] }`. Image
+  entries with `ref` are read from the matching multipart field and uploaded
+  to Blossom; entries with `blossom_url` are preserved as-is. Tag input is
+  normalized server-side (lowercase, trimmed, `#`-stripped, 32-char cap,
+  deduped).
+- `PUT /api/drafts/{id}` — full-replace update (same multipart shape).
+- `DELETE /api/drafts/{id}` — `204`, cascades to `draft_media`.
+- `POST /api/drafts/{id}/translate` — body `{ "target": "<iso639-1>" }`.
+  Translates `master_text` via DeepL and creates a **new** draft (original
+  untouched). Returns the new draft. Requires `DEEPL_API_KEY`.
+
+`POST /api/post` accepts an optional `draft_id` field on its `spec`. On
+success (immediate or scheduled), the referenced draft is deleted in the same
+transaction. On any failure, the draft survives so the user can retry.
+
+Image uploads dedup by sha256 across both `posts` and `drafts`: if the bytes
+already live on Blossom (via a previous post or draft), the pipeline returns
+the existing URL instead of re-uploading.
+
 ### Web UI & `/api`
 
 The container embeds a mobile-first web UI (the crosspost composer, post

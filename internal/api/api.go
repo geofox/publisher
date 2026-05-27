@@ -139,6 +139,12 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/interact", a.handleInteract)
 	mux.HandleFunc("GET /api/config", a.handleConfig)
 	mux.HandleFunc("POST /api/translate", a.handleTranslate)
+	mux.HandleFunc("GET /api/drafts", a.handleListDrafts)
+	mux.HandleFunc("POST /api/drafts", a.handleCreateDraft)
+	mux.HandleFunc("GET /api/drafts/{id}", a.handleGetDraft)
+	mux.HandleFunc("PUT /api/drafts/{id}", a.handleUpdateDraft)
+	mux.HandleFunc("DELETE /api/drafts/{id}", a.handleDeleteDraft)
+	mux.HandleFunc("POST /api/drafts/{id}/translate", a.handleTranslateDraft)
 	mux.Handle("/", web.Handler())
 	return withSecurityHeaders(withCSRFGuard(mux))
 }
@@ -456,6 +462,7 @@ type postSpecJSON struct {
 	Images       []imageAlt                    `json:"images"`
 	ScheduledAt  string                        `json:"scheduled_at"`
 	Number       bool                          `json:"number"`
+	DraftID      string                        `json:"draft_id,omitempty"` // NEW: consume on success
 }
 
 func (a *API) handleAPIPost(w http.ResponseWriter, r *http.Request) {
@@ -545,6 +552,12 @@ func (a *API) handleAPIPost(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if sj.DraftID != "" && a.Store != nil {
+			if err := a.Store.DeleteDraft(sj.DraftID); err != nil {
+				// log but don't fail the publish — the post was created
+				slog.Warn("drafts: consume DeleteDraft failed", "draft_id", sj.DraftID, "err", err)
+			}
+		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"post_id": srec.ID, "status": srec.Status, "scheduled_at": srec.ScheduledAt,
 		})
@@ -576,6 +589,12 @@ func (a *API) handleAPIPost(w http.ResponseWriter, r *http.Request) {
 			Relays:    tg.Relays,
 			Segments:  tg.Segments,
 		})
+	}
+	if sj.DraftID != "" && a.Store != nil {
+		if err := a.Store.DeleteDraft(sj.DraftID); err != nil {
+			// log but don't fail the publish — the post was created
+			slog.Warn("drafts: consume DeleteDraft failed", "draft_id", sj.DraftID, "err", err)
+		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 }

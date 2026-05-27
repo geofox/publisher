@@ -41,6 +41,7 @@ type Pipeline struct {
 	NSEC       nostr.SecretKey
 	OwnerPub   nostr.PubKey
 	HTTP       *http.Client
+	Lookup     func(sha256 string) (string, bool, error) // optional; if set, returning ok=true short-circuits the Blossom upload
 }
 
 func New(blossomURL string, nsec nostr.SecretKey, pub nostr.PubKey) *Pipeline {
@@ -65,6 +66,15 @@ func (p *Pipeline) Process(ctx context.Context, body []byte, mime string) (Resul
 			dim, bh = d, h
 		}
 	}
+	if p.Lookup != nil {
+		if existing, ok, err := p.Lookup(sha); err != nil {
+			return Result{}, fmt.Errorf("media: lookup sha256: %w", err)
+		} else if ok {
+			return Result{URL: existing, SHA256: sha, Size: int64(len(body)), Mime: mime,
+				Dim: dim, Blurhash: bh, Imeta: ImetaTag(existing, mime, sha, dim, bh), Bytes: body}, nil
+		}
+	}
+
 	url, err := p.blossomUpload(ctx, body, sha, mime)
 	if err != nil {
 		return Result{}, fmt.Errorf("blossom upload: %w", err)
