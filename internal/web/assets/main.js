@@ -7,7 +7,7 @@ import { toolsInit, loadTools } from "./tools.js";
 import { verifyInit } from "./verify.js";
 import { interactInit } from "./interact.js";
 import { installRecoveryAutosave } from "./drafts_recovery.js";
-import { installDraftsSidebar } from "./drafts.js";
+import { installDraftsSidebar, populateTranslateMenu } from "./drafts.js";
 
 // loadConfig fetches operator preferences (currently just USER_LANGUAGES) and
 // rebuilds the per-platform overrides so the Bluesky/Mastodon language fields
@@ -52,6 +52,7 @@ async function init() {
   interactInit();
   installRecoveryAutosave();
   installDraftsSidebar();
+  populateTranslateMenu(); // re-populate after /api/config resolves (idempotent)
   document.querySelectorAll(".tab").forEach(b =>
     b.addEventListener("click", () => switchTab(b.dataset.view)));
 }

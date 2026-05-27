@@ -256,6 +256,7 @@ export function installDraftsSidebar() {
   });
 
   installTagsInput();
+  populateTranslateMenu();
   loadDraftList();
 }
 
@@ -285,4 +286,43 @@ export async function deleteActiveDraft() {
 function refreshActiveControls() {
   const del = document.getElementById("draft-delete");
   if (del) del.hidden = !state.activeDraftId;
+}
+
+export function populateTranslateMenu() {
+  const sel = document.getElementById("draft-translate");
+  if (!sel) return;
+  const targets = state.translateTargets || [];
+  if (targets.length === 0) { sel.hidden = true; return; }
+  sel.hidden = false;
+  sel.innerHTML = `<option value="">🌐 Translate to…</option>` +
+    targets.map(t => `<option value="${t}">${t.toUpperCase()}</option>`).join("");
+  // attach the change handler once (replace any prior handler by cloning the node would lose the options;
+  // instead, idempotently bind a property-based handler):
+  sel.onchange = async () => {
+    const target = sel.value;
+    sel.value = "";
+    if (!target || !state.activeDraftId) return;
+    setStatus("saving", "translating…");
+    try {
+      const r = await fetch(
+        "/api/drafts/" + encodeURIComponent(state.activeDraftId) + "/translate",
+        { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target }), credentials: "same-origin" }
+      );
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const newD = await r.json();
+      // load the new draft into Compose
+      let spec = {};
+      try { spec = JSON.parse(newD.spec || "{}"); } catch {}
+      spec.id = newD.id;
+      spec.media = newD.media || [];
+      loadDraft(spec);
+      renderTagChips(newD.tags || []);
+      setStatus("saved", "translated → new draft");
+      loadDraftList();
+    } catch (e) {
+      setStatus("error", "translate failed");
+      console.warn("translate:", e);
+    }
+  };
 }
