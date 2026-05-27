@@ -1,6 +1,10 @@
 package store
 
 import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -70,4 +74,104 @@ func DeriveTitle(masterText string) string {
 		return t
 	}
 	return ""
+}
+
+// CreateDraft inserts a new draft (with media) in a single transaction.
+// CreatedAt / UpdatedAt must be set by the caller (callers usually use
+// time.Now().UTC()). Tags are normalized via NormalizeTags before persistence.
+func (s *Store) CreateDraft(d *Draft) error {
+	if d.ID == "" {
+		return errors.New("CreateDraft: empty id")
+	}
+	d.Tags = NormalizeTags(d.Tags)
+	tagsJSON, err := json.Marshal(d.Tags)
+	if err != nil {
+		return fmt.Errorf("CreateDraft: marshal tags: %w", err)
+	}
+	if d.Title == "" {
+		d.Title = DeriveTitle(d.MasterText)
+	}
+	tx, err := s.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(
+		`INSERT INTO drafts(id, created_at, updated_at, title, master_text, tags_json, spec_json)
+		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		d.ID, d.CreatedAt.UTC(), d.UpdatedAt.UTC(), d.Title, d.MasterText, string(tagsJSON), d.Spec,
+	); err != nil {
+		return fmt.Errorf("CreateDraft: insert draft: %w", err)
+	}
+	if err := insertDraftMedia(tx, d.ID, d.Media); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func insertDraftMedia(tx *sql.Tx, draftID string, media []Media) error {
+	for _, m := range media {
+		if _, err := tx.Exec(
+			`INSERT INTO draft_media(draft_id, ordinal, blossom_url, sha256, mime, dim, blurhash, size_bytes, alt)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			draftID, m.Ordinal, m.BlossomURL, m.SHA256, m.Mime, m.Dim, m.Blurhash, m.SizeBytes, m.Alt,
+		); err != nil {
+			return fmt.Errorf("insertDraftMedia: %w", err)
+		}
+	}
+	return nil
+}
+
+// ErrDraftNotFound is returned by GetDraft / UpdateDraft / DeleteDraft when no
+// row matches the requested id.
+var ErrDraftNotFound = errors.New("draft not found")
+
+// GetDraft returns a draft hydrated with its media. Returns ErrDraftNotFound
+// (wrapped) if no row matches.
+func (s *Store) GetDraft(id string) (*Draft, error) {
+	d := &Draft{ID: id}
+	var tagsJSON string
+	err := s.sql.QueryRow(
+		`SELECT created_at, updated_at, title, master_text, tags_json, spec_json
+		 FROM drafts WHERE id=?`, id,
+	).Scan(&d.CreatedAt, &d.UpdatedAt, &d.Title, &d.MasterText, &tagsJSON, &d.Spec)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("GetDraft %q: %w", id, ErrDraftNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("GetDraft %q: %w", id, err)
+	}
+	if tagsJSON != "" {
+		_ = json.Unmarshal([]byte(tagsJSON), &d.Tags)
+	}
+	if d.Tags == nil {
+		d.Tags = []string{}
+	}
+	media, err := s.getDraftMedia(id)
+	if err != nil {
+		return nil, err
+	}
+	d.Media = media
+	return d, nil
+}
+
+func (s *Store) getDraftMedia(draftID string) ([]Media, error) {
+	rows, err := s.sql.Query(
+		`SELECT ordinal, blossom_url, sha256, COALESCE(mime,''), COALESCE(dim,''),
+		        COALESCE(blurhash,''), COALESCE(size_bytes,0), COALESCE(alt,'')
+		 FROM draft_media WHERE draft_id=? ORDER BY ordinal`, draftID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("getDraftMedia: %w", err)
+	}
+	defer rows.Close()
+	var out []Media
+	for rows.Next() {
+		var m Media
+		if err := rows.Scan(&m.Ordinal, &m.BlossomURL, &m.SHA256, &m.Mime, &m.Dim, &m.Blurhash, &m.SizeBytes, &m.Alt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
