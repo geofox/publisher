@@ -58,3 +58,25 @@ func TestRetryNotifies(t *testing.T) {
 		t.Fatalf("Retry PostPublished calls = %d, want 1 with id p1", len(rn.posts))
 	}
 }
+
+func TestFireNotifies(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SavePost(&store.Post{
+		ID: "p2", Platforms: []string{"nostr"}, Status: "scheduled",
+		Targets: []store.Target{{Platform: "nostr", Status: "scheduled"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rn := &recordingNotifier{}
+	d := &Dispatcher{Nostr: fakeNostr{}, Store: db, Notify: rn}
+	if _, err := d.Fire(context.Background(), "p2"); err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+	if len(rn.posts) != 1 || rn.posts[0].ID != "p2" {
+		t.Fatalf("Fire PostPublished calls = %d, want 1 with id p2", len(rn.posts))
+	}
+}
