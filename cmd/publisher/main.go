@@ -16,6 +16,7 @@ import (
 	"github.com/geofox/publisher/internal/bluesky"
 	"github.com/geofox/publisher/internal/config"
 	"github.com/geofox/publisher/internal/dispatch"
+	"github.com/geofox/publisher/internal/feed"
 	"github.com/geofox/publisher/internal/mastodon"
 	"github.com/geofox/publisher/internal/media"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
@@ -72,11 +73,13 @@ func main() {
 		Threads:  dispatch.ThreadsAdapter{C: tc},
 		Store:    st,
 		Fetcher:  mp,
+		Notify:   feed.NewWebhook(cfg.FeedWebhookURL, cfg.FeedWebhookToken),
 	}
 	a := api.New(np, mp)
 	a.Store = st
 	a.Dispatch = d
 	a.UserLanguages = cfg.UserLanguages
+	a.PublicFeedToken = cfg.PublicFeedToken
 	if cfg.DeepLAPIKey != "" {
 		a.Translator = translate.NewDeepL(cfg.DeepLAPIKey)
 	}
