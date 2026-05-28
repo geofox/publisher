@@ -127,4 +127,29 @@ func TestBuildPublishedAtFallsBackToCreatedAt(t *testing.T) {
 	}
 }
 
+func TestBuildIncludesPartialNostr(t *testing.T) {
+	// A Nostr note that reached some relays but not all is status "partial" yet
+	// carries a public njump.me URL — it is live and must appear (and gate the
+	// webhook). This is the common one-relay-timed-out case.
+	posts := []store.Post{{
+		ID: "pn", MasterText: "live on some relays",
+		Targets: []store.Target{{Platform: "nostr", Status: "partial", RemoteURL: "https://njump.me/x"}},
+	}}
+	out := Build(posts, 20)
+	if len(out.Posts) != 1 {
+		t.Fatalf("got %d items, want 1 (partial nostr is live)", len(out.Posts))
+	}
+	if len(out.Posts[0].Links) != 1 || out.Posts[0].Links[0].Platform != "nostr" {
+		t.Fatalf("links = %+v, want one nostr link", out.Posts[0].Links)
+	}
+	if !Eligible(posts[0]) {
+		t.Error("partial nostr post should be eligible (gates the webhook)")
+	}
+	// A partial target with no URL (shouldn't happen, but guard) is excluded.
+	noURL := store.Post{ID: "x", Targets: []store.Target{{Platform: "nostr", Status: "partial", RemoteURL: ""}}}
+	if Eligible(noURL) {
+		t.Error("partial target without a URL must not be linkable")
+	}
+}
+
 func ptr(t time.Time) *time.Time { return &t }

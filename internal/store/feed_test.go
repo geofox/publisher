@@ -153,3 +153,32 @@ func TestPublicFeedIncludesPartial(t *testing.T) {
 		t.Fatalf("partial FirstSuccessAt = %v, want %v", posts[0].FirstSuccessAt, ts)
 	}
 }
+
+func TestPublicFeedFirstLiveCountsPartialAttempt(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ts := time.Date(2026, 5, 26, 10, 0, 0, 0, time.UTC)
+	// A Nostr-only post that reached some relays but not all: the target AND its
+	// attempt are 'partial' (no 'success' attempt exists), yet the note is live.
+	// first-live must come from the partial attempt, not fall back to created_at
+	// — which matters for scheduled posts fired long after composition.
+	mkFeedPost(t, db, "partialnostr", "partial", []Target{
+		{Platform: "nostr", Status: "partial", RemoteURL: "https://njump.me/pn",
+			Attempts: []Attempt{{AttemptNo: 1, Status: "partial", AttemptedAt: ts}}},
+	})
+
+	posts, err := db.PublicFeed(20)
+	if err != nil {
+		t.Fatalf("PublicFeed: %v", err)
+	}
+	if len(posts) != 1 || posts[0].ID != "partialnostr" {
+		t.Fatalf("got %d posts, want the partial nostr post", len(posts))
+	}
+	if posts[0].FirstSuccessAt == nil || !posts[0].FirstSuccessAt.Equal(ts) {
+		t.Fatalf("FirstSuccessAt = %v, want %v (partial attempt counts as live)", posts[0].FirstSuccessAt, ts)
+	}
+}

@@ -71,16 +71,24 @@ func publicVisible(platform, fieldsJSON string) bool {
 }
 
 // targetLink returns the public link for a target, or false if it should not
-// appear: it must have succeeded, carry a URL, and be publicly visible.
+// appear. A target qualifies when it is publicly visible, carries a URL, and
+// actually went live — status "success", or "partial". "partial" only arises
+// for Nostr, where it means the note reached at least one relay (the njump.me
+// URL resolves) while another relay failed; that note is publicly live, so it
+// must not be hidden until every relay is green. The RemoteURL guard keeps
+// truly-failed targets (which have no URL) out.
 func targetLink(t store.Target) (Link, bool) {
-	if t.Status != "success" || t.RemoteURL == "" || !publicVisible(t.Platform, t.FieldsJSON) {
+	if t.RemoteURL == "" || !publicVisible(t.Platform, t.FieldsJSON) {
+		return Link{}, false
+	}
+	if t.Status != "success" && t.Status != "partial" {
 		return Link{}, false
 	}
 	return Link{Platform: t.Platform, URL: t.RemoteURL}, true
 }
 
 // Eligible reports whether a post may appear in the feed: it is not a reply and
-// has at least one public, successful platform link.
+// has at least one public, live platform link (see targetLink).
 func Eligible(p store.Post) bool {
 	if isReply(p) {
 		return false

@@ -7,12 +7,16 @@ import (
 	"time"
 )
 
-// firstSuccessExpr is the SQL fragment for a post's first-success time: the
+// firstSuccessExpr is the SQL fragment for a post's first-live time: the
 // earliest target_attempts.attempted_at across the post's targets whose attempt
-// succeeded. Used for both ORDER BY and the FirstSuccessAt projection.
+// went live — status 'success', or 'partial' (a Nostr note that reached at
+// least one relay). This must match feed.targetLink's notion of "live" so the
+// publish date covers partial-but-live Nostr-only posts (e.g. a scheduled post
+// that fires partial, where created_at would otherwise misdate it). Used for
+// both ORDER BY and the FirstSuccessAt projection.
 const firstSuccessExpr = `(SELECT MIN(ta.attempted_at) FROM target_attempts ta
 	JOIN post_targets pt ON ta.target_id = pt.id
-	WHERE pt.post_id = p.id AND ta.status = 'success')`
+	WHERE pt.post_id = p.id AND ta.status IN ('success','partial'))`
 
 // PublicFeed returns posts for the public homepage feed, newest-first by
 // first-success time. It includes only non-hidden posts in a published state
