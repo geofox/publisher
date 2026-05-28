@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"time"
 )
 
@@ -68,6 +69,8 @@ func (s *Store) PublicFeed(limit int) ([]Post, error) {
 			if t, perr := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", fsa.String); perr == nil {
 				u := t.UTC()
 				p.FirstSuccessAt = &u
+			} else {
+				slog.Warn("PublicFeed: unexpected first_success_at format", "post_id", p.ID, "raw", fsa.String, "err", perr)
 			}
 		}
 		out = append(out, p)

@@ -49,11 +49,18 @@ func TestPublicFeedFirstSuccessAndOrder(t *testing.T) {
 				{AttemptNo: 2, Status: "success", AttemptedAt: t2},
 			}},
 	})
-	// Newer post: nostr succeeded at t3.
-	mkFeedPost(t, db, "new", "success", []Target{
-		{Platform: "nostr", Status: "success", RemoteURL: "https://njump.me/y",
-			Attempts: []Attempt{{AttemptNo: 1, Status: "success", AttemptedAt: t3}}},
-	})
+	// Newer post: nostr succeeded at t3, with one media attachment.
+	if err := db.SavePost(&Post{
+		ID: "new", CreatedAt: time.Now().UTC(), MasterText: "text new",
+		Platforms: []string{"nostr"}, Source: "web", Status: "success",
+		Targets: []Target{
+			{Platform: "nostr", Status: "success", RemoteURL: "https://njump.me/y",
+				Attempts: []Attempt{{AttemptNo: 1, Status: "success", AttemptedAt: t3}}},
+		},
+		Media: []Media{{Ordinal: 0, BlossomURL: "https://b/new.jpg", SHA256: "abc", Mime: "image/jpeg", Dim: "2x2", Blurhash: "L1", SizeBytes: 10, Alt: "a pic"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	posts, err := db.PublicFeed(20)
 	if err != nil {
@@ -78,6 +85,10 @@ func TestPublicFeedFirstSuccessAndOrder(t *testing.T) {
 	}
 	if masto == nil || masto.RemoteURL != "https://m/1" || masto.FieldsJSON != `{"visibility":"public"}` {
 		t.Fatalf("mastodon target not hydrated: %+v", masto)
+	}
+	// Media is hydrated by PublicFeed (posts[0] is "new").
+	if len(posts[0].Media) != 1 || posts[0].Media[0].BlossomURL != "https://b/new.jpg" || posts[0].Media[0].Alt != "a pic" {
+		t.Fatalf("media not hydrated: %+v", posts[0].Media)
 	}
 }
 
@@ -112,5 +123,33 @@ func TestPublicFeedExcludesHiddenAndUnpublished(t *testing.T) {
 			ids[i] = p.ID
 		}
 		t.Fatalf("got %v, want [shown] (hidden/scheduled/failed excluded)", ids)
+	}
+}
+
+func TestPublicFeedIncludesPartial(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ts := time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC)
+	// A partial post: nostr succeeded, mastodon failed → overall 'partial'.
+	mkFeedPost(t, db, "partial", "partial", []Target{
+		{Platform: "nostr", Status: "success", RemoteURL: "https://njump.me/p",
+			Attempts: []Attempt{{AttemptNo: 1, Status: "success", AttemptedAt: ts}}},
+		{Platform: "mastodon", Status: "failed", RemoteURL: "",
+			Attempts: []Attempt{{AttemptNo: 1, Status: "failed", AttemptedAt: ts}}},
+	})
+
+	posts, err := db.PublicFeed(20)
+	if err != nil {
+		t.Fatalf("PublicFeed: %v", err)
+	}
+	if len(posts) != 1 || posts[0].ID != "partial" {
+		t.Fatalf("got %d posts, want the single partial post included", len(posts))
+	}
+	if posts[0].FirstSuccessAt == nil || !posts[0].FirstSuccessAt.Equal(ts) {
+		t.Fatalf("partial FirstSuccessAt = %v, want %v", posts[0].FirstSuccessAt, ts)
 	}
 }
