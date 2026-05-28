@@ -376,7 +376,7 @@ main{max-width:1200px;margin:0 auto;padding:14px 14px 60px}
 
 /* ── Thread preview ─────────────────────────────────────────────────────── */
 .threadnum { display:flex; align-items:center; gap:6px; margin:8px 0; color:var(--muted); font-size:13px; }
-.pv-thread-head { color:var(--muted); font-size:12px; margin-bottom:6px; }
+.pv-thread-head { color:var(--muted); font-size:12px; }
 .pv-seg { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:8px; }
 .pv-seg-n { color:var(--accent); font-size:11px; font-variant-numeric:tabular-nums; }
 .pv-seg-body { white-space:pre-wrap; margin-top:4px; }

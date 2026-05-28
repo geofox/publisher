@@ -52,6 +52,17 @@ function maybeAppendQuotedCard(host, p) {
   if (it && p === it.platform) host.append(quotedCard());
 }
 
+// platformSwitch builds the <select> that changes which platform the preview
+// shows. Shared by the single-post card and the threaded view so the operator
+// can always switch the previewed platform — including when the draft renders
+// as a multi-segment thread.
+function platformSwitch(p) {
+  const sel = el("select", { class: "pv-switch", onchange: e => { state.focus = e.target.value; renderPreview(); } });
+  for (const q of [...state.platforms]) sel.append(el("option", { value: q, text: META[q].label }));
+  sel.value = p;
+  return sel;
+}
+
 // threadPreview fetches the per-platform split for the focused platform and
 // renders the segment chain into `container`. Returns true if it rendered a
 // multi-segment thread, false if the draft fits in one post (caller renders the
@@ -73,9 +84,12 @@ export async function threadPreview(container, text, platform, number) {
   if (!pv || pv.count < 2) return false;
 
   container.innerHTML = "";
-  const head = document.createElement("div");
-  head.className = "pv-thread-head";
-  head.textContent = `${pv.count} posts`;
+  // Header mirrors the single-post card: platform switcher on the left so the
+  // operator can change the previewed platform even while viewing a thread.
+  const head = el("div", { class: "pv-head" },
+    platformSwitch(platform),
+    el("span", { class: "pv-thread-head", text: `${pv.count} posts` }),
+  );
   container.appendChild(head);
   pv.segments.forEach((seg, i) => {
     const card = document.createElement("div");
@@ -140,9 +154,7 @@ function _renderSinglePost(host, p) {
   const card = el("div", { class: "pv-card p-" + p });
 
   // header: platform + selector + count
-  const sel = el("select", { class: "pv-switch", onchange: e => { state.focus = e.target.value; renderPreview(); } });
-  for (const q of [...state.platforms]) sel.append(el("option", { value: q, text: META[q].label }));
-  sel.value = p;
+  const sel = platformSwitch(p);
   const overCls = !meta.limit ? "ok" : n > meta.limit ? "bad" : n > meta.limit * 0.9 ? "warn" : "ok";
   card.append(el("div", { class: "pv-head" },
     sel,
