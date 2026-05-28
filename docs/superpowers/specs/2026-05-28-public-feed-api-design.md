@@ -60,6 +60,11 @@ The two share one eligibility predicate so they can never disagree about what is
 9. **Webhook fires on retry too.** Treat retry as a terminal publish: if the
    post is feed-eligible afterward, ping. Redundant pings are harmless because
    the receiver just re-fetches (idempotent).
+10. **`published_at` = first-success time, stable across retries.** The item's
+    publish date is the earliest moment the post went live on *any* platform
+    (`MIN(attempted_at)` over successful attempts). A later retry that fixes a
+    failed platform appends a newer attempt row, so it adds a link but does
+    **not** move the publish date. The feed is ordered by this same timestamp.
 
 ## Out of scope
 
@@ -86,7 +91,8 @@ them).
   hydrated with target `status`, `remote_url`, `fields_json`.
 - `Build(posts []store.Post, limit int) Response` — applies the per-target link
   filter, empty-drop, trims to `limit`, reshapes to DTOs. Each item's
-  `published_at` is `p.FiredAt` if set, else `p.CreatedAt`. Pure and table-test
+  `published_at` is `p.FirstSuccessAt` (the first-success time set by
+  `PublicFeed`), falling back to `p.CreatedAt` only if unset. Pure and table-test
   friendly.
 - `publicVisible(platform, fieldsJSON string) bool` — the Mastodon-visibility
   helper (unset/`public` → true; otherwise false; non-Mastodon → true).
@@ -95,17 +101,23 @@ them).
 
 New method (new file `internal/store/feed.go` or appended to `models.go`):
 
-- `PublicFeed(limit int) ([]Post, error)` — posts newest-first by effective
-  publish time (`COALESCE(MAX(target_attempts.attempted_at), created_at)`,
-  matching `ListPostsFiltered`'s ordering), filtered to `hidden=0` and
-  `status IN ('success','partial')` (the only statuses that can hold a successful
-  target). Hydrates each target with `platform`, `status`, `remote_url`,
-  `fields_json`, plus the post's `media[]` and `interaction`, and populates
-  `FiredAt` (effective publish time) the way `ListPostsFiltered` does. Does
-  **not** hydrate attempt/relay history (unlike `GetPost`). Reply exclusion and
-  visibility filtering are left to `feed.Eligible`/`feed.Build` so the predicate
-  stays the single source of truth; the bounded over-fetch window absorbs the
-  rows those rules drop.
+- `PublicFeed(limit int) ([]Post, error)` — posts ordered by **first-success
+  time** descending (`MIN(ta.attempted_at)` over the post's attempts where
+  `ta.status='success'`, `COALESCE`-d with `created_at` defensively), filtered to
+  `hidden=0` and `status IN ('success','partial')` (the only statuses that can
+  hold a successful target). Hydrates each target with `platform`, `status`,
+  `remote_url`, `fields_json`, plus the post's `media[]` and `interaction`, and
+  populates the new `FirstSuccessAt` field (see below) with that same
+  first-success timestamp. Does **not** hydrate attempt/relay history (unlike
+  `GetPost`). Reply exclusion and visibility filtering are left to
+  `feed.Eligible`/`feed.Build` so the predicate stays the single source of truth;
+  the bounded over-fetch window absorbs the rows those rules drop.
+- `store.Post` gains `FirstSuccessAt *time.Time` with `json:"-"` (never
+  serialized, so it can't leak into the existing `/api/posts` responses;
+  populated only by `PublicFeed`, read only by `feed.Build`). It is the time the
+  post first went live on **any** platform; because retries append *later*
+  attempt rows, `MIN` is unaffected, so a successful retry never moves the
+  publish date.
 - Because the visibility/empty-drop filtering happens in `feed.Build` after the
   query, `PublicFeed` over-fetches a bounded recent window (e.g. `max(limit*4,
   50)` capped at 200) so trimming to `limit` still yields a full page in the
@@ -199,8 +211,11 @@ to inject into the dispatcher.
 
 ## Testing
 
-- **`store.PublicFeed`:** ordering newest-first; hydrates `remote_url` +
-  `fields_json`; excludes hidden and replies; bounded over-fetch.
+- **`store.PublicFeed`:** ordering by first-success time descending; hydrates
+  `remote_url` + `fields_json` + `FirstSuccessAt`; excludes hidden; bounded
+  over-fetch. A post that succeeded on platform A at T1 and only succeeded on
+  platform B after a retry at T2>T1 reports `FirstSuccessAt == T1` (retry does
+  not move the date) and now carries both links.
 - **`feed.Build` / `feed.Eligible` (pure, table-driven):** Mastodon `unlisted`
   link omitted; post public-elsewhere keeps its other links; only-unlisted post
   dropped; quote/repost carry `interaction`; reply excluded; media mapped;
