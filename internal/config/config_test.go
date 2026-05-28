@@ -48,3 +48,17 @@ func TestUserLanguagesParsedFromEnv(t *testing.T) {
 		}
 	}
 }
+
+func TestFeedEnvVars(t *testing.T) {
+	if got := getEnv("PUBLIC_FEED_TOKEN", ""); got != "" {
+		t.Errorf("default PUBLIC_FEED_TOKEN = %q, want empty", got)
+	}
+	t.Setenv("PUBLIC_FEED_TOKEN", "tok")
+	t.Setenv("FEED_WEBHOOK_URL", "https://hook")
+	t.Setenv("FEED_WEBHOOK_TOKEN", "wtok")
+	if getEnv("PUBLIC_FEED_TOKEN", "") != "tok" ||
+		getEnv("FEED_WEBHOOK_URL", "") != "https://hook" ||
+		getEnv("FEED_WEBHOOK_TOKEN", "") != "wtok" {
+		t.Error("feed env vars not read via getEnv")
+	}
+}
