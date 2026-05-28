@@ -347,6 +347,8 @@ func authorityOf(atURI string) string {
 	return s
 }
 
-func webURL(handle, atURI string) string {
-	return "https://bsky.app/profile/" + handle + "/post/" + rkeyOf(atURI)
+// webURL builds a bsky.app permalink. authority is the profile segment — a
+// handle (alice.bsky.social) or a DID (did:plc:…); bsky.app resolves either.
+func webURL(authority, atURI string) string {
+	return "https://bsky.app/profile/" + authority + "/post/" + rkeyOf(atURI)
 }
