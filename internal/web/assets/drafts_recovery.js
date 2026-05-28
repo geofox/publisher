@@ -51,10 +51,13 @@ export function installRecoveryAutosave() {
     clearTimeout(t);
     t = setTimeout(snapshot, 250);
   };
-  document.addEventListener("input", (e) => {
+  const onComposeEdit = (e) => {
+    // #preview is a read-only render of the draft; its platform-switcher only
+    // changes which platform is previewed (state.focus), not the draft content,
+    // so it must never mark the draft dirty or trigger an autosave snapshot.
+    if (e.target.closest("#preview")) return;
     if (e.target.closest("#compose")) { fire(); markDirty(); }
-  });
-  document.addEventListener("change", (e) => {
-    if (e.target.closest("#compose")) { fire(); markDirty(); }
-  });
+  };
+  document.addEventListener("input", onComposeEdit);
+  document.addEventListener("change", onComposeEdit);
 }
