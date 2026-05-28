@@ -26,6 +26,10 @@ type Post struct {
 	Status       string       `json:"status"`
 	ScheduledAt  *time.Time   `json:"scheduled_at,omitempty"`
 	FiredAt      *time.Time   `json:"fired_at,omitempty"` // list view: latest target attempt time (actual publish/retry)
+	// FirstSuccessAt is the earliest time the post went live on ANY platform
+	// (MIN over successful attempts). Set only by PublicFeed, never serialized.
+	// Retries append later attempt rows, so this never moves once set.
+	FirstSuccessAt *time.Time `json:"-"`
 	Targets      []Target     `json:"targets,omitempty"`
 	Media        []Media      `json:"media,omitempty"`
 	Interaction  *Interaction `json:"interaction,omitempty"`
