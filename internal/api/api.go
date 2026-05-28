@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"fiatjaf.com/nostr"
 
 	"github.com/geofox/publisher/internal/dispatch"
+	"github.com/geofox/publisher/internal/feed"
 	"github.com/geofox/publisher/internal/httpx"
 	"github.com/geofox/publisher/internal/media"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
@@ -105,6 +107,10 @@ type API struct {
 	// Translator powers POST /api/translate. nil → feature disabled (handler
 	// returns 503 and /api/config emits an empty translate_targets array).
 	Translator Translator
+
+	// PublicFeedToken gates GET /api/public/feed. Empty → the endpoint is
+	// disabled (returns 404). Set → callers must send Authorization: Bearer <it>.
+	PublicFeedToken string
 }
 
 // New creates a new API with the given publisher and media pipeline.
@@ -138,6 +144,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/resolve", a.handleResolve)
 	mux.HandleFunc("POST /api/interact", a.handleInteract)
 	mux.HandleFunc("GET /api/config", a.handleConfig)
+	mux.HandleFunc("GET /api/public/feed", a.handlePublicFeed)
 	mux.HandleFunc("POST /api/translate", a.handleTranslate)
 	mux.HandleFunc("GET /api/drafts", a.handleListDrafts)
 	mux.HandleFunc("POST /api/drafts", a.handleCreateDraft)
@@ -611,6 +618,33 @@ func atoiOr(s string, def int) int {
 		return def
 	}
 	return v
+}
+
+// ─── GET /api/public/feed ────────────────────────────────────────────────
+//
+// Read-only homepage feed: latest public master posts as custom JSON. Disabled
+// (404) unless PUBLIC_FEED_TOKEN is set; when set, requires a matching bearer
+// token. GET, so it passes the CSRF guard and is meant for a server-side
+// (build-time) consumer that keeps the token secret.
+func (a *API) handlePublicFeed(w http.ResponseWriter, r *http.Request) {
+	if a.PublicFeedToken == "" {
+		httpx.WriteError(w, http.StatusNotFound, "not found")
+		return
+	}
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) ||
+		subtle.ConstantTimeCompare([]byte(h[len(prefix):]), []byte(a.PublicFeedToken)) != 1 {
+		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	limit := atoiOr(r.URL.Query().Get("limit"), 20)
+	posts, err := a.Store.PublicFeed(limit)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, feed.Build(posts, limit))
 }
 
 func (a *API) handleListPosts(w http.ResponseWriter, r *http.Request) {
