@@ -59,6 +59,13 @@ type Config struct {
 	// Free vs Pro is auto-detected from the key suffix (":fx" → Free). Unset
 	// → translation disabled (the UI hides the button).
 	DeepLAPIKey string
+
+	// PublicFeedToken gates GET /api/public/feed (empty → endpoint disabled).
+	PublicFeedToken string
+	// FeedWebhookURL: signal-only ping POSTed when a feed-eligible post is
+	// published (empty → no webhook). FeedWebhookToken is sent as a bearer token.
+	FeedWebhookURL   string
+	FeedWebhookToken string
 }
 
 func Load() (Config, error) {
@@ -86,6 +93,9 @@ func Load() (Config, error) {
 		"wss://nos.lol,wss://relay.damus.io,wss://nostr.wine,wss://nostr.land,wss://relay.nostr.band,wss://purplepag.es,wss://relay.snort.social,wss://nostr.mom"))
 	c.UserLanguages = splitCSV(getEnv("USER_LANGUAGES", ""))
 	c.DeepLAPIKey = getEnv("DEEPL_API_KEY", "")
+	c.PublicFeedToken = getEnv("PUBLIC_FEED_TOKEN", "")
+	c.FeedWebhookURL = getEnv("FEED_WEBHOOK_URL", "")
+	c.FeedWebhookToken = getEnv("FEED_WEBHOOK_TOKEN", "")
 
 	var err error
 	if c.POWDifficultyDefault, err = strconv.Atoi(getEnv("POW_DIFFICULTY_DEFAULT", "16")); err != nil {

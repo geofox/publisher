@@ -226,6 +226,23 @@ Image uploads dedup by sha256 across both `posts` and `drafts`: if the bytes
 already live on Blossom (via a previous post or draft), the pipeline returns
 the existing URL instead of re-uploading.
 
+### Public feed
+
+- `GET /api/public/feed?limit=20` — latest public master posts as JSON for a
+  homepage. Requires `Authorization: Bearer $PUBLIC_FEED_TOKEN`; returns `404`
+  when `PUBLIC_FEED_TOKEN` is unset. Each item has `id`, `published_at` (first
+  time the post went live on any platform), `text`, optional `media[]`, optional
+  `interaction` (for quotes/reposts), and `links[]` — one `{platform, url}` per
+  platform where the post is public and successfully published. Replies, and any
+  post with no public platform copy, are omitted. `limit` defaults to 20, max
+  100.
+
+When a feed-eligible post is published (immediately, on a scheduled fire, or on
+a retry), publisher fires a signal-only `POST` to `FEED_WEBHOOK_URL`
+(`{ "event": "post.published", "id", "published_at" }`) so the homepage can
+re-fetch instead of polling. The body carries no content; treat it as a refresh
+trigger.
+
 ### Web UI & `/api`
 
 The container embeds a mobile-first web UI (the crosspost composer, post
@@ -313,6 +330,9 @@ infrastructure and should be overridden.
 | `ALERT_WEBHOOK_URL` | no | — | Webhook posted to on scheduled-post failure |
 | `ALERT_WEBHOOK_USER` | no | `alertmanager` | Basic-auth user for the alert webhook |
 | `ALERT_WEBHOOK_PASS` | no | — | Basic-auth password for the alert webhook (**secret**) |
+| `PUBLIC_FEED_TOKEN` | no | — | Bearer token gating `GET /api/public/feed`; unset disables the endpoint (**secret**) |
+| `FEED_WEBHOOK_URL` | no | — | Signal-only webhook POSTed when a feed-eligible post is published |
+| `FEED_WEBHOOK_TOKEN` | no | — | Bearer token sent on the feed webhook so the receiver can verify it (**secret**) |
 | `PORT` | no | `8080` | Listen port |
 | `LOG_LEVEL` | no | `info` | `debug` / `info` / `warn` / `error` |
 | `PLC_DIRECTORY_URL` | no | `https://plc.directory` | did:plc resolver for Bluesky identity lookups |
