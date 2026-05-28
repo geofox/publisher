@@ -959,6 +959,10 @@ func (d *Dispatcher) RetryRelay(ctx context.Context, postID, relayURL string) (*
 	if err := d.Store.UpdateRelayStatus(target.ID, relayURL, status, msg); err != nil {
 		return nil, err
 	}
+	// No notify() here: RetryRelay only rebroadcasts an already-signed Nostr
+	// event to one relay; it creates no new post/URL. The narrow case where a
+	// partial→success relay flip newly makes a post feed-eligible is
+	// intentionally not pinged (the feed still surfaces it on next fetch).
 	return d.Store.GetPost(postID)
 }
 

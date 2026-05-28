@@ -34,6 +34,9 @@ func (w *Webhook) PostPublished(_ context.Context, p *store.Post) {
 	if w == nil || w.URL == "" || p == nil || !Eligible(*p) {
 		return
 	}
+	// published_at here is best-effort: on the dispatch path the post carries no
+	// FirstSuccessAt, so this is the post's creation time. The webhook is only a
+	// refresh signal — the authoritative first-success time is in the feed itself.
 	body, err := json.Marshal(map[string]string{
 		"event":        "post.published",
 		"id":           p.ID,
