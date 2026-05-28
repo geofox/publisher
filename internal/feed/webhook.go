@@ -27,7 +27,9 @@ func NewWebhook(url, token string) *Webhook {
 }
 
 // PostPublished pings the consumer if the post is feed-eligible. It returns
-// immediately; delivery (with retries) runs in a background goroutine.
+// immediately; delivery (with retries) runs in a background goroutine with a
+// detached context. The caller's context is intentionally NOT forwarded — it is
+// typically cancelled when the publish handler returns, before delivery finishes.
 func (w *Webhook) PostPublished(_ context.Context, p *store.Post) {
 	if w == nil || w.URL == "" || p == nil || !Eligible(*p) {
 		return
@@ -48,7 +50,9 @@ func (w *Webhook) PostPublished(_ context.Context, p *store.Post) {
 // the ping. On exhaustion it logs a warning — a missed ping just leaves the
 // homepage stale until the next post, never wrong.
 func (w *Webhook) deliver(body []byte, postID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// 35s comfortably covers the worst-case retry budget: 3 attempts at the
+	// client's 10s timeout plus 0.5s+1.0s backoff = 31.5s.
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
