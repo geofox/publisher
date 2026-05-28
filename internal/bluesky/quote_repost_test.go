@@ -85,3 +85,46 @@ func TestGetPostNoReplyRootForTopLevel(t *testing.T) {
 		t.Fatalf("top-level post should have empty reply root: %+v", sp)
 	}
 }
+
+// TestRepostRemoteURLPointsAtSubject guards the repost-link regression: the
+// RemoteURL must address the ORIGINAL post (the subject) rather than gluing the
+// reposter's handle to the repost record's rkey under /post/.
+func TestRepostRemoteURLPointsAtSubject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/xrpc/com.atproto.server.createSession":
+			w.Write([]byte(`{"accessJwt":"jwt","did":"did:plc:me","handle":"me.bsky.social"}`))
+		case "/xrpc/com.atproto.repo.createRecord":
+			// The created repost record gets its own rkey in the repost collection.
+			w.Write([]byte(`{"uri":"at://did:plc:me/app.bsky.feed.repost/rp123","cid":"cidrepost"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "id", "pw")
+	res, err := c.Repost(context.Background(), "at://did:plc:author/app.bsky.feed.post/orig456", "cidsubj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://bsky.app/profile/did:plc:author/post/orig456"; res.RemoteURL != want {
+		t.Errorf("RemoteURL = %q, want %q", res.RemoteURL, want)
+	}
+	// RemoteID stays the repost record's URI (needed for later deletion).
+	if want := "at://did:plc:me/app.bsky.feed.repost/rp123"; res.RemoteID != want {
+		t.Errorf("RemoteID = %q, want %q", res.RemoteID, want)
+	}
+}
+
+func TestAuthorityOf(t *testing.T) {
+	cases := map[string]string{
+		"at://did:plc:abc/app.bsky.feed.post/3k":      "did:plc:abc",
+		"at://alice.bsky.social/app.bsky.feed.post/x": "alice.bsky.social",
+		"did:plc:naked":                               "did:plc:naked",
+	}
+	for in, want := range cases {
+		if got := authorityOf(in); got != want {
+			t.Errorf("authorityOf(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
