@@ -143,6 +143,14 @@ type Fetcher interface {
 	Fetch(ctx context.Context, url string) (data []byte, mime string, err error)
 }
 
+// PostNotifier is told when a post reaches a terminal publish state, so an
+// implementation (feed.Webhook) can ping an external consumer. Implementations
+// must be non-blocking and best-effort — the dispatcher fires this on the hot
+// publish path and does not wait for or check the result.
+type PostNotifier interface {
+	PostPublished(ctx context.Context, p *store.Post)
+}
+
 type Dispatcher struct {
 	Nostr    NostrPoster
 	Mastodon MastodonPoster
@@ -150,6 +158,15 @@ type Dispatcher struct {
 	Threads  ThreadsPoster
 	Store    *store.Store // may be nil in unit tests
 	Fetcher  Fetcher
+	Notify   PostNotifier // may be nil; notify() guards it
+}
+
+// notify fires the PostNotifier when configured. Safe with a nil notifier or
+// nil post so call sites stay one-liners.
+func (d *Dispatcher) notify(ctx context.Context, p *store.Post) {
+	if d.Notify != nil && p != nil {
+		d.Notify.PostPublished(ctx, p)
+	}
 }
 
 // runPlatform executes one platform and returns a normalized TargetResult.
@@ -530,6 +547,7 @@ func (d *Dispatcher) Post(ctx context.Context, spec PostSpec) *store.Post {
 			slog.Error("savepost failed", "post_id", rec.ID, "err", err)
 		}
 	}
+	d.notify(ctx, rec)
 	return rec
 }
 
@@ -699,6 +717,7 @@ func (d *Dispatcher) Interact(ctx context.Context, spec InteractSpec) *store.Pos
 			slog.Error("savepost (interact) failed", "post_id", rec.ID, "err", err)
 		}
 	}
+	d.notify(ctx, rec)
 	return rec
 }
 
@@ -829,7 +848,12 @@ func (d *Dispatcher) Fire(ctx context.Context, postID string) (*store.Post, erro
 	}); err != nil {
 		return nil, err
 	}
-	return d.Store.GetPost(postID)
+	post, err = d.Store.GetPost(postID)
+	if err != nil {
+		return nil, err
+	}
+	d.notify(ctx, post)
+	return post, nil
 }
 
 // Retry re-runs the failed (or missed) targets of an archived post. If platforms
@@ -856,7 +880,12 @@ func (d *Dispatcher) Retry(ctx context.Context, postID string, platforms []strin
 	}); err != nil {
 		return nil, err
 	}
-	return d.Store.GetPost(postID)
+	post, err = d.Store.GetPost(postID)
+	if err != nil {
+		return nil, err
+	}
+	d.notify(ctx, post)
+	return post, nil
 }
 
 // nostrStatusFromRelays derives a Nostr target status from its relay states,
