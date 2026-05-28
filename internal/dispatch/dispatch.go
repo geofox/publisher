@@ -794,9 +794,19 @@ func (d *Dispatcher) Schedule(ctx context.Context, spec PostSpec, at time.Time) 
 	for _, plat := range platforms {
 		// ov2fields returns a map of JSON-safe values only, so Marshal can't fail.
 		fields, _ := json.Marshal(ov2fields(spec.Overrides[plat]))
-		rec.Targets = append(rec.Targets, store.Target{
-			Platform: plat, FinalText: finalText(spec, plat), FieldsJSON: string(fields), Status: "scheduled",
-		})
+		text := finalText(spec, plat)
+		tg := store.Target{
+			Platform: plat, FinalText: text, FieldsJSON: string(fields), Status: "scheduled",
+		}
+		// Pre-split exactly as runChain does at dispatch time, so a scheduled
+		// over-limit post fires as a reply-chain (the fire path threads any target
+		// with >1 segment) instead of one over-limit post the platform rejects.
+		if segTexts, _ := thread.Split(text, thread.LimitFor(plat), thread.Opts{Number: spec.Number}); len(segTexts) > 1 {
+			for i, st := range segTexts {
+				tg.Segments = append(tg.Segments, store.Segment{Ordinal: i, Text: st, Status: "pending"})
+			}
+		}
+		rec.Targets = append(rec.Targets, tg)
 	}
 	if err := d.Store.SavePost(rec); err != nil {
 		return nil, err
