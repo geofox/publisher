@@ -53,12 +53,26 @@ func TestFeedEnvVars(t *testing.T) {
 	if got := getEnv("PUBLIC_FEED_TOKEN", ""); got != "" {
 		t.Errorf("default PUBLIC_FEED_TOKEN = %q, want empty", got)
 	}
+
+	// Verify that Load() reads the feed env vars into the correct Config fields.
+	t.Setenv("NSEC_HEX", "0000000000000000000000000000000000000000000000000000000000000001")
+	t.Setenv("OWNER_PUBKEY", "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+	t.Setenv("BLOSSOM_URL", "https://blossom.example.com")
 	t.Setenv("PUBLIC_FEED_TOKEN", "tok")
 	t.Setenv("FEED_WEBHOOK_URL", "https://hook")
 	t.Setenv("FEED_WEBHOOK_TOKEN", "wtok")
-	if getEnv("PUBLIC_FEED_TOKEN", "") != "tok" ||
-		getEnv("FEED_WEBHOOK_URL", "") != "https://hook" ||
-		getEnv("FEED_WEBHOOK_TOKEN", "") != "wtok" {
-		t.Error("feed env vars not read via getEnv")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PublicFeedToken != "tok" {
+		t.Errorf("PublicFeedToken = %q, want %q", cfg.PublicFeedToken, "tok")
+	}
+	if cfg.FeedWebhookURL != "https://hook" {
+		t.Errorf("FeedWebhookURL = %q, want %q", cfg.FeedWebhookURL, "https://hook")
+	}
+	if cfg.FeedWebhookToken != "wtok" {
+		t.Errorf("FeedWebhookToken = %q, want %q", cfg.FeedWebhookToken, "wtok")
 	}
 }
