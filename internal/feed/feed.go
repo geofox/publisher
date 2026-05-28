@@ -65,6 +65,8 @@ func publicVisible(platform, fieldsJSON string) bool {
 	if err := json.Unmarshal([]byte(fieldsJSON), &f); err != nil {
 		return false
 	}
+	// Absent/empty visibility = Mastodon account default, treated as public.
+	// Non-public values (dropped): unlisted, private, direct.
 	return f.Visibility == "" || f.Visibility == "public"
 }
 

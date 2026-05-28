@@ -112,4 +112,19 @@ func TestEligible(t *testing.T) {
 	}
 }
 
+func TestBuildPublishedAtFallsBackToCreatedAt(t *testing.T) {
+	created := time.Date(2026, 5, 24, 8, 0, 0, 0, time.UTC)
+	posts := []store.Post{{
+		ID: "p1", CreatedAt: created, // FirstSuccessAt deliberately nil
+		Targets: []store.Target{successTarget("nostr", "https://njump.me/x", "")},
+	}}
+	out := Build(posts, 20)
+	if len(out.Posts) != 1 {
+		t.Fatalf("got %d items, want 1", len(out.Posts))
+	}
+	if out.Posts[0].PublishedAt != created {
+		t.Errorf("PublishedAt = %v, want CreatedAt %v when FirstSuccessAt is nil", out.Posts[0].PublishedAt, created)
+	}
+}
+
 func ptr(t time.Time) *time.Time { return &t }
