@@ -3,6 +3,7 @@ import { el, $, gcount, wcount, flash, confirmModal, META, ORDER } from "./commo
 import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv } from "./state.js";
 import { renderPreview } from "./preview.js";
 import { resultRow, openDetail } from "./history.js";
+import { brandTile, icon, PLATFORM_META } from "./brands.js";
 
 export function markDirty() {
   state.dirty = true;
@@ -24,8 +25,72 @@ function counterClass(n, limit) {
 }
 
 // ---------------------------------------------------------------------------
-// Platform chips
+// Auto-threading estimate (client-side, mirrors Go dispatch + the design's
+// splitThread: word-boundary wrap reserving room for a " n/n" suffix). Used for
+// the live thread badge, banner, and the review sheet's segments; the live
+// preview pane still fetches the authoritative split from /api/thread-preview.
 // ---------------------------------------------------------------------------
+
+function numberingOn() { return document.getElementById("threadnum")?.checked ?? true; }
+
+function splitThread(text, limit, number = true) {
+  if (!limit) return [text];
+  if (gcount(text) <= limit) return [text];
+  const reserve = number ? 6 : 0; // " 99/99"
+  const eff = Math.max(limit - reserve, 1);
+  const words = text.split(/(\s+)/);
+  const parts = []; let cur = "";
+  for (const w of words) {
+    if (gcount(cur + w) > eff && cur.trim()) { parts.push(cur.trim()); cur = w.replace(/^\s+/, ""); }
+    else cur += w;
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  return parts.length ? parts : [text];
+}
+
+function threadInfoFor(p) {
+  const parts = splitThread(postedText(p), META[p].limit, numberingOn());
+  return { posts: parts.length, threaded: parts.length > 1, parts };
+}
+
+// targetCount → {text, cls} for a platform's live count. State colors mirror the
+// design: under 90% → ink2 (no class), >90% → amber, over → indigo (will thread,
+// informational), no-limit → teal ∞.
+function targetCount(p) {
+  const limit = META[p].limit, n = gcount(postedText(p));
+  if (!limit) return { text: "∞", cls: "inf", n };
+  const pct = n / limit;
+  return { text: `${n}/${limit}`, cls: n > limit ? "over" : pct > 0.9 ? "near" : "", n };
+}
+
+// Token highlighter for the thread sheet; .pv-tok picks up the platform tint from
+// the --pa set by the p-{platform} ancestor class.
+const SHEET_TOKEN = /(https?:\/\/[^\s]+|#[\w]+|@[\w.]+|\b[a-z0-9-]+\.(?:one|com|social|net|io)\b[^\s]*)/gi;
+function highlightTokens(text) {
+  const out = []; let last = 0, m; SHEET_TOKEN.lastIndex = 0;
+  while ((m = SHEET_TOKEN.exec(text)) !== null) {
+    if (m.index > last) out.push(document.createTextNode(text.slice(last, m.index)));
+    out.push(el("span", { class: "pv-tok", text: m[0] }));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(document.createTextNode(text.slice(last)));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Targets — selectable rows with brand tile, live count, switch, thread badge
+// ---------------------------------------------------------------------------
+
+function iosSwitch(on) { return el("div", { class: "ios-switch" + (on ? " on" : "") }, el("div", { class: "knob" })); }
+
+function threadBadge(p) {
+  const ti = threadInfoFor(p);
+  const badge = el("span", { class: "thread-badge",
+    onclick: e => { e.stopPropagation(); openThreadSheet(p); } });
+  const ic = icon("thread", { size: 12, sw: 1.9 }); if (ic) badge.append(ic);
+  badge.append(el("span", { class: "tb-txt", text: `${ti.posts} posts` }));
+  return badge;
+}
 
 function renderChips() {
   const c = $("#chips"); c.innerHTML = "";
@@ -33,18 +98,129 @@ function renderChips() {
   for (const p of ORDER) {
     const on = state.platforms.has(p);
     const locked = it != null && p === it.platform;
-    let label = META[p].label;
-    if (it) label += p === it.platform ? " · native" : " · copy";
-    c.append(el("button", {
-      class: "chip p-" + p + (on ? " on" : "") + (locked ? " locked" : ""), type: "button", text: label,
+    const meta = PLATFORM_META[p] || {};
+    const tc = targetCount(p);
+    const ti = threadInfoFor(p);
+
+    const top = el("div", { class: "target-top" }, el("span", { class: "t-name", text: META[p].label }));
+    if (it) top.append(el("span", { class: "t-tag" + (locked ? " native" : ""), text: locked ? "native" : "copy" }));
+    if (on && ti.threaded) top.append(threadBadge(p));
+
+    const row = el("div", {
+      class: "target-row p-" + p + (on ? "" : " off") + (locked ? " locked" : ""),
       onclick: () => {
         if (locked) return; // source platform stays selected in interaction mode
         on ? state.platforms.delete(p) : state.platforms.add(p);
         if (!state.platforms.has(state.focus)) state.focus = p;
         renderChips(); renderCards(); renderPreview();
       },
-    }));
+    },
+      brandTile(p, { size: 29 }),
+      el("div", { class: "target-main" }, top, el("div", { class: "t-handle", text: meta.handle || "" })),
+      el("span", { class: "t-count" + (tc.cls ? " " + tc.cls : ""), text: tc.text }),
+      iosSwitch(on),
+    );
+    c.append(row);
   }
+  renderTargetsMeta();
+  renderThreadNotice();
+}
+
+// refreshTargets updates each row's count + thread badge in place on every
+// keystroke (rebuilding rows would re-create the brand-mark <img>s and flicker).
+function refreshTargets() {
+  for (const p of ORDER) {
+    const row = $(`#chips .target-row.p-${p}`); if (!row) continue;
+    const on = state.platforms.has(p);
+    const tc = targetCount(p);
+    const cnt = row.querySelector(".t-count");
+    if (cnt) { cnt.textContent = tc.text; cnt.className = "t-count" + (tc.cls ? " " + tc.cls : ""); }
+    const top = row.querySelector(".target-top");
+    const ti = threadInfoFor(p);
+    let badge = top.querySelector(".thread-badge");
+    if (on && ti.threaded) {
+      if (!badge) { badge = threadBadge(p); top.append(badge); }
+      else badge.querySelector(".tb-txt").textContent = `${ti.posts} posts`;
+    } else if (badge) { badge.remove(); }
+  }
+  renderTargetsMeta();
+  renderThreadNotice();
+}
+
+function renderTargetsMeta() {
+  const m = $("#targets-meta"); if (m) m.textContent = `${state.platforms.size} selected`;
+  const aud = $("#compose-audience");
+  if (aud) aud.textContent = state.platforms.size ? `Public · mirror to ${state.platforms.size}` : "Public";
+}
+
+// renderThreadNotice shows the calm informational banner above POST TO whenever
+// ≥1 selected target overflows; tapping it opens the review sheet.
+function renderThreadNotice() {
+  const host = $("#threadnotice"); if (!host) return;
+  host.innerHTML = "";
+  const threaded = ORDER.filter(p => state.platforms.has(p) && threadInfoFor(p).threaded);
+  if (!threaded.length) return;
+  const names = threaded.map(p => `${META[p].label} (${threadInfoFor(p).posts})`).join(", ");
+  const banner = el("div", { class: "thread-notice", onclick: () => openThreadSheet(threaded[0]) });
+  const ic = icon("thread", { size: 20, sw: 1.8 }); if (ic) banner.append(ic);
+  banner.append(el("div", { class: "tn-body" },
+    el("div", { class: "tn-title", text: `Auto-threading on ${names}` }),
+    el("div", { class: "tn-sub", text: "Over the limit — we'll split it into a numbered thread." }),
+  ));
+  const ch = icon("chevron", { size: 16 }); if (ch) banner.append(ch);
+  host.append(banner);
+}
+
+// openThreadSheet presents the glass bottom sheet reviewing how an over-limit
+// draft splits for one platform.
+function openThreadSheet(p) {
+  const meta = META[p];
+  const number = numberingOn();
+  const text = postedText(p);
+  const segs = splitThread(text, meta.limit, number);
+  const total = gcount(text);
+
+  const bk = el("div", { class: "sheet-bk" });
+  const close = () => bk.remove();
+  bk.addEventListener("click", e => { if (e.target === bk) close(); });
+
+  const sheet = el("div", { class: "sheet p-" + p });
+  sheet.append(el("div", { class: "sheet-grabber" }));
+  sheet.append(el("div", { class: "sheet-head" },
+    brandTile(p, { size: 30 }),
+    el("div", { class: "sh-main" },
+      el("div", { class: "sh-title", text: `${meta.label} thread` }),
+      el("div", { class: "sh-sub", text: `${total} chars over ${meta.limit} → ${segs.length} posts` }),
+    ),
+  ));
+
+  const tl = el("div", { class: "seg-timeline" });
+  segs.forEach((seg, i) => {
+    const num = `${i + 1}/${segs.length}`;
+    const len = gcount(number ? seg + " " + num : seg);
+    const rail = el("div", { class: "seg-rail" }, el("div", { class: "seg-node", text: String(i + 1) }));
+    if (i < segs.length - 1) rail.append(el("div", { class: "seg-conn" }));
+    const txt = el("div", { class: "sc-text" }, ...highlightTokens(seg));
+    if (number) txt.append(el("span", { class: "sc-num", text: " " + num }));
+    const meterFill = el("i", { style: `width:${Math.min(len / meta.limit * 100, 100)}%` });
+    const card = el("div", { class: "seg-card" }, txt,
+      el("div", { class: "sc-meta" },
+        el("span", { class: "sc-count" + (len > meta.limit ? " over" : ""), text: `${len}/${meta.limit}` }),
+        el("div", { class: "track" }, meterFill),
+      ),
+    );
+    tl.append(el("div", { class: "seg-item" }, rail, card));
+  });
+  sheet.append(tl);
+
+  const foot = el("div", { class: "sheet-foot" });
+  const lk = icon("link", { size: 16 }); if (lk) foot.append(lk);
+  foot.append(el("span", { text: "Replies chain automatically · numbering added on send" }));
+  sheet.append(foot);
+  sheet.append(el("button", { class: "sheet-cta", type: "button", text: "Looks good — keep thread", onclick: close }));
+
+  bk.append(sheet);
+  document.body.append(bk);
 }
 
 // ---------------------------------------------------------------------------
@@ -565,7 +741,7 @@ export function showResultModal(data) {
 // ---------------------------------------------------------------------------
 
 export function composeInit() {
-  $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); renderMeta(); renderPreview(); });
+  $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); });
   $("#addimg").addEventListener("click", () => $("#imgfile").click());
   $("#imgfile").addEventListener("change", e => {
     const file = e.target.files[0]; if (!file) return;
@@ -576,6 +752,6 @@ export function composeInit() {
   $("#schedat").addEventListener("input", updateSched);
   $("#schedclear").addEventListener("click", () => { $("#schedat").value = ""; updateSched(); });
   $("#submit").addEventListener("click", submit);
-  document.getElementById("threadnum")?.addEventListener("change", renderPreview);
+  document.getElementById("threadnum")?.addEventListener("change", () => { refreshTargets(); renderPreview(); });
   renderChips(); renderImages(); renderCards(); renderMeta(); renderPreview();
 }

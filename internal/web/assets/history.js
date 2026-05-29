@@ -2,6 +2,7 @@
 import { el, $, api, flash, relTime, shortID, shortRef, META, ORDER, confirmModal } from "./common.js";
 import { state } from "./state.js";
 import { loadDraft } from "./compose.js";
+import { brandTile } from "./brands.js";
 
 // ---------------------------------------------------------------------------
 // Shared result-row primitives (also imported by compose.js for the result modal)
@@ -102,6 +103,7 @@ export function resultRow(t, stop) {
   }
   const b = tgBadge(t.status);
   const row = el("div", { class: "res" },
+    brandTile(t.platform, { size: 22, r: 6 }),
     el("span", { class: "bdg " + b.cls, text: `${t.platform} ${b.mark}` }),
     mid,
     el("span", { class: "meta", text: t.latency_ms ? t.latency_ms + "ms" : "" }),

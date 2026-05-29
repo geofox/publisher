@@ -1,6 +1,16 @@
 "use strict";
 import { el, $, gcount, graphemes, META } from "./common.js";
 import { state, focusedPlatform, postedText } from "./state.js";
+import { brandTile, icon } from "./brands.js";
+
+// threadBadgeStatic → the indigo "{N}-post thread" pill shown in a threaded
+// preview header (non-interactive; the row/banner badges open the review sheet).
+function threadBadgeStatic(count) {
+  const b = el("span", { class: "thread-badge" });
+  const ic = icon("thread", { size: 12, sw: 1.9 }); if (ic) b.append(ic);
+  b.append(el("span", { class: "tb-txt", text: `${count}-post thread` }));
+  return b;
+}
 
 // mediaMax mirrors Go dispatch.mediaMax (per-platform attachment cap; 0 = none).
 function mediaMax(p) {
@@ -84,32 +94,34 @@ export async function threadPreview(container, text, platform, number) {
   if (!pv || pv.count < 2) return false;
 
   container.innerHTML = "";
-  // Header mirrors the single-post card: platform switcher on the left so the
-  // operator can change the previewed platform even while viewing a thread.
-  const head = el("div", { class: "pv-head" },
+  // The whole thread view is wrapped in a p-{platform} card so .pv-tok token
+  // highlighting picks up the platform tint, and the left border is tinted too.
+  const wrap = el("div", { class: "pv-card pv-thread p-" + platform });
+  const limit = META[platform].limit;
+  // Header mirrors the single-post card: brand tile + platform switcher (so the
+  // operator can change the previewed platform even while viewing a thread) +
+  // the "{N}-post thread" badge.
+  wrap.appendChild(el("div", { class: "pv-head" },
+    brandTile(platform, { size: 22, r: 6 }),
     platformSwitch(platform),
-    el("span", { class: "pv-thread-head", text: `${pv.count} posts` }),
-  );
-  container.appendChild(head);
+    el("span", { class: "grow" }),
+    threadBadgeStatic(pv.count),
+  ));
   pv.segments.forEach((seg, i) => {
-    const card = document.createElement("div");
-    card.className = "pv-seg";
-    const n = document.createElement("span");
-    n.className = "pv-seg-n";
-    n.textContent = `${i + 1}/${pv.count}`;
-    const body = document.createElement("div");
-    body.className = "pv-seg-body";
-    body.textContent = seg; // textContent => no HTML injection
-    card.appendChild(n);
-    card.appendChild(body);
-    container.appendChild(card);
+    const rail = el("div", { class: "pv-seg-rail" }, el("div", { class: "pv-seg-num", text: String(i + 1) }));
+    if (i < pv.count - 1) rail.append(el("div", { class: "pv-seg-line" }));
+    const body = el("div", { class: "pv-seg-body" }, ...highlight(seg));
+    const segLen = gcount(seg);
+    const main = el("div", { class: "pv-seg-main" }, body,
+      el("div", { class: "pv-seg-n", style: "margin-top:4px", text: `${i + 1}/${pv.count}` }),
+      el("div", { class: "pv-seg-count" + (limit && segLen > limit ? " over" : ""), text: limit ? `${segLen}/${limit}` : `${segLen} chars` }),
+    );
+    wrap.appendChild(el("div", { class: "pv-seg" }, rail, main));
   });
   (pv.warnings || []).forEach((wmsg) => {
-    const wd = document.createElement("div");
-    wd.className = "pv-warn";
-    wd.textContent = wmsg;
-    container.appendChild(wd);
+    wrap.appendChild(el("div", { class: "pv-warn", text: wmsg }));
   });
+  container.appendChild(wrap);
   return true;
 }
 
@@ -153,11 +165,13 @@ function _renderSinglePost(host, p) {
 
   const card = el("div", { class: "pv-card p-" + p });
 
-  // header: platform + selector + count
+  // header: brand tile + platform selector + state-colored count
   const sel = platformSwitch(p);
-  const overCls = !meta.limit ? "ok" : n > meta.limit ? "bad" : n > meta.limit * 0.9 ? "warn" : "ok";
+  const overCls = !meta.limit ? "inf" : n > meta.limit ? "over" : n > meta.limit * 0.9 ? "near" : "ok";
   card.append(el("div", { class: "pv-head" },
+    brandTile(p, { size: 22, r: 6 }),
     sel,
+    el("span", { class: "grow" }),
     el("span", { class: "pv-count " + overCls, text: meta.limit ? `${n}/${meta.limit}${n > meta.limit ? ` · +${n - meta.limit} over` : " ✓"}` : "∞" }),
   ));
 

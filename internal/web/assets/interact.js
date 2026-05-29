@@ -1,6 +1,7 @@
 "use strict";
 import { el, $, api, flash, confirmModal } from "./common.js";
 import { startInteraction, showResultModal } from "./compose.js";
+import { brandTile } from "./brands.js";
 
 const PLAT_LABEL = { bluesky: "Bluesky", mastodon: "Mastodon", nostr: "Nostr", threads: "Threads" };
 
@@ -34,6 +35,7 @@ function renderSource(s) {
   const card = el("div", { class: "src-card p-" + s.platform });
   const p = s.preview;
   card.append(el("div", { class: "src-head" },
+    brandTile(s.platform, { size: 24, r: 7 }),
     el("span", { class: "src-plat", text: PLAT_LABEL[s.platform] || s.platform }),
     el("span", { class: "src-author", text: p.author_name || "" }),
     el("span", { class: "src-handle muted", text: p.author_handle || "" }),

@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0b0d13">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#eef0f5">
   <title>publisher</title>
   <link rel="preload" href="fonts/plex-mono-400.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="app.css">
@@ -14,22 +14,15 @@
   <link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="publisher">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark"><span class="caret">▍</span>publisher</span>
-      <span class="brand-sub">crosspost console</span>
+      <span class="brand-sub">crosspost</span>
     </div>
-    <nav class="tabs">
-      <button class="tab on" data-view="compose" type="button">compose</button>
-      <button class="tab" data-view="interact" type="button">interact</button>
-      <button class="tab" data-view="history" type="button">history</button>
-      <button class="tab" data-view="tools" type="button">tools</button>
-      <button class="tab" data-view="verify" type="button">verify</button>
-    </nav>
   </header>
   <main>
 
@@ -70,25 +63,44 @@
           <button id="drafts-toggle" class="ghost sm mobile-only" type="button" aria-expanded="false" style="margin-bottom:8px">📋 Drafts</button>
           <div class="compose-grid">
             <div class="compose-left">
-              <div class="sec-head"><span class="lbl">master draft</span><span id="mastermeta" class="metaline"></span></div>
-              <textarea id="master" class="master" placeholder="write once — mirror to every platform…"></textarea>
+              <div class="composer-card">
+                <div class="author-row">
+                  <span class="avatar" id="compose-avatar">G</span>
+                  <div class="author-meta">
+                    <div class="author-name" id="compose-author">Geoffrey</div>
+                    <div class="author-sub">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.5 2.2 2.5 13.8 0 16M12 4c-2.5 2.2-2.5 13.8 0 16"/></svg>
+                      <span id="compose-audience">Public · mirror to every network</span>
+                    </div>
+                  </div>
+                </div>
+                <textarea id="master" class="master" placeholder="write once — mirror to every platform…"></textarea>
+                <div class="compose-foot"><span id="mastermeta" class="metaline"></span></div>
+              </div>
 
-              <div class="sec-head"><span class="lbl">targets</span></div>
-              <div id="chips" class="chips"></div>
+              <div id="threadnotice"></div>
 
-              <div class="sec-head"><span class="lbl">media</span><span class="muted">alt per image · max 4</span></div>
-              <div id="images" class="images"></div>
-              <button id="addimg" class="ghost" type="button">+ add image</button>
+              <div class="sec-head"><span class="lbl">post to</span><span id="targets-meta" class="muted"></span></div>
+              <div id="chips" class="targets-card"></div>
+
+              <div class="sec-head"><span class="lbl">media</span><span class="muted">max 4</span></div>
+              <div class="images" id="images-wrap">
+                <div id="images" style="display:contents"></div>
+                <button id="addimg" type="button" aria-label="add image">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M5 17l4.5-4 3 2.5L16 12l3 3"/></svg>
+                  <span>Add</span>
+                </button>
+              </div>
               <input id="imgfile" type="file" accept="image/jpeg,image/png,image/webp" hidden>
 
-              <div class="sec-head"><span class="lbl">schedule</span><span class="muted">optional · Europe/Paris · empty = post now</span></div>
+              <div class="sec-head"><span class="lbl">schedule</span><span class="muted">Europe/Paris · empty = now</span></div>
               <div id="schedrow" class="sched">
                 <input type="datetime-local" id="schedat" aria-label="schedule date and time">
                 <button id="schedclear" class="ghost sm" type="button" hidden>clear</button>
                 <span id="schednote" class="sched-note muted"></span>
               </div>
 
-              <div class="sec-head"><span class="lbl">per-platform</span><span class="muted">mirror until edited</span></div>
+              <div class="sec-head"><span class="lbl">per-platform options</span><span class="muted">mirror until edited</span></div>
               <div id="cards"></div>
 
               <div id="summary" class="summary"></div>
@@ -96,7 +108,7 @@
               <button id="submit" class="submit" type="button">Post</button>
             </div><!-- /.compose-left -->
             <div class="compose-right">
-              <div class="sec-head"><span class="lbl">live preview</span></div>
+              <div class="sec-head"><span class="lbl"><span class="live-dot"></span>live preview</span><span class="muted">updates as you type</span></div>
               <div id="preview"></div>
             </div><!-- /.compose-right -->
           </div><!-- /.compose-grid -->
@@ -152,6 +164,30 @@
     </section><!-- /#interact -->
 
   </main>
+
+  <nav class="tabbar" aria-label="Sections">
+    <button class="tab on" data-view="compose" type="button" aria-label="Compose">
+      <span class="ti"><svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 19h14"/><path d="M14.5 5.5l4 4L8 20l-4.5.9L4.5 16z"/></svg></span>
+      <span class="tl">Compose</span>
+    </button>
+    <button class="tab" data-view="interact" type="button" aria-label="Interact">
+      <span class="ti"><svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7h10l-2.5-2.5M17 17H7l2.5 2.5"/></svg></span>
+      <span class="tl">Interact</span>
+    </button>
+    <button class="tab" data-view="history" type="button" aria-label="History">
+      <span class="ti"><svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span>
+      <span class="tl">History</span>
+    </button>
+    <button class="tab" data-view="tools" type="button" aria-label="Tools">
+      <span class="ti"><svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7h9M5 12h14M5 17h6"/><circle cx="17" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg></span>
+      <span class="tl">Tools</span>
+    </button>
+    <button class="tab" data-view="verify" type="button" aria-label="Verify">
+      <span class="ti"><svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg></span>
+      <span class="tl">Verify</span>
+    </button>
+  </nav>
+
   <script type="module" src="main.js"></script>
 </body>
 </html>
