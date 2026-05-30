@@ -127,6 +127,37 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 			due = append(due, t.Platform)
 		}
 	}
+	var exhaustedRelays []string
+	for ti := range post.Targets {
+		t := post.Targets[ti]
+		// Only single-post nostr partials use relay-level retry; threaded /
+		// failed nostr targets are covered by the platform path above.
+		if t.Platform != "nostr" || t.Status != "partial" || len(t.Segments) > 1 {
+			continue
+		}
+		for _, rl := range t.Relays {
+			if rl.Status != "failed" || rl.GaveUpAt != nil {
+				continue
+			}
+			if rl.RetryCount >= r.maxAttempts {
+				if set, err := r.disp.Store.MarkRelayGaveUp(t.ID, rl.URL, now); err != nil {
+					slog.Error("retrier: mark relay gave-up failed", "post_id", id, "relay", rl.URL, "err", err)
+				} else if set {
+					exhaustedRelays = append(exhaustedRelays, rl.URL)
+				}
+				continue
+			}
+			if !r.relayDue(rl, now) {
+				continue
+			}
+			if _, err := r.disp.RetryRelay(ctx, id, rl.URL); err != nil {
+				slog.Error("retrier: relay retry failed", "post_id", id, "relay", rl.URL, "err", err)
+			} else {
+				slog.Info("retrier: rebroadcast to relay", "post_id", id, "relay", rl.URL)
+			}
+		}
+	}
+
 	if len(due) > 0 {
 		if _, err := r.disp.Retry(ctx, id, due); err != nil {
 			slog.Error("retrier: retry failed", "post_id", id, "platforms", due, "err", err)
@@ -134,9 +165,18 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 			slog.Info("retrier: re-drove targets", "post_id", id, "platforms", due)
 		}
 	}
-	if len(exhausted) > 0 {
-		r.alertGaveUp(ctx, id, exhausted, nil)
+	if len(exhausted) > 0 || len(exhaustedRelays) > 0 {
+		r.alertGaveUp(ctx, id, exhausted, exhaustedRelays)
 	}
+}
+
+// relayDue checks whether the relay's next retry is due. Uses AttemptedAt +
+// backoff(RetryCount+1) so the first retry is after base*2^(RetryCount) wait.
+func (r *Retrier) relayDue(rl store.RelayState, now time.Time) bool {
+	if rl.AttemptedAt.IsZero() {
+		return true
+	}
+	return !now.Before(rl.AttemptedAt.Add(backoff(rl.RetryCount+1, r.base, r.max)))
 }
 
 // alertGaveUp fires one operational alert summarizing newly given-up targets.

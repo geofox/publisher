@@ -110,6 +110,46 @@ func TestRetrierGivesUpAndAlertsOnce(t *testing.T) {
 	}
 }
 
+func TestRetrierRelayLevelRetry(t *testing.T) {
+	st := openDispatchStore(t)
+	p := &store.Post{ID: "rl1", CreatedAt: time.Now().UTC(), MasterText: "hi",
+		Platforms: []string{"nostr"}, Source: "test", Status: "partial",
+		Targets: []store.Target{{Platform: "nostr", Status: "partial"}}}
+	_ = st.SavePost(p)
+	gp, _ := st.GetPost("rl1")
+	tid := gp.Targets[0].ID
+	// One relay ok, one failed → target partial; store a signed event so
+	// RetryRelay has something to rebroadcast.
+	_ = st.AppendTargetAttempt(tid, "partial", "", "", "", 1, "", "",
+		[]store.RelayState{
+			{URL: "wss://ok", Status: "ok"},
+			{URL: "wss://down", Status: "failed"},
+		}, `{"id":"abc"}`)
+
+	// fakeNostr lets RetryRelay "succeed" without a network.
+	d := &Dispatcher{Store: st, Nostr: fakeRebroadcaster{ok: true}}
+	now := time.Now().UTC().Add(10 * time.Minute)
+	r := &Retrier{disp: d, notifier: &fakeAlerter{}, enabled: true, maxAttempts: 6,
+		base: 2 * time.Minute, max: time.Hour, now: func() time.Time { return now }}
+	r.runDue(context.Background())
+
+	gp, _ = st.GetPost("rl1")
+	for _, rl := range gp.Targets[0].Relays {
+		if rl.URL == "wss://down" && rl.Status != "ok" {
+			t.Errorf("down relay should have been rebroadcast to ok, got %q", rl.Status)
+		}
+	}
+}
+
+type fakeRebroadcaster struct {
+	NostrPoster // embed; nil — only RebroadcastToRelay is called in this test
+	ok          bool
+}
+
+func (f fakeRebroadcaster) RebroadcastToRelay(_ context.Context, _, _ string) (bool, string) {
+	return f.ok, ""
+}
+
 func TestBackoff(t *testing.T) {
 	base, max := 2*time.Minute, 1*time.Hour
 	cases := []struct {

@@ -76,11 +76,12 @@ type Media struct {
 }
 
 type RelayState struct {
-	URL        string     `json:"url"`
-	Status     string     `json:"status"` // ok | failed | skipped
-	Message    string     `json:"message,omitempty"`
-	GaveUpAt   *time.Time `json:"gave_up_at,omitempty"`
-	RetryCount int        `json:"retry_count,omitempty"`
+	URL         string     `json:"url"`
+	Status      string     `json:"status"` // ok | failed | skipped
+	Message     string     `json:"message,omitempty"`
+	GaveUpAt    *time.Time `json:"gave_up_at,omitempty"`
+	RetryCount  int        `json:"retry_count,omitempty"`
+	AttemptedAt time.Time  `json:"attempted_at,omitempty"`
 }
 
 // Segment is one post in a platform's reply-chain. A non-threaded target has no
@@ -260,15 +261,15 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		arows.Close()
 	}
 	for i := range p.Targets {
-		rrows, err := s.sql.Query(`SELECT relay_url,status,message,gave_up_at,retry_count FROM target_relays WHERE target_id=? ORDER BY id`, p.Targets[i].ID)
+		rrows, err := s.sql.Query(`SELECT relay_url,status,message,gave_up_at,retry_count,attempted_at FROM target_relays WHERE target_id=? ORDER BY id`, p.Targets[i].ID)
 		if err != nil {
 			return nil, err
 		}
 		for rrows.Next() {
 			var rs RelayState
 			var msg sql.NullString
-			var rgu sql.NullTime
-			if err := rrows.Scan(&rs.URL, &rs.Status, &msg, &rgu, &rs.RetryCount); err != nil {
+			var rgu, rat sql.NullTime
+			if err := rrows.Scan(&rs.URL, &rs.Status, &msg, &rgu, &rs.RetryCount, &rat); err != nil {
 				rrows.Close()
 				return nil, err
 			}
@@ -276,6 +277,9 @@ func (s *Store) GetPost(id string) (*Post, error) {
 			if rgu.Valid {
 				t := rgu.Time.UTC()
 				rs.GaveUpAt = &t
+			}
+			if rat.Valid {
+				rs.AttemptedAt = rat.Time.UTC()
 			}
 			p.Targets[i].Relays = append(p.Targets[i].Relays, rs)
 		}
