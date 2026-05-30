@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -115,7 +116,9 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 			continue
 		}
 		if t.AttemptCount >= r.maxAttempts {
-			if set, err := r.disp.Store.MarkTargetGaveUp(t.ID, now); err == nil && set {
+			if set, err := r.disp.Store.MarkTargetGaveUp(t.ID, now); err != nil {
+				slog.Error("retrier: mark gave-up failed", "post_id", id, "platform", t.Platform, "err", err)
+			} else if set {
 				exhausted = append(exhausted, t.Platform)
 			}
 			continue
@@ -140,13 +143,13 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 func (r *Retrier) alertGaveUp(ctx context.Context, postID string, platforms, relays []string) {
 	parts := ""
 	if len(platforms) > 0 {
-		parts += "platforms " + joinComma(platforms)
+		parts += "platforms " + strings.Join(platforms, ", ")
 	}
 	if len(relays) > 0 {
 		if parts != "" {
 			parts += "; "
 		}
-		parts += joinComma(relays) + " relays"
+		parts += strings.Join(relays, ", ") + " relays"
 	}
 	body := "post " + postID + " gave up on " + parts + " after " +
 		strconv.Itoa(r.maxAttempts) + " attempts; manual retry still available"
@@ -155,13 +158,3 @@ func (r *Retrier) alertGaveUp(ctx context.Context, postID string, platforms, rel
 	}
 }
 
-func joinComma(ss []string) string {
-	out := ""
-	for i, s := range ss {
-		if i > 0 {
-			out += ", "
-		}
-		out += s
-	}
-	return out
-}
