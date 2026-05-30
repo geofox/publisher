@@ -7,6 +7,34 @@ import (
 	"time"
 )
 
+func TestGaveUpColumnsAndLastAttemptLoad(t *testing.T) {
+	st := openTestStore(t) // existing same-package helper (store_test.go-style)
+	p := &Post{
+		ID: "p-gaveup", CreatedAt: time.Now().UTC(), MasterText: "x",
+		Platforms: []string{"bluesky"}, Source: "test", Status: "failed",
+		Targets: []Target{{Platform: "bluesky", Status: "failed"}},
+	}
+	if err := st.SavePost(p); err != nil {
+		t.Fatalf("SavePost: %v", err)
+	}
+	// Record an attempt so last_attempt_at is set.
+	got, _ := st.GetPost("p-gaveup")
+	tid := got.Targets[0].ID
+	if err := st.AppendTargetAttempt(tid, "failed", "boom", "", "", 5, "", "", nil, ""); err != nil {
+		t.Fatalf("AppendTargetAttempt: %v", err)
+	}
+	got, err := st.GetPost("p-gaveup")
+	if err != nil {
+		t.Fatalf("GetPost: %v", err)
+	}
+	if got.Targets[0].LastAttempt.IsZero() {
+		t.Error("LastAttempt should be loaded, got zero")
+	}
+	if got.Targets[0].GaveUpAt != nil {
+		t.Error("GaveUpAt should be nil initially")
+	}
+}
+
 func TestAppendTargetAttemptAndRecompute(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {

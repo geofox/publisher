@@ -46,6 +46,7 @@ type Target struct {
 	LatencyMS       int          `json:"latency_ms"`
 	AttemptCount    int          `json:"attempt_count"`
 	LastAttempt     time.Time    `json:"last_attempt"`
+	GaveUpAt        *time.Time   `json:"gave_up_at,omitempty"`
 	Attempts        []Attempt    `json:"attempts,omitempty"`
 	Relays          []RelayState `json:"relays,omitempty"`
 	Segments        []Segment    `json:"segments,omitempty"`
@@ -75,9 +76,11 @@ type Media struct {
 }
 
 type RelayState struct {
-	URL     string `json:"url"`
-	Status  string `json:"status"` // ok | failed | skipped
-	Message string `json:"message,omitempty"`
+	URL        string     `json:"url"`
+	Status     string     `json:"status"` // ok | failed | skipped
+	Message    string     `json:"message,omitempty"`
+	GaveUpAt   *time.Time `json:"gave_up_at,omitempty"`
+	RetryCount int        `json:"retry_count,omitempty"`
 }
 
 // Segment is one post in a platform's reply-chain. A non-threaded target has no
@@ -205,7 +208,7 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		return nil, err
 	}
 
-	trows, err := s.sql.Query(`SELECT id,platform,final_text,fields_json,status,remote_id,remote_url,latency_ms,attempt_count,signed_event_json,segments_json FROM post_targets WHERE post_id=? ORDER BY id`, id)
+	trows, err := s.sql.Query(`SELECT id,platform,final_text,fields_json,status,remote_id,remote_url,latency_ms,attempt_count,last_attempt_at,gave_up_at,signed_event_json,segments_json FROM post_targets WHERE post_id=? ORDER BY id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -213,10 +216,18 @@ func (s *Store) GetPost(id string) (*Post, error) {
 	for trows.Next() {
 		var tg Target
 		var fields, rid, rurl, sej, segs sql.NullString
-		if err := trows.Scan(&tg.ID, &tg.Platform, &tg.FinalText, &fields, &tg.Status, &rid, &rurl, &tg.LatencyMS, &tg.AttemptCount, &sej, &segs); err != nil {
+		var la, gu sql.NullTime
+		if err := trows.Scan(&tg.ID, &tg.Platform, &tg.FinalText, &fields, &tg.Status, &rid, &rurl, &tg.LatencyMS, &tg.AttemptCount, &la, &gu, &sej, &segs); err != nil {
 			return nil, err
 		}
 		tg.FieldsJSON, tg.RemoteID, tg.RemoteURL, tg.SignedEventJSON = fields.String, rid.String, rurl.String, sej.String
+		if la.Valid {
+			tg.LastAttempt = la.Time.UTC()
+		}
+		if gu.Valid {
+			t := gu.Time.UTC()
+			tg.GaveUpAt = &t
+		}
 		if segs.String != "" {
 			if err := json.Unmarshal([]byte(segs.String), &tg.Segments); err != nil {
 				return nil, err
@@ -249,18 +260,23 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		arows.Close()
 	}
 	for i := range p.Targets {
-		rrows, err := s.sql.Query(`SELECT relay_url,status,message FROM target_relays WHERE target_id=? ORDER BY id`, p.Targets[i].ID)
+		rrows, err := s.sql.Query(`SELECT relay_url,status,message,gave_up_at,retry_count FROM target_relays WHERE target_id=? ORDER BY id`, p.Targets[i].ID)
 		if err != nil {
 			return nil, err
 		}
 		for rrows.Next() {
 			var rs RelayState
 			var msg sql.NullString
-			if err := rrows.Scan(&rs.URL, &rs.Status, &msg); err != nil {
+			var rgu sql.NullTime
+			if err := rrows.Scan(&rs.URL, &rs.Status, &msg, &rgu, &rs.RetryCount); err != nil {
 				rrows.Close()
 				return nil, err
 			}
 			rs.Message = msg.String
+			if rgu.Valid {
+				t := rgu.Time.UTC()
+				rs.GaveUpAt = &t
+			}
 			p.Targets[i].Relays = append(p.Targets[i].Relays, rs)
 		}
 		if err := rrows.Err(); err != nil {
