@@ -35,6 +35,59 @@ func TestGaveUpColumnsAndLastAttemptLoad(t *testing.T) {
 	}
 }
 
+func TestPostsNeedingRetryAndMarkGaveUp(t *testing.T) {
+	st := openTestStore(t)
+	mk := func(id, status string) {
+		p := &Post{ID: id, CreatedAt: time.Now().UTC(), MasterText: "x",
+			Platforms: []string{"bluesky"}, Source: "test", Status: status,
+			Targets: []Target{{Platform: "bluesky", Status: status}}}
+		if err := st.SavePost(p); err != nil {
+			t.Fatalf("SavePost %s: %v", id, err)
+		}
+	}
+	mk("p-failed", "failed")
+	mk("p-partial", "partial")
+	mk("p-success", "success")
+	mk("p-missed", "missed")
+
+	ids, err := st.PostsNeedingRetry()
+	if err != nil {
+		t.Fatalf("PostsNeedingRetry: %v", err)
+	}
+	set := map[string]bool{}
+	for _, id := range ids {
+		set[id] = true
+	}
+	if !set["p-failed"] || !set["p-partial"] {
+		t.Errorf("failed/partial should be candidates: %v", ids)
+	}
+	if set["p-success"] || set["p-missed"] {
+		t.Errorf("success/missed must not be candidates: %v", ids)
+	}
+
+	// Mark the failed target given up → it drops out of the candidate set.
+	gp, _ := st.GetPost("p-failed")
+	tid := gp.Targets[0].ID
+	at := time.Now().UTC()
+	set1, err := st.MarkTargetGaveUp(tid, at)
+	if err != nil {
+		t.Fatalf("MarkTargetGaveUp: %v", err)
+	}
+	if !set1 {
+		t.Error("first MarkTargetGaveUp should report it set the flag")
+	}
+	set2, _ := st.MarkTargetGaveUp(tid, at) // idempotent guard
+	if set2 {
+		t.Error("second MarkTargetGaveUp should report no-op (already set)")
+	}
+	ids, _ = st.PostsNeedingRetry()
+	for _, id := range ids {
+		if id == "p-failed" {
+			t.Error("given-up post should no longer be a candidate")
+		}
+	}
+}
+
 func TestAppendTargetAttemptAndRecompute(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {

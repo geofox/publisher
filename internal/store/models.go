@@ -633,6 +633,55 @@ func (s *Store) CancelScheduled(id string) error {
 	return tx.Commit()
 }
 
+// PostsNeedingRetry returns IDs of posts that have at least one target in a
+// recoverable state (failed or partial) that has not yet given up. 'missed'
+// (scheduling miss) and 'success' are excluded. The caller (Retrier) loads
+// each post and applies backoff/cap per target.
+func (s *Store) PostsNeedingRetry() ([]string, error) {
+	rows, err := s.sql.Query(
+		`SELECT DISTINCT post_id FROM post_targets
+		  WHERE status IN ('failed','partial') AND gave_up_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// MarkTargetGaveUp stamps gave_up_at on a platform target, but only if it is
+// still NULL. Returns true iff this call set it (so the caller alerts once).
+func (s *Store) MarkTargetGaveUp(targetID int64, at time.Time) (bool, error) {
+	res, err := s.sql.Exec(
+		`UPDATE post_targets SET gave_up_at=? WHERE id=? AND gave_up_at IS NULL`,
+		at.UTC(), targetID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// MarkRelayGaveUp stamps gave_up_at on a single relay row, only if still NULL.
+// Returns true iff this call set it.
+func (s *Store) MarkRelayGaveUp(targetID int64, relayURL string, at time.Time) (bool, error) {
+	res, err := s.sql.Exec(
+		`UPDATE target_relays SET gave_up_at=? WHERE target_id=? AND relay_url=? AND gave_up_at IS NULL`,
+		at.UTC(), targetID, relayURL)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
 // PostFilter controls filtering/paging for ListPostsFiltered.
 type PostFilter struct {
 	Status string // "sent", "scheduled", "failed", "" / "all" → no filter
