@@ -133,6 +133,16 @@ function interactionBadge(post) {
 let hfilter = "all", hquery = "", hoffset = 0, hlimit = 50, hdone = false, hposts = [];
 let hloading = false;
 
+async function refreshAttentionBadge() {
+  const badge = document.querySelector("#hseg .attn-badge");
+  if (!badge) return;
+  try {
+    const { count } = await api("/api/posts/attention/count");
+    if (count > 0) { badge.textContent = String(count); badge.hidden = false; }
+    else { badge.hidden = true; }
+  } catch { badge.hidden = true; }
+}
+
 export async function loadHistory(reset = true) {
   if (hloading) return;
   hloading = true;
@@ -144,6 +154,7 @@ export async function loadHistory(reset = true) {
     hposts = reset ? page : hposts.concat(page);
     hoffset += page.length;
     renderList();
+    refreshAttentionBadge();
   } finally {
     hloading = false;
   }

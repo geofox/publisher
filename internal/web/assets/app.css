@@ -392,6 +392,11 @@ textarea.master,.verify-input{}
 }
 #hseg button:hover{color:var(--ink)}
 #hseg button.on{color:var(--indigo);background:var(--card);box-shadow:var(--shadow-card);font-weight:600}
+.attn-badge{
+  display:inline-block;min-width:1.2em;padding:0 0.35em;margin-left:0.3em;
+  border-radius:999px;background:var(--red);color:#fff;
+  font-size:0.75em;line-height:1.4;text-align:center;
+}
 #hsearch{
   flex:1;min-width:120px;font:inherit;font-size:14px;padding:8px 12px;color:var(--ink);
   background:var(--card);border:.5px solid var(--line-2);border-radius:10px;
