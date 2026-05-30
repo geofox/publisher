@@ -380,8 +380,11 @@ func (s *Store) UpdateRelayStatus(targetID int64, relayURL, status, message stri
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec(
-		`UPDATE target_relays SET status=?, message=?, attempted_at=? WHERE target_id=? AND relay_url=?`,
-		status, message, time.Now().UTC(), targetID, relayURL,
+		`UPDATE target_relays
+		    SET status=?, message=?, attempted_at=?, retry_count = retry_count + 1,
+		        gave_up_at = CASE WHEN ?='ok' THEN NULL ELSE gave_up_at END
+		  WHERE target_id=? AND relay_url=?`,
+		status, message, time.Now().UTC(), status, targetID, relayURL,
 	); err != nil {
 		return err
 	}
@@ -425,8 +428,11 @@ func (s *Store) AppendTargetAttempt(targetID int64, status, errMsg, remoteID, re
 		return err
 	}
 	if _, err := tx.Exec(
-		`UPDATE post_targets SET status=?, remote_id=?, remote_url=?, latency_ms=?, attempt_count=?, last_attempt_at=? WHERE id=?`,
-		status, remoteID, remoteURL, latencyMS, n, now, targetID,
+		`UPDATE post_targets
+		    SET status=?, remote_id=?, remote_url=?, latency_ms=?, attempt_count=?, last_attempt_at=?,
+		        gave_up_at = CASE WHEN ?='success' THEN NULL ELSE gave_up_at END
+		  WHERE id=?`,
+		status, remoteID, remoteURL, latencyMS, n, now, status, targetID,
 	); err != nil {
 		return err
 	}
@@ -483,8 +489,11 @@ func (s *Store) UpdateTargetSegments(targetID int64, segments []Segment, status,
 		return err
 	}
 	if _, err := tx.Exec(
-		`UPDATE post_targets SET status=?, remote_id=?, remote_url=?, latency_ms=?, attempt_count=?, last_attempt_at=?, segments_json=? WHERE id=?`,
-		status, headRemoteID, headRemoteURL, latencyMS, n, now, string(segJSON), targetID,
+		`UPDATE post_targets
+		    SET status=?, remote_id=?, remote_url=?, latency_ms=?, attempt_count=?, last_attempt_at=?, segments_json=?,
+		        gave_up_at = CASE WHEN ?='success' THEN NULL ELSE gave_up_at END
+		  WHERE id=?`,
+		status, headRemoteID, headRemoteURL, latencyMS, n, now, string(segJSON), status, targetID,
 	); err != nil {
 		return err
 	}

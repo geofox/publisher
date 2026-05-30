@@ -88,6 +88,48 @@ func TestPostsNeedingRetryAndMarkGaveUp(t *testing.T) {
 	}
 }
 
+func TestSuccessClearsGaveUpAndRelayRetryCount(t *testing.T) {
+	st := openTestStore(t)
+	p := &Post{ID: "p-clear", CreatedAt: time.Now().UTC(), MasterText: "x",
+		Platforms: []string{"bluesky"}, Source: "test", Status: "failed",
+		Targets: []Target{{Platform: "bluesky", Status: "failed"}}}
+	if err := st.SavePost(p); err != nil {
+		t.Fatalf("SavePost: %v", err)
+	}
+	gp, _ := st.GetPost("p-clear")
+	tid := gp.Targets[0].ID
+	if _, err := st.MarkTargetGaveUp(tid, time.Now().UTC()); err != nil {
+		t.Fatalf("MarkTargetGaveUp: %v", err)
+	}
+	// A successful later attempt clears the give-up flag.
+	if err := st.AppendTargetAttempt(tid, "success", "", "rid", "https://x/1", 10, "", "", nil, ""); err != nil {
+		t.Fatalf("AppendTargetAttempt: %v", err)
+	}
+	gp, _ = st.GetPost("p-clear")
+	if gp.Targets[0].GaveUpAt != nil {
+		t.Error("a successful attempt must clear gave_up_at")
+	}
+
+	// Relay retry_count bumps on UpdateRelayStatus.
+	if err := st.AppendTargetAttempt(tid, "failed", "x", "", "", 1, "", "",
+		[]RelayState{{URL: "wss://r1", Status: "failed"}}, "{}"); err != nil {
+		t.Fatalf("seed relay: %v", err)
+	}
+	if err := st.UpdateRelayStatus(tid, "wss://r1", "failed", "still down"); err != nil {
+		t.Fatalf("UpdateRelayStatus: %v", err)
+	}
+	gp, _ = st.GetPost("p-clear")
+	var rc int
+	for _, r := range gp.Targets[0].Relays {
+		if r.URL == "wss://r1" {
+			rc = r.RetryCount
+		}
+	}
+	if rc != 1 {
+		t.Errorf("relay retry_count = %d, want 1 after one UpdateRelayStatus", rc)
+	}
+}
+
 func TestAppendTargetAttemptAndRecompute(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
