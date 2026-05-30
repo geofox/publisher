@@ -86,6 +86,19 @@ export function relayBlock(t, retryFn) {
   return wrap;
 }
 
+// retryStatusLine renders the auto-retry state for a target in the detail pane.
+function retryStatusLine(t, maxAttempts = 6) {
+  if (t.gave_up_at) {
+    return el("div", { class: "retry-status gaveup",
+      text: `⚠ gave up after ${t.attempt_count || maxAttempts} attempts` });
+  }
+  if ((t.status === "failed" || t.status === "partial") && (t.attempt_count || 0) < maxAttempts) {
+    return el("div", { class: "retry-status pending",
+      text: `↻ retrying (${t.attempt_count || 0}/${maxAttempts})` });
+  }
+  return null;
+}
+
 // resultRow renders one platform outcome line shared by the modal and detail.
 // stop=true keeps the success link from bubbling (used inside the clickable modal).
 export function resultRow(t, stop) {
@@ -109,7 +122,11 @@ export function resultRow(t, stop) {
     el("span", { class: "meta", text: t.latency_ms ? t.latency_ms + "ms" : "" }),
   );
   const relays = relayBlock(t, null); // read-only in modal
-  return relays ? el("div", { class: "res-wrap" }, row, relays) : row;
+  const rs = retryStatusLine(t);
+  const children = [row];
+  if (rs) children.push(rs);
+  if (relays) children.push(relays);
+  return children.length > 1 ? el("div", { class: "res-wrap" }, ...children) : row;
 }
 
 // interactionBadge renders "↩ replied to / ❝ quoted / 🔁 reposted <author>" with a

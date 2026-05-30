@@ -513,6 +513,9 @@ textarea.master,.verify-input{}
 .retry{font:inherit;font-size:12px;color:var(--indigo);background:none;border:.5px solid var(--indigo);border-radius:8px;padding:5px 12px;cursor:pointer}
 .retry:disabled{opacity:.6}
 .err{color:var(--red);font-size:13px;margin:8px 0}
+.retry-status{font-size:0.8em;margin-top:0.2em}
+.retry-status.gaveup{color:var(--red)}
+.retry-status.pending{color:var(--muted)}
 
 /* ── Toast + modal ──────────────────────────────────────────────────────── */
 .toast{position:fixed;left:50%;bottom:calc(var(--tabbar-h) + 16px + var(--safe-b));transform:translateX(-50%);z-index:90;padding:11px 17px;background:rgba(27,31,39,.94);color:#fff;border-radius:12px;font-size:13px;box-shadow:0 12px 32px rgba(20,24,50,.28);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
