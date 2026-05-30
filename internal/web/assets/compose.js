@@ -33,19 +33,45 @@ function counterClass(n, limit) {
 
 function numberingOn() { return document.getElementById("threadnum")?.checked ?? true; }
 
-function splitThread(text, limit, number = true) {
-  if (!limit) return [text];
-  if (gcount(text) <= limit) return [text];
+// splitMarkers mirrors internal/thread.splitMarkers: break on lines that are
+// solely "---", trimming each block and dropping empties. Manual breaks let the
+// operator force a thread (and shape it via the Edit-split sheet).
+function splitMarkers(text) {
+  const blocks = []; let cur = [];
+  for (const ln of text.split(/\r?\n/)) {
+    if (ln.trim() === "---") { blocks.push(cur.join("\n")); cur = []; }
+    else cur.push(ln);
+  }
+  blocks.push(cur.join("\n"));
+  return blocks.map(b => b.trim()).filter(Boolean);
+}
+
+// splitLength wraps one block on word boundaries, reserving room for a " n/n"
+// suffix when numbering is on. limit 0 (Nostr) → never length-splits.
+function splitLength(text, limit, number) {
+  if (!limit || gcount(text) <= limit) return [text];
   const reserve = number ? 6 : 0; // " 99/99"
   const eff = Math.max(limit - reserve, 1);
-  const words = text.split(/(\s+)/);
   const parts = []; let cur = "";
-  for (const w of words) {
+  for (const w of text.split(/(\s+)/)) {
     if (gcount(cur + w) > eff && cur.trim()) { parts.push(cur.trim()); cur = w.replace(/^\s+/, ""); }
     else cur += w;
   }
   if (cur.trim()) parts.push(cur.trim());
   return parts.length ? parts : [text];
+}
+
+// splitThread mirrors the backend: honor manual --- markers first, then
+// length-split each block. A chain forms when there are multiple blocks OR a
+// single block exceeds the limit.
+function splitThread(text, limit, number = true) {
+  const blocks = splitMarkers(text);
+  if (blocks.length > 1) {
+    const out = [];
+    for (const b of blocks) out.push(...splitLength(b, limit, number));
+    return out.length ? out : [text];
+  }
+  return splitLength(text, limit, number);
 }
 
 function threadInfoFor(p) {
@@ -153,6 +179,31 @@ function renderTargetsMeta() {
   if (aud) aud.textContent = state.platforms.size ? `Public · mirror to ${state.platforms.size}` : "Public";
 }
 
+// applyIdentity swaps the placeholder author + per-platform handles for the
+// operator's real profile (from GET /api/identity). Called once after boot;
+// failures leave the placeholders untouched.
+export function applyIdentity(id) {
+  if (!id) return;
+  const acc = id.accounts || {};
+  for (const p of ORDER) {
+    const a = acc[p];
+    if (a && a.handle && PLATFORM_META[p]) PLATFORM_META[p].handle = a.handle;
+  }
+  const nameEl = $("#compose-author");
+  if (nameEl && id.name) nameEl.textContent = id.name;
+  const av = $("#compose-avatar");
+  if (av) {
+    if (id.avatar) {
+      av.style.background = "none";
+      av.textContent = "";
+      av.append(el("img", { src: id.avatar, alt: "", class: "avatar-img" }));
+    } else if (id.monogram) {
+      av.textContent = id.monogram;
+    }
+  }
+  renderChips(); // re-render target rows so the real handles show
+}
+
 // renderThreadNotice shows the calm informational banner above POST TO whenever
 // ≥1 selected target overflows; tapping it opens the review sheet.
 function renderThreadNotice() {
@@ -172,54 +223,135 @@ function renderThreadNotice() {
 }
 
 // openThreadSheet presents the glass bottom sheet reviewing how an over-limit
-// draft splits for one platform.
+// draft splits for one platform — and, via "Edit split", lets the operator
+// reshape the breakpoints (saved back into the source text as \n---\n markers,
+// which the backend honors verbatim on send).
 function openThreadSheet(p) {
   const meta = META[p];
+  const it = state.interaction;
+  const ov = state.ov[p];
+  // Edit-split writes back to the text that produced the segments: a per-platform
+  // override if one is set, else the master draft. Disabled in interaction mode
+  // (the previewed text there is an assembled reproduction, not directly owned).
+  const editable = !it;
+  const srcIsOverride = ov.text != null;
   const number = numberingOn();
-  const text = postedText(p);
-  const segs = splitThread(text, meta.limit, number);
-  const total = gcount(text);
+  const sourceText = postedText(p);
+
+  let segs = splitThread(sourceText, meta.limit, number);
+  let editing = false;
+  let segInputs = [];
 
   const bk = el("div", { class: "sheet-bk" });
   const close = () => bk.remove();
   bk.addEventListener("click", e => { if (e.target === bk) close(); });
-
   const sheet = el("div", { class: "sheet p-" + p });
-  sheet.append(el("div", { class: "sheet-grabber" }));
-  sheet.append(el("div", { class: "sheet-head" },
-    brandTile(p, { size: 30 }),
-    el("div", { class: "sh-main" },
-      el("div", { class: "sh-title", text: `${meta.label} thread` }),
-      el("div", { class: "sh-sub", text: `${total} chars over ${meta.limit} → ${segs.length} posts` }),
-    ),
-  ));
+  bk.append(sheet);
 
-  const tl = el("div", { class: "seg-timeline" });
-  segs.forEach((seg, i) => {
-    const num = `${i + 1}/${segs.length}`;
-    const len = gcount(number ? seg + " " + num : seg);
-    const rail = el("div", { class: "seg-rail" }, el("div", { class: "seg-node", text: String(i + 1) }));
-    if (i < segs.length - 1) rail.append(el("div", { class: "seg-conn" }));
-    const txt = el("div", { class: "sc-text" }, ...highlightTokens(seg));
-    if (number) txt.append(el("span", { class: "sc-num", text: " " + num }));
-    const meterFill = el("i", { style: `width:${Math.min(len / meta.limit * 100, 100)}%` });
-    const card = el("div", { class: "seg-card" }, txt,
-      el("div", { class: "sc-meta" },
-        el("span", { class: "sc-count" + (len > meta.limit ? " over" : ""), text: `${len}/${meta.limit}` }),
-        el("div", { class: "track" }, meterFill),
+  const collectRaw = () => segInputs.map(t => t.value);
+
+  // segLen = a segment's length including the " n/n" numbering it will gain on
+  // send; over = whether that pushes it past the limit.
+  function segLen(seg, total) {
+    const n = number ? gcount(seg) + (` ${total}/${total}`).length : gcount(seg);
+    return { n, over: meta.limit ? n > meta.limit : false };
+  }
+
+  function viewTimeline() {
+    const tl = el("div", { class: "seg-timeline" });
+    segs.forEach((seg, i) => {
+      const { n, over } = segLen(seg, segs.length);
+      const rail = el("div", { class: "seg-rail" }, el("div", { class: "seg-node", text: String(i + 1) }));
+      if (i < segs.length - 1) rail.append(el("div", { class: "seg-conn" }));
+      const txt = el("div", { class: "sc-text" }, ...highlightTokens(seg));
+      if (number) txt.append(el("span", { class: "sc-num", text: ` ${i + 1}/${segs.length}` }));
+      const card = el("div", { class: "seg-card" }, txt,
+        el("div", { class: "sc-meta" },
+          el("span", { class: "sc-count" + (over ? " over" : ""), text: meta.limit ? `${n}/${meta.limit}` : `${n} chars` }),
+          meta.limit ? el("div", { class: "track" }, el("i", { style: `width:${Math.min(n / meta.limit * 100, 100)}%` })) : null,
+        ),
+      );
+      tl.append(el("div", { class: "seg-item" }, rail, card));
+    });
+    return tl;
+  }
+
+  function editTimeline() {
+    segInputs = [];
+    const tl = el("div", { class: "seg-timeline" });
+    segs.forEach((seg, i) => {
+      const rail = el("div", { class: "seg-rail" }, el("div", { class: "seg-node", text: String(i + 1) }));
+      if (i < segs.length - 1) rail.append(el("div", { class: "seg-conn" }));
+
+      const count = el("span", { class: "sa-count" });
+      const updateCount = (val) => {
+        const { n, over } = segLen(val, segs.length);
+        count.textContent = meta.limit ? `${n}/${meta.limit}` : `${n} chars`;
+        count.className = "sa-count" + (over ? " over" : "");
+      };
+      const ta = el("textarea", { class: "seg-edit", rows: 3,
+        oninput: e => updateCount(e.target.value) });
+      ta.value = seg; updateCount(seg);
+      segInputs.push(ta);
+
+      const actions = el("div", { class: "seg-actions" });
+      if (i > 0) actions.append(el("button", { class: "sa-btn", type: "button", text: "⤺ merge up",
+        onclick: () => { const cur = collectRaw(); cur[i - 1] = (cur[i - 1].trimEnd() + " " + cur[i].trimStart()).trim(); cur.splice(i, 1); segs = cur; render(); } }));
+      actions.append(el("button", { class: "sa-btn", type: "button", text: "✂ break here",
+        onclick: () => { const cur = collectRaw(); const caret = ta.selectionStart ?? cur[i].length; cur.splice(i, 1, cur[i].slice(0, caret), cur[i].slice(caret)); segs = cur; render(); } }));
+      actions.append(count);
+
+      const card = el("div", { class: "seg-card" }, ta, actions);
+      tl.append(el("div", { class: "seg-item" }, rail, card));
+    });
+    return tl;
+  }
+
+  function save() {
+    const next = collectRaw().map(s => s.trim()).filter(Boolean);
+    if (!next.length) { close(); return; }
+    const joined = next.join("\n---\n");
+    if (srcIsOverride) ov.text = joined;
+    else { state.master = joined; const m = $("#master"); if (m) m.value = joined; }
+    markDirty();
+    renderChips(); renderCards(); refreshCounts(); renderMeta(); renderPreview();
+    close();
+    flash(`Thread split saved · ${next.length} posts`);
+  }
+
+  function render() {
+    sheet.innerHTML = "";
+    sheet.append(el("div", { class: "sheet-grabber" }));
+    const total = gcount(sourceText);
+    const head = el("div", { class: "sheet-head" },
+      brandTile(p, { size: 30 }),
+      el("div", { class: "sh-main" },
+        el("div", { class: "sh-title", text: `${meta.label} thread` }),
+        el("div", { class: "sh-sub", text: editing
+          ? `${segs.length} posts · edit text, break, or merge`
+          : (meta.limit ? `${total} chars over ${meta.limit} → ${segs.length} posts` : `${segs.length} posts`) }),
       ),
     );
-    tl.append(el("div", { class: "seg-item" }, rail, card));
-  });
-  sheet.append(tl);
+    if (editable) head.append(el("button", { class: "sh-edit", type: "button",
+      text: editing ? "Done" : "Edit split",
+      onclick: () => { if (editing) segs = collectRaw().map(s => s.trim()).filter(Boolean); editing = !editing; render(); } }));
+    sheet.append(head);
 
-  const foot = el("div", { class: "sheet-foot" });
-  const lk = icon("link", { size: 16 }); if (lk) foot.append(lk);
-  foot.append(el("span", { text: "Replies chain automatically · numbering added on send" }));
-  sheet.append(foot);
-  sheet.append(el("button", { class: "sheet-cta", type: "button", text: "Looks good — keep thread", onclick: close }));
+    sheet.append(editing ? editTimeline() : viewTimeline());
 
-  bk.append(sheet);
+    const foot = el("div", { class: "sheet-foot" });
+    const lk = icon("link", { size: 16 }); if (lk) foot.append(lk);
+    foot.append(el("span", { text: editing
+      ? "Manual breaks apply to every network · numbering added on send"
+      : "Replies chain automatically · numbering added on send" }));
+    sheet.append(foot);
+
+    sheet.append(editing
+      ? el("button", { class: "sheet-cta", type: "button", text: "Save split", onclick: save })
+      : el("button", { class: "sheet-cta", type: "button", text: "Looks good — keep thread", onclick: close }));
+  }
+
+  render();
   document.body.append(bk);
 }
 

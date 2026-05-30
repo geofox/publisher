@@ -303,6 +303,27 @@ func (c *Client) RefreshToken(ctx context.Context, current string) (string, time
 	return out.AccessToken, time.Duration(out.ExpiresIn) * time.Second, nil
 }
 
+// Profile fetches the authenticated operator's own Threads profile (username,
+// name, avatar) via GET /{user-id}?fields=username,name,threads_profile_picture_url.
+func (c *Client) Profile(ctx context.Context) (handle, name, avatar string, err error) {
+	var r struct {
+		Username string `json:"username"`
+		Name     string `json:"name"`
+		Picture  string `json:"threads_profile_picture_url"`
+	}
+	uid := c.UserID
+	if uid == "" {
+		uid = "me"
+	}
+	if err := c.do(ctx, http.MethodGet, "/"+uid+"?fields=username,name,threads_profile_picture_url", &r); err != nil {
+		return "", "", "", err
+	}
+	if r.Username != "" {
+		handle = "@" + r.Username
+	}
+	return handle, r.Name, r.Picture, nil
+}
+
 // do executes an authenticated HTTP request and JSON-decodes the response into out.
 // The token is placed in the Authorization header, never in the URL.
 func (c *Client) do(ctx context.Context, method, path string, out any) error {

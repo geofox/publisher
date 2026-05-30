@@ -21,6 +21,7 @@ import (
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/feed"
 	"github.com/geofox/publisher/internal/httpx"
+	"github.com/geofox/publisher/internal/identity"
 	"github.com/geofox/publisher/internal/media"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/relaysync"
@@ -111,6 +112,10 @@ type API struct {
 	// PublicFeedToken gates GET /api/public/feed. Empty → the endpoint is
 	// disabled (returns 404). Set → callers must send Authorization: Bearer <it>.
 	PublicFeedToken string
+
+	// Identity aggregates the operator's own per-platform profile (handle, name,
+	// avatar) for the composer. nil → GET /api/identity returns empty accounts.
+	Identity *identity.Service
 }
 
 // New creates a new API with the given publisher and media pipeline.
@@ -144,6 +149,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/resolve", a.handleResolve)
 	mux.HandleFunc("POST /api/interact", a.handleInteract)
 	mux.HandleFunc("GET /api/config", a.handleConfig)
+	mux.HandleFunc("GET /api/identity", a.handleIdentity)
 	mux.HandleFunc("GET /api/public/feed", a.handlePublicFeed)
 	mux.HandleFunc("POST /api/translate", a.handleTranslate)
 	mux.HandleFunc("GET /api/drafts", a.handleListDrafts)
@@ -246,6 +252,20 @@ func (a *API) handleConfig(w http.ResponseWriter, _ *http.Request) {
 		"user_languages":    langs,
 		"translate_targets": targets,
 	})
+}
+
+// ─── GET /api/identity ───────────────────────────────────────────────────
+//
+// The operator's own cross-platform profile (handle, display name, avatar) so
+// the composer can show real account data. Best-effort + cached; an unconfigured
+// service returns {"accounts":{}} so the UI keeps its placeholders.
+
+func (a *API) handleIdentity(w http.ResponseWriter, r *http.Request) {
+	if a.Identity == nil {
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"accounts": map[string]any{}})
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, a.Identity.Get(r.Context()))
 }
 
 // ─── POST /api/translate ─────────────────────────────────────────────────

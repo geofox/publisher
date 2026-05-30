@@ -59,12 +59,16 @@
 .p-bluesky{--pa:#1185fe} .p-mastodon{--pa:#6364ff} .p-threads{--pa:#1c1c1e} .p-nostr{--pa:#8e44ec}
 
 *{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
+html{-webkit-text-size-adjust:100%;height:100%}
 body{
   margin:0; color:var(--ink); background:var(--bg);
   font:15px/1.5 var(--sans); letter-spacing:-0.01em;
   -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
-  padding-bottom:calc(var(--tabbar-h) + var(--safe-b));
+  /* Fixed app shell: lock to the screen, never page-scroll/rubber-band. The
+     chrome (top bar + tab bar) are non-scrolling flex children; <main> scrolls. */
+  height:100vh; height:100dvh; overflow:hidden;
+  display:flex; flex-direction:column;
+  overscroll-behavior:none; touch-action:manipulation;
 }
 ::selection{background:rgba(75,84,214,.18)}
 a{color:var(--indigo);text-decoration:none}
@@ -75,7 +79,7 @@ a{color:var(--indigo);text-decoration:none}
 
 /* ── Top app bar (glass) ────────────────────────────────────────────────── */
 .topbar{
-  position:sticky; top:0; z-index:20;
+  position:relative; z-index:20; flex-shrink:0;
   padding-top:var(--safe-t);
   background:rgba(238,240,245,.72);
   -webkit-backdrop-filter:var(--glass); backdrop-filter:var(--glass);
@@ -89,7 +93,7 @@ a{color:var(--indigo);text-decoration:none}
 
 /* ── Bottom tab bar (glass) ─────────────────────────────────────────────── */
 .tabbar{
-  position:fixed; left:0; right:0; bottom:0; z-index:30;
+  position:relative; z-index:30; flex-shrink:0;
   display:flex; justify-content:space-around; align-items:flex-start;
   padding:8px 6px var(--safe-b);
   background:rgba(255,255,255,.62);
@@ -112,7 +116,14 @@ a{color:var(--indigo);text-decoration:none}
   .tab{flex:0 0 auto;min-width:64px}
 }
 
-main{max-width:1200px;margin:0 auto;padding:8px 16px calc(var(--tabbar-h) + 24px)}
+/* The single scroll region. Centering to 1200px is done with responsive side
+   padding (max(16px, gutter)) so no inner wrapper is needed, and min-height:0
+   lets the flex child actually shrink so only this area scrolls. */
+main{
+  flex:1 1 auto; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch;
+  overscroll-behavior:contain;
+  padding:8px max(16px,calc((100% - 1200px) / 2)) 24px;
+}
 
 /* active tab icon reads slightly heavier (matches the design's stroke 2) */
 .tab.on .ti svg{stroke-width:2}
@@ -137,12 +148,13 @@ main{max-width:1200px;margin:0 auto;padding:8px 16px calc(var(--tabbar-h) + 24px
 .composer-card{background:var(--card);border-radius:20px;border:.5px solid var(--hair);box-shadow:var(--shadow-card);padding:15px}
 .author-row{display:flex;align-items:center;gap:11px;margin-bottom:12px}
 .avatar{
-  width:38px;height:38px;border-radius:50%;flex-shrink:0;
+  width:38px;height:38px;border-radius:50%;flex-shrink:0;overflow:hidden;
   display:flex;align-items:center;justify-content:center;
   color:#fff;font-weight:600;font-size:16px;
   background:linear-gradient(150deg,var(--indigo),#7b6ef0 70%,var(--teal));
   box-shadow:inset 0 1px 1px rgba(255,255,255,.4);
 }
+.avatar .avatar-img{width:100%;height:100%;object-fit:cover;display:block}
 .author-meta{flex:1;min-width:0}
 .author-name{font-size:15px;font-weight:600;color:var(--ink)}
 .author-sub{display:flex;align-items:center;gap:4px;margin-top:1px;font-size:12px;color:var(--faint)}
@@ -272,7 +284,7 @@ textarea.master,.verify-input{}
 .compose-grid{display:grid;grid-template-columns:1fr;gap:0}
 @media(min-width:760px){
   .compose-grid{grid-template-columns:1fr 360px;gap:26px;align-items:start}
-  .compose-right{position:sticky;top:calc(var(--topbar-h) + 16px)}
+  .compose-right{position:sticky;top:8px}
 }
 .compose-right .sec-head{margin-top:8px}
 
@@ -362,6 +374,14 @@ textarea.master,.verify-input{}
 .sheet-foot{display:flex;align-items:center;gap:8px;color:var(--ink-2);font-size:12.5px;margin-top:2px}
 .sheet-cta{margin-top:16px;width:100%;background:var(--indigo);color:#fff;border:0;border-radius:14px;padding:14px;font:inherit;font-size:16px;font-weight:600;cursor:pointer;box-shadow:var(--shadow-cta)}
 .sheet-cta:hover{filter:brightness(1.04)}
+/* Edit-split mode */
+.seg-edit{width:100%;min-height:58px;padding:9px 11px;font:inherit;font-size:14px;line-height:1.45;color:var(--ink);background:#fff;border:.5px solid var(--line-2);border-radius:10px;resize:vertical}
+.seg-edit:focus{outline:none;border-color:var(--indigo);box-shadow:0 0 0 3px var(--accent-dim)}
+.seg-actions{display:flex;align-items:center;gap:7px;margin-top:7px}
+.seg-actions .sa-btn{font:inherit;font-size:11.5px;color:var(--indigo);background:none;border:.5px solid var(--line-2);border-radius:8px;padding:3px 9px;cursor:pointer}
+.seg-actions .sa-btn:hover{border-color:var(--indigo)}
+.seg-actions .sa-count{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+.seg-actions .sa-count.over{color:var(--red)}
 
 /* ── History filter bar ─────────────────────────────────────────────────── */
 .hbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:14px 0 10px}
@@ -383,7 +403,7 @@ textarea.master,.verify-input{}
 .history-grid > *{min-width:0}
 @media(min-width:760px){
   .history-grid{grid-template-columns:1fr 1fr;gap:16px;align-items:start}
-  .hdetail{position:sticky;top:calc(var(--topbar-h) + 16px);max-height:calc(100vh - 120px);overflow-y:auto}
+  .hdetail{position:sticky;top:8px;max-height:calc(100dvh - var(--topbar-h) - var(--tabbar-h) - 48px);overflow-y:auto}
 }
 @media(max-width:759px){
   .hdetail{display:none}
@@ -657,7 +677,8 @@ textarea.master,.verify-input{}
 @media (max-width:720px){
   .drafts-sidebar{display:none}
   .drafts-sidebar.open{
-    display:flex;position:fixed;inset:calc(var(--topbar-h) + var(--safe-t)) 0 0 0;z-index:25;
+    display:flex;position:fixed;z-index:25;
+    inset:calc(var(--topbar-h) + var(--safe-t)) 0 calc(var(--tabbar-h) + var(--safe-b)) 0;
     background:var(--bg);border-radius:0;padding:14px;overflow-y:auto;
   }
 }
