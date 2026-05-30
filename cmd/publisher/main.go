@@ -16,6 +16,8 @@ import (
 	"github.com/geofox/publisher/internal/bluesky"
 	"github.com/geofox/publisher/internal/config"
 	"github.com/geofox/publisher/internal/dispatch"
+	"github.com/geofox/publisher/internal/feed"
+	"github.com/geofox/publisher/internal/identity"
 	"github.com/geofox/publisher/internal/mastodon"
 	"github.com/geofox/publisher/internal/media"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
@@ -72,11 +74,27 @@ func main() {
 		Threads:  dispatch.ThreadsAdapter{C: tc},
 		Store:    st,
 		Fetcher:  mp,
+		Notify:   feed.NewWebhook(cfg.FeedWebhookURL, cfg.FeedWebhookToken),
 	}
 	a := api.New(np, mp)
 	a.Store = st
 	a.Dispatch = d
 	a.UserLanguages = cfg.UserLanguages
+	a.PublicFeedToken = cfg.PublicFeedToken
+	// Operator's own cross-platform identity for the composer (real handle/name/
+	// avatar). Each platform is wired only when its credentials are configured;
+	// Nostr is always available (npub derives from the owner pubkey).
+	ids := &identity.Service{Nostr: np, TTL: 10 * time.Minute, Timeout: 6 * time.Second}
+	if cfg.BlueskyAppPassword != "" {
+		ids.Bluesky = bc
+	}
+	if cfg.MastodonToken != "" {
+		ids.Mastodon = mc
+	}
+	if cfg.ThreadsToken != "" {
+		ids.Threads = tc
+	}
+	a.Identity = ids
 	if cfg.DeepLAPIKey != "" {
 		a.Translator = translate.NewDeepL(cfg.DeepLAPIKey)
 	}
@@ -97,11 +115,16 @@ func main() {
 		Nostr:    resolve.NostrAdapter{P: np},
 	}
 	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
+	d.Alerter = notifier
 	if cfg.ThreadsToken != "" {
 		mgr := threads.NewTokenManager(st, tc, notifier, cfg.ThreadsToken)
 		go mgr.Start(context.Background())
 	}
 	go dispatch.NewScheduler(d, notifier, cfg.ScheduleGrace).Start(context.Background())
+	go dispatch.NewRetrier(d, notifier,
+		cfg.AutoRetryEnabled, cfg.AutoRetryMaxAttempts,
+		cfg.AutoRetryBaseDelay, cfg.AutoRetryMaxDelay, cfg.RetrierTick,
+	).Start(context.Background())
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      a.Routes(),

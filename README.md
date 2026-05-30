@@ -165,6 +165,22 @@ A chain that fails mid-way is recorded as `partial`; **resume** from history
 re-posts only the not-yet-sent segments (already-delivered segments are never
 re-sent). With `number`, segments get per-platform ` k/n` counters.
 
+### Automatic failure recovery
+
+Failed and partial deliveries are re-driven automatically by a background
+Retrier with exponential backoff (`AUTO_RETRY_BASE_DELAY` × 2 per attempt,
+capped at `AUTO_RETRY_MAX_DELAY`), up to `AUTO_RETRY_MAX_ATTEMPTS` per target.
+Nostr partials retry at the per-relay level (rebroadcasting the same signed
+event, no duplicate note); other platforms retry the whole target. `missed`
+scheduled posts are **not** auto-retried (a scheduling miss, not a delivery
+failure) — retry them manually.
+
+After the cap, a target/relay is marked **given up** and an operational alert
+fires once (via `ALERT_WEBHOOK_URL`). Immediate-post failures also alert. The
+History tab gains an **attention** filter (delivery failed/partial) with a live
+count from `GET /api/posts/attention/count`; manual retry remains available on
+any target, including given-up ones.
+
 ### `POST /api/resolve`
 
 Resolve a pasted post URL (Bluesky/Mastodon) or a Nostr identifier
@@ -225,6 +241,23 @@ transaction. On any failure, the draft survives so the user can retry.
 Image uploads dedup by sha256 across both `posts` and `drafts`: if the bytes
 already live on Blossom (via a previous post or draft), the pipeline returns
 the existing URL instead of re-uploading.
+
+### Public feed
+
+- `GET /api/public/feed?limit=20` — latest public master posts as JSON for a
+  homepage. Requires `Authorization: Bearer $PUBLIC_FEED_TOKEN`; returns `404`
+  when `PUBLIC_FEED_TOKEN` is unset. Each item has `id`, `published_at` (first
+  time the post went live on any platform), `text`, optional `media[]`, optional
+  `interaction` (for quotes/reposts), and `links[]` — one `{platform, url}` per
+  platform where the post is public and successfully published. Replies, and any
+  post with no public platform copy, are omitted. `limit` defaults to 20, max
+  100.
+
+When a feed-eligible post is published (immediately, on a scheduled fire, or on
+a retry), publisher fires a signal-only `POST` to `FEED_WEBHOOK_URL`
+(`{ "event": "post.published", "id", "published_at" }`) so the homepage can
+re-fetch instead of polling. The body carries no content; treat it as a refresh
+trigger.
 
 ### Web UI & `/api`
 
@@ -302,6 +335,11 @@ infrastructure and should be overridden.
 | `POW_DIFFICULTY_MAX` | no | `28` | Hard cap on per-request PoW override |
 | `POW_TIMEOUT` | no | `30s` | Per-publish mining timeout |
 | `SCHEDULE_GRACE` | no | `2h` | Grace window for firing overdue scheduled posts |
+| `AUTO_RETRY_ENABLED` | no | `true` | Master switch for the auto-retry worker (Retrier) |
+| `AUTO_RETRY_MAX_ATTEMPTS` | no | `6` | Per-target attempt cap before giving up |
+| `AUTO_RETRY_BASE_DELAY` | no | `2m` | First backoff interval |
+| `AUTO_RETRY_MAX_DELAY` | no | `1h` | Backoff ceiling |
+| `RETRIER_TICK` | no | `60s` | Retrier loop cadence |
 | `DB_PATH` | no | `/data/publisher.db` | SQLite archive path (mount a volume here) |
 | `MASTODON_BASE_URL` | no | — | Mastodon instance URL (enables Mastodon cross-post) |
 | `MASTODON_TOKEN` | no | — | Mastodon access token (**secret**) |
@@ -313,6 +351,9 @@ infrastructure and should be overridden.
 | `ALERT_WEBHOOK_URL` | no | — | Webhook posted to on scheduled-post failure |
 | `ALERT_WEBHOOK_USER` | no | `alertmanager` | Basic-auth user for the alert webhook |
 | `ALERT_WEBHOOK_PASS` | no | — | Basic-auth password for the alert webhook (**secret**) |
+| `PUBLIC_FEED_TOKEN` | no | — | Bearer token gating `GET /api/public/feed`; unset disables the endpoint (**secret**) |
+| `FEED_WEBHOOK_URL` | no | — | Signal-only webhook POSTed when a feed-eligible post is published |
+| `FEED_WEBHOOK_TOKEN` | no | — | Bearer token sent on the feed webhook so the receiver can verify it (**secret**) |
 | `PORT` | no | `8080` | Listen port |
 | `LOG_LEVEL` | no | `info` | `debug` / `info` / `warn` / `error` |
 | `PLC_DIRECTORY_URL` | no | `https://plc.directory` | did:plc resolver for Bluesky identity lookups |

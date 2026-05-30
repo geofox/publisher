@@ -109,6 +109,33 @@ func (p *Publisher) ResolveSource(ctx context.Context, input string) (*SourceEve
 	return src, nil
 }
 
+// OwnerProfile returns the operator's npub (encoded from the configured pubkey)
+// plus a best-effort display name + avatar from their kind-0 profile metadata on
+// relays. The npub is always returned; name/picture are empty when no kind-0 is
+// found.
+func (p *Publisher) OwnerProfile(ctx context.Context) (npub, name, picture string, err error) {
+	npub = nip19.EncodeNpub(p.cfg.OwnerPubkey)
+	urls := p.sourceRelays(ctx, nil)
+	prof := p.fetchOne(ctx, urls, gonostr.Filter{
+		Authors: []gonostr.PubKey{p.cfg.OwnerPubkey},
+		Kinds:   []gonostr.Kind{0},
+		Limit:   1,
+	})
+	if prof == nil {
+		return npub, "", "", nil
+	}
+	var meta struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"display_name"`
+		Picture     string `json:"picture"`
+	}
+	if json.Unmarshal([]byte(prof.Content), &meta) == nil {
+		name = firstNonEmpty(meta.DisplayName, meta.Name)
+		picture = meta.Picture
+	}
+	return npub, name, picture, nil
+}
+
 // hasProtectedTag reports whether the event carries a NIP-70 ["-"] tag, which
 // asks relays not to accept the event from anyone but its author — so a repost
 // (which rebroadcasts the original) can't reliably propagate it.

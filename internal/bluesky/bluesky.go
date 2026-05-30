@@ -261,7 +261,13 @@ func (c *Client) Repost(ctx context.Context, subjectURI, subjectCID string) (Res
 	if err != nil {
 		return Result{}, fmt.Errorf("repost: %w", err)
 	}
-	return Result{RemoteID: uri, RemoteURL: webURL(s.Handle, uri), CID: cid}, nil
+	// A repost record has no standalone bsky.app page, and its rkey lives in the
+	// app.bsky.feed.repost collection — not app.bsky.feed.post — so webURL(handle,
+	// repostURI) would produce a dead link under our own profile. The meaningful
+	// link is the original post we reposted (the subject), addressed by its own
+	// author + rkey. RemoteID stays the repost record's URI so it can be deleted
+	// later.
+	return Result{RemoteID: uri, RemoteURL: webURL(authorityOf(subjectURI), subjectURI), CID: cid}, nil
 }
 
 func (c *Client) createSession(ctx context.Context) (session, error) {
@@ -330,6 +336,19 @@ func rkeyOf(atURI string) string {
 	return atURI
 }
 
-func webURL(handle, atURI string) string {
-	return "https://bsky.app/profile/" + handle + "/post/" + rkeyOf(atURI)
+// authorityOf returns the repo authority (DID or handle) of an at:// URI — the
+// segment between "at://" and the first "/". Used to link a repost to the
+// original author's post rather than the reposter's own profile.
+func authorityOf(atURI string) string {
+	s := strings.TrimPrefix(atURI, "at://")
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// webURL builds a bsky.app permalink. authority is the profile segment — a
+// handle (alice.bsky.social) or a DID (did:plc:…); bsky.app resolves either.
+func webURL(authority, atURI string) string {
+	return "https://bsky.app/profile/" + authority + "/post/" + rkeyOf(atURI)
 }

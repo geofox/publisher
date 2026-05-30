@@ -3,6 +3,15 @@ import { el, $, gcount, wcount, flash, confirmModal, META, ORDER } from "./commo
 import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv } from "./state.js";
 import { renderPreview } from "./preview.js";
 import { resultRow, openDetail } from "./history.js";
+import { brandTile, icon, PLATFORM_META } from "./brands.js";
+
+// autoGrow sizes a textarea to its content (up to its CSS max-height, then it
+// scrolls). No-op when the element is hidden (scrollHeight is 0 then).
+function autoGrow(ta) {
+  if (!ta || ta.offsetParent === null) return;
+  ta.style.height = "auto";
+  ta.style.height = ta.scrollHeight + "px";
+}
 
 export function markDirty() {
   state.dirty = true;
@@ -24,8 +33,98 @@ function counterClass(n, limit) {
 }
 
 // ---------------------------------------------------------------------------
-// Platform chips
+// Auto-threading estimate (client-side, mirrors Go dispatch + the design's
+// splitThread: word-boundary wrap reserving room for a " n/n" suffix). Used for
+// the live thread badge, banner, and the review sheet's segments; the live
+// preview pane still fetches the authoritative split from /api/thread-preview.
 // ---------------------------------------------------------------------------
+
+function numberingOn() { return document.getElementById("threadnum")?.checked ?? true; }
+
+// splitMarkers mirrors internal/thread.splitMarkers: break on lines that are
+// solely "---", trimming each block and dropping empties. Manual breaks let the
+// operator force a thread (and shape it via the Edit-split sheet).
+function splitMarkers(text) {
+  const blocks = []; let cur = [];
+  for (const ln of text.split(/\r?\n/)) {
+    if (ln.trim() === "---") { blocks.push(cur.join("\n")); cur = []; }
+    else cur.push(ln);
+  }
+  blocks.push(cur.join("\n"));
+  return blocks.map(b => b.trim()).filter(Boolean);
+}
+
+// splitLength wraps one block on word boundaries, reserving room for a " n/n"
+// suffix when numbering is on. limit 0 (Nostr) → never length-splits.
+function splitLength(text, limit, number) {
+  if (!limit || gcount(text) <= limit) return [text];
+  const reserve = number ? 6 : 0; // " 99/99"
+  const eff = Math.max(limit - reserve, 1);
+  const parts = []; let cur = "";
+  for (const w of text.split(/(\s+)/)) {
+    if (gcount(cur + w) > eff && cur.trim()) { parts.push(cur.trim()); cur = w.replace(/^\s+/, ""); }
+    else cur += w;
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  return parts.length ? parts : [text];
+}
+
+// splitThread mirrors the backend: honor manual --- markers first, then
+// length-split each block. A chain forms when there are multiple blocks OR a
+// single block exceeds the limit.
+function splitThread(text, limit, number = true) {
+  const blocks = splitMarkers(text);
+  if (blocks.length > 1) {
+    const out = [];
+    for (const b of blocks) out.push(...splitLength(b, limit, number));
+    return out.length ? out : [text];
+  }
+  return splitLength(text, limit, number);
+}
+
+function threadInfoFor(p) {
+  const parts = splitThread(postedText(p), META[p].limit, numberingOn());
+  return { posts: parts.length, threaded: parts.length > 1, parts };
+}
+
+// targetCount → {text, cls} for a platform's live count. State colors mirror the
+// design: under 90% → ink2 (no class), >90% → amber, over → indigo (will thread,
+// informational), no-limit → teal ∞.
+function targetCount(p) {
+  const limit = META[p].limit, n = gcount(postedText(p));
+  if (!limit) return { text: "∞", cls: "inf", n };
+  const pct = n / limit;
+  return { text: `${n}/${limit}`, cls: n > limit ? "over" : pct > 0.9 ? "near" : "", n };
+}
+
+// Token highlighter for the thread sheet; .pv-tok picks up the platform tint from
+// the --pa set by the p-{platform} ancestor class.
+const SHEET_TOKEN = /(https?:\/\/[^\s]+|#[\w]+|@[\w.]+|\b[a-z0-9-]+\.(?:one|com|social|net|io)\b[^\s]*)/gi;
+function highlightTokens(text) {
+  const out = []; let last = 0, m; SHEET_TOKEN.lastIndex = 0;
+  while ((m = SHEET_TOKEN.exec(text)) !== null) {
+    if (m.index > last) out.push(document.createTextNode(text.slice(last, m.index)));
+    out.push(el("span", { class: "pv-tok", text: m[0] }));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(document.createTextNode(text.slice(last)));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Targets — selectable rows with brand tile, live count, switch, thread badge
+// ---------------------------------------------------------------------------
+
+function iosSwitch(on) { return el("div", { class: "ios-switch" + (on ? " on" : "") }, el("div", { class: "knob" })); }
+
+function threadBadge(p) {
+  const ti = threadInfoFor(p);
+  const badge = el("span", { class: "thread-badge",
+    onclick: e => { e.stopPropagation(); openThreadSheet(p); } });
+  const ic = icon("thread", { size: 12, sw: 1.9 }); if (ic) badge.append(ic);
+  badge.append(el("span", { class: "tb-txt", text: `${ti.posts} posts` }));
+  return badge;
+}
 
 function renderChips() {
   const c = $("#chips"); c.innerHTML = "";
@@ -33,18 +132,247 @@ function renderChips() {
   for (const p of ORDER) {
     const on = state.platforms.has(p);
     const locked = it != null && p === it.platform;
-    let label = META[p].label;
-    if (it) label += p === it.platform ? " · native" : " · copy";
-    c.append(el("button", {
-      class: "chip p-" + p + (on ? " on" : "") + (locked ? " locked" : ""), type: "button", text: label,
+    const meta = PLATFORM_META[p] || {};
+    const tc = targetCount(p);
+    const ti = threadInfoFor(p);
+
+    const top = el("div", { class: "target-top" }, el("span", { class: "t-name", text: META[p].label }));
+    if (it) top.append(el("span", { class: "t-tag" + (locked ? " native" : ""), text: locked ? "native" : "copy" }));
+    if (on && ti.threaded) top.append(threadBadge(p));
+
+    const row = el("div", {
+      class: "target-row p-" + p + (on ? "" : " off") + (locked ? " locked" : ""),
       onclick: () => {
         if (locked) return; // source platform stays selected in interaction mode
         on ? state.platforms.delete(p) : state.platforms.add(p);
         if (!state.platforms.has(state.focus)) state.focus = p;
         renderChips(); renderCards(); renderPreview();
       },
-    }));
+    },
+      brandTile(p, { size: 29 }),
+      el("div", { class: "target-main" }, top, el("div", { class: "t-handle", text: meta.handle || "" })),
+      el("span", { class: "t-count" + (tc.cls ? " " + tc.cls : ""), text: tc.text }),
+      iosSwitch(on),
+    );
+    c.append(row);
   }
+  renderTargetsMeta();
+  renderThreadNotice();
+}
+
+// refreshTargets updates each row's count + thread badge in place on every
+// keystroke (rebuilding rows would re-create the brand-mark <img>s and flicker).
+function refreshTargets() {
+  for (const p of ORDER) {
+    const row = $(`#chips .target-row.p-${p}`); if (!row) continue;
+    const on = state.platforms.has(p);
+    const tc = targetCount(p);
+    const cnt = row.querySelector(".t-count");
+    if (cnt) { cnt.textContent = tc.text; cnt.className = "t-count" + (tc.cls ? " " + tc.cls : ""); }
+    const top = row.querySelector(".target-top");
+    const ti = threadInfoFor(p);
+    let badge = top.querySelector(".thread-badge");
+    if (on && ti.threaded) {
+      if (!badge) { badge = threadBadge(p); top.append(badge); }
+      else badge.querySelector(".tb-txt").textContent = `${ti.posts} posts`;
+    } else if (badge) { badge.remove(); }
+  }
+  renderTargetsMeta();
+  renderThreadNotice();
+}
+
+function renderTargetsMeta() {
+  const m = $("#targets-meta"); if (m) m.textContent = `${state.platforms.size} selected`;
+  const aud = $("#compose-audience");
+  if (aud) aud.textContent = state.platforms.size ? `Public · mirror to ${state.platforms.size}` : "Public";
+}
+
+// shortId middle-truncates a long opaque identifier (a Nostr npub, hex key, …)
+// to "head…tail" so it stays glanceable instead of overflowing the row.
+function shortId(s, head = 10, tail = 5) {
+  return s && s.length > head + tail + 3 ? s.slice(0, head) + "…" + s.slice(-tail) : s;
+}
+// isOpaqueId reports whether s is an identifier (npub/nprofile/long hex) rather
+// than a human handle/name — those are the ones worth middle-truncating.
+function isOpaqueId(s) { return /^(npub1|nprofile1)/i.test(s) || /^[0-9a-f]{32,}$/i.test(s); }
+
+// applyIdentity swaps the placeholder author + per-platform handles for the
+// operator's real profile (from GET /api/identity). Called once after boot;
+// failures leave the placeholders untouched.
+export function applyIdentity(id) {
+  if (!id) return;
+  const acc = id.accounts || {};
+  for (const p of ORDER) {
+    const a = acc[p];
+    if (a && a.handle && PLATFORM_META[p]) {
+      // The Nostr npub is ~63 chars — truncate it (and any other opaque id) for display.
+      PLATFORM_META[p].handle = (p === "nostr" || isOpaqueId(a.handle)) ? shortId(a.handle) : a.handle;
+    }
+  }
+  const nameEl = $("#compose-author");
+  if (nameEl && id.name) nameEl.textContent = isOpaqueId(id.name) ? shortId(id.name) : id.name;
+  const av = $("#compose-avatar");
+  if (av) {
+    if (id.avatar) {
+      av.style.background = "none";
+      av.textContent = "";
+      av.append(el("img", { src: id.avatar, alt: "", class: "avatar-img" }));
+    } else if (id.monogram) {
+      av.textContent = id.monogram;
+    }
+  }
+  renderChips(); // re-render target rows so the real handles show
+}
+
+// renderThreadNotice shows the calm informational banner above POST TO whenever
+// ≥1 selected target overflows; tapping it opens the review sheet.
+function renderThreadNotice() {
+  const host = $("#threadnotice"); if (!host) return;
+  host.innerHTML = "";
+  const threaded = ORDER.filter(p => state.platforms.has(p) && threadInfoFor(p).threaded);
+  if (!threaded.length) return;
+  const names = threaded.map(p => `${META[p].label} (${threadInfoFor(p).posts})`).join(", ");
+  const banner = el("div", { class: "thread-notice", onclick: () => openThreadSheet(threaded[0]) });
+  const ic = icon("thread", { size: 20, sw: 1.8 }); if (ic) banner.append(ic);
+  banner.append(el("div", { class: "tn-body" },
+    el("div", { class: "tn-title", text: `Auto-threading on ${names}` }),
+    el("div", { class: "tn-sub", text: "Over the limit — we'll split it into a numbered thread." }),
+  ));
+  const ch = icon("chevron", { size: 16 }); if (ch) banner.append(ch);
+  host.append(banner);
+}
+
+// openThreadSheet presents the glass bottom sheet reviewing how an over-limit
+// draft splits for one platform — and, via "Edit split", lets the operator
+// reshape the breakpoints (saved back into the source text as \n---\n markers,
+// which the backend honors verbatim on send).
+function openThreadSheet(p) {
+  const meta = META[p];
+  const it = state.interaction;
+  const ov = state.ov[p];
+  // Edit-split writes back to the text that produced the segments: a per-platform
+  // override if one is set, else the master draft. Disabled in interaction mode
+  // (the previewed text there is an assembled reproduction, not directly owned).
+  const editable = !it;
+  const srcIsOverride = ov.text != null;
+  const number = numberingOn();
+  const sourceText = postedText(p);
+
+  let segs = splitThread(sourceText, meta.limit, number);
+  let editing = false;
+  let segInputs = [];
+
+  const bk = el("div", { class: "sheet-bk" });
+  const close = () => bk.remove();
+  bk.addEventListener("click", e => { if (e.target === bk) close(); });
+  const sheet = el("div", { class: "sheet p-" + p });
+  bk.append(sheet);
+
+  const collectRaw = () => segInputs.map(t => t.value);
+
+  // segLen = a segment's length including the " n/n" numbering it will gain on
+  // send; over = whether that pushes it past the limit.
+  function segLen(seg, total) {
+    const n = number ? gcount(seg) + (` ${total}/${total}`).length : gcount(seg);
+    return { n, over: meta.limit ? n > meta.limit : false };
+  }
+
+  function viewTimeline() {
+    const tl = el("div", { class: "seg-timeline" });
+    segs.forEach((seg, i) => {
+      const { n, over } = segLen(seg, segs.length);
+      const rail = el("div", { class: "seg-rail" }, el("div", { class: "seg-node", text: String(i + 1) }));
+      if (i < segs.length - 1) rail.append(el("div", { class: "seg-conn" }));
+      const txt = el("div", { class: "sc-text" }, ...highlightTokens(seg));
+      if (number) txt.append(el("span", { class: "sc-num", text: ` ${i + 1}/${segs.length}` }));
+      const card = el("div", { class: "seg-card" }, txt,
+        el("div", { class: "sc-meta" },
+          el("span", { class: "sc-count" + (over ? " over" : ""), text: meta.limit ? `${n}/${meta.limit}` : `${n} chars` }),
+          meta.limit ? el("div", { class: "track" }, el("i", { style: `width:${Math.min(n / meta.limit * 100, 100)}%` })) : null,
+        ),
+      );
+      tl.append(el("div", { class: "seg-item" }, rail, card));
+    });
+    return tl;
+  }
+
+  function editTimeline() {
+    segInputs = [];
+    const tl = el("div", { class: "seg-timeline" });
+    segs.forEach((seg, i) => {
+      const rail = el("div", { class: "seg-rail" }, el("div", { class: "seg-node", text: String(i + 1) }));
+      if (i < segs.length - 1) rail.append(el("div", { class: "seg-conn" }));
+
+      const count = el("span", { class: "sa-count" });
+      const updateCount = (val) => {
+        const { n, over } = segLen(val, segs.length);
+        count.textContent = meta.limit ? `${n}/${meta.limit}` : `${n} chars`;
+        count.className = "sa-count" + (over ? " over" : "");
+      };
+      const ta = el("textarea", { class: "seg-edit", rows: 3,
+        oninput: e => updateCount(e.target.value) });
+      ta.value = seg; updateCount(seg);
+      segInputs.push(ta);
+
+      const actions = el("div", { class: "seg-actions" });
+      if (i > 0) actions.append(el("button", { class: "sa-btn", type: "button", text: "⤺ merge up",
+        onclick: () => { const cur = collectRaw(); cur[i - 1] = (cur[i - 1].trimEnd() + " " + cur[i].trimStart()).trim(); cur.splice(i, 1); segs = cur; render(); } }));
+      actions.append(el("button", { class: "sa-btn", type: "button", text: "✂ break here",
+        onclick: () => { const cur = collectRaw(); const caret = ta.selectionStart ?? cur[i].length; cur.splice(i, 1, cur[i].slice(0, caret), cur[i].slice(caret)); segs = cur; render(); } }));
+      actions.append(count);
+
+      const card = el("div", { class: "seg-card" }, ta, actions);
+      tl.append(el("div", { class: "seg-item" }, rail, card));
+    });
+    return tl;
+  }
+
+  function save() {
+    const next = collectRaw().map(s => s.trim()).filter(Boolean);
+    if (!next.length) { close(); return; }
+    const joined = next.join("\n---\n");
+    if (srcIsOverride) ov.text = joined;
+    else { state.master = joined; const m = $("#master"); if (m) { m.value = joined; autoGrow(m); } }
+    markDirty();
+    renderChips(); renderCards(); refreshCounts(); renderMeta(); renderPreview();
+    close();
+    flash(`Thread split saved · ${next.length} posts`);
+  }
+
+  function render() {
+    sheet.innerHTML = "";
+    sheet.append(el("div", { class: "sheet-grabber" }));
+    const total = gcount(sourceText);
+    const head = el("div", { class: "sheet-head" },
+      brandTile(p, { size: 30 }),
+      el("div", { class: "sh-main" },
+        el("div", { class: "sh-title", text: `${meta.label} thread` }),
+        el("div", { class: "sh-sub", text: editing
+          ? `${segs.length} posts · edit text, break, or merge`
+          : (meta.limit ? `${total} chars over ${meta.limit} → ${segs.length} posts` : `${segs.length} posts`) }),
+      ),
+    );
+    if (editable) head.append(el("button", { class: "sh-edit", type: "button",
+      text: editing ? "Done" : "Edit split",
+      onclick: () => { if (editing) segs = collectRaw().map(s => s.trim()).filter(Boolean); editing = !editing; render(); } }));
+    sheet.append(head);
+
+    sheet.append(editing ? editTimeline() : viewTimeline());
+
+    const foot = el("div", { class: "sheet-foot" });
+    const lk = icon("link", { size: 16 }); if (lk) foot.append(lk);
+    foot.append(el("span", { text: editing
+      ? "Manual breaks apply to every network · numbering added on send"
+      : "Replies chain automatically · numbering added on send" }));
+    sheet.append(foot);
+
+    sheet.append(editing
+      ? el("button", { class: "sheet-cta", type: "button", text: "Save split", onclick: save })
+      : el("button", { class: "sheet-cta", type: "button", text: "Looks good — keep thread", onclick: close }));
+  }
+
+  render();
+  document.body.append(bk);
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +401,7 @@ export function startInteraction(src, action) {
     state.focus = src.platform;
     const tab = document.querySelector('.tab[data-view="compose"]');
     if (tab) tab.click();
-    const m = $("#master"); if (m) m.value = "";
+    const m = $("#master"); if (m) { m.value = ""; autoGrow(m); }
     window.scrollTo({ top: 0, behavior: "smooth" });
     flash((action === "quote" ? "Quoting " : "Replying to ") + (src.preview.author_handle || src.platform));
     renderImages(); // entry cleared state.images → refresh the thumbnail strip (symmetric with exit)
@@ -98,7 +426,7 @@ export function exitInteraction() {
   state.master = "";
   state.images.forEach((i) => URL.revokeObjectURL(i.url));
   state.images = [];
-  const m = $("#master"); if (m) m.value = "";
+  const m = $("#master"); if (m) { m.value = ""; autoGrow(m); }
   state.platforms = prev && prev.size ? new Set(prev) : new Set(ORDER);
   if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
   renderImages();
@@ -129,7 +457,7 @@ export function loadDraft(input) {
       state.dirty = true;
       const tab = document.querySelector('.tab[data-view="compose"]');
       if (tab) tab.click();
-      const m = $("#master"); if (m) m.value = state.master;
+      const m = $("#master"); if (m) { m.value = state.master; autoGrow(m); }
       window.scrollTo({ top: 0, behavior: "smooth" });
       renderImages();
       renderInteractionUI(); // re-renders chips/cards/preview and hides the banner
@@ -169,7 +497,7 @@ export function loadDraft(input) {
     state.dirty = false;
     const tab = document.querySelector('.tab[data-view="compose"]');
     if (tab) tab.click();
-    const master = $("#master"); if (master) master.value = state.master;
+    const master = $("#master"); if (master) { master.value = state.master; autoGrow(master); }
     window.scrollTo({ top: 0, behavior: "smooth" });
     renderImages();
     renderInteractionUI(); // re-renders chips/cards/preview and hides the banner
@@ -565,7 +893,8 @@ export function showResultModal(data) {
 // ---------------------------------------------------------------------------
 
 export function composeInit() {
-  $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); renderMeta(); renderPreview(); });
+  $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); autoGrow(e.target); });
+  autoGrow($("#master")); // size correctly if a draft was already in the field at init
   $("#addimg").addEventListener("click", () => $("#imgfile").click());
   $("#imgfile").addEventListener("change", e => {
     const file = e.target.files[0]; if (!file) return;
@@ -576,6 +905,6 @@ export function composeInit() {
   $("#schedat").addEventListener("input", updateSched);
   $("#schedclear").addEventListener("click", () => { $("#schedat").value = ""; updateSched(); });
   $("#submit").addEventListener("click", submit);
-  document.getElementById("threadnum")?.addEventListener("change", renderPreview);
+  document.getElementById("threadnum")?.addEventListener("change", () => { refreshTargets(); renderPreview(); });
   renderChips(); renderImages(); renderCards(); renderMeta(); renderPreview();
 }

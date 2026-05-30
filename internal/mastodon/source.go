@@ -146,6 +146,32 @@ func (c *Client) QuotePost(ctx context.Context, text, quotedID string, imgs []Im
 	return Result{RemoteID: st.ID, RemoteURL: st.URL}, nil
 }
 
+// Profile fetches the authenticated operator's own account (acct, display name,
+// avatar) via /api/v1/accounts/verify_credentials. The acct is bare on the local
+// instance, so it is normalized to @user@host using the instance base URL.
+func (c *Client) Profile(ctx context.Context) (handle, displayName, avatar string, err error) {
+	var a struct {
+		Username    string `json:"username"`
+		Acct        string `json:"acct"`
+		DisplayName string `json:"display_name"`
+		Avatar      string `json:"avatar"`
+	}
+	if err := c.getJSON(ctx, "/api/v1/accounts/verify_credentials", nil, &a); err != nil {
+		return "", "", "", err
+	}
+	h := a.Acct
+	if h == "" {
+		h = a.Username
+	}
+	if h != "" && !strings.Contains(h, "@") {
+		host := strings.TrimPrefix(strings.TrimPrefix(c.baseURL, "https://"), "http://")
+		h = "@" + h + "@" + host
+	} else if h != "" && !strings.HasPrefix(h, "@") {
+		h = "@" + h
+	}
+	return h, a.DisplayName, a.Avatar, nil
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, params url.Values, out any) error {
 	full := c.baseURL + path
 	if len(params) > 0 {

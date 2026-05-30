@@ -11,6 +11,38 @@ import (
 	"github.com/geofox/publisher/internal/store"
 )
 
+func TestAttentionCountEndpoint(t *testing.T) {
+	// Same setup pattern as list_filter_test.go: real temp store + &API{Store: db}.
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mk := func(id, status string) {
+		_ = db.SavePost(&store.Post{ID: id, CreatedAt: time.Now().UTC(),
+			Platforms: []string{"bluesky"}, Source: "test", Status: status,
+			Targets: []store.Target{{Platform: "bluesky", Status: status}}})
+	}
+	mk("c1", "failed")
+	mk("c2", "partial")
+	mk("c3", "success")
+
+	a := &API{Store: db}
+	req := httptest.NewRequest("GET", "/api/posts/attention/count", nil)
+	w := httptest.NewRecorder()
+	a.Routes().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status %d", w.Code)
+	}
+	var body struct {
+		Count int `json:"count"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if body.Count != 2 {
+		t.Errorf("count = %d, want 2", body.Count)
+	}
+}
+
 func TestListPostsQueryParams(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {

@@ -69,6 +69,29 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, access
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+// Profile fetches the authenticated operator's own handle, display name, and
+// avatar URL. A fresh session already yields the DID + handle;
+// app.bsky.actor.getProfile adds displayName + avatar. Best-effort: returns the
+// session handle even if the profile call fails.
+func (c *Client) Profile(ctx context.Context) (handle, displayName, avatar string, err error) {
+	s, err := c.createSession(ctx)
+	if err != nil {
+		return "", "", "", err
+	}
+	var p struct {
+		Handle      string `json:"handle"`
+		DisplayName string `json:"displayName"`
+		Avatar      string `json:"avatar"`
+	}
+	if err := c.get(ctx, "/xrpc/app.bsky.actor.getProfile", url.Values{"actor": {s.Did}}, s.AccessJwt, &p); err != nil {
+		return s.Handle, "", "", err
+	}
+	if p.Handle == "" {
+		p.Handle = s.Handle
+	}
+	return p.Handle, p.DisplayName, p.Avatar, nil
+}
+
 // GetPost resolves a bsky.app URL to a SourcePost using an authed session (viewer
 // flags are only meaningful when authed).
 func (c *Client) GetPost(ctx context.Context, postURL string) (*SourcePost, error) {

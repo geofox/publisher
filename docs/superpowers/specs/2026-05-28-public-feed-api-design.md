@@ -28,13 +28,18 @@ The two share one eligibility predicate so they can never disagree about what is
    blurhash), `published_at`, optional `interaction`, and `links[]` (one
    `{platform, url}` per publicly-visible successful target).
 2. **Privacy = per-platform link filter, then empty-drop.** A target becomes a
-   link only if it is `status=success`, has a non-empty `remote_url`, and is
-   publicly visible. Visibility applies only to Mastodon (`fields_json.visibility`
-   must be `public`, or unset → account default which resolves to public);
-   `unlisted`/`private`/`direct` are omitted. Bluesky, Nostr, Threads have no
-   per-post visibility and always pass. After filtering, a post with zero links
-   is dropped entirely. (This is the user's rule: hide just that platform, but if
-   no public copy remains, the whole post disappears.)
+   link only if it is **live** (status `success`, or `partial`), has a non-empty
+   `remote_url`, and is publicly visible. `partial` only arises for Nostr, where
+   it means the note reached at least one relay (the `njump.me` URL resolves)
+   while another relay failed — that note is publicly live, so it must not be
+   hidden until every relay is green (the common one-relay-timeout case). The
+   `remote_url` guard keeps truly-failed targets out. Visibility applies only to
+   Mastodon (`fields_json.visibility` must be `public`, or unset → account
+   default which resolves to public); `unlisted`/`private`/`direct` are omitted.
+   Bluesky, Nostr, Threads have no per-post visibility and always pass. After
+   filtering, a post with zero links is dropped entirely. (This is the user's
+   rule: hide just that platform, but if no public copy remains, the whole post
+   disappears.)
 3. **Post types: originals, quotes, reposts — not replies.** Replies
    (`interaction.action == "reply"`) never appear. Quotes and reposts appear and
    carry an `interaction` block exposing `action`, `source_platform`,

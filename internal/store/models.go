@@ -26,6 +26,10 @@ type Post struct {
 	Status       string       `json:"status"`
 	ScheduledAt  *time.Time   `json:"scheduled_at,omitempty"`
 	FiredAt      *time.Time   `json:"fired_at,omitempty"` // list view: latest target attempt time (actual publish/retry)
+	// FirstSuccessAt is the earliest time the post went live on ANY platform
+	// (MIN over successful attempts). Set only by PublicFeed, never serialized.
+	// Retries append later attempt rows, so this never moves once set.
+	FirstSuccessAt *time.Time `json:"-"`
 	Targets      []Target     `json:"targets,omitempty"`
 	Media        []Media      `json:"media,omitempty"`
 	Interaction  *Interaction `json:"interaction,omitempty"`
@@ -42,6 +46,7 @@ type Target struct {
 	LatencyMS       int          `json:"latency_ms"`
 	AttemptCount    int          `json:"attempt_count"`
 	LastAttempt     time.Time    `json:"last_attempt"`
+	GaveUpAt        *time.Time   `json:"gave_up_at,omitempty"`
 	Attempts        []Attempt    `json:"attempts,omitempty"`
 	Relays          []RelayState `json:"relays,omitempty"`
 	Segments        []Segment    `json:"segments,omitempty"`
@@ -71,9 +76,12 @@ type Media struct {
 }
 
 type RelayState struct {
-	URL     string `json:"url"`
-	Status  string `json:"status"` // ok | failed | skipped
-	Message string `json:"message,omitempty"`
+	URL         string     `json:"url"`
+	Status      string     `json:"status"` // ok | failed | skipped
+	Message     string     `json:"message,omitempty"`
+	GaveUpAt    *time.Time `json:"gave_up_at,omitempty"`
+	RetryCount  int        `json:"retry_count,omitempty"`
+	AttemptedAt time.Time  `json:"attempted_at,omitempty"`
 }
 
 // Segment is one post in a platform's reply-chain. A non-threaded target has no
@@ -201,7 +209,7 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		return nil, err
 	}
 
-	trows, err := s.sql.Query(`SELECT id,platform,final_text,fields_json,status,remote_id,remote_url,latency_ms,attempt_count,signed_event_json,segments_json FROM post_targets WHERE post_id=? ORDER BY id`, id)
+	trows, err := s.sql.Query(`SELECT id,platform,final_text,fields_json,status,remote_id,remote_url,latency_ms,attempt_count,last_attempt_at,gave_up_at,signed_event_json,segments_json FROM post_targets WHERE post_id=? ORDER BY id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -209,10 +217,18 @@ func (s *Store) GetPost(id string) (*Post, error) {
 	for trows.Next() {
 		var tg Target
 		var fields, rid, rurl, sej, segs sql.NullString
-		if err := trows.Scan(&tg.ID, &tg.Platform, &tg.FinalText, &fields, &tg.Status, &rid, &rurl, &tg.LatencyMS, &tg.AttemptCount, &sej, &segs); err != nil {
+		var la, gu sql.NullTime
+		if err := trows.Scan(&tg.ID, &tg.Platform, &tg.FinalText, &fields, &tg.Status, &rid, &rurl, &tg.LatencyMS, &tg.AttemptCount, &la, &gu, &sej, &segs); err != nil {
 			return nil, err
 		}
 		tg.FieldsJSON, tg.RemoteID, tg.RemoteURL, tg.SignedEventJSON = fields.String, rid.String, rurl.String, sej.String
+		if la.Valid {
+			tg.LastAttempt = la.Time.UTC()
+		}
+		if gu.Valid {
+			t := gu.Time.UTC()
+			tg.GaveUpAt = &t
+		}
 		if segs.String != "" {
 			if err := json.Unmarshal([]byte(segs.String), &tg.Segments); err != nil {
 				return nil, err
@@ -245,18 +261,26 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		arows.Close()
 	}
 	for i := range p.Targets {
-		rrows, err := s.sql.Query(`SELECT relay_url,status,message FROM target_relays WHERE target_id=? ORDER BY id`, p.Targets[i].ID)
+		rrows, err := s.sql.Query(`SELECT relay_url,status,message,gave_up_at,retry_count,attempted_at FROM target_relays WHERE target_id=? ORDER BY id`, p.Targets[i].ID)
 		if err != nil {
 			return nil, err
 		}
 		for rrows.Next() {
 			var rs RelayState
 			var msg sql.NullString
-			if err := rrows.Scan(&rs.URL, &rs.Status, &msg); err != nil {
+			var rgu, rat sql.NullTime
+			if err := rrows.Scan(&rs.URL, &rs.Status, &msg, &rgu, &rs.RetryCount, &rat); err != nil {
 				rrows.Close()
 				return nil, err
 			}
 			rs.Message = msg.String
+			if rgu.Valid {
+				t := rgu.Time.UTC()
+				rs.GaveUpAt = &t
+			}
+			if rat.Valid {
+				rs.AttemptedAt = rat.Time.UTC()
+			}
 			p.Targets[i].Relays = append(p.Targets[i].Relays, rs)
 		}
 		if err := rrows.Err(); err != nil {
@@ -360,8 +384,11 @@ func (s *Store) UpdateRelayStatus(targetID int64, relayURL, status, message stri
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec(
-		`UPDATE target_relays SET status=?, message=?, attempted_at=? WHERE target_id=? AND relay_url=?`,
-		status, message, time.Now().UTC(), targetID, relayURL,
+		`UPDATE target_relays
+		    SET status=?, message=?, attempted_at=?, retry_count = retry_count + 1,
+		        gave_up_at = CASE WHEN ?='ok' THEN NULL ELSE gave_up_at END
+		  WHERE target_id=? AND relay_url=?`,
+		status, message, time.Now().UTC(), status, targetID, relayURL,
 	); err != nil {
 		return err
 	}
@@ -405,8 +432,11 @@ func (s *Store) AppendTargetAttempt(targetID int64, status, errMsg, remoteID, re
 		return err
 	}
 	if _, err := tx.Exec(
-		`UPDATE post_targets SET status=?, remote_id=?, remote_url=?, latency_ms=?, attempt_count=?, last_attempt_at=? WHERE id=?`,
-		status, remoteID, remoteURL, latencyMS, n, now, targetID,
+		`UPDATE post_targets
+		    SET status=?, remote_id=?, remote_url=?, latency_ms=?, attempt_count=?, last_attempt_at=?,
+		        gave_up_at = CASE WHEN ?='success' THEN NULL ELSE gave_up_at END
+		  WHERE id=?`,
+		status, remoteID, remoteURL, latencyMS, n, now, status, targetID,
 	); err != nil {
 		return err
 	}
@@ -463,8 +493,11 @@ func (s *Store) UpdateTargetSegments(targetID int64, segments []Segment, status,
 		return err
 	}
 	if _, err := tx.Exec(
-		`UPDATE post_targets SET status=?, remote_id=?, remote_url=?, latency_ms=?, attempt_count=?, last_attempt_at=?, segments_json=? WHERE id=?`,
-		status, headRemoteID, headRemoteURL, latencyMS, n, now, string(segJSON), targetID,
+		`UPDATE post_targets
+		    SET status=?, remote_id=?, remote_url=?, latency_ms=?, attempt_count=?, last_attempt_at=?, segments_json=?,
+		        gave_up_at = CASE WHEN ?='success' THEN NULL ELSE gave_up_at END
+		  WHERE id=?`,
+		status, headRemoteID, headRemoteURL, latencyMS, n, now, string(segJSON), status, targetID,
 	); err != nil {
 		return err
 	}
@@ -613,6 +646,64 @@ func (s *Store) CancelScheduled(id string) error {
 	return tx.Commit()
 }
 
+// PostsNeedingRetry returns IDs of posts that have at least one target in a
+// recoverable state (failed or partial) that has not yet given up. 'missed'
+// (scheduling miss) and 'success' are excluded. The caller (Retrier) loads
+// each post and applies backoff/cap per target.
+func (s *Store) PostsNeedingRetry() ([]string, error) {
+	rows, err := s.sql.Query(
+		`SELECT DISTINCT post_id FROM post_targets
+		  WHERE status IN ('failed','partial') AND gave_up_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// MarkTargetGaveUp stamps gave_up_at on a platform target, but only if it is
+// still NULL. Returns true iff this call set it (so the caller alerts once).
+func (s *Store) MarkTargetGaveUp(targetID int64, at time.Time) (bool, error) {
+	res, err := s.sql.Exec(
+		`UPDATE post_targets SET gave_up_at=? WHERE id=? AND gave_up_at IS NULL`,
+		at.UTC(), targetID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// MarkRelayGaveUp stamps gave_up_at on a single relay row, only if still NULL.
+// Returns true iff this call set it.
+func (s *Store) MarkRelayGaveUp(targetID int64, relayURL string, at time.Time) (bool, error) {
+	res, err := s.sql.Exec(
+		`UPDATE target_relays SET gave_up_at=? WHERE target_id=? AND relay_url=? AND gave_up_at IS NULL`,
+		at.UTC(), targetID, relayURL)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// AttentionCount returns the number of non-hidden posts needing attention
+// (delivery failed or partial). Drives the History "attention" badge.
+func (s *Store) AttentionCount() (int, error) {
+	var n int
+	err := s.sql.QueryRow(
+		`SELECT COUNT(*) FROM posts WHERE hidden=0 AND status IN ('failed','partial')`).Scan(&n)
+	return n, err
+}
+
 // PostFilter controls filtering/paging for ListPostsFiltered.
 type PostFilter struct {
 	Status string // "sent", "scheduled", "failed", "" / "all" → no filter
@@ -626,6 +717,8 @@ func statusClause(status string) string {
 	switch status {
 	case "scheduled":
 		return "p.status IN ('scheduled','sending')"
+	case "attention":
+		return "p.status IN ('failed','partial')"
 	case "failed":
 		return "p.status IN ('failed','partial','missed')"
 	case "sent":
