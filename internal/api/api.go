@@ -132,6 +132,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("/upload-media", a.handleUploadMedia)
 	mux.HandleFunc("/api/post", a.handleAPIPost)
 	mux.HandleFunc("GET /api/posts", a.handleListPosts)
+	mux.HandleFunc("GET /api/posts/attention/count", a.handleAttentionCount)
 	mux.HandleFunc("GET /api/posts/{id}", a.handleGetPost)
 	mux.HandleFunc("POST /api/posts/{id}/retry", a.handleRetry)
 	mux.HandleFunc("POST /api/posts/{id}/relay-retry", a.handleRelayRetry)
@@ -696,6 +697,17 @@ func (a *API) handleGetPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, p)
+}
+
+// ─── GET /api/posts/attention/count ─────────────────────────────────────────
+
+func (a *API) handleAttentionCount(w http.ResponseWriter, r *http.Request) {
+	n, err := a.Store.AttentionCount()
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]int{"count": n})
 }
 
 // ─── POST /api/posts/{id}/retry ─────────────────────────────────────────────

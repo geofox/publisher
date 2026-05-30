@@ -49,6 +49,7 @@ function segmentChain(post, t) {
         const np = await rr.json(); if (!rr.ok) throw new Error(np.error || ("HTTP " + rr.status));
         const st = targetStatus(np, plat);
         renderDetail(np);
+        refreshAttentionBadge();
         flash(`${plat}: resume ${st === "success" ? "succeeded ✓" : "still failing ✗"}`);
       } catch (e) {
         btn.disabled = false;
@@ -86,6 +87,19 @@ export function relayBlock(t, retryFn) {
   return wrap;
 }
 
+// retryStatusLine renders the auto-retry state for a target in the detail pane.
+function retryStatusLine(t, maxAttempts = 6) {
+  if (t.gave_up_at) {
+    return el("div", { class: "retry-status gaveup",
+      text: `⚠ gave up after ${t.attempt_count || maxAttempts} attempts` });
+  }
+  if ((t.status === "failed" || t.status === "partial") && (t.attempt_count || 0) < maxAttempts) {
+    return el("div", { class: "retry-status pending",
+      text: `↻ retrying (${t.attempt_count || 0}/${maxAttempts})` });
+  }
+  return null;
+}
+
 // resultRow renders one platform outcome line shared by the modal and detail.
 // stop=true keeps the success link from bubbling (used inside the clickable modal).
 export function resultRow(t, stop) {
@@ -109,7 +123,11 @@ export function resultRow(t, stop) {
     el("span", { class: "meta", text: t.latency_ms ? t.latency_ms + "ms" : "" }),
   );
   const relays = relayBlock(t, null); // read-only in modal
-  return relays ? el("div", { class: "res-wrap" }, row, relays) : row;
+  const rs = retryStatusLine(t);
+  const children = [row];
+  if (rs) children.push(rs);
+  if (relays) children.push(relays);
+  return children.length > 1 ? el("div", { class: "res-wrap" }, ...children) : row;
 }
 
 // interactionBadge renders "↩ replied to / ❝ quoted / 🔁 reposted <author>" with a
@@ -133,6 +151,16 @@ function interactionBadge(post) {
 let hfilter = "all", hquery = "", hoffset = 0, hlimit = 50, hdone = false, hposts = [];
 let hloading = false;
 
+async function refreshAttentionBadge() {
+  const badge = document.querySelector("#hseg .attn-badge");
+  if (!badge) return;
+  try {
+    const { count } = await api("/api/posts/attention/count");
+    if (count > 0) { badge.textContent = String(count); badge.hidden = false; }
+    else { badge.hidden = true; }
+  } catch { badge.hidden = true; }
+}
+
 export async function loadHistory(reset = true) {
   if (hloading) return;
   hloading = true;
@@ -144,6 +172,7 @@ export async function loadHistory(reset = true) {
     hposts = reset ? page : hposts.concat(page);
     hoffset += page.length;
     renderList();
+    refreshAttentionBadge();
   } finally {
     hloading = false;
   }
@@ -297,6 +326,7 @@ async function relayRetry(postID, relayURL, btn) {
     const post = await r.json();
     if (!r.ok) throw new Error(post.error || ("HTTP " + r.status));
     renderDetail(post);
+    refreshAttentionBadge();
     document.querySelectorAll(".hitem").forEach(e => e.classList.toggle("active", e.dataset.id === postID));
     const host = relayURL.replace(/^wss?:\/\//, "");
     const nt = (post.targets || []).find(t => t.platform === "nostr");
@@ -415,6 +445,7 @@ function renderDetail(post) {
             const np = await rr.json(); if (!rr.ok) throw new Error(np.error || ("HTTP " + rr.status));
             const st = targetStatus(np, plat);
             renderDetail(np);
+            refreshAttentionBadge();
             flash(`${plat}: retry ${st === "success" ? "succeeded ✓" : "still failing ✗"}`);
           } catch (e) { btn.disabled = false; btn.textContent = "Retry"; flash("Retry error: " + e.message); }
         },

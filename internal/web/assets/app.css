@@ -162,7 +162,8 @@ main{
 
 /* the master textarea, restyled as a clean body field (id kept) */
 .master{
-  width:100%;min-height:104px;padding:0;border:0;background:none;resize:vertical;
+  width:100%;min-height:104px;max-height:45dvh;padding:0;border:0;background:none;resize:none;
+  overflow-y:auto;box-sizing:border-box;
   font-family:var(--sans);font-size:16px;line-height:1.5;letter-spacing:-0.01em;color:var(--ink);
 }
 .master::placeholder{color:var(--faint)}
@@ -392,6 +393,11 @@ textarea.master,.verify-input{}
 }
 #hseg button:hover{color:var(--ink)}
 #hseg button.on{color:var(--indigo);background:var(--card);box-shadow:var(--shadow-card);font-weight:600}
+.attn-badge{
+  display:inline-block;min-width:1.2em;padding:0 0.35em;margin-left:0.3em;
+  border-radius:999px;background:var(--red);color:#fff;
+  font-size:0.75em;line-height:1.4;text-align:center;
+}
 #hsearch{
   flex:1;min-width:120px;font:inherit;font-size:14px;padding:8px 12px;color:var(--ink);
   background:var(--card);border:.5px solid var(--line-2);border-radius:10px;
@@ -508,6 +514,9 @@ textarea.master,.verify-input{}
 .retry{font:inherit;font-size:12px;color:var(--indigo);background:none;border:.5px solid var(--indigo);border-radius:8px;padding:5px 12px;cursor:pointer}
 .retry:disabled{opacity:.6}
 .err{color:var(--red);font-size:13px;margin:8px 0}
+.retry-status{font-size:0.8em;margin-top:0.2em}
+.retry-status.gaveup{color:var(--red)}
+.retry-status.pending{color:var(--muted)}
 
 /* ── Toast + modal ──────────────────────────────────────────────────────── */
 .toast{position:fixed;left:50%;bottom:calc(var(--tabbar-h) + 16px + var(--safe-b));transform:translateX(-50%);z-index:90;padding:11px 17px;background:rgba(27,31,39,.94);color:#fff;border-radius:12px;font-size:13px;box-shadow:0 12px 32px rgba(20,24,50,.28);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}

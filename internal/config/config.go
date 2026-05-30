@@ -66,6 +66,13 @@ type Config struct {
 	// published (empty → no webhook). FeedWebhookToken is sent as a bearer token.
 	FeedWebhookURL   string
 	FeedWebhookToken string
+
+	// Auto-retry / Retrier settings.
+	AutoRetryEnabled     bool
+	AutoRetryMaxAttempts int
+	AutoRetryBaseDelay   time.Duration
+	AutoRetryMaxDelay    time.Duration
+	RetrierTick          time.Duration
 }
 
 func Load() (Config, error) {
@@ -116,6 +123,19 @@ func Load() (Config, error) {
 	if c.ScheduleGrace, err = time.ParseDuration(getEnv("SCHEDULE_GRACE", "2h")); err != nil {
 		return c, fmt.Errorf("SCHEDULE_GRACE: %w", err)
 	}
+	c.AutoRetryEnabled = getBool("AUTO_RETRY_ENABLED", true)
+	if c.AutoRetryMaxAttempts, err = strconv.Atoi(getEnv("AUTO_RETRY_MAX_ATTEMPTS", "6")); err != nil {
+		return c, fmt.Errorf("AUTO_RETRY_MAX_ATTEMPTS: %w", err)
+	}
+	if c.AutoRetryBaseDelay, err = time.ParseDuration(getEnv("AUTO_RETRY_BASE_DELAY", "2m")); err != nil {
+		return c, fmt.Errorf("AUTO_RETRY_BASE_DELAY: %w", err)
+	}
+	if c.AutoRetryMaxDelay, err = time.ParseDuration(getEnv("AUTO_RETRY_MAX_DELAY", "1h")); err != nil {
+		return c, fmt.Errorf("AUTO_RETRY_MAX_DELAY: %w", err)
+	}
+	if c.RetrierTick, err = time.ParseDuration(getEnv("RETRIER_TICK", "60s")); err != nil {
+		return c, fmt.Errorf("RETRIER_TICK: %w", err)
+	}
 	if c.VerifyHTTPTimeout, err = time.ParseDuration(getEnv("VERIFY_HTTP_TIMEOUT", "10s")); err != nil {
 		return c, fmt.Errorf("VERIFY_HTTP_TIMEOUT: %w", err)
 	}
@@ -149,6 +169,21 @@ func getEnv(k, d string) string {
 		return v
 	}
 	return d
+}
+
+func getBool(k string, d bool) bool {
+	v := os.Getenv(k)
+	if v == "" {
+		return d
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return d
+	}
 }
 
 func splitCSV(s string) []string {

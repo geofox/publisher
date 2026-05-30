@@ -165,6 +165,22 @@ A chain that fails mid-way is recorded as `partial`; **resume** from history
 re-posts only the not-yet-sent segments (already-delivered segments are never
 re-sent). With `number`, segments get per-platform ` k/n` counters.
 
+### Automatic failure recovery
+
+Failed and partial deliveries are re-driven automatically by a background
+Retrier with exponential backoff (`AUTO_RETRY_BASE_DELAY` × 2 per attempt,
+capped at `AUTO_RETRY_MAX_DELAY`), up to `AUTO_RETRY_MAX_ATTEMPTS` per target.
+Nostr partials retry at the per-relay level (rebroadcasting the same signed
+event, no duplicate note); other platforms retry the whole target. `missed`
+scheduled posts are **not** auto-retried (a scheduling miss, not a delivery
+failure) — retry them manually.
+
+After the cap, a target/relay is marked **given up** and an operational alert
+fires once (via `ALERT_WEBHOOK_URL`). Immediate-post failures also alert. The
+History tab gains an **attention** filter (delivery failed/partial) with a live
+count from `GET /api/posts/attention/count`; manual retry remains available on
+any target, including given-up ones.
+
 ### `POST /api/resolve`
 
 Resolve a pasted post URL (Bluesky/Mastodon) or a Nostr identifier
@@ -319,6 +335,11 @@ infrastructure and should be overridden.
 | `POW_DIFFICULTY_MAX` | no | `28` | Hard cap on per-request PoW override |
 | `POW_TIMEOUT` | no | `30s` | Per-publish mining timeout |
 | `SCHEDULE_GRACE` | no | `2h` | Grace window for firing overdue scheduled posts |
+| `AUTO_RETRY_ENABLED` | no | `true` | Master switch for the auto-retry worker (Retrier) |
+| `AUTO_RETRY_MAX_ATTEMPTS` | no | `6` | Per-target attempt cap before giving up |
+| `AUTO_RETRY_BASE_DELAY` | no | `2m` | First backoff interval |
+| `AUTO_RETRY_MAX_DELAY` | no | `1h` | Backoff ceiling |
+| `RETRIER_TICK` | no | `60s` | Retrier loop cadence |
 | `DB_PATH` | no | `/data/publisher.db` | SQLite archive path (mount a volume here) |
 | `MASTODON_BASE_URL` | no | — | Mastodon instance URL (enables Mastodon cross-post) |
 | `MASTODON_TOKEN` | no | — | Mastodon access token (**secret**) |
