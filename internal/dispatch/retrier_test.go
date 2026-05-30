@@ -78,6 +78,38 @@ func TestRetrierSkipsNotDue(t *testing.T) {
 	}
 }
 
+func TestRetrierGivesUpAndAlertsOnce(t *testing.T) {
+	st := openDispatchStore(t)
+	p := &store.Post{ID: "g1", CreatedAt: time.Now().UTC(), MasterText: "hi",
+		Platforms: []string{"bluesky"}, Source: "test", Status: "failed",
+		Targets: []store.Target{{Platform: "bluesky", Status: "failed"}}}
+	_ = st.SavePost(p)
+	gp, _ := st.GetPost("g1")
+	tid := gp.Targets[0].ID
+	// Drive attempt_count up to the cap (6) — all failures.
+	for i := 0; i < 6; i++ {
+		_ = st.AppendTargetAttempt(tid, "failed", "boom", "", "", 1, "", "", nil, "")
+	}
+	al := &fakeAlerter{}
+	d := &Dispatcher{Store: st}
+	now := time.Now().UTC().Add(2 * time.Hour) // well past any backoff
+	r := &Retrier{disp: d, notifier: al, enabled: true, maxAttempts: 6,
+		base: 2 * time.Minute, max: time.Hour, now: func() time.Time { return now }}
+
+	r.runDue(context.Background()) // crosses the cap → gives up + alerts
+	gp, _ = st.GetPost("g1")
+	if gp.Targets[0].GaveUpAt == nil {
+		t.Fatal("target should be marked given up at the cap")
+	}
+	if len(al.calls) != 1 {
+		t.Fatalf("expected exactly 1 give-up alert, got %d", len(al.calls))
+	}
+	r.runDue(context.Background()) // second pass must not re-alert
+	if len(al.calls) != 1 {
+		t.Errorf("give-up alert must fire only once, got %d", len(al.calls))
+	}
+}
+
 func TestBackoff(t *testing.T) {
 	base, max := 2*time.Minute, 1*time.Hour
 	cases := []struct {
