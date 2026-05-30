@@ -227,3 +227,18 @@ func TestNostrStatusFromRelays(t *testing.T) {
 		}
 	}
 }
+
+func TestPostAlertsOnFailure(t *testing.T) {
+	st := openDispatchStore(t)
+	al := &fakeAlerter{} // defined in retrier_test.go (same package)
+	d := &Dispatcher{Store: st, Alerter: al} // no adapters → bluesky post fails
+	rec := d.Post(context.Background(), PostSpec{
+		MasterText: "hello", Platforms: []string{"bluesky"},
+	})
+	if rec.Status == "success" {
+		t.Fatal("expected a non-success post in this no-adapter test")
+	}
+	if len(al.calls) != 1 {
+		t.Errorf("expected one immediate-failure alert, got %d", len(al.calls))
+	}
+}

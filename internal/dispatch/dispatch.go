@@ -159,6 +159,7 @@ type Dispatcher struct {
 	Store    *store.Store // may be nil in unit tests
 	Fetcher  Fetcher
 	Notify   PostNotifier // may be nil; notify() guards it
+	Alerter  Notifier     // may be nil; alertFailure guards it
 }
 
 // notify fires the PostNotifier when configured. Safe with a nil notifier or
@@ -166,6 +167,20 @@ type Dispatcher struct {
 func (d *Dispatcher) notify(ctx context.Context, p *store.Post) {
 	if d.Notify != nil && p != nil {
 		d.Notify.PostPublished(ctx, p)
+	}
+}
+
+// alertFailure fires an operational alert when a freshly recorded post did not
+// fully succeed. No-op when no alerter is wired or the post fully succeeded.
+func (d *Dispatcher) alertFailure(ctx context.Context, p *store.Post) {
+	if d.Alerter == nil || p == nil {
+		return
+	}
+	if p.Status == "failed" || p.Status == "partial" {
+		body := "post " + p.ID + " finished with status " + p.Status + "; auto-retry will attempt recovery"
+		if err := d.Alerter.Alert(ctx, "Publisher: post delivery "+p.Status, body); err != nil {
+			slog.Error("alertFailure", "post_id", p.ID, "err", err)
+		}
 	}
 }
 
@@ -548,6 +563,7 @@ func (d *Dispatcher) Post(ctx context.Context, spec PostSpec) *store.Post {
 		}
 	}
 	d.notify(ctx, rec)
+	d.alertFailure(ctx, rec)
 	return rec
 }
 
@@ -718,6 +734,7 @@ func (d *Dispatcher) Interact(ctx context.Context, spec InteractSpec) *store.Pos
 		}
 	}
 	d.notify(ctx, rec)
+	d.alertFailure(ctx, rec)
 	return rec
 }
 
@@ -853,6 +870,7 @@ func (d *Dispatcher) Fire(ctx context.Context, postID string) (*store.Post, erro
 		return nil, err
 	}
 	d.notify(ctx, post)
+	d.alertFailure(ctx, post)
 	return post, nil
 }
 
