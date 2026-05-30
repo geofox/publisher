@@ -141,6 +141,40 @@ func TestRetrierRelayLevelRetry(t *testing.T) {
 	}
 }
 
+func TestRetrierRelayLevelSkipsNotDue(t *testing.T) {
+	st := openDispatchStore(t)
+	p := &store.Post{ID: "rl2", CreatedAt: time.Now().UTC(), MasterText: "hi",
+		Platforms: []string{"nostr"}, Source: "test", Status: "partial",
+		Targets: []store.Target{{Platform: "nostr", Status: "partial"}}}
+	_ = st.SavePost(p)
+	gp, _ := st.GetPost("rl2")
+	tid := gp.Targets[0].ID
+	// Capture t0 right before seeding so we can place now() reliably within the
+	// 2-minute backoff window regardless of how long AppendTargetAttempt takes.
+	t0 := time.Now().UTC()
+	_ = st.AppendTargetAttempt(tid, "partial", "", "", "", 1, "", "",
+		[]store.RelayState{
+			{URL: "wss://ok2", Status: "ok"},
+			{URL: "wss://down2", Status: "failed"},
+		}, `{"id":"xyz"}`)
+
+	// fakeRebroadcaster{ok:true}: if the down relay were (wrongly) retried it
+	// would flip to "ok"; the assertion that it stays "failed" proves the gate.
+	d := &Dispatcher{Store: st, Nostr: fakeRebroadcaster{ok: true}}
+	// Only 30s after seed — well inside the 2m base backoff for retry_count=0.
+	now := t0.Add(30 * time.Second)
+	r := &Retrier{disp: d, notifier: &fakeAlerter{}, enabled: true, maxAttempts: 6,
+		base: 2 * time.Minute, max: time.Hour, now: func() time.Time { return now }}
+	r.runDue(context.Background())
+
+	gp, _ = st.GetPost("rl2")
+	for _, rl := range gp.Targets[0].Relays {
+		if rl.URL == "wss://down2" && rl.Status != "failed" {
+			t.Errorf("not-due relay must not be retried, got status %q", rl.Status)
+		}
+	}
+}
+
 type fakeRebroadcaster struct {
 	NostrPoster // embed; nil — only RebroadcastToRelay is called in this test
 	ok          bool

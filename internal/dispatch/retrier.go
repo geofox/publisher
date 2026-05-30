@@ -128,8 +128,7 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 		}
 	}
 	var exhaustedRelays []string
-	for ti := range post.Targets {
-		t := post.Targets[ti]
+	for _, t := range post.Targets {
 		// Only single-post nostr partials use relay-level retry; threaded /
 		// failed nostr targets are covered by the platform path above.
 		if t.Platform != "nostr" || t.Status != "partial" || len(t.Segments) > 1 {
