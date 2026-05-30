@@ -5,6 +5,51 @@ import (
 	"time"
 )
 
+// These are the exact valid test keys already used elsewhere in config_test.go.
+const (
+	tNSEC = "0000000000000000000000000000000000000000000000000000000000000001"
+	tPUB  = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+)
+
+func TestAutoRetryDefaults(t *testing.T) {
+	t.Setenv("NSEC_HEX", tNSEC)
+	t.Setenv("OWNER_PUBKEY", tPUB)
+	t.Setenv("BLOSSOM_URL", "https://b.example.com")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.AutoRetryEnabled {
+		t.Error("AutoRetryEnabled should default true")
+	}
+	if c.AutoRetryMaxAttempts != 6 {
+		t.Errorf("AutoRetryMaxAttempts = %d, want 6", c.AutoRetryMaxAttempts)
+	}
+	if c.AutoRetryBaseDelay != 2*time.Minute {
+		t.Errorf("AutoRetryBaseDelay = %v, want 2m", c.AutoRetryBaseDelay)
+	}
+	if c.AutoRetryMaxDelay != time.Hour {
+		t.Errorf("AutoRetryMaxDelay = %v, want 1h", c.AutoRetryMaxDelay)
+	}
+	if c.RetrierTick != time.Minute {
+		t.Errorf("RetrierTick = %v, want 1m", c.RetrierTick)
+	}
+}
+
+func TestAutoRetryDisabled(t *testing.T) {
+	t.Setenv("NSEC_HEX", tNSEC)
+	t.Setenv("OWNER_PUBKEY", tPUB)
+	t.Setenv("BLOSSOM_URL", "https://b.example.com")
+	t.Setenv("AUTO_RETRY_ENABLED", "false")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.AutoRetryEnabled {
+		t.Error("AUTO_RETRY_ENABLED=false should disable")
+	}
+}
+
 func TestVerifyConfigDefaults(t *testing.T) {
 	t.Setenv("PLC_DIRECTORY_URL", "")
 	t.Setenv("VERIFY_HTTP_TIMEOUT", "")
