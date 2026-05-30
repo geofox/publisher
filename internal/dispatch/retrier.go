@@ -138,6 +138,7 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 			if rl.Status != "failed" || rl.GaveUpAt != nil {
 				continue
 			}
+			// retry_count counts retries only (the original publish is attempt 0), so a relay gets up to maxAttempts rebroadcasts before giving up.
 			if rl.RetryCount >= r.maxAttempts {
 				if set, err := r.disp.Store.MarkRelayGaveUp(t.ID, rl.URL, now); err != nil {
 					slog.Error("retrier: mark relay gave-up failed", "post_id", id, "relay", rl.URL, "err", err)
@@ -180,6 +181,9 @@ func (r *Retrier) relayDue(rl store.RelayState, now time.Time) bool {
 
 // alertGaveUp fires one operational alert summarizing newly given-up targets.
 func (r *Retrier) alertGaveUp(ctx context.Context, postID string, platforms, relays []string) {
+	if r.notifier == nil {
+		return
+	}
 	parts := ""
 	if len(platforms) > 0 {
 		parts += "platforms " + strings.Join(platforms, ", ")

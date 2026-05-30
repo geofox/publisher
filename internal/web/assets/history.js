@@ -49,6 +49,7 @@ function segmentChain(post, t) {
         const np = await rr.json(); if (!rr.ok) throw new Error(np.error || ("HTTP " + rr.status));
         const st = targetStatus(np, plat);
         renderDetail(np);
+        refreshAttentionBadge();
         flash(`${plat}: resume ${st === "success" ? "succeeded ✓" : "still failing ✗"}`);
       } catch (e) {
         btn.disabled = false;
@@ -325,6 +326,7 @@ async function relayRetry(postID, relayURL, btn) {
     const post = await r.json();
     if (!r.ok) throw new Error(post.error || ("HTTP " + r.status));
     renderDetail(post);
+    refreshAttentionBadge();
     document.querySelectorAll(".hitem").forEach(e => e.classList.toggle("active", e.dataset.id === postID));
     const host = relayURL.replace(/^wss?:\/\//, "");
     const nt = (post.targets || []).find(t => t.platform === "nostr");
@@ -443,6 +445,7 @@ function renderDetail(post) {
             const np = await rr.json(); if (!rr.ok) throw new Error(np.error || ("HTTP " + rr.status));
             const st = targetStatus(np, plat);
             renderDetail(np);
+            refreshAttentionBadge();
             flash(`${plat}: retry ${st === "success" ? "succeeded ✓" : "still failing ✗"}`);
           } catch (e) { btn.disabled = false; btn.textContent = "Retry"; flash("Retry error: " + e.message); }
         },
