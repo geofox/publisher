@@ -115,11 +115,16 @@ func main() {
 		Nostr:    resolve.NostrAdapter{P: np},
 	}
 	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
+	d.Alerter = notifier
 	if cfg.ThreadsToken != "" {
 		mgr := threads.NewTokenManager(st, tc, notifier, cfg.ThreadsToken)
 		go mgr.Start(context.Background())
 	}
 	go dispatch.NewScheduler(d, notifier, cfg.ScheduleGrace).Start(context.Background())
+	go dispatch.NewRetrier(d, notifier,
+		cfg.AutoRetryEnabled, cfg.AutoRetryMaxAttempts,
+		cfg.AutoRetryBaseDelay, cfg.AutoRetryMaxDelay, cfg.RetrierTick,
+	).Start(context.Background())
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      a.Routes(),
