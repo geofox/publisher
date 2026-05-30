@@ -179,6 +179,15 @@ function renderTargetsMeta() {
   if (aud) aud.textContent = state.platforms.size ? `Public · mirror to ${state.platforms.size}` : "Public";
 }
 
+// shortId middle-truncates a long opaque identifier (a Nostr npub, hex key, …)
+// to "head…tail" so it stays glanceable instead of overflowing the row.
+function shortId(s, head = 10, tail = 5) {
+  return s && s.length > head + tail + 3 ? s.slice(0, head) + "…" + s.slice(-tail) : s;
+}
+// isOpaqueId reports whether s is an identifier (npub/nprofile/long hex) rather
+// than a human handle/name — those are the ones worth middle-truncating.
+function isOpaqueId(s) { return /^(npub1|nprofile1)/i.test(s) || /^[0-9a-f]{32,}$/i.test(s); }
+
 // applyIdentity swaps the placeholder author + per-platform handles for the
 // operator's real profile (from GET /api/identity). Called once after boot;
 // failures leave the placeholders untouched.
@@ -187,10 +196,13 @@ export function applyIdentity(id) {
   const acc = id.accounts || {};
   for (const p of ORDER) {
     const a = acc[p];
-    if (a && a.handle && PLATFORM_META[p]) PLATFORM_META[p].handle = a.handle;
+    if (a && a.handle && PLATFORM_META[p]) {
+      // The Nostr npub is ~63 chars — truncate it (and any other opaque id) for display.
+      PLATFORM_META[p].handle = (p === "nostr" || isOpaqueId(a.handle)) ? shortId(a.handle) : a.handle;
+    }
   }
   const nameEl = $("#compose-author");
-  if (nameEl && id.name) nameEl.textContent = id.name;
+  if (nameEl && id.name) nameEl.textContent = isOpaqueId(id.name) ? shortId(id.name) : id.name;
   const av = $("#compose-avatar");
   if (av) {
     if (id.avatar) {

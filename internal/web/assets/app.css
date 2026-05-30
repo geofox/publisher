@@ -156,7 +156,7 @@ main{
 }
 .avatar .avatar-img{width:100%;height:100%;object-fit:cover;display:block}
 .author-meta{flex:1;min-width:0}
-.author-name{font-size:15px;font-weight:600;color:var(--ink)}
+.author-name{font-size:15px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .author-sub{display:flex;align-items:center;gap:4px;margin-top:1px;font-size:12px;color:var(--faint)}
 .author-sub svg{flex-shrink:0}
 
