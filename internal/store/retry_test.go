@@ -130,6 +130,37 @@ func TestSuccessClearsGaveUpAndRelayRetryCount(t *testing.T) {
 	}
 }
 
+func TestAttentionFilterAndCount(t *testing.T) {
+	st := openTestStore(t)
+	mk := func(id, status string) {
+		p := &Post{ID: id, CreatedAt: time.Now().UTC(), MasterText: "x",
+			Platforms: []string{"bluesky"}, Source: "test", Status: status,
+			Targets: []Target{{Platform: "bluesky", Status: status}}}
+		if err := st.SavePost(p); err != nil {
+			t.Fatalf("SavePost: %v", err)
+		}
+	}
+	mk("a1", "failed")
+	mk("a2", "partial")
+	mk("a3", "success")
+	mk("a4", "missed")
+
+	got, err := st.ListPostsFiltered(PostFilter{Status: "attention", Limit: 50})
+	if err != nil {
+		t.Fatalf("ListPostsFiltered: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("attention filter returned %d, want 2 (failed+partial)", len(got))
+	}
+	n, err := st.AttentionCount()
+	if err != nil {
+		t.Fatalf("AttentionCount: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("AttentionCount = %d, want 2", n)
+	}
+}
+
 func TestAppendTargetAttemptAndRecompute(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {

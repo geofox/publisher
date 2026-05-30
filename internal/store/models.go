@@ -691,6 +691,15 @@ func (s *Store) MarkRelayGaveUp(targetID int64, relayURL string, at time.Time) (
 	return n == 1, nil
 }
 
+// AttentionCount returns the number of non-hidden posts needing attention
+// (delivery failed or partial). Drives the History "attention" badge.
+func (s *Store) AttentionCount() (int, error) {
+	var n int
+	err := s.sql.QueryRow(
+		`SELECT COUNT(*) FROM posts WHERE hidden=0 AND status IN ('failed','partial')`).Scan(&n)
+	return n, err
+}
+
 // PostFilter controls filtering/paging for ListPostsFiltered.
 type PostFilter struct {
 	Status string // "sent", "scheduled", "failed", "" / "all" → no filter
@@ -704,6 +713,8 @@ func statusClause(status string) string {
 	switch status {
 	case "scheduled":
 		return "p.status IN ('scheduled','sending')"
+	case "attention":
+		return "p.status IN ('failed','partial')"
 	case "failed":
 		return "p.status IN ('failed','partial','missed')"
 	case "sent":
