@@ -5,6 +5,14 @@ import { renderPreview } from "./preview.js";
 import { resultRow, openDetail } from "./history.js";
 import { brandTile, icon, PLATFORM_META } from "./brands.js";
 
+// autoGrow sizes a textarea to its content (up to its CSS max-height, then it
+// scrolls). No-op when the element is hidden (scrollHeight is 0 then).
+function autoGrow(ta) {
+  if (!ta || ta.offsetParent === null) return;
+  ta.style.height = "auto";
+  ta.style.height = ta.scrollHeight + "px";
+}
+
 export function markDirty() {
   state.dirty = true;
   const el2 = document.getElementById("draft-status");
@@ -324,7 +332,7 @@ function openThreadSheet(p) {
     if (!next.length) { close(); return; }
     const joined = next.join("\n---\n");
     if (srcIsOverride) ov.text = joined;
-    else { state.master = joined; const m = $("#master"); if (m) m.value = joined; }
+    else { state.master = joined; const m = $("#master"); if (m) { m.value = joined; autoGrow(m); } }
     markDirty();
     renderChips(); renderCards(); refreshCounts(); renderMeta(); renderPreview();
     close();
@@ -393,7 +401,7 @@ export function startInteraction(src, action) {
     state.focus = src.platform;
     const tab = document.querySelector('.tab[data-view="compose"]');
     if (tab) tab.click();
-    const m = $("#master"); if (m) m.value = "";
+    const m = $("#master"); if (m) { m.value = ""; autoGrow(m); }
     window.scrollTo({ top: 0, behavior: "smooth" });
     flash((action === "quote" ? "Quoting " : "Replying to ") + (src.preview.author_handle || src.platform));
     renderImages(); // entry cleared state.images → refresh the thumbnail strip (symmetric with exit)
@@ -418,7 +426,7 @@ export function exitInteraction() {
   state.master = "";
   state.images.forEach((i) => URL.revokeObjectURL(i.url));
   state.images = [];
-  const m = $("#master"); if (m) m.value = "";
+  const m = $("#master"); if (m) { m.value = ""; autoGrow(m); }
   state.platforms = prev && prev.size ? new Set(prev) : new Set(ORDER);
   if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
   renderImages();
@@ -449,7 +457,7 @@ export function loadDraft(input) {
       state.dirty = true;
       const tab = document.querySelector('.tab[data-view="compose"]');
       if (tab) tab.click();
-      const m = $("#master"); if (m) m.value = state.master;
+      const m = $("#master"); if (m) { m.value = state.master; autoGrow(m); }
       window.scrollTo({ top: 0, behavior: "smooth" });
       renderImages();
       renderInteractionUI(); // re-renders chips/cards/preview and hides the banner
@@ -489,7 +497,7 @@ export function loadDraft(input) {
     state.dirty = false;
     const tab = document.querySelector('.tab[data-view="compose"]');
     if (tab) tab.click();
-    const master = $("#master"); if (master) master.value = state.master;
+    const master = $("#master"); if (master) { master.value = state.master; autoGrow(master); }
     window.scrollTo({ top: 0, behavior: "smooth" });
     renderImages();
     renderInteractionUI(); // re-renders chips/cards/preview and hides the banner
@@ -885,7 +893,8 @@ export function showResultModal(data) {
 // ---------------------------------------------------------------------------
 
 export function composeInit() {
-  $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); });
+  $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); autoGrow(e.target); });
+  autoGrow($("#master")); // size correctly if a draft was already in the field at init
   $("#addimg").addEventListener("click", () => $("#imgfile").click());
   $("#imgfile").addEventListener("change", e => {
     const file = e.target.files[0]; if (!file) return;

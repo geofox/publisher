@@ -162,7 +162,8 @@ main{
 
 /* the master textarea, restyled as a clean body field (id kept) */
 .master{
-  width:100%;min-height:104px;padding:0;border:0;background:none;resize:vertical;
+  width:100%;min-height:104px;max-height:45dvh;padding:0;border:0;background:none;resize:none;
+  overflow-y:auto;box-sizing:border-box;
   font-family:var(--sans);font-size:16px;line-height:1.5;letter-spacing:-0.01em;color:var(--ink);
 }
 .master::placeholder{color:var(--faint)}
