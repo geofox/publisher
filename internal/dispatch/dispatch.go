@@ -294,6 +294,7 @@ func (d *Dispatcher) runAction(ctx context.Context, action, plat, text string, o
 			r.Error = "adapter returned empty status"
 		}
 	}
+	metrics.RecordPublish(r.Platform, r.Status, time.Since(start))
 	return r
 }
 

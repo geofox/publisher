@@ -86,3 +86,19 @@ func TestSchedulerMetricsHelpers(t *testing.T) {
 		t.Fatalf("attention_backlog gauge = %v, want 7", metricValue(t, reBacklog))
 	}
 }
+
+// runAction (native repost/quote) is also a platform send and must be counted
+// in publish_total. fakeMastodon.Reblog returns an empty TargetResult, which
+// runAction normalizes to status "failed" — so this asserts the failed series.
+func TestRunActionRecordsPublish(t *testing.T) {
+	d := &Dispatcher{Mastodon: fakeMastodon{}}
+	re := regexp.MustCompile(`publisher_publish_total\{outcome="failed",platform="mastodon"\} (\d+)`)
+	before := metricValue(t, re)
+
+	_ = d.runAction(context.Background(), actionRepost, "mastodon", "", Overrides{}, nil, nil, InteractRef{})
+
+	after := metricValue(t, re)
+	if after < before+1 {
+		t.Fatalf("publish_total mastodon/failed via runAction: before=%v after=%v, want +1", before, after)
+	}
+}
