@@ -23,6 +23,7 @@ import (
 	"github.com/geofox/publisher/internal/httpx"
 	"github.com/geofox/publisher/internal/identity"
 	"github.com/geofox/publisher/internal/media"
+	"github.com/geofox/publisher/internal/metrics"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/relaysync"
 	"github.com/geofox/publisher/internal/resolve"
@@ -128,6 +129,7 @@ func New(np *pubnostr.Publisher, mp *media.Pipeline) *API {
 func (a *API) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", a.handleHealthz)
+	mux.Handle("GET /metrics", metrics.Handler())
 	mux.HandleFunc("/publish", a.handlePublish)
 	mux.HandleFunc("/upload-media", a.handleUploadMedia)
 	mux.HandleFunc("/api/post", a.handleAPIPost)
