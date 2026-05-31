@@ -15,11 +15,16 @@ RUN go mod download
 
 COPY . .
 
+# Version metadata stamped into the binary for the publisher_build_info metric.
+# Defaults keep local `docker build` working; CI passes the real tag + sha.
+ARG VERSION=dev
+ARG COMMIT=none
+
 # Trim path + strip symbol table → smallest static binary.
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build \
       -trimpath \
-      -ldflags='-s -w' \
+      -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
       -o /publisher \
       ./cmd/publisher
 
