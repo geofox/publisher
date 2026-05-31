@@ -71,3 +71,18 @@ func TestMetricsHelpersForRetry(t *testing.T) {
 		t.Fatalf("retry_total not incremented")
 	}
 }
+
+func TestSchedulerMetricsHelpers(t *testing.T) {
+	reFires := regexp.MustCompile(`publisher_scheduler_fires_total (\d+)`)
+	bf := metricValue(t, reFires)
+	metrics.IncSchedulerFire()
+	if metricValue(t, reFires) < bf+1 {
+		t.Fatalf("scheduler_fires_total not incremented")
+	}
+
+	reBacklog := regexp.MustCompile(`publisher_attention_backlog (\d+)`)
+	metrics.SetAttentionBacklog(7)
+	if metricValue(t, reBacklog) != 7 {
+		t.Fatalf("attention_backlog gauge = %v, want 7", metricValue(t, reBacklog))
+	}
+}

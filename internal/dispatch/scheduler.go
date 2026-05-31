@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/geofox/publisher/internal/metrics"
 )
 
 const schedulerTick = 30 * time.Second
@@ -86,7 +88,11 @@ func (s *Scheduler) runDue(ctx context.Context) {
 		if _, err := s.disp.Fire(ctx, id); err != nil {
 			slog.Error("scheduler: fire failed", "post_id", id, "err", err)
 		} else {
+			metrics.IncSchedulerFire()
 			slog.Info("scheduler: fired scheduled post", "post_id", id)
 		}
+	}
+	if n, err := s.disp.Store.AttentionCount(); err == nil {
+		metrics.SetAttentionBacklog(float64(n))
 	}
 }
