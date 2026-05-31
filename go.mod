@@ -9,6 +9,7 @@ require (
 	github.com/gowebpki/jcs v1.0.1
 	github.com/mattn/go-mastodon v0.0.11
 	github.com/mr-tron/base58 v1.3.0
+	github.com/prometheus/client_golang v1.17.0
 	github.com/rivo/uniseg v0.4.7
 	golang.org/x/image v0.40.0
 	modernc.org/sqlite v1.50.1
@@ -22,6 +23,7 @@ require (
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/coder/websocket v1.8.13 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -71,7 +73,6 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	github.com/polydawn/refmt v0.89.1-0.20231129105047-37766d95467a // indirect
-	github.com/prometheus/client_golang v1.17.0 // indirect
 	github.com/prometheus/client_model v0.5.0 // indirect
 	github.com/prometheus/common v0.45.0 // indirect
 	github.com/prometheus/procfs v0.12.0 // indirect
