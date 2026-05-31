@@ -64,7 +64,8 @@ func init() {
 		publishTotal, publishDuration, retryTotal, retryExhausted,
 		schedulerFires, attentionBacklog, tokenExpiry, buildInfo,
 		collectors.NewGoCollector(),
-		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		// No ProcessCollector: it reads /proc, which the FROM scratch image
+		// lacks, so it would silently emit nothing. GoCollector is pure-Go.
 	)
 }
 

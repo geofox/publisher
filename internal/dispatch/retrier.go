@@ -204,7 +204,7 @@ func (r *Retrier) alertGaveUp(ctx context.Context, postID string, platforms, rel
 	body := "post " + postID + " gave up on " + parts + " after " +
 		strconv.Itoa(r.maxAttempts) + " attempts; manual retry still available"
 	if err := r.notifier.Alert(ctx, "Publisher: auto-retry exhausted", body); err != nil {
-		slog.Error("retrier: give-up alert failed", "post_id", postID, "err", err)
+		slog.ErrorContext(ctx, "retrier: give-up alert failed", "err", err)
 	}
 }
 

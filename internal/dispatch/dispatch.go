@@ -181,7 +181,7 @@ func (d *Dispatcher) alertFailure(ctx context.Context, p *store.Post) {
 	if p.Status == "failed" || p.Status == "partial" {
 		body := "post " + p.ID + " finished with status " + p.Status + "; auto-retry will attempt recovery"
 		if err := d.Alerter.Alert(ctx, "Publisher: post delivery "+p.Status, body); err != nil {
-			slog.Error("alertFailure", "post_id", p.ID, "err", err)
+			slog.ErrorContext(ctx, "alertFailure", "err", err)
 		}
 	}
 }
