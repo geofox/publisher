@@ -18,8 +18,10 @@ import (
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/feed"
 	"github.com/geofox/publisher/internal/identity"
+	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/mastodon"
 	"github.com/geofox/publisher/internal/media"
+	"github.com/geofox/publisher/internal/metrics"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/notify"
 	"github.com/geofox/publisher/internal/relaysync"
@@ -28,6 +30,14 @@ import (
 	"github.com/geofox/publisher/internal/threads"
 	"github.com/geofox/publisher/internal/translate"
 	"github.com/geofox/publisher/internal/verify"
+)
+
+// Build metadata, overridable at link time:
+//
+//	go build -ldflags "-X main.version=v1.3.0 -X main.commit=$(git rev-parse --short HEAD)"
+var (
+	version = "dev"
+	commit  = "none"
 )
 
 func main() {
@@ -42,6 +52,7 @@ func main() {
 		os.Exit(2)
 	}
 	setupLogger(cfg.LogLevel)
+	metrics.SetBuildInfo(version, commit)
 
 	np := pubnostr.New(pubnostr.Config{
 		NSEC:                 cfg.NSEC,
@@ -173,6 +184,6 @@ func setupLogger(level string) {
 	default:
 		l = slog.LevelInfo
 	}
-	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: l})
+	h := logging.ContextHandler{Handler: slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: l})}
 	slog.SetDefault(slog.New(h))
 }

@@ -4,6 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/geofox/publisher/internal/logging"
+	"github.com/geofox/publisher/internal/metrics"
 )
 
 const schedulerTick = 30 * time.Second
@@ -58,9 +61,10 @@ func (s *Scheduler) runDue(ctx context.Context) {
 		return
 	}
 	for _, id := range ids {
+		pctx := logging.With(ctx, "post_id", id)
 		won, err := s.disp.Store.ClaimScheduled(id)
 		if err != nil {
-			slog.Error("scheduler: claim failed", "post_id", id, "err", err)
+			slog.ErrorContext(pctx, "scheduler: claim failed", "err", err)
 			continue
 		}
 		if !won {
@@ -68,25 +72,29 @@ func (s *Scheduler) runDue(ctx context.Context) {
 		}
 		post, err := s.disp.Store.GetPost(id)
 		if err != nil {
-			slog.Error("scheduler: load failed", "post_id", id, "err", err)
+			slog.ErrorContext(pctx, "scheduler: load failed", "err", err)
 			continue
 		}
 		if post.ScheduledAt != nil && overdue(now, *post.ScheduledAt, s.grace) {
 			if err := s.disp.Store.MarkMissed(id); err != nil {
-				slog.Error("scheduler: mark missed failed", "post_id", id, "err", err)
+				slog.ErrorContext(pctx, "scheduler: mark missed failed", "err", err)
 				continue
 			}
-			slog.Warn("scheduler: post missed (beyond grace)", "post_id", id, "scheduled_at", post.ScheduledAt)
+			slog.WarnContext(pctx, "scheduler: post missed (beyond grace)", "scheduled_at", post.ScheduledAt)
 			if err := s.notifier.Alert(ctx, "Scheduled post missed",
 				"post "+id+" was due "+post.ScheduledAt.Format(time.RFC3339)+" but is beyond the grace window; not published"); err != nil {
-				slog.Error("scheduler: missed alert failed", "err", err)
+				slog.ErrorContext(pctx, "scheduler: missed alert failed", "err", err)
 			}
 			continue
 		}
 		if _, err := s.disp.Fire(ctx, id); err != nil {
-			slog.Error("scheduler: fire failed", "post_id", id, "err", err)
+			slog.ErrorContext(pctx, "scheduler: fire failed", "err", err)
 		} else {
-			slog.Info("scheduler: fired scheduled post", "post_id", id)
+			metrics.IncSchedulerFire()
+			slog.InfoContext(pctx, "scheduler: fired scheduled post")
 		}
+	}
+	if n, err := s.disp.Store.AttentionCount(); err == nil {
+		metrics.SetAttentionBacklog(float64(n))
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/geofox/publisher/internal/metrics"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -114,6 +115,7 @@ func (m *TokenManager) tick(ctx context.Context) {
 		slog.Warn("threads token tick: no token persisted yet")
 		return
 	}
+	metrics.SetTokenExpiry("threads", cur.ExpiresAt.Sub(now).Seconds())
 	refreshed := false
 	if refreshDue(now, cur.RefreshedAt, cur.ExpiresAt) {
 		newTok, ttl, rerr := m.client.RefreshToken(ctx, cur.Token)
