@@ -55,3 +55,19 @@ func TestRunPlatformRecordsPublish(t *testing.T) {
 		t.Fatalf("publish_total mastodon/success: before=%v after=%v, want +1", before, after)
 	}
 }
+
+func TestMetricsHelpersForRetry(t *testing.T) {
+	reExhausted := regexp.MustCompile(`publisher_retry_exhausted_total\{platform="bluesky"\} (\d+)`)
+	reRetry := regexp.MustCompile(`publisher_retry_total\{platform="bluesky"\} (\d+)`)
+	be, br := metricValue(t, reExhausted), metricValue(t, reRetry)
+
+	metrics.IncRetryExhausted("bluesky")
+	metrics.RecordRetry("bluesky")
+
+	if metricValue(t, reExhausted) < be+1 {
+		t.Fatalf("retry_exhausted_total not incremented")
+	}
+	if metricValue(t, reRetry) < br+1 {
+		t.Fatalf("retry_total not incremented")
+	}
+}

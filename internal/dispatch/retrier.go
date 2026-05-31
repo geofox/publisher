@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/geofox/publisher/internal/metrics"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -120,6 +121,7 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 				slog.Error("retrier: mark gave-up failed", "post_id", id, "platform", t.Platform, "err", err)
 			} else if set {
 				exhausted = append(exhausted, t.Platform)
+				metrics.IncRetryExhausted(t.Platform)
 			}
 			continue
 		}
@@ -162,6 +164,9 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 		if _, err := r.disp.Retry(ctx, id, due); err != nil {
 			slog.Error("retrier: retry failed", "post_id", id, "platforms", due, "err", err)
 		} else {
+			for _, p := range due {
+				metrics.RecordRetry(p)
+			}
 			slog.Info("retrier: re-drove targets", "post_id", id, "platforms", due)
 		}
 	}
