@@ -13,6 +13,7 @@ import (
 	"time"
 
 	gonostr "fiatjaf.com/nostr"
+	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
 	"github.com/geofox/publisher/internal/store"
@@ -506,6 +507,7 @@ func (d *Dispatcher) Post(ctx context.Context, spec PostSpec) *store.Post {
 		Platforms: platforms, DelaySeconds: spec.DelaySeconds, Source: spec.Source,
 		Media: spec.MediaRecords,
 	}
+	ctx = logging.With(ctx, "post_id", rec.ID)
 
 	imetas := buildImetas(spec.MediaRecords)
 
@@ -561,7 +563,7 @@ func (d *Dispatcher) Post(ctx context.Context, spec PostSpec) *store.Post {
 	}
 	if d.Store != nil {
 		if err := d.Store.SavePost(rec); err != nil {
-			slog.Error("savepost failed", "post_id", rec.ID, "err", err)
+			slog.ErrorContext(ctx, "savepost failed", "err", err)
 		}
 	}
 	d.notify(ctx, rec)
@@ -678,6 +680,7 @@ func (d *Dispatcher) Interact(ctx context.Context, spec InteractSpec) *store.Pos
 			SourceURL: spec.SourceURL, SourceAuthor: spec.SourceAuthor,
 		},
 	}
+	ctx = logging.With(ctx, "post_id", rec.ID)
 	var outcomes []chainOutcome
 	switch spec.Action {
 	case actionRepost:
@@ -732,7 +735,7 @@ func (d *Dispatcher) Interact(ctx context.Context, spec InteractSpec) *store.Pos
 	}
 	if d.Store != nil {
 		if err := d.Store.SavePost(rec); err != nil {
-			slog.Error("savepost (interact) failed", "post_id", rec.ID, "err", err)
+			slog.ErrorContext(ctx, "savepost (interact) failed", "err", err)
 		}
 	}
 	d.notify(ctx, rec)

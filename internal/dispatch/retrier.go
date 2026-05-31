@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/metrics"
 	"github.com/geofox/publisher/internal/store"
 )
@@ -104,9 +105,10 @@ func (r *Retrier) targetDue(t store.Target, now time.Time) bool {
 }
 
 func (r *Retrier) processPost(ctx context.Context, id string) {
+	ctx = logging.With(ctx, "post_id", id)
 	post, err := r.disp.Store.GetPost(id)
 	if err != nil {
-		slog.Error("retrier: load failed", "post_id", id, "err", err)
+		slog.ErrorContext(ctx, "retrier: load failed", "err", err)
 		return
 	}
 	now := r.now()
@@ -118,7 +120,7 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 		}
 		if t.AttemptCount >= r.maxAttempts {
 			if set, err := r.disp.Store.MarkTargetGaveUp(t.ID, now); err != nil {
-				slog.Error("retrier: mark gave-up failed", "post_id", id, "platform", t.Platform, "err", err)
+				slog.ErrorContext(ctx, "retrier: mark gave-up failed", "platform", t.Platform, "err", err)
 			} else if set {
 				exhausted = append(exhausted, t.Platform)
 				metrics.IncRetryExhausted(t.Platform)
@@ -143,7 +145,7 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 			// retry_count counts retries only (the original publish is attempt 0), so a relay gets up to maxAttempts rebroadcasts before giving up.
 			if rl.RetryCount >= r.maxAttempts {
 				if set, err := r.disp.Store.MarkRelayGaveUp(t.ID, rl.URL, now); err != nil {
-					slog.Error("retrier: mark relay gave-up failed", "post_id", id, "relay", rl.URL, "err", err)
+					slog.ErrorContext(ctx, "retrier: mark relay gave-up failed", "relay", rl.URL, "err", err)
 				} else if set {
 					exhaustedRelays = append(exhaustedRelays, rl.URL)
 				}
@@ -153,21 +155,21 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 				continue
 			}
 			if _, err := r.disp.RetryRelay(ctx, id, rl.URL); err != nil {
-				slog.Error("retrier: relay retry failed", "post_id", id, "relay", rl.URL, "err", err)
+				slog.ErrorContext(ctx, "retrier: relay retry failed", "relay", rl.URL, "err", err)
 			} else {
-				slog.Info("retrier: rebroadcast to relay", "post_id", id, "relay", rl.URL)
+				slog.InfoContext(ctx, "retrier: rebroadcast to relay", "relay", rl.URL)
 			}
 		}
 	}
 
 	if len(due) > 0 {
 		if _, err := r.disp.Retry(ctx, id, due); err != nil {
-			slog.Error("retrier: retry failed", "post_id", id, "platforms", due, "err", err)
+			slog.ErrorContext(ctx, "retrier: retry failed", "platforms", due, "err", err)
 		} else {
 			for _, p := range due {
 				metrics.RecordRetry(p)
 			}
-			slog.Info("retrier: re-drove targets", "post_id", id, "platforms", due)
+			slog.InfoContext(ctx, "retrier: re-drove targets", "platforms", due)
 		}
 	}
 	if len(exhausted) > 0 || len(exhaustedRelays) > 0 {

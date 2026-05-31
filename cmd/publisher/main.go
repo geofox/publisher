@@ -18,6 +18,7 @@ import (
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/feed"
 	"github.com/geofox/publisher/internal/identity"
+	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/mastodon"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
@@ -183,6 +184,6 @@ func setupLogger(level string) {
 	default:
 		l = slog.LevelInfo
 	}
-	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: l})
+	h := logging.ContextHandler{Handler: slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: l})}
 	slog.SetDefault(slog.New(h))
 }
