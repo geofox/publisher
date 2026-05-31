@@ -14,6 +14,7 @@ import (
 
 	gonostr "fiatjaf.com/nostr"
 	"github.com/geofox/publisher/internal/media"
+	"github.com/geofox/publisher/internal/metrics"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/thread"
 )
@@ -232,6 +233,7 @@ func (d *Dispatcher) runPlatform(ctx context.Context, plat, text string, ov Over
 	if r.LatencyMS == 0 {
 		r.LatencyMS = int(time.Since(start).Milliseconds())
 	}
+	metrics.RecordPublish(r.Platform, r.Status, time.Since(start))
 	return r
 }
 
