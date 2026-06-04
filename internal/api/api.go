@@ -26,6 +26,7 @@ import (
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
+	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/relaysync"
 	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
@@ -60,10 +61,12 @@ const (
 // can substitute a fake.
 type Dispatcher interface {
 	Post(ctx context.Context, spec dispatch.PostSpec) *store.Post
+	PostWithID(ctx context.Context, id string, spec dispatch.PostSpec) *store.Post
 	Retry(ctx context.Context, id string, platforms []string) (*store.Post, error)
 	RetryRelay(ctx context.Context, id, relay string) (*store.Post, error)
 	Schedule(ctx context.Context, spec dispatch.PostSpec, at time.Time) (*store.Post, error)
 	Interact(ctx context.Context, spec dispatch.InteractSpec) *store.Post
+	InteractWithID(ctx context.Context, id string, spec dispatch.InteractSpec) *store.Post
 }
 
 // Syncer is implemented by *relaysync.Sync.
@@ -118,6 +121,10 @@ type API struct {
 	// Identity aggregates the operator's own per-platform profile (handle, name,
 	// avatar) for the composer. nil → GET /api/identity returns empty accounts.
 	Identity *identity.Service
+
+	// Progress is the live in-flight progress registry (SSE). nil disables the
+	// live modal path (handlers fall back to synchronous dispatch).
+	Progress *progress.Registry
 
 	// fetchMedia downloads already-uploaded image bytes by URL when a publish
 	// carries Blossom references instead of fresh uploads (a restored/loaded
@@ -589,6 +596,19 @@ func (a *API) handleAPIPost(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if a.Progress != nil {
+		id := dispatch.NewID()
+		hub := a.Progress.Create(id, spec.Platforms, "")
+		go func() {
+			ctx := context.WithoutCancel(r.Context())
+			ctx = progress.WithSink(ctx, hub)
+			rec := a.Dispatch.PostWithID(ctx, id, spec)
+			a.Progress.Finish(id, rec.Status, 5*time.Minute)
+		}()
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"post_id": id, "status": "running"})
+		return
+	}
+	// Fallback (no registry): synchronous as before.
 	rec := a.Dispatch.Post(r.Context(), spec)
 
 	type targetOut struct {
@@ -847,6 +867,19 @@ func errOfTarget(tg store.Target) string {
 		return tg.Attempts[len(tg.Attempts)-1].Error
 	}
 	return ""
+}
+
+// dedupPlatforms returns a deduplicated copy of platforms preserving order.
+func dedupPlatforms(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // ─── /api/sync ───────────────────────────────────────────────────────────
@@ -1175,7 +1208,7 @@ func (a *API) handleInteract(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	post := a.Dispatch.Interact(r.Context(), dispatch.InteractSpec{
+	ispec := dispatch.InteractSpec{
 		Action: sj.Action, SourcePlatform: sj.Platform, Ref: sj.Ref,
 		SourceURL: sj.SourceURL, SourceAuthor: sj.SourceAuthor, Text: sj.Text,
 		Overrides: sj.Overrides, Fanout: sj.Fanout, Force: sj.Force, Number: sj.Number,
@@ -1183,7 +1216,22 @@ func (a *API) handleInteract(w http.ResponseWriter, r *http.Request) {
 		SourcePreview:      dispatch.SourcePreview{Author: sj.SourcePreview.Author, Text: sj.SourcePreview.Text},
 		SourceImages:       srcImgs,
 		SourceMediaRecords: srcRecs,
-	})
+	}
+	if a.Progress != nil {
+		id := dispatch.NewID()
+		// native = the reply/quote target platform; fan-out platforms are the rest.
+		platforms := append([]string{ispec.SourcePlatform}, ispec.Fanout...)
+		hub := a.Progress.Create(id, dedupPlatforms(platforms), ispec.SourcePlatform)
+		go func() {
+			ctx := context.WithoutCancel(r.Context())
+			ctx = progress.WithSink(ctx, hub)
+			rec := a.Dispatch.InteractWithID(ctx, id, ispec)
+			a.Progress.Finish(id, rec.Status, 5*time.Minute)
+		}()
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"post_id": id, "status": "running"})
+		return
+	}
+	post := a.Dispatch.Interact(r.Context(), ispec)
 	httpx.WriteJSON(w, http.StatusOK, post)
 }
 

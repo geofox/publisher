@@ -37,6 +37,13 @@ func (c *capturingSpecDispatcher) Schedule(context.Context, dispatch.PostSpec, t
 func (c *capturingSpecDispatcher) Interact(context.Context, dispatch.InteractSpec) *store.Post {
 	return nil
 }
+func (c *capturingSpecDispatcher) PostWithID(_ context.Context, id string, spec dispatch.PostSpec) *store.Post {
+	c.spec = spec
+	return &store.Post{ID: id, Status: "success", Platforms: spec.Platforms}
+}
+func (c *capturingSpecDispatcher) InteractWithID(_ context.Context, id string, _ dispatch.InteractSpec) *store.Post {
+	return &store.Post{ID: id, Status: "success"}
+}
 
 // TestAPIPostReattachesUploadedImageReferences guards the restored-draft bug:
 // when a publish carries an already-uploaded image as a Blossom reference

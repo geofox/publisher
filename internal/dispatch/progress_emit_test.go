@@ -130,3 +130,11 @@ func TestRunChainEmitsThreadCounter(t *testing.T) {
 		t.Errorf("expected at least one thread-counter running emission; got %v", sink.platforms)
 	}
 }
+
+func TestPostWithIDUsesGivenID(t *testing.T) {
+	d := &Dispatcher{Bluesky: simpleFakeBsky{}}
+	rec := d.PostWithID(context.Background(), "fixed-id", PostSpec{Platforms: []string{"bluesky"}, MasterText: "hi"})
+	if rec.ID != "fixed-id" {
+		t.Fatalf("expected fixed-id, got %q", rec.ID)
+	}
+}

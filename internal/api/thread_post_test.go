@@ -43,6 +43,13 @@ func (c *capturingDispatcher) Schedule(context.Context, dispatch.PostSpec, time.
 func (c *capturingDispatcher) Interact(context.Context, dispatch.InteractSpec) *store.Post {
 	return nil
 }
+func (c *capturingDispatcher) PostWithID(_ context.Context, id string, spec dispatch.PostSpec) *store.Post {
+	c.gotNumber = spec.Number
+	return &store.Post{ID: id, Status: "success", Platforms: spec.Platforms}
+}
+func (c *capturingDispatcher) InteractWithID(_ context.Context, id string, _ dispatch.InteractSpec) *store.Post {
+	return &store.Post{ID: id, Status: "success"}
+}
 
 func TestAPIPostForwardsNumberAndReturnsSegments(t *testing.T) {
 	cap := &capturingDispatcher{}

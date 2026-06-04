@@ -31,6 +31,13 @@ func (f *fakeInteractDispatcher) Interact(_ context.Context, spec dispatch.Inter
 	return &store.Post{ID: "x1", Status: "success", Interaction: &store.Interaction{Action: spec.Action},
 		Targets: []store.Target{{Platform: spec.SourcePlatform, Status: "success", RemoteURL: "u"}}}
 }
+func (f *fakeInteractDispatcher) PostWithID(_ context.Context, id string, spec dispatch.PostSpec) *store.Post {
+	return &store.Post{ID: id, Status: "success"}
+}
+func (f *fakeInteractDispatcher) InteractWithID(_ context.Context, id string, spec dispatch.InteractSpec) *store.Post {
+	f.got = spec
+	return &store.Post{ID: id, Status: "success"}
+}
 
 func TestAPIInteractForwardsSpec(t *testing.T) {
 	fd := &fakeInteractDispatcher{}

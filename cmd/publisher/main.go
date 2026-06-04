@@ -27,6 +27,7 @@ import (
 	"github.com/geofox/publisher/internal/relaysync"
 	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
+	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/threads"
 	"github.com/geofox/publisher/internal/translate"
 	"github.com/geofox/publisher/internal/verify"
@@ -92,6 +93,7 @@ func main() {
 	a.Dispatch = d
 	a.UserLanguages = cfg.UserLanguages
 	a.PublicFeedToken = cfg.PublicFeedToken
+	a.Progress = progress.NewRegistry()
 	// Operator's own cross-platform identity for the composer (real handle/name/
 	// avatar). Each platform is wired only when its credentials are configured;
 	// Nostr is always available (npub derives from the owner pubkey).

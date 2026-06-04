@@ -31,6 +31,12 @@ func (s *schedFakeDispatch) Schedule(ctx context.Context, spec dispatch.PostSpec
 	return &store.Post{ID: "sch", Status: "scheduled", ScheduledAt: &at, Platforms: spec.Platforms}, nil
 }
 func (s *schedFakeDispatch) Interact(context.Context, dispatch.InteractSpec) *store.Post { return nil }
+func (s *schedFakeDispatch) PostWithID(_ context.Context, id string, spec dispatch.PostSpec) *store.Post {
+	return &store.Post{ID: id, Status: "success", Platforms: spec.Platforms}
+}
+func (s *schedFakeDispatch) InteractWithID(_ context.Context, id string, _ dispatch.InteractSpec) *store.Post {
+	return &store.Post{ID: id, Status: "success"}
+}
 
 func postSpecReq(a *API, spec map[string]any) *httptest.ResponseRecorder {
 	var buf bytes.Buffer

@@ -497,6 +497,10 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
+// NewID mints a new unique post ID. Exported so the API layer can pre-mint an
+// ID before launching a detached dispatch goroutine.
+func NewID() string { return newID() }
+
 // buildImetas rebuilds NIP-92 imeta tags (one per attached image) from the
 // archived media records, so a Nostr cross-post embeds the same media the
 // upload pipeline produced. Records without a Blossom URL are skipped.
@@ -512,9 +516,13 @@ func buildImetas(recs []store.Media) []gonostr.Tag {
 }
 
 func (d *Dispatcher) Post(ctx context.Context, spec PostSpec) *store.Post {
+	return d.PostWithID(ctx, newID(), spec)
+}
+
+func (d *Dispatcher) PostWithID(ctx context.Context, id string, spec PostSpec) *store.Post {
 	platforms := dedupStrings(spec.Platforms)
 	rec := &store.Post{
-		ID: newID(), CreatedAt: time.Now().UTC(), MasterText: spec.MasterText,
+		ID: id, CreatedAt: time.Now().UTC(), MasterText: spec.MasterText,
 		Platforms: platforms, DelaySeconds: spec.DelaySeconds, Source: spec.Source,
 		Media: spec.MediaRecords,
 	}
@@ -687,8 +695,12 @@ func (d *Dispatcher) fanoutChain(ctx context.Context, plat string, spec Interact
 // the source platform; quote also fans out an assembled reproduction (commentary +
 // original text + source URL + re-hosted source media) to each Fanout platform.
 func (d *Dispatcher) Interact(ctx context.Context, spec InteractSpec) *store.Post {
+	return d.InteractWithID(ctx, newID(), spec)
+}
+
+func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec InteractSpec) *store.Post {
 	rec := &store.Post{
-		ID: newID(), CreatedAt: time.Now().UTC(), MasterText: spec.Text,
+		ID: id, CreatedAt: time.Now().UTC(), MasterText: spec.Text,
 		Source: "web", Media: spec.MediaRecords,
 		Interaction: &store.Interaction{
 			Action: spec.Action, SourcePlatform: spec.SourcePlatform,

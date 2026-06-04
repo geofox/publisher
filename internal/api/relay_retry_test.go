@@ -28,6 +28,12 @@ func (f *relayFakeDispatch) Schedule(ctx context.Context, spec dispatch.PostSpec
 	return &store.Post{ID: "sch", Status: "scheduled"}, nil
 }
 func (f *relayFakeDispatch) Interact(context.Context, dispatch.InteractSpec) *store.Post { return nil }
+func (f *relayFakeDispatch) PostWithID(_ context.Context, id string, _ dispatch.PostSpec) *store.Post {
+	return &store.Post{ID: id}
+}
+func (f *relayFakeDispatch) InteractWithID(_ context.Context, id string, _ dispatch.InteractSpec) *store.Post {
+	return &store.Post{ID: id}
+}
 
 func TestRelayRetryEndpoint(t *testing.T) {
 	fd := &relayFakeDispatch{}
