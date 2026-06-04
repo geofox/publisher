@@ -150,6 +150,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/posts", a.handleListPosts)
 	mux.HandleFunc("GET /api/posts/attention/count", a.handleAttentionCount)
 	mux.HandleFunc("GET /api/posts/{id}", a.handleGetPost)
+	mux.HandleFunc("GET /api/posts/{id}/progress", a.handleProgress)
 	mux.HandleFunc("POST /api/posts/{id}/retry", a.handleRetry)
 	mux.HandleFunc("POST /api/posts/{id}/relay-retry", a.handleRelayRetry)
 	mux.HandleFunc("POST /api/posts/{id}/cancel", a.handleCancelScheduled)
@@ -715,6 +716,66 @@ func (a *API) handleGetPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, p)
+}
+
+// ─── GET /api/posts/{id}/progress ───────────────────────────────────────────
+//
+// handleProgress streams live progress for a post as Server-Sent Events. If the
+// post is in-flight (a hub exists) it streams snapshots until terminal; if it
+// already finished it replays a single snapshot built from the store; unknown
+// ids 404.
+func (a *API) handleProgress(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		httpx.WriteError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	send := func(s progress.Snapshot) {
+		b, _ := json.Marshal(s)
+		_, _ = w.Write([]byte("data: "))
+		_, _ = w.Write(b)
+		_, _ = w.Write([]byte("\n\n"))
+		flusher.Flush()
+	}
+
+	if a.Progress != nil {
+		if hub, ok := a.Progress.Get(id); ok {
+			cur, ch, cancel := hub.Subscribe()
+			defer cancel()
+			send(cur)
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-r.Context().Done():
+					return
+				case <-ticker.C:
+					_, _ = w.Write([]byte(": ping\n\n"))
+					flusher.Flush()
+				case s, open := <-ch:
+					if !open {
+						return // hub closed: terminal snapshot already delivered
+					}
+					send(s)
+				}
+			}
+		}
+	}
+
+	// Not in-flight: replay from the store if it finished, else 404.
+	if a.Store != nil {
+		if p, err := a.Store.GetPost(id); err == nil && p != nil {
+			send(progress.FromStorePost(p))
+			return
+		}
+	}
+	httpx.WriteError(w, http.StatusNotFound, "post not found")
 }
 
 // ─── GET /api/posts/attention/count ─────────────────────────────────────────
