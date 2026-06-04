@@ -131,6 +131,14 @@ export function buildSpec() {
   return spec;
 }
 
+// In-flight post id: stashed on submit so a refresh can re-attach to the live
+// progress stream; cleared when the post reaches a terminal state or the modal
+// is closed.
+const INFLIGHT_KEY = "inflight_post_v1";
+export function setInflight(id) { try { localStorage.setItem(INFLIGHT_KEY, id); } catch {} }
+export function getInflight() { try { return localStorage.getItem(INFLIGHT_KEY) || ""; } catch { return ""; } }
+export function clearInflight() { try { localStorage.removeItem(INFLIGHT_KEY); } catch {} }
+
 // buildInteractSpec assembles the /api/interact spec (reply/quote) from the
 // interaction state: the source platform is the locked native target; the other
 // selected platforms are fan-out reproductions.

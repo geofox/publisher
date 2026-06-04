@@ -1,6 +1,6 @@
 "use strict";
 import { el, $, gcount, wcount, flash, confirmModal, META, ORDER } from "./common.js";
-import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv } from "./state.js";
+import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv, setInflight, getInflight, clearInflight } from "./state.js";
 import { renderPreview } from "./preview.js";
 import { resultRow, openDetail } from "./history.js";
 import { brandTile, icon, PLATFORM_META } from "./brands.js";
@@ -818,8 +818,11 @@ async function doPost() {
     if (data.status === "scheduled" && data.scheduled_at) {
       flash("Scheduled for " + new Date(data.scheduled_at).toLocaleString("fr-FR", { timeZone: "Europe/Paris" }));
       $("#schedat").value = ""; updateSched();
+    } else if (data.post_id) {
+      setInflight(data.post_id);
+      openProgressModal(data.post_id);
     } else {
-      showResultModal(data);
+      showResultModal(data); // fallback if a full record came back (no registry)
     }
     // Drafts integration: if we just published a saved draft, clear the
     // active-draft state and the recovery snapshot, then refresh the sidebar.
@@ -850,7 +853,12 @@ async function doInteract() {
     const r = await fetch("/api/interact", { method: "POST", body: fd, credentials: "same-origin" });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
-    showResultModal({ post_id: data.id, status: data.status, targets: data.targets });
+    if (data.post_id) {
+      setInflight(data.post_id);
+      openProgressModal(data.post_id);
+    } else {
+      showResultModal({ post_id: data.id, status: data.status, targets: data.targets }); // fallback
+    }
     exitInteraction(); // back to a normal composer after a successful interaction
   } catch (e) {
     flash("Error: " + e.message);
@@ -889,6 +897,68 @@ function submit() {
     return;
   }
   doPost();
+}
+
+// ---------------------------------------------------------------------------
+// Progress modal — live SSE task tree for a dispatched post
+// ---------------------------------------------------------------------------
+
+// openProgressModal renders the live task tree for postId by subscribing to the
+// SSE stream, re-rendering on each snapshot. On a terminal status it swaps the
+// footer to Done / "open in history". Closing only closes the stream — the post
+// continues server-side.
+export function openProgressModal(postId) {
+  const bk = el("div", { class: "modal-bk" });
+  const card = el("div", { class: "modal pmodal" });
+  const title = el("p", { class: "pm-title" });
+  const tree = el("div", { class: "tasktree" });
+  const foot = el("div", { class: "pm-foot" });
+  card.append(title, tree, foot);
+  bk.append(card);
+  document.body.append(bk);
+
+  let es = null;
+  const close = () => { if (es) es.close(); es = null; clearInflight(); bk.remove(); };
+
+  const render = (snap) => {
+    const terminal = snap.status !== "running" && snap.status !== "queued";
+    title.textContent = snap.status === "running" ? "Posting…"
+      : snap.status === "success" ? "✓ Posted"
+      : snap.status === "failed" ? "⚠ Posting failed" : "⚠ Posted with issues";
+    tree.innerHTML = "";
+    for (const p of (snap.platforms || [])) {
+      tree.append(el("div", { class: "trow lvl1 st-" + p.status },
+        el("span", { class: "ic" }),
+        el("span", { text: (META[p.platform] && META[p.platform].label) || p.platform }),
+        el("span", { class: "meta", text: p.detail || "" })));
+      for (const rl of (p.relays || [])) {
+        tree.append(el("div", { class: "trow lvl2 st-" + rl.status },
+          el("span", { class: "ic" }),
+          el("span", { text: rl.url.replace(/^wss?:\/\//, "") }),
+          el("span", { class: "meta", text: rl.message || "" })));
+      }
+    }
+    foot.innerHTML = "";
+    if (terminal) {
+      clearInflight();
+      if (snap.status !== "success") {
+        foot.append(el("a", { class: "pm-link", href: "#", text: "Open in history ↗",
+          onclick: (e) => {
+            e.preventDefault();
+            close();
+            document.querySelector('.tab[data-view="history"]')?.click();
+            openDetail(snap.post_id || postId);
+          } }));
+      }
+      foot.append(el("button", { class: "pm-btn primary", type: "button", text: "Done", onclick: close }));
+    } else {
+      foot.append(el("button", { class: "pm-btn", type: "button", text: "Close", onclick: close }));
+    }
+  };
+
+  es = new EventSource("/api/posts/" + encodeURIComponent(postId) + "/progress");
+  es.onmessage = (ev) => { try { render(JSON.parse(ev.data)); } catch {} };
+  es.onerror = () => { /* EventSource auto-reconnects; a closed stream (terminal) stops on its own */ };
 }
 
 // ---------------------------------------------------------------------------
@@ -938,4 +1008,6 @@ export function composeInit() {
   $("#submit").addEventListener("click", submit);
   document.getElementById("threadnum")?.addEventListener("change", () => { refreshTargets(); renderPreview(); });
   renderChips(); renderImages(); renderCards(); renderMeta(); renderPreview();
+  const pending = getInflight();
+  if (pending) openProgressModal(pending);
 }

@@ -694,3 +694,26 @@ textarea.master,.verify-input{}
 
 .mobile-only{display:none}
 @media (max-width:720px){.mobile-only{display:inline-flex}}
+
+/* ── Progress modal (live SSE task tree) ────────────────────────────────── */
+.pmodal{cursor:default}
+.pmodal .pm-title{font-weight:700;font-size:15px;margin:0 0 10px}
+.pmodal .tasktree{font:13px/1.6 ui-monospace,Menlo,monospace}
+.pmodal .trow{display:flex;align-items:center;gap:8px;padding:3px 6px;border-radius:8px}
+.pmodal .trow .ic{width:16px;text-align:center}
+.pmodal .trow.lvl1{font-weight:600}
+.pmodal .trow.lvl2{margin-left:22px;font-size:12px}
+.pmodal .trow .meta{color:#9aa0a6;font-size:11px;margin-left:auto}
+.pmodal .trow.st-queued  .ic::before{content:"○";color:#9aa0a6}
+.pmodal .trow.st-running .ic::before{content:"◐";color:#c98a00;display:inline-block;animation:pm-spin 1s linear infinite}
+.pmodal .trow.st-success .ic::before,
+.pmodal .trow.st-ok      .ic::before{content:"✓";color:#1f9d55}
+.pmodal .trow.st-failed  .ic::before{content:"✗";color:#d23f3f}
+.pmodal .trow.st-partial .ic::before{content:"◍";color:#c98a00}
+.pmodal .trow.st-skipped .ic::before{content:"–";color:#9aa0a6}
+.pmodal .pm-foot{margin-top:14px;display:flex;justify-content:flex-end;gap:8px;align-items:center}
+.pmodal .pm-link{margin-right:auto;color:#2b7cff;font-weight:600;font-size:12px;text-decoration:none}
+.pm-btn{font:inherit;font-size:13px;cursor:pointer;padding:8px 14px;background:var(--card);border:.5px solid var(--line-2);border-radius:10px;color:var(--indigo);font-weight:500}
+.pm-btn.primary{font-weight:600;padding:8px 16px;background:var(--indigo);border:0;border-radius:999px;color:#fff;box-shadow:var(--shadow-pill)}
+.pm-btn.primary:hover{filter:brightness(1.05)}
+@keyframes pm-spin{to{transform:rotate(360deg)}}
