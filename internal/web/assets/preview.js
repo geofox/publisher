@@ -34,6 +34,22 @@ function previewMedia(p) {
   return out;
 }
 
+// mediaGrid builds the <div.pv-media> thumbnail grid for platform p (your
+// attached images + any re-hosted source media), or returns null when there's
+// nothing to show. Shared by the single-post card and the threaded view so both
+// previews render media identically.
+function mediaGrid(p) {
+  const media = previewMedia(p);
+  if (!media.length) return null;
+  const g = el("div", { class: "pv-media" });
+  for (const im of media) {
+    g.append(el("figure", {},
+      el("img", { src: im.url, alt: im.alt || "" }),
+      el("figcaption", { class: im.alt ? "" : "muted", text: im.alt ? "alt ✓" : "no alt" })));
+  }
+  return g;
+}
+
 // quotedCard renders the source post being quoted/replied-to (shown under the
 // source-platform preview; on fan-out platforms the original is already inline in
 // postedText so no card is needed).
@@ -116,6 +132,13 @@ export async function threadPreview(container, text, platform, number) {
       el("div", { class: "pv-seg-n", style: "margin-top:4px", text: `${i + 1}/${pv.count}` }),
       el("div", { class: "pv-seg-count" + (limit && segLen > limit ? " over" : ""), text: limit ? `${segLen}/${limit}` : `${segLen} chars` }),
     );
+    // Attached media rides on the head segment only — this mirrors dispatch's
+    // runChain ("media on the head only"), so the preview shows the image where
+    // it will actually post: with the opening post, not buried at the tail.
+    if (i === 0) {
+      const g = mediaGrid(platform);
+      if (g) main.append(g);
+    }
     wrap.appendChild(el("div", { class: "pv-seg" }, rail, main));
   });
   (pv.warnings || []).forEach((wmsg) => {
@@ -194,16 +217,8 @@ function _renderSinglePost(host, p) {
 
   // media grid — your attached images, plus (on a fan-out platform) the original's
   // re-hosted media, capped per platform exactly like dispatch does on send.
-  const media = previewMedia(p);
-  if (media.length) {
-    const g = el("div", { class: "pv-media" });
-    for (const im of media) {
-      g.append(el("figure", {},
-        el("img", { src: im.url, alt: im.alt || "" }),
-        el("figcaption", { class: im.alt ? "" : "muted", text: im.alt ? "alt ✓" : "no alt" })));
-    }
-    card.append(g);
-  }
+  const g = mediaGrid(p);
+  if (g) card.append(g);
 
   // settings line (platform-specific)
   const bits = [];
