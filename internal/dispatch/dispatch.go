@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
+	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/thread"
 )
@@ -385,6 +387,14 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 			Ordinal: i, Text: st, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID,
 			Status: r.Status, Error: r.Error,
 		}
+		// live thread counter: successes so far / total planned
+		done := 0
+		for _, sg := range out.Segments {
+			if sg.Status == "success" {
+				done++
+			}
+		}
+		progress.SinkFrom(ctx).Platform(plat, progress.StatusRunning, "thread "+strconv.Itoa(done)+"/"+strconv.Itoa(len(segTexts)), "")
 		if i == 0 {
 			rootID, rootCID = r.RemoteID, r.CID
 			out.HeadRemoteID, out.HeadRemoteURL = r.RemoteID, r.RemoteURL
@@ -525,7 +535,11 @@ func (d *Dispatcher) Post(ctx context.Context, spec PostSpec) *store.Post {
 		wg.Add(1)
 		go func(i int, plat, text string, ov Overrides) {
 			defer wg.Done()
-			outcomes[i] = d.runChain(ctx, plat, text, ov, spec.Images, imetas, spec.Number, nil)
+			sink := progress.SinkFrom(ctx)
+			sink.Platform(plat, progress.StatusRunning, "", "")
+			o := d.runChain(ctx, plat, text, ov, spec.Images, imetas, spec.Number, nil)
+			outcomes[i] = o
+			sink.Platform(plat, mapStatus(o.Status), platformDetail(o), o.HeadRemoteURL)
 		}(i, plat, text, ov)
 	}
 	wg.Wait()
@@ -685,12 +699,16 @@ func (d *Dispatcher) Interact(ctx context.Context, spec InteractSpec) *store.Pos
 	var outcomes []chainOutcome
 	switch spec.Action {
 	case actionRepost:
+		sink := progress.SinkFrom(ctx)
+		sink.Platform(spec.SourcePlatform, progress.StatusRunning, "", "")
 		r := d.runAction(ctx, actionRepost, spec.SourcePlatform, "", spec.Overrides[spec.SourcePlatform], nil, nil, spec.Ref)
-		outcomes = append(outcomes, chainOutcome{
+		o := chainOutcome{
 			Platform: r.Platform, Status: r.Status, Error: r.Error,
 			HeadRemoteID: r.RemoteID, HeadRemoteURL: r.RemoteURL, LatencyMS: r.LatencyMS,
 			Relays: r.Relays, SignedEventJSON: r.SignedEventJSON, RequestJSON: r.RequestJSON, ResponseJSON: r.ResponseJSON,
-		})
+		}
+		sink.Platform(spec.SourcePlatform, mapStatus(o.Status), platformDetail(o), o.HeadRemoteURL)
+		outcomes = append(outcomes, o)
 	case actionReply, actionQuote:
 		ov := spec.Overrides[spec.SourcePlatform]
 		head := &headSpec{}
@@ -699,12 +717,19 @@ func (d *Dispatcher) Interact(ctx context.Context, spec InteractSpec) *store.Pos
 		} else {
 			head.quote = &spec.Ref
 		}
-		outcomes = append(outcomes, d.runChain(ctx, spec.SourcePlatform, interactText(spec, spec.SourcePlatform), ov, spec.Images, buildImetas(spec.MediaRecords), spec.Number, head))
+		sink := progress.SinkFrom(ctx)
+		sink.Platform(spec.SourcePlatform, progress.StatusRunning, "", "")
+		o := d.runChain(ctx, spec.SourcePlatform, interactText(spec, spec.SourcePlatform), ov, spec.Images, buildImetas(spec.MediaRecords), spec.Number, head)
+		sink.Platform(spec.SourcePlatform, mapStatus(o.Status), platformDetail(o), o.HeadRemoteURL)
+		outcomes = append(outcomes, o)
 		for _, p := range spec.Fanout {
 			if p == spec.SourcePlatform {
 				continue
 			}
-			outcomes = append(outcomes, d.fanoutChain(ctx, p, spec))
+			sink.Platform(p, progress.StatusRunning, "", "")
+			fo := d.fanoutChain(ctx, p, spec)
+			sink.Platform(p, mapStatus(fo.Status), platformDetail(fo), fo.HeadRemoteURL)
+			outcomes = append(outcomes, fo)
 		}
 	}
 
@@ -1003,4 +1028,33 @@ func dedupStrings(in []string) []string {
 		}
 	}
 	return out
+}
+
+// mapStatus maps a chainOutcome/target status to a progress platform status.
+// They share the same vocabulary ("success"/"failed"/"partial"); an empty or
+// unknown status is treated as failed.
+func mapStatus(s string) string {
+	switch s {
+	case "success":
+		return progress.StatusSuccess
+	case "partial":
+		return progress.StatusPartial
+	default:
+		return progress.StatusFailed
+	}
+}
+
+// platformDetail renders the per-platform detail line: a thread counter when the
+// outcome has multiple segments, else empty.
+func platformDetail(o chainOutcome) string {
+	if n := len(o.Segments); n > 1 {
+		done := 0
+		for _, sg := range o.Segments {
+			if sg.Status == "success" {
+				done++
+			}
+		}
+		return "thread " + strconv.Itoa(done) + "/" + strconv.Itoa(n)
+	}
+	return ""
 }
