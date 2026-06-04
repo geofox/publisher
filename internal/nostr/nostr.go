@@ -17,6 +17,8 @@ import (
 	gonostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip13"
 	"fiatjaf.com/nostr/nip19"
+
+	"github.com/geofox/publisher/internal/progress"
 )
 
 // ErrInvalidInput is returned by Publish when the caller supplies an empty text field.
@@ -77,12 +79,19 @@ type Config struct {
 	PublishTimeout       time.Duration
 }
 
+// publishPool is the subset of *gonostr.Pool that Publisher needs; an
+// interface so tests can inject fake relay results.
+type publishPool interface {
+	PublishMany(ctx context.Context, urls []string, evt gonostr.Event) chan gonostr.PublishResult
+	QuerySingle(ctx context.Context, urls []string, filter gonostr.Filter, opts gonostr.SubscriptionOptions) *gonostr.RelayEvent
+}
+
 // Publisher is a stateful Nostr broadcast client. Create one with New and
 // reuse it across requests — it holds a persistent relay pool and a relay
 // list cache keyed by pubkey.
 type Publisher struct {
 	cfg   Config
-	pool  *gonostr.Pool
+	pool  publishPool
 	mu    sync.RWMutex
 	cache map[gonostr.PubKey]relayCacheEntry
 }
@@ -221,12 +230,18 @@ func (p *Publisher) publishToRelays(ctx context.Context, event gonostr.Event, ur
 	ctx, cancel := context.WithTimeout(ctx, p.cfg.PublishTimeout)
 	defer cancel()
 
+	sink := progress.SinkFrom(ctx)
+	sink.RelaysQueued("nostr", urls)
+
 	results := make([]RelayResult, 0, len(urls))
 	for r := range p.pool.PublishMany(ctx, urls, event) {
 		rr := RelayResult{URL: r.RelayURL, OK: r.Error == nil}
+		status := progress.RelayOK
 		if r.Error != nil {
 			rr.Message = r.Error.Error()
+			status = progress.RelayFailed
 		}
+		sink.Relay("nostr", rr.URL, status, rr.Message)
 		results = append(results, rr)
 	}
 	return results
