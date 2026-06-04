@@ -44,3 +44,17 @@ func TestWithSinkRoundTrips(t *testing.T) {
 		t.Fatalf("sink-from-context did not reach hub: %+v", got.Platforms[0])
 	}
 }
+
+func TestFinishClosesHubAndSchedulesRemoval(t *testing.T) {
+	r := NewRegistry()
+	h := r.Create("p4", []string{"nostr"}, "")
+	// Finish with a zero retain duration removes immediately after closing.
+	r.Finish("p4", StatusSuccess, 0)
+	if _, ch, _ := h.Subscribe(); func() bool { _, ok := <-ch; return ok }() {
+		t.Fatalf("hub channel should be closed after Finish")
+	}
+	if _, ok := r.Get("p4"); ok {
+		t.Fatalf("hub should be removed with zero retain")
+	}
+}
+

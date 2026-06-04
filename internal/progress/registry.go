@@ -3,6 +3,7 @@ package progress
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // Sink is the emit surface the dispatch path uses. Hub implements it; a no-op
@@ -71,4 +72,19 @@ func (r *Registry) Remove(postID string) {
 	r.mu.Lock()
 	delete(r.hubs, postID)
 	r.mu.Unlock()
+}
+
+// Finish closes the post's hub (final status) and removes it after retain so a
+// just-finished post can still be subscribed to briefly. retain<=0 removes now.
+func (r *Registry) Finish(postID, final string, retain time.Duration) {
+	h, ok := r.Get(postID)
+	if !ok {
+		return
+	}
+	h.Close(final)
+	if retain <= 0 {
+		r.Remove(postID)
+		return
+	}
+	time.AfterFunc(retain, func() { r.Remove(postID) })
 }
