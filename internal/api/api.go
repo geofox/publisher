@@ -600,11 +600,23 @@ func (a *API) handleAPIPost(w http.ResponseWriter, r *http.Request) {
 	if a.Progress != nil {
 		id := dispatch.NewID()
 		hub := a.Progress.Create(id, spec.Platforms, "")
+		draftID := sj.DraftID
 		go func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					slog.Error("post dispatch goroutine panic", "post_id", id, "panic", rec)
+					a.Progress.Finish(id, "failed", 5*time.Minute)
+				}
+			}()
 			ctx := context.WithoutCancel(r.Context())
 			ctx = progress.WithSink(ctx, hub)
 			rec := a.Dispatch.PostWithID(ctx, id, spec)
 			a.Progress.Finish(id, rec.Status, 5*time.Minute)
+			if draftID != "" && a.Store != nil {
+				if err := a.Store.DeleteDraft(draftID); err != nil {
+					slog.Warn("drafts: consume DeleteDraft failed", "draft_id", draftID, "err", err)
+				}
+			}
 		}()
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"post_id": id, "status": "running"})
 		return
@@ -771,6 +783,8 @@ func (a *API) handleProgress(w http.ResponseWriter, r *http.Request) {
 	// Not in-flight: replay from the store if it finished, else 404.
 	if a.Store != nil {
 		if p, err := a.Store.GetPost(id); err == nil && p != nil {
+			_, _ = w.Write([]byte("retry: -1\n\n"))
+			flusher.Flush()
 			send(progress.FromStorePost(p))
 			return
 		}
@@ -1284,6 +1298,12 @@ func (a *API) handleInteract(w http.ResponseWriter, r *http.Request) {
 		platforms := append([]string{ispec.SourcePlatform}, ispec.Fanout...)
 		hub := a.Progress.Create(id, dedupPlatforms(platforms), ispec.SourcePlatform)
 		go func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					slog.Error("interact dispatch goroutine panic", "post_id", id, "panic", rec)
+					a.Progress.Finish(id, "failed", 5*time.Minute)
+				}
+			}()
 			ctx := context.WithoutCancel(r.Context())
 			ctx = progress.WithSink(ctx, hub)
 			rec := a.Dispatch.InteractWithID(ctx, id, ispec)

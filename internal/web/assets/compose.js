@@ -957,8 +957,15 @@ export function openProgressModal(postId) {
   };
 
   es = new EventSource("/api/posts/" + encodeURIComponent(postId) + "/progress");
-  es.onmessage = (ev) => { try { render(JSON.parse(ev.data)); } catch {} };
-  es.onerror = () => { /* EventSource auto-reconnects; a closed stream (terminal) stops on its own */ };
+  es.onmessage = (ev) => {
+    try {
+      const snap = JSON.parse(ev.data);
+      render(snap);
+      const terminal = snap.status !== "running" && snap.status !== "queued";
+      if (terminal && es) { es.close(); es = null; }
+    } catch {}
+  };
+  es.onerror = () => { /* no-op: genuine mid-flight network errors auto-reconnect */ };
 }
 
 // ---------------------------------------------------------------------------
