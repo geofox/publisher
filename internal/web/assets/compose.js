@@ -617,7 +617,7 @@ function overrideCard(p) {
 
   // expanded editor + fields
   const resetBtn = el("button", { class: "reset", type: "button", text: "reset to master", hidden: !edited,
-    onclick: () => { ov.text = null; renderCards(); renderPreview(); } });
+    onclick: () => { ov.text = null; renderCards(); refreshTargets(); renderPreview(); } });
   const ta = el("textarea", {
     oninput: e => {
       ov.text = e.target.value;
@@ -626,6 +626,9 @@ function overrideCard(p) {
       cnt.className = counterClass(m, meta.limit);
       card.classList.add("edited");
       resetBtn.hidden = false;
+      // refreshTargets so this platform's thread badge + the thread notice track
+      // the per-platform text (every other text-change path refreshes them too).
+      refreshTargets();
       renderMeta(); renderPreview();
     },
   });
@@ -698,7 +701,7 @@ function fieldsFor(p, ov) {
 // Images
 // ---------------------------------------------------------------------------
 
-function renderImages() {
+export function renderImages() {
   const c = $("#images"); c.innerHTML = "";
   state.images.forEach((img, i) => {
     c.append(el("div", { class: "thumb" },
@@ -777,13 +780,37 @@ function updateSched() {
 // Submit — ported verbatim from the pre-module monolith
 // ---------------------------------------------------------------------------
 
+// resetComposer clears the draft out of the composer after it's been committed
+// (posted or scheduled): text, images, interaction, and per-platform overrides
+// all return to empty, and every dependent view is refreshed so no stale text,
+// thumbnail, count, thread badge, or preview lingers.
+export function resetComposer() {
+  state.images.forEach((i) => { if (i.url) URL.revokeObjectURL(i.url); });
+  state.images = [];
+  state.master = "";
+  state.interaction = null;
+  for (const p of Object.keys(state.ov)) state.ov[p] = defaultOv(p);
+  const m = $("#master"); if (m) { m.value = ""; autoGrow(m); }
+  const sched = $("#schedat"); if (sched) { sched.value = ""; updateSched(); }
+  renderImages();
+  refreshCounts();
+  refreshTargets();
+  renderCards();
+  renderMeta();
+  renderInteractionUI();
+  renderPreview();
+}
+
 async function doPost() {
   const btn = $("#submit");
   const isScheduled = !!$("#schedat").value;
   btn.disabled = true; btn.textContent = isScheduled ? "Scheduling…" : "Posting…";
   const fd = new FormData();
   fd.append("spec", JSON.stringify(buildSpec()));
-  for (const img of state.images) fd.append("image", img.file);
+  // Only fresh images carry a File; already-uploaded ones (a restored/loaded
+  // draft) ride as blossom_url references in the spec and the server re-fetches
+  // their bytes. Appending a null file would send a junk "null" form value.
+  for (const img of state.images) if (img.file) fd.append("image", img.file);
   try {
     const r = await fetch("/api/post", { method: "POST", body: fd, credentials: "same-origin" });
     const data = await r.json();
@@ -800,6 +827,9 @@ async function doPost() {
       state.activeDraftId = null;
     }
     state.dirty = false;
+    // Committed successfully → empty the composer so the posted text and images
+    // don't linger as if still unsent.
+    resetComposer();
     import("./drafts_recovery.js").then(m => m.clearRecovery());
     import("./drafts.js").then(m => m.loadDraftList && m.loadDraftList());
   } catch (e) {
@@ -814,7 +844,8 @@ async function doInteract() {
   btn.disabled = true; btn.textContent = label + "ing…";
   const fd = new FormData();
   fd.append("spec", JSON.stringify(buildInteractSpec()));
-  for (const img of state.images) fd.append("image", img.file);
+  // Only fresh images carry a File; references ride in the spec (see doPost).
+  for (const img of state.images) if (img.file) fd.append("image", img.file);
   try {
     const r = await fetch("/api/interact", { method: "POST", body: fd, credentials: "same-origin" });
     const data = await r.json();

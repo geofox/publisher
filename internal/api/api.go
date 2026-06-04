@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -117,6 +118,12 @@ type API struct {
 	// Identity aggregates the operator's own per-platform profile (handle, name,
 	// avatar) for the composer. nil → GET /api/identity returns empty accounts.
 	Identity *identity.Service
+
+	// fetchMedia downloads already-uploaded image bytes by URL when a publish
+	// carries Blossom references instead of fresh uploads (a restored/loaded
+	// draft). nil → fetchSourceMedia (https-only, SSRF-guarded). Overridable in
+	// tests so the reattach path can run without a live Blossom server.
+	fetchMedia func(ctx context.Context, rawURL string) ([]byte, string, error)
 }
 
 // New creates a new API with the given publisher and media pipeline.
@@ -475,12 +482,26 @@ func (a *API) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 
 // ─── /api/post ───────────────────────────────────────────────────────────
 
-// imageAlt is the per-image metadata carried in a "spec" field's "images"
-// array; the uploaded file order maps positionally to this slice for alt text.
+// imageSpec is the per-image metadata carried in a "spec" field's "images"
+// array. Each entry is one of two kinds, distinguished by which fields are set:
+//   - a freshly-added image: Ref is set ("img_N") and its bytes arrive as the
+//     next multipart "image" file part;
+//   - an already-uploaded image (a restored/loaded draft): BlossomURL (+ the
+//     other media fields) is set and there is NO multipart file — assembleImages
+//     re-fetches the bytes from Blossom so the media isn't dropped on publish.
+//
 // Named (not anonymous) so it can be shared between the spec structs and the
-// processFormImages helper without struct-tag identity pitfalls.
-type imageAlt struct {
-	Alt string `json:"alt"`
+// assembleImages helper without struct-tag identity pitfalls.
+type imageSpec struct {
+	Alt        string `json:"alt"`
+	Ref        string `json:"ref"`
+	BlossomURL string `json:"blossom_url"`
+	SHA256     string `json:"sha256"`
+	Mime       string `json:"mime"`
+	Dim        string `json:"dim"`
+	Blurhash   string `json:"blurhash"`
+	SizeBytes  int64  `json:"size_bytes"`
+	Ordinal    int    `json:"ordinal"`
 }
 
 // postSpecJSON is the JSON object expected in the "spec" multipart field.
@@ -489,7 +510,7 @@ type postSpecJSON struct {
 	Platforms    []string                      `json:"platforms"`
 	DelaySeconds int                           `json:"delay_seconds"`
 	Overrides    map[string]dispatch.Overrides `json:"overrides"`
-	Images       []imageAlt                    `json:"images"`
+	Images       []imageSpec                   `json:"images"`
 	ScheduledAt  string                        `json:"scheduled_at"`
 	Number       bool                          `json:"number"`
 	DraftID      string                        `json:"draft_id,omitempty"` // NEW: consume on success
@@ -526,40 +547,15 @@ func (a *API) handleAPIPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var imgs []dispatch.Img
-	var mediaRecs []store.Media
-	files := r.MultipartForm.File["image"]
-	if len(files) > 4 {
-		httpx.WriteError(w, http.StatusBadRequest, "max 4 images")
+	imgs, mediaRecs, err := a.assembleImages(r, sj.Images)
+	if err != nil {
+		var me *mediaError
+		if errors.As(err, &me) {
+			httpx.WriteError(w, http.StatusBadGateway, me.Error())
+		} else {
+			httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		}
 		return
-	}
-	for i, fh := range files {
-		f, err := fh.Open()
-		if err != nil {
-			httpx.WriteError(w, http.StatusBadRequest, "open image: "+err.Error())
-			return
-		}
-		body, err := io.ReadAll(f)
-		if err != nil {
-			f.Close()
-			httpx.WriteError(w, http.StatusInternalServerError, "read image: "+err.Error())
-			return
-		}
-		f.Close()
-		res, err := a.media.Process(r.Context(), body, fh.Header.Get("Content-Type"))
-		if err != nil {
-			httpx.WriteError(w, http.StatusBadGateway, "media: "+err.Error())
-			return
-		}
-		alt := ""
-		if i < len(sj.Images) {
-			alt = sj.Images[i].Alt
-		}
-		imgs = append(imgs, dispatch.Img{Bytes: res.Bytes, Mime: res.Mime, Alt: alt, BlossomURL: res.URL})
-		mediaRecs = append(mediaRecs, store.Media{
-			Ordinal: i, BlossomURL: res.URL, SHA256: res.SHA256, Mime: res.Mime,
-			Dim: res.Dim, Blurhash: res.Blurhash, SizeBytes: res.Size, Alt: alt,
-		})
 	}
 
 	spec := dispatch.PostSpec{
@@ -1135,7 +1131,7 @@ func (a *API) handleInteract(w http.ResponseWriter, r *http.Request) {
 		Fanout    []string                      `json:"fanout"`
 		Number    bool                          `json:"number"`
 		Force     bool                          `json:"force"`
-		Images    []imageAlt                    `json:"images"`
+		Images    []imageSpec                   `json:"images"`
 	}
 	if err := json.Unmarshal([]byte(r.FormValue("spec")), &sj); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid spec json: "+err.Error())
@@ -1152,7 +1148,7 @@ func (a *API) handleInteract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userImgs, userRecs, err := a.processFormImages(r, sj.Images)
+	userImgs, userRecs, err := a.assembleImages(r, sj.Images)
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -1191,44 +1187,106 @@ func (a *API) handleInteract(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, post)
 }
 
-// processFormImages reads the multipart "image" files, runs each through the
-// media pipeline, and returns dispatch.Img + store.Media (alt from imageAlts[i]).
-func (a *API) processFormImages(r *http.Request, imageAlts []imageAlt) ([]dispatch.Img, []store.Media, error) {
-	if r.MultipartForm == nil {
-		return nil, nil, nil
+// assembleImages reconstructs the ordered image set for a publish/interact
+// request from its spec.images, in spec order. Each entry is handled by kind:
+//   - fresh upload (no BlossomURL): consume the next multipart "image" file and
+//     run its bytes through the media pipeline;
+//   - already-uploaded reference (BlossomURL set, no fresh file): re-fetch the
+//     bytes from Blossom and re-process them, so platforms that need raw bytes
+//     (Bluesky/Mastodon/Threads) still get the media and Nostr gets a fresh
+//     imeta. Without this, a restored/loaded draft would publish with no media.
+//
+// A reference that can't be fetched is skipped (best-effort, matching source-
+// media re-hosting) rather than failing the whole post. The returned slices are
+// renumbered densely so a skipped reference doesn't leave an ordinal gap.
+func (a *API) assembleImages(r *http.Request, specs []imageSpec) ([]dispatch.Img, []store.Media, error) {
+	var files []*multipart.FileHeader
+	if r.MultipartForm != nil {
+		files = r.MultipartForm.File["image"]
 	}
-	files := r.MultipartForm.File["image"]
-	if len(files) > 4 {
+	if len(files) > 4 || len(specs) > 4 {
 		return nil, nil, fmt.Errorf("max 4 images")
 	}
-	var imgs []dispatch.Img
-	var recs []store.Media
-	for i, fh := range files {
+	fetch := a.fetchMedia
+	if fetch == nil {
+		fetch = a.fetchSourceMedia
+	}
+
+	// processUpload reads one multipart file and runs it through the media
+	// pipeline. A pipeline failure is wrapped as *mediaError so callers can map
+	// it to 502 (upstream) rather than 400 (client) — open/read failures stay
+	// plain (client/server-side body issues).
+	processUpload := func(fh *multipart.FileHeader) (media.Result, error) {
 		f, err := fh.Open()
 		if err != nil {
-			return nil, nil, fmt.Errorf("open image: %w", err)
+			return media.Result{}, fmt.Errorf("open image: %w", err)
 		}
 		body, err := io.ReadAll(f)
 		f.Close()
 		if err != nil {
-			return nil, nil, fmt.Errorf("read image: %w", err)
+			return media.Result{}, fmt.Errorf("read image: %w", err)
 		}
 		res, err := a.media.Process(r.Context(), body, fh.Header.Get("Content-Type"))
 		if err != nil {
-			return nil, nil, fmt.Errorf("media: %w", err)
+			return media.Result{}, &mediaError{err: fmt.Errorf("media: %w", err)}
 		}
-		alt := ""
-		if i < len(imageAlts) {
-			alt = imageAlts[i].Alt
-		}
+		return res, nil
+	}
+
+	var imgs []dispatch.Img
+	var recs []store.Media
+	add := func(res media.Result, alt string) {
 		imgs = append(imgs, dispatch.Img{Bytes: res.Bytes, Mime: res.Mime, Alt: alt, BlossomURL: res.URL})
 		recs = append(recs, store.Media{
-			Ordinal: i, BlossomURL: res.URL, SHA256: res.SHA256, Mime: res.Mime,
+			Ordinal: len(recs), BlossomURL: res.URL, SHA256: res.SHA256, Mime: res.Mime,
 			Dim: res.Dim, Blurhash: res.Blurhash, SizeBytes: res.Size, Alt: alt,
 		})
 	}
+
+	fi := 0 // cursor into the uploaded files (fresh images, in spec order)
+	for _, s := range specs {
+		if s.BlossomURL != "" {
+			// Already-uploaded reference: re-fetch the bytes from Blossom.
+			body, mime, ferr := fetch(r.Context(), s.BlossomURL)
+			if ferr != nil {
+				continue // unreachable reference → skip, never fail the post
+			}
+			res, perr := a.media.Process(r.Context(), body, mime)
+			if perr != nil {
+				continue
+			}
+			add(res, s.Alt)
+			continue
+		}
+		// Fresh upload: consume the next multipart file part.
+		if fi >= len(files) {
+			continue // spec entry with neither file nor reference → skip
+		}
+		res, err := processUpload(files[fi])
+		fi++
+		if err != nil {
+			return nil, nil, err
+		}
+		add(res, s.Alt)
+	}
+	// Defensive: process any uploaded files with no matching spec entry (a client
+	// that posts files without an images[] array) as fresh images with no alt, so
+	// media is never silently dropped.
+	for ; fi < len(files); fi++ {
+		res, err := processUpload(files[fi])
+		if err != nil {
+			return nil, nil, err
+		}
+		add(res, "")
+	}
 	return imgs, recs, nil
 }
+
+// mediaError marks a media-pipeline (upstream Blossom) failure so handlers can
+// respond 502 Bad Gateway, distinct from 400 client errors.
+type mediaError struct{ err error }
+
+func (e *mediaError) Error() string { return e.err.Error() }
 
 // fetchSourceMedia downloads a source media URL for re-hosting (https-only,
 // size-limited, SSRF-guarded). Best-effort: callers skip on error.

@@ -94,10 +94,13 @@ function ovFor(p) {
   return o;
 }
 
-export function buildSpec() {
-  const overrides = {};
-  for (const p of state.platforms) overrides[p] = ovFor(p);
-  const images = state.images.map((i, idx) => {
+// imageSpecs serializes state.images for a publish/interact spec. A fresh image
+// (has a File) becomes a `ref` entry whose bytes ride as a multipart file; an
+// already-uploaded one (a restored/loaded draft) becomes a `blossom_url`
+// reference the server re-fetches. Shared by buildSpec and buildInteractSpec so
+// both paths carry references identically.
+export function imageSpecs() {
+  return state.images.map((i, idx) => {
     if (i.file) {
       return { ordinal: idx, ref: "img_" + idx, alt: i.alt };
     }
@@ -107,6 +110,12 @@ export function buildSpec() {
       alt: i.alt,
     };
   });
+}
+
+export function buildSpec() {
+  const overrides = {};
+  for (const p of state.platforms) overrides[p] = ovFor(p);
+  const images = imageSpecs();
   const spec = {
     master_text: state.master,
     platforms: [...state.platforms],
@@ -146,6 +155,6 @@ export function buildInteractSpec() {
     fanout,
     number: document.getElementById("threadnum")?.checked ?? true,
     force: !!it.force,
-    images: state.images.map((i) => ({ alt: i.alt })),
+    images: imageSpecs(),
   };
 }

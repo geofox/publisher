@@ -1,6 +1,6 @@
 "use strict";
 import { state, buildSpec, defaultOv } from "./state.js";
-import { loadDraft, markDirty } from "./compose.js";
+import { loadDraft, markDirty, renderImages } from "./compose.js";
 import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -162,6 +162,11 @@ export async function saveActiveDraft() {
       alt: m.alt || "", ordinal: m.ordinal, file: null,
       url: m.blossom_url || "",
     }));
+    // Re-render the thumbnail strip so each alt input's oninput rebinds to the
+    // NEW state.images objects. Without this, the inputs stay bound to the
+    // pre-save objects and a subsequent alt edit is written to a detached object
+    // and lost on the next save.
+    renderImages();
     setStatus("saved", "saved just now");
     snapshot(); // clears recovery (since activeDraftId is now set)
     loadDraftList();
