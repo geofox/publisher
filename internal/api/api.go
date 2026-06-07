@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -273,7 +274,10 @@ func (a *API) withGates(next http.Handler) http.Handler {
 	session := a.requireSession(next)
 	token := a.requireAPIToken(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
+		// Clean the path before gate selection: net/http does not normalize
+		// r.URL.Path before the handler runs, so a raw "/auth/../api/tokens"
+		// would otherwise satisfy the "/auth/" prefix and dodge the session gate.
+		p := path.Clean(r.URL.Path)
 		switch {
 		case p == "/healthz" || p == "/metrics" ||
 			strings.HasPrefix(p, "/auth/") ||

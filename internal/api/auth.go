@@ -100,6 +100,7 @@ func (a *API) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: raw, Path: "/", HttpOnly: true, Secure: true,
 		SameSite: http.SameSiteLaxMode, Expires: time.Now().Add(a.sessionTTL()),
+		MaxAge: int(a.sessionTTL().Seconds()), // MaxAge takes precedence per RFC 6265
 	})
 	http.Redirect(w, r, "/", http.StatusFound)
 }

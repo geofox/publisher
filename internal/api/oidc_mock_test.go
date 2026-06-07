@@ -157,6 +157,50 @@ func TestCallbackHappyPath(t *testing.T) {
 	}
 }
 
+// TestRoutesGatesOnWhenAuthEnabled exercises the gate-on path through the real
+// Routes() handler (not the middleware in isolation): an unauthenticated
+// browser navigation is redirected to login, an unauthenticated machine call to
+// /publish is 401, and the always-open /healthz stays reachable.
+func TestRoutesGatesOnWhenAuthEnabled(t *testing.T) {
+	issuer := newMockOIDC(t)
+	au, err := auth.New(context.Background(), auth.Config{
+		Issuer: issuer, ClientID: "client-1", ClientSecret: "s",
+		RedirectURL: "https://app/auth/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := storeOpen(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &API{Store: db, Auth: au, Allowlist: auth.NewAllowlist([]string{"sub-1"}, nil), SessionTTL: time.Hour}
+	mux := a.Routes()
+
+	// Browser navigation to a gated route without a session → 302 /auth/login.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/posts", nil)
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/auth/login" {
+		t.Fatalf("gated page: code=%d loc=%s want 302 /auth/login", rec.Code, rec.Header().Get("Location"))
+	}
+
+	// Machine endpoint without a bearer token → 401.
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/publish", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("gated /publish: code=%d want 401", rec.Code)
+	}
+
+	// Always-open health check stays reachable with auth on.
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/healthz: code=%d want 200", rec.Code)
+	}
+}
+
 // TestCallbackRejectsStateMismatch verifies that a mismatched state parameter
 // produces a 400 without touching the provider at all.
 func TestCallbackRejectsStateMismatch(t *testing.T) {
@@ -164,11 +208,8 @@ func TestCallbackRejectsStateMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// au=nil is fine here; the state check happens before Exchange.
-	// We need an Allowlist too for authEnabled(), but the handler accesses
-	// Auth before allowlist; we need Auth non-nil to avoid a nil pointer on
-	// Exchange — but the state check fires before that.  We can pass nil Auth
-	// because handleAuthCallback checks state before calling a.Auth.Exchange.
+	// Auth nil is safe here: handleAuthCallback validates the state cookie and
+	// rejects the mismatch before it ever reaches a.Auth.Exchange.
 	a := &API{Store: db, Auth: nil, Allowlist: nil, SessionTTL: time.Hour}
 
 	ls := loginState{State: "good-state", Nonce: "n1", PKCEVerifier: "v"}
