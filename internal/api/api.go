@@ -19,6 +19,7 @@ import (
 
 	"fiatjaf.com/nostr"
 
+	"github.com/geofox/publisher/internal/auth"
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/feed"
 	"github.com/geofox/publisher/internal/httpx"
@@ -131,6 +132,18 @@ type API struct {
 	// draft). nil → fetchSourceMedia (https-only, SSRF-guarded). Overridable in
 	// tests so the reattach path can run without a live Blossom server.
 	fetchMedia func(ctx context.Context, rawURL string) ([]byte, string, error)
+
+	// Auth holds the OIDC Relying Party. nil → auth disabled (gates are
+	// pass-through). Set by cmd/publisher when OIDC_ISSUER is configured.
+	Auth *auth.Authenticator
+	// Allowlist gates which verified identities may use the app. Non-nil iff Auth is non-nil.
+	Allowlist *auth.Allowlist
+	// SessionTTL is how long a new session lives. Zero → 168h default applied by handlers.
+	SessionTTL time.Duration
+	// EndSession toggles provider single-logout on /auth/logout.
+	EndSession bool
+	// AppBaseURL is the public origin (scheme://host) used to build post-logout redirects.
+	AppBaseURL string
 }
 
 // New creates a new API with the given publisher and media pipeline.
