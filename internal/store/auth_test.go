@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -106,5 +108,13 @@ func TestAPITokenLifecycle(t *testing.T) {
 	}
 	if _, err := s.APITokenByRaw(raw); err == nil {
 		t.Fatal("revoked token should not resolve")
+	}
+	// Revoking an unknown or already-revoked id reports sql.ErrNoRows so a
+	// handler can surface 404 instead of a misleading success.
+	if err := s.RevokeAPIToken("does-not-exist"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("revoke unknown id: got %v want sql.ErrNoRows", err)
+	}
+	if err := s.RevokeAPIToken(tok.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("re-revoke: got %v want sql.ErrNoRows", err)
 	}
 }

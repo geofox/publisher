@@ -150,11 +150,11 @@ func (s *Store) CreateAPIToken(name string) (APIToken, string, error) {
 func (s *Store) APITokenByRaw(raw string) (APIToken, error) {
 	h := hashToken(raw)
 	var t APIToken
-	var lastUsed, revoked sql.NullTime
+	var lastUsed sql.NullTime
 	err := s.sql.QueryRow(
-		`SELECT id, name, created_at, last_used_at, revoked_at FROM api_tokens
+		`SELECT id, name, created_at, last_used_at FROM api_tokens
 		 WHERE token_hash=? AND revoked_at IS NULL`, h).
-		Scan(&t.ID, &t.Name, &t.CreatedAt, &lastUsed, &revoked)
+		Scan(&t.ID, &t.Name, &t.CreatedAt, &lastUsed)
 	if err != nil {
 		return APIToken{}, err
 	}
@@ -184,9 +184,19 @@ func (s *Store) ListAPITokens() ([]APIToken, error) {
 	return out, rows.Err()
 }
 
-// RevokeAPIToken soft-deletes a token (keeps the row for audit).
+// RevokeAPIToken soft-deletes a token (keeps the row for audit). Returns
+// sql.ErrNoRows when the id is unknown or already revoked, so callers can
+// surface a 404 rather than a misleading success.
 func (s *Store) RevokeAPIToken(id string) error {
-	_, err := s.sql.Exec(`UPDATE api_tokens SET revoked_at=? WHERE id=? AND revoked_at IS NULL`,
+	res, err := s.sql.Exec(`UPDATE api_tokens SET revoked_at=? WHERE id=? AND revoked_at IS NULL`,
 		time.Now().UTC(), id)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
