@@ -8,6 +8,7 @@ import { verifyInit } from "./verify.js";
 import { interactInit } from "./interact.js";
 import { installRecoveryAutosave } from "./drafts_recovery.js";
 import { installDraftsSidebar, populateTranslateMenu } from "./drafts.js";
+import { tokensInit, tokensShow, loadUserChip } from "./tokens.js";
 
 // loadConfig fetches operator preferences (currently just USER_LANGUAGES) and
 // rebuilds the per-platform overrides so the Bluesky/Mastodon language fields
@@ -49,6 +50,7 @@ function switchTab(view) {
   document.querySelectorAll(".view").forEach(s => { s.hidden = s.id !== view; });
   if (view === "history") loadHistory(true);
   if (view === "tools")   loadTools();
+  if (view === "tokens")  tokensShow();
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +65,8 @@ async function init() {
   toolsInit();
   verifyInit();
   interactInit();
+  tokensInit();
+  loadUserChip(); // fire-and-forget: renders OIDC user chip if authenticated, silent otherwise
   installRecoveryAutosave();
   installDraftsSidebar();
   populateTranslateMenu(); // re-populate after /api/config resolves (idempotent)
