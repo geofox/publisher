@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestAuthTablesExist(t *testing.T) {
 	s := openTestStore(t)
@@ -33,5 +36,47 @@ func TestUpsertUser(t *testing.T) {
 	}
 	if u2.Email != "alice@example.com" || u2.Name != "Alice B" {
 		t.Fatalf("not updated: %+v", u2)
+	}
+}
+
+func TestSessionLifecycle(t *testing.T) {
+	s := openTestStore(t)
+	u, _ := s.UpsertUser("sub-1", "a@e.com", "A")
+
+	raw, err := s.CreateSession(u.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw == "" {
+		t.Fatal("empty session token")
+	}
+	got, err := s.SessionUser(raw)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if got.ID != u.ID {
+		t.Fatalf("wrong user: %s", got.ID)
+	}
+	if err := s.DeleteSession(raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SessionUser(raw); err == nil {
+		t.Fatal("expected error after delete")
+	}
+}
+
+func TestSessionExpiryAndSweep(t *testing.T) {
+	s := openTestStore(t)
+	u, _ := s.UpsertUser("sub-1", "", "")
+	raw, _ := s.CreateSession(u.ID, -time.Minute) // already expired
+	if _, err := s.SessionUser(raw); err == nil {
+		t.Fatal("expired session should not resolve")
+	}
+	n, err := s.SweepExpiredSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("swept %d want 1", n)
 	}
 }
