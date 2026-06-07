@@ -80,3 +80,31 @@ func TestSessionExpiryAndSweep(t *testing.T) {
 		t.Fatalf("swept %d want 1", n)
 	}
 }
+
+func TestAPITokenLifecycle(t *testing.T) {
+	s := openTestStore(t)
+	tok, raw, err := s.CreateAPIToken("n8n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw == "" || tok.ID == "" || tok.Name != "n8n" {
+		t.Fatalf("bad token: %+v raw=%q", tok, raw)
+	}
+	got, err := s.APITokenByRaw(raw)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if got.ID != tok.ID {
+		t.Fatalf("wrong token")
+	}
+	list, err := s.ListAPITokens()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list=%v err=%v", list, err)
+	}
+	if err := s.RevokeAPIToken(tok.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.APITokenByRaw(raw); err == nil {
+		t.Fatal("revoked token should not resolve")
+	}
+}

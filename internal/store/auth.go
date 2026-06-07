@@ -118,3 +118,75 @@ func (s *Store) SweepExpiredSessions() (int64, error) {
 	}
 	return res.RowsAffected()
 }
+
+// APIToken is a machine credential row. The secret is never stored or returned
+// after creation — only its hash.
+type APIToken struct {
+	ID         string
+	Name       string
+	CreatedAt  time.Time
+	LastUsedAt time.Time
+	RevokedAt  time.Time
+	Revoked    bool
+}
+
+// CreateAPIToken mints a token, stores its hash, and returns the row plus the
+// raw secret (shown to the operator exactly once).
+func (s *Store) CreateAPIToken(name string) (APIToken, string, error) {
+	raw := randomToken()
+	id := newID()
+	now := time.Now().UTC()
+	_, err := s.sql.Exec(
+		`INSERT INTO api_tokens(id, name, token_hash, created_at) VALUES(?, ?, ?, ?)`,
+		id, name, hashToken(raw), now)
+	if err != nil {
+		return APIToken{}, "", err
+	}
+	return APIToken{ID: id, Name: name, CreatedAt: now}, raw, nil
+}
+
+// APITokenByRaw resolves a presented bearer secret to a live (non-revoked)
+// token and stamps last_used_at. Returns sql.ErrNoRows when absent/revoked.
+func (s *Store) APITokenByRaw(raw string) (APIToken, error) {
+	h := hashToken(raw)
+	var t APIToken
+	var lastUsed, revoked sql.NullTime
+	err := s.sql.QueryRow(
+		`SELECT id, name, created_at, last_used_at, revoked_at FROM api_tokens
+		 WHERE token_hash=? AND revoked_at IS NULL`, h).
+		Scan(&t.ID, &t.Name, &t.CreatedAt, &lastUsed, &revoked)
+	if err != nil {
+		return APIToken{}, err
+	}
+	t.LastUsedAt = lastUsed.Time
+	_, _ = s.sql.Exec(`UPDATE api_tokens SET last_used_at=? WHERE id=?`, time.Now().UTC(), t.ID)
+	return t, nil
+}
+
+// ListAPITokens returns all tokens (newest first), never the secret.
+func (s *Store) ListAPITokens() ([]APIToken, error) {
+	rows, err := s.sql.Query(
+		`SELECT id, name, created_at, last_used_at, revoked_at FROM api_tokens ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]APIToken, 0)
+	for rows.Next() {
+		var t APIToken
+		var lastUsed, revoked sql.NullTime
+		if err := rows.Scan(&t.ID, &t.Name, &t.CreatedAt, &lastUsed, &revoked); err != nil {
+			return nil, err
+		}
+		t.LastUsedAt, t.RevokedAt, t.Revoked = lastUsed.Time, revoked.Time, revoked.Valid
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// RevokeAPIToken soft-deletes a token (keeps the row for audit).
+func (s *Store) RevokeAPIToken(id string) error {
+	_, err := s.sql.Exec(`UPDATE api_tokens SET revoked_at=? WHERE id=? AND revoked_at IS NULL`,
+		time.Now().UTC(), id)
+	return err
+}
