@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,5 +93,38 @@ func TestRequireAPIToken(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("valid token: code=%d want 200", rec.Code)
+	}
+}
+
+func TestTokenCRUDHandlers(t *testing.T) {
+	db, _ := storeOpen(t)
+	a := &API{Store: db}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/tokens", strings.NewReader(`{"name":"n8n"}`))
+	a.handleCreateToken(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"token"`) {
+		t.Fatalf("create: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	a.handleListTokens(rec, httptest.NewRequest(http.MethodGet, "/api/tokens", nil))
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"token"`) {
+		t.Fatalf("list leaked secret or failed: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "n8n") {
+		t.Fatalf("list missing token name: %s", rec.Body.String())
+	}
+}
+
+func TestRevokeUnknownTokenIs404(t *testing.T) {
+	db, _ := storeOpen(t)
+	a := &API{Store: db}
+	req := httptest.NewRequest(http.MethodDelete, "/api/tokens/does-not-exist", nil)
+	req.SetPathValue("id", "does-not-exist")
+	rec := httptest.NewRecorder()
+	a.handleRevokeToken(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("revoke unknown: code=%d want 404", rec.Code)
 	}
 }
