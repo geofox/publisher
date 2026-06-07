@@ -26,7 +26,6 @@ func newAuthDisabledAPI(t *testing.T) http.Handler {
 }
 
 func TestLoginDisabledReturns404(t *testing.T) {
-	t.Skip("enabled in Task 11 once /auth routes are wired behind the feature flag")
 	mux := newAuthDisabledAPI(t)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/login", nil))
@@ -114,6 +113,25 @@ func TestTokenCRUDHandlers(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "n8n") {
 		t.Fatalf("list missing token name: %s", rec.Body.String())
+	}
+}
+
+func TestRoutesGatesOffWhenAuthDisabled(t *testing.T) {
+	mux := newAuthDisabledAPI(t)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("healthz code=%d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/posts", nil))
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatalf("api/posts should be open when auth disabled")
+	}
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/login", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("auth/login should 404 when disabled, got %d", rec.Code)
 	}
 }
 

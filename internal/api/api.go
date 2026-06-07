@@ -189,8 +189,18 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/drafts/{id}", a.handleUpdateDraft)
 	mux.HandleFunc("DELETE /api/drafts/{id}", a.handleDeleteDraft)
 	mux.HandleFunc("POST /api/drafts/{id}/translate", a.handleTranslateDraft)
+	// Token management + identity + auth routes (only when OIDC is enabled).
+	if a.authEnabled() {
+		mux.HandleFunc("GET /api/tokens", a.handleListTokens)
+		mux.HandleFunc("POST /api/tokens", a.handleCreateToken)
+		mux.HandleFunc("DELETE /api/tokens/{id}", a.handleRevokeToken)
+		mux.HandleFunc("GET /api/me", a.handleMe)
+		mux.HandleFunc("GET /auth/login", a.handleAuthLogin)
+		mux.HandleFunc("GET /auth/callback", a.handleAuthCallback)
+		mux.HandleFunc("POST /auth/logout", a.handleAuthLogout)
+	}
 	mux.Handle("/", web.Handler())
-	return withSecurityHeaders(withCSRFGuard(mux))
+	return withSecurityHeaders(withCSRFGuard(a.withGates(mux)))
 }
 
 // contentSecurityPolicy locks the SPA to same-origin code. Every script, style,
@@ -251,6 +261,30 @@ func hostOnly(h string) string {
 		return host
 	}
 	return h
+}
+
+// withGates applies session/token gates per path. When auth is disabled it is a
+// pass-through, preserving the pre-OIDC behavior (and keeping the existing test
+// suite green).
+func (a *API) withGates(next http.Handler) http.Handler {
+	if !a.authEnabled() {
+		return next
+	}
+	session := a.requireSession(next)
+	token := a.requireAPIToken(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		switch {
+		case p == "/healthz" || p == "/metrics" ||
+			strings.HasPrefix(p, "/auth/") ||
+			p == "/api/public/feed":
+			next.ServeHTTP(w, r) // always-open / separately-gated
+		case p == "/publish" || p == "/upload-media":
+			token.ServeHTTP(w, r) // machine endpoints
+		default:
+			session.ServeHTTP(w, r) // SPA + browser /api/*
+		}
+	})
 }
 
 // ─── /healthz ────────────────────────────────────────────────────────────
