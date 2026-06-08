@@ -201,7 +201,7 @@ func (a *API) Routes() http.Handler {
 		mux.HandleFunc("POST /auth/logout", a.handleAuthLogout)
 	}
 	mux.Handle("/", web.Handler())
-	return withSecurityHeaders(withCSRFGuard(a.withGates(mux)))
+	return withSecurityHeaders(a.withCSRFGuard(a.withGates(mux)))
 }
 
 // contentSecurityPolicy locks the SPA to same-origin code. Every script, style,
@@ -228,10 +228,24 @@ func withSecurityHeaders(next http.Handler) http.Handler {
 
 // withCSRFGuard rejects a state-changing request whose Origin header is present
 // but points at a different host — the signature of a cross-site attack riding
-// the owner's authenticated (Authelia) session. Same-origin SPA calls (Origin
-// matches Host) and server-to-server callers like n8n (no Origin header) pass
-// through, so CSRF is blocked without an app-level token scheme.
-func withCSRFGuard(next http.Handler) http.Handler {
+// the owner's authenticated (Authelia) session. Same-origin SPA calls and
+// server-to-server callers like n8n (no Origin header) pass through, so CSRF is
+// blocked without an app-level token scheme.
+//
+// The Origin is accepted when it matches the request Host OR the configured
+// public origin (AppBaseURL). Behind a reverse proxy r.Host is whatever the
+// proxy forwards upstream — often an internal host that never matches the
+// browser's public Origin — so comparing against the server-configured public
+// origin is what keeps the SPA's own same-origin requests (sign-out included)
+// from being wrongly blocked. AppBaseURL comes from env, not the client, so it
+// is not spoofable.
+func (a *API) withCSRFGuard(next http.Handler) http.Handler {
+	allowedHost := ""
+	if a.AppBaseURL != "" {
+		if u, err := url.Parse(a.AppBaseURL); err == nil {
+			allowedHost = hostOnly(u.Host)
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
@@ -239,7 +253,9 @@ func withCSRFGuard(next http.Handler) http.Handler {
 		default:
 			if origin := r.Header.Get("Origin"); origin != "" {
 				u, err := url.Parse(origin)
-				if err != nil || !sameHost(u.Host, r.Host) {
+				okHost := err == nil && (sameHost(u.Host, r.Host) ||
+					(allowedHost != "" && hostOnly(u.Host) == allowedHost))
+				if !okHost {
 					httpx.WriteError(w, http.StatusForbidden, "cross-origin request blocked")
 					return
 				}
