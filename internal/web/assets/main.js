@@ -66,7 +66,10 @@ async function init() {
   verifyInit();
   interactInit();
   tokensInit();
-  loadUserChip(); // fire-and-forget: renders OIDC user chip if authenticated, silent otherwise
+  // User chip (identity + sign-out) disabled: sign-out POST is CSRF-blocked
+  // behind the proxy and the chip only surfaced the raw OIDC subject (UUID),
+  // not a name/email. Re-enable once the cross-origin logout is resolved.
+  // loadUserChip();
   installRecoveryAutosave();
   installDraftsSidebar();
   populateTranslateMenu(); // re-populate after /api/config resolves (idempotent)
