@@ -69,8 +69,13 @@ func (a *API) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad login state")
 		return
 	}
-	// Clear the login-state cookie now that we've read it.
-	http.SetCookie(w, &http.Cookie{Name: loginStateCookie, Path: "/auth", MaxAge: -1})
+	// Clear the login-state cookie now that we've read it. Carry the same
+	// security attributes as when it was set (defense in depth; also keeps
+	// static cookie scanners happy — every Set-Cookie is HttpOnly+Secure).
+	http.SetCookie(w, &http.Cookie{
+		Name: loginStateCookie, Path: "/auth", MaxAge: -1,
+		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
+	})
 
 	if r.URL.Query().Get("state") != ls.State || ls.State == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "state mismatch")
@@ -111,7 +116,10 @@ func (a *API) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		_ = a.Store.DeleteSession(c.Value)
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookie, Path: "/", MaxAge: -1,
+		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
+	})
 	if a.EndSession {
 		if url := a.Auth.EndSessionURL(a.AppBaseURL + "/"); url != "" {
 			http.Redirect(w, r, url, http.StatusFound)

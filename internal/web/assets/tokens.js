@@ -51,7 +51,7 @@ function tokenRow(t) {
     });
     btn.addEventListener("click", () => {
       confirmModal({
-        title: "Revoke token "" + t.name + ""?",
+        title: "Revoke token \"" + t.name + "\"?",
         body: "Any client using this token will lose access immediately.",
         confirmText: "Revoke",
         onConfirm: async () => {
@@ -147,7 +147,7 @@ function showNewTokenSecret(token, name) {
   const card = el("div", { class: "modal" });
   card.append(
     el("button", { class: "modal-x", type: "button", text: "✕", onclick: close }),
-    el("p", { class: "modal-title ok", text: "Token created — "" + name + """ }),
+    el("p", { class: "modal-title ok", text: "Token created — \"" + name + "\"" }),
     el("p", { class: "tok-warning", text: "Copy this now — you won't be able to see it again." }),
     el("div", { class: "tok-secret-row" }, secretInput, copyBtn),
     el("div", { class: "confirm-actions" },
