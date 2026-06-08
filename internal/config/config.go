@@ -73,7 +73,22 @@ type Config struct {
 	AutoRetryBaseDelay   time.Duration
 	AutoRetryMaxDelay    time.Duration
 	RetrierTick          time.Duration
+
+	// OIDC Relying-Party auth. When OIDCIssuer is empty, auth is dormant and all
+	// gates are off (behaves exactly as before — relies on the reverse proxy).
+	OIDCIssuer          string
+	OIDCClientID        string
+	OIDCClientSecret    string
+	OIDCRedirectURL     string
+	OIDCAllowedSubjects []string
+	OIDCAllowedEmails   []string
+	OIDCScopes          []string
+	OIDCEndSession      bool
+	SessionTTL          time.Duration
 }
+
+// OIDCEnabled reports whether app-level OIDC auth is configured.
+func (c Config) OIDCEnabled() bool { return c.OIDCIssuer != "" }
 
 func Load() (Config, error) {
 	c := Config{
@@ -160,6 +175,26 @@ func Load() (Config, error) {
 	if derived := nostr.GetPublicKey(c.NSEC); derived != c.OwnerPubkey {
 		return c, fmt.Errorf("OWNER_PUBKEY (%s) does not match the pubkey derived from NSEC_HEX (%s)",
 			c.OwnerPubkey.Hex(), derived.Hex())
+	}
+
+	c.OIDCIssuer = strings.TrimRight(getEnv("OIDC_ISSUER", ""), "/")
+	c.OIDCClientID = getEnv("OIDC_CLIENT_ID", "")
+	c.OIDCClientSecret = getEnv("OIDC_CLIENT_SECRET", "")
+	c.OIDCRedirectURL = getEnv("OIDC_REDIRECT_URL", "")
+	c.OIDCAllowedSubjects = splitCSV(getEnv("OIDC_ALLOWED_SUBJECTS", ""))
+	c.OIDCAllowedEmails = splitCSV(getEnv("OIDC_ALLOWED_EMAILS", ""))
+	c.OIDCScopes = splitCSV(getEnv("OIDC_SCOPES", "openid,profile,email"))
+	c.OIDCEndSession = getBool("OIDC_END_SESSION", true)
+	if c.SessionTTL, err = time.ParseDuration(getEnv("SESSION_TTL", "168h")); err != nil {
+		return c, fmt.Errorf("SESSION_TTL: %w", err)
+	}
+	if c.OIDCEnabled() {
+		if c.OIDCClientID == "" || c.OIDCClientSecret == "" || c.OIDCRedirectURL == "" {
+			return c, errors.New("OIDC_ISSUER is set; OIDC_CLIENT_ID, OIDC_CLIENT_SECRET and OIDC_REDIRECT_URL are required")
+		}
+		if len(c.OIDCAllowedSubjects) == 0 && len(c.OIDCAllowedEmails) == 0 {
+			return c, errors.New("OIDC enabled but no allowlist: set OIDC_ALLOWED_SUBJECTS and/or OIDC_ALLOWED_EMAILS")
+		}
 	}
 	return c, nil
 }

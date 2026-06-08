@@ -358,6 +358,18 @@ infrastructure and should be overridden.
 | `LOG_LEVEL` | no | `info` | `debug` / `info` / `warn` / `error` |
 | `PLC_DIRECTORY_URL` | no | `https://plc.directory` | did:plc resolver for Bluesky identity lookups |
 | `VERIFY_HTTP_TIMEOUT` | no | `10s` | Per-request timeout for verification fetches |
+| `OIDC_ISSUER` | no | (empty) | Issuer URL of the OpenID Provider (e.g. `https://auth.example.com`). Empty → app-level auth disabled. Setting it enables OIDC and makes the vars below required |
+| `OIDC_CLIENT_ID` | yes* | — | Confidential client ID registered with the provider |
+| `OIDC_CLIENT_SECRET` | yes* | — | Client secret (**secret**) |
+| `OIDC_REDIRECT_URL` | yes* | — | Callback URL registered with the provider, e.g. `https://publisher.example.com/auth/callback` |
+| `OIDC_ALLOWED_SUBJECTS` | yes*† | — | CSV of allowed OIDC subjects (`sub`) |
+| `OIDC_ALLOWED_EMAILS` | yes*† | — | CSV of allowed email addresses |
+| `OIDC_SCOPES` | no | `openid profile email` | Requested scopes (space- or comma-separated) |
+| `OIDC_END_SESSION` | no | `true` | On logout, also end the provider session (RP-initiated logout) when the provider advertises `end_session_endpoint` |
+| `SESSION_TTL` | no | `168h` | Server-side session lifetime |
+
+\* Required only when `OIDC_ISSUER` is set.
+† At least one of `OIDC_ALLOWED_SUBJECTS` / `OIDC_ALLOWED_EMAILS` must be non-empty when OIDC is enabled.
 
 > **Note:** `OWNER_PUBKEY` must be the public key derived from `NSEC_HEX`;
 > the process exits at startup if they don't match.
@@ -427,14 +439,48 @@ docker build -t publisher:dev .
 
 ### Security
 
-The service holds your `NSEC` and signs events on request. The embedded web
-UI and the write endpoints (`/api/*`, `/publish`, `/upload-media`) are
-**not** authenticated by the service itself. **Do not expose it directly to
-the internet.** Put it behind an authenticating reverse proxy (Authelia,
-oauth2-proxy, Basic Auth) or keep it on a private network / VPN. The
-`docker run` and compose examples above bind port 8080 to `127.0.0.1`
-(localhost only), so nothing is exposed until you deliberately place a proxy
-in front of it.
+The service holds your `NSEC` and signs events on request. **Do not expose
+it directly to the internet.**
+
+**OIDC disabled (default — `OIDC_ISSUER` unset):** the embedded web UI and
+all `/api/*`, `/publish`, and `/upload-media` endpoints are **not**
+authenticated by the service itself. Put it behind an authenticating reverse
+proxy (Authelia, oauth2-proxy, Basic Auth) or keep it on a private network /
+VPN. The `docker run` and compose examples above bind port 8080 to
+`127.0.0.1` (localhost only), so nothing is exposed until you deliberately
+place a proxy in front of it.
+
+**OIDC enabled (`OIDC_ISSUER` set):** publisher authenticates the web UI as
+an OpenID Connect Relying Party against a standard OIDC provider (Authelia,
+Keycloak, or any spec-compliant issuer). When enabled:
+
+- The SPA and browser `/api/*` routes require an authenticated session whose
+  OIDC subject (`sub`) or email is on the allowlist (`OIDC_ALLOWED_SUBJECTS`
+  / `OIDC_ALLOWED_EMAILS`).
+- The machine endpoints `/publish` and `/upload-media` require
+  `Authorization: Bearer <api-token>`. Tokens are created and revoked in the
+  UI under **Access tokens**.
+- `/healthz`, `/metrics`, and the token-gated `GET /api/public/feed` remain
+  open (no session required). `/metrics` is intentionally unauthenticated so
+  a Prometheus scraper can reach it without a session; restrict it at the
+  network or proxy layer if that is a concern in your deployment.
+
+**Single-tenant caveat:** the app still signs with one operator key and posts
+to the operator's own accounts. The allowlist gates who may operate the UI —
+this is not yet per-user data isolation. OIDC support is a first step toward
+multi-user operation.
+
+#### Authentication setup
+
+1. Register a **confidential** client (with PKCE `S256`) with your OIDC
+   provider and set the redirect URI to
+   `https://<your-publisher-host>/auth/callback`.
+2. Set the `OIDC_*` env vars (see the table below). Add your own OIDC
+   subject and/or email to `OIDC_ALLOWED_SUBJECTS` / `OIDC_ALLOWED_EMAILS`.
+3. For machine callers (e.g. an automation workflow), open the UI under
+   **Access tokens**, create a token, and configure the caller to send
+   `Authorization: Bearer <token>` on requests to `/publish` and
+   `/upload-media`.
 
 ## Logging
 

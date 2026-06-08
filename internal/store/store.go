@@ -184,4 +184,26 @@ CREATE INDEX IF NOT EXISTS idx_targets_post ON post_targets(post_id);
 CREATE INDEX IF NOT EXISTS idx_target_relays_target ON target_relays(target_id);
 CREATE INDEX IF NOT EXISTS idx_drafts_updated_at ON drafts(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_draft_media_draft_id ON draft_media(draft_id);
+CREATE TABLE IF NOT EXISTS users (
+  id           TEXT PRIMARY KEY,
+  subject      TEXT NOT NULL UNIQUE,
+  email        TEXT,
+  name         TEXT,
+  created_at   TIMESTAMP NOT NULL,
+  last_seen_at TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id),
+  created_at TIMESTAMP NOT NULL,
+  expires_at TIMESTAMP NOT NULL
+);
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  token_hash   TEXT NOT NULL UNIQUE,
+  created_at   TIMESTAMP NOT NULL,
+  last_used_at TIMESTAMP,
+  revoked_at   TIMESTAMP
+);
 `

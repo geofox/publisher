@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/geofox/publisher/internal/api"
+	"github.com/geofox/publisher/internal/auth"
 	"github.com/geofox/publisher/internal/bluesky"
 	"github.com/geofox/publisher/internal/config"
 	"github.com/geofox/publisher/internal/dispatch"
@@ -129,6 +131,40 @@ func main() {
 	}
 	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
 	d.Alerter = notifier
+	if cfg.OIDCEnabled() {
+		authn, err := auth.New(context.Background(), auth.Config{
+			Issuer:       cfg.OIDCIssuer,
+			ClientID:     cfg.OIDCClientID,
+			ClientSecret: cfg.OIDCClientSecret,
+			RedirectURL:  cfg.OIDCRedirectURL,
+			Scopes:       cfg.OIDCScopes,
+		})
+		if err != nil {
+			slog.Error("oidc init failed", "err", err)
+			os.Exit(1)
+		}
+		a.Auth = authn
+		a.Allowlist = auth.NewAllowlist(cfg.OIDCAllowedSubjects, cfg.OIDCAllowedEmails)
+		a.SessionTTL = cfg.SessionTTL
+		a.EndSession = cfg.OIDCEndSession
+		a.AppBaseURL = appBaseURL(cfg.OIDCRedirectURL)
+		// GC expired sessions hourly (same background-goroutine pattern as the
+		// scheduler/retrier).
+		go func() {
+			t := time.NewTicker(time.Hour)
+			defer t.Stop()
+			for range t.C {
+				if n, err := st.SweepExpiredSessions(); err != nil {
+					slog.Warn("session sweep failed", "err", err)
+				} else if n > 0 {
+					slog.Debug("swept expired sessions", "count", n)
+				}
+			}
+		}()
+		slog.Info("oidc auth enabled", "issuer", cfg.OIDCIssuer,
+			"allowed_subjects", len(cfg.OIDCAllowedSubjects),
+			"allowed_emails", len(cfg.OIDCAllowedEmails))
+	}
 	if cfg.ThreadsToken != "" {
 		mgr := threads.NewTokenManager(st, tc, notifier, cfg.ThreadsToken)
 		go mgr.Start(context.Background())
@@ -188,4 +224,12 @@ func setupLogger(level string) {
 	}
 	h := logging.ContextHandler{Handler: slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: l})}
 	slog.SetDefault(slog.New(h))
+}
+
+// appBaseURL extracts scheme://host from the configured redirect URL.
+func appBaseURL(redirect string) string {
+	if u, err := url.Parse(redirect); err == nil {
+		return u.Scheme + "://" + u.Host
+	}
+	return ""
 }

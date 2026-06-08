@@ -13,12 +13,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
 
 	"fiatjaf.com/nostr"
 
+	"github.com/geofox/publisher/internal/auth"
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/feed"
 	"github.com/geofox/publisher/internal/httpx"
@@ -131,6 +133,18 @@ type API struct {
 	// draft). nil → fetchSourceMedia (https-only, SSRF-guarded). Overridable in
 	// tests so the reattach path can run without a live Blossom server.
 	fetchMedia func(ctx context.Context, rawURL string) ([]byte, string, error)
+
+	// Auth holds the OIDC Relying Party. nil → auth disabled (gates are
+	// pass-through). Set by cmd/publisher when OIDC_ISSUER is configured.
+	Auth *auth.Authenticator
+	// Allowlist gates which verified identities may use the app. Non-nil iff Auth is non-nil.
+	Allowlist *auth.Allowlist
+	// SessionTTL is how long a new session lives. Zero → 168h default applied by handlers.
+	SessionTTL time.Duration
+	// EndSession toggles provider single-logout on /auth/logout.
+	EndSession bool
+	// AppBaseURL is the public origin (scheme://host) used to build post-logout redirects.
+	AppBaseURL string
 }
 
 // New creates a new API with the given publisher and media pipeline.
@@ -176,8 +190,18 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/drafts/{id}", a.handleUpdateDraft)
 	mux.HandleFunc("DELETE /api/drafts/{id}", a.handleDeleteDraft)
 	mux.HandleFunc("POST /api/drafts/{id}/translate", a.handleTranslateDraft)
+	// Token management + identity + auth routes (only when OIDC is enabled).
+	if a.authEnabled() {
+		mux.HandleFunc("GET /api/tokens", a.handleListTokens)
+		mux.HandleFunc("POST /api/tokens", a.handleCreateToken)
+		mux.HandleFunc("DELETE /api/tokens/{id}", a.handleRevokeToken)
+		mux.HandleFunc("GET /api/me", a.handleMe)
+		mux.HandleFunc("GET /auth/login", a.handleAuthLogin)
+		mux.HandleFunc("GET /auth/callback", a.handleAuthCallback)
+		mux.HandleFunc("POST /auth/logout", a.handleAuthLogout)
+	}
 	mux.Handle("/", web.Handler())
-	return withSecurityHeaders(withCSRFGuard(mux))
+	return withSecurityHeaders(withCSRFGuard(a.withGates(mux)))
 }
 
 // contentSecurityPolicy locks the SPA to same-origin code. Every script, style,
@@ -238,6 +262,33 @@ func hostOnly(h string) string {
 		return host
 	}
 	return h
+}
+
+// withGates applies session/token gates per path. When auth is disabled it is a
+// pass-through, preserving the pre-OIDC behavior (and keeping the existing test
+// suite green).
+func (a *API) withGates(next http.Handler) http.Handler {
+	if !a.authEnabled() {
+		return next
+	}
+	session := a.requireSession(next)
+	token := a.requireAPIToken(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Clean the path before gate selection: net/http does not normalize
+		// r.URL.Path before the handler runs, so a raw "/auth/../api/tokens"
+		// would otherwise satisfy the "/auth/" prefix and dodge the session gate.
+		p := path.Clean(r.URL.Path)
+		switch {
+		case p == "/healthz" || p == "/metrics" ||
+			strings.HasPrefix(p, "/auth/") ||
+			p == "/api/public/feed":
+			next.ServeHTTP(w, r) // always-open / separately-gated
+		case p == "/publish" || p == "/upload-media":
+			token.ServeHTTP(w, r) // machine endpoints
+		default:
+			session.ServeHTTP(w, r) // SPA + browser /api/*
+		}
+	})
 }
 
 // ─── /healthz ────────────────────────────────────────────────────────────

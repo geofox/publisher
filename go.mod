@@ -6,12 +6,15 @@ require (
 	fiatjaf.com/nostr v0.0.0-20260515180420-8634f0f7d548
 	github.com/bluesky-social/indigo v0.0.0-20260520161040-0eb7e0ea71bc
 	github.com/buckket/go-blurhash v1.1.0
+	github.com/coreos/go-oidc/v3 v3.18.0
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/gowebpki/jcs v1.0.1
 	github.com/mattn/go-mastodon v0.0.11
 	github.com/mr-tron/base58 v1.3.0
 	github.com/prometheus/client_golang v1.17.0
 	github.com/rivo/uniseg v0.4.7
 	golang.org/x/image v0.40.0
+	golang.org/x/oauth2 v0.36.0
 	modernc.org/sqlite v1.50.1
 )
 

@@ -717,3 +717,28 @@ textarea.master,.verify-input{}
 .pm-btn.primary{font-weight:600;padding:8px 16px;background:var(--indigo);border:0;border-radius:999px;color:#fff;box-shadow:var(--shadow-pill)}
 .pm-btn.primary:hover{filter:brightness(1.05)}
 @keyframes pm-spin{to{transform:rotate(360deg)}}
+
+/* ── Access tokens view ─────────────────────────────────────────────────── */
+.tok-row{display:flex;align-items:center;gap:12px;padding:11px 14px;background:var(--card);border:.5px solid var(--hair);border-radius:14px;box-shadow:var(--shadow-card);margin:7px 0}
+.tok-info{flex:1;min-width:0;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.tok-name{font-weight:600;font-size:14px;color:var(--ink)}
+.tok-badge{flex-shrink:0}
+.tok-form{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin:4px 0 12px}
+.tok-form input[type=text]{
+  flex:1;min-width:160px;font:inherit;font-size:14px;padding:9px 12px;color:var(--ink);
+  background:var(--card);border:.5px solid var(--line-2);border-radius:10px;
+}
+.tok-form input[type=text]:focus{outline:none;border-color:var(--indigo);box-shadow:0 0 0 3px var(--accent-dim)}
+.tok-warning{margin:4px 0 10px;font-size:13px;font-weight:600;color:var(--amber)}
+.tok-secret-row{display:flex;gap:8px;align-items:center;margin-bottom:14px}
+.tok-secret-input{
+  flex:1;font:13px/1.4 var(--mono);padding:9px 11px;color:var(--ink);
+  background:var(--surface);border:.5px solid var(--line-2);border-radius:10px;
+  word-break:break-all;
+}
+.tok-secret-input:focus{outline:none;border-color:var(--indigo);box-shadow:0 0 0 3px var(--accent-dim)}
+
+/* ── User chip (OIDC identity, top bar) ─────────────────────────────────── */
+.user-chip{display:flex;align-items:center;gap:8px;margin-left:auto}
+.user-chip-name{font-size:13px;font-weight:500;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
+.user-signout{padding:5px 11px;font-size:12px}

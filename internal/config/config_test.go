@@ -94,6 +94,47 @@ func TestUserLanguagesParsedFromEnv(t *testing.T) {
 	}
 }
 
+// loadWithRequiredBase sets the always-required env vars using the valid test
+// keypair constants and then calls Load(). Any test that exercises optional
+// config should call this instead of repeating the boilerplate.
+func loadWithRequiredBase(t *testing.T) (Config, error) {
+	t.Helper()
+	t.Setenv("NSEC_HEX", tNSEC)
+	t.Setenv("OWNER_PUBKEY", tPUB)
+	t.Setenv("BLOSSOM_URL", "https://b.example.com")
+	return Load()
+}
+
+func TestOIDCConfig(t *testing.T) {
+	t.Setenv("OIDC_ISSUER", "")
+	c, err := loadWithRequiredBase(t)
+	if err != nil {
+		t.Fatalf("dormant config errored: %v", err)
+	}
+	if c.OIDCEnabled() {
+		t.Fatal("should be disabled when issuer unset")
+	}
+
+	t.Setenv("OIDC_ISSUER", "https://auth.example.com")
+	t.Setenv("OIDC_CLIENT_ID", "publisher")
+	t.Setenv("OIDC_CLIENT_SECRET", "secret")
+	t.Setenv("OIDC_REDIRECT_URL", "https://app.example.com/auth/callback")
+	t.Setenv("OIDC_ALLOWED_SUBJECTS", "")
+	t.Setenv("OIDC_ALLOWED_EMAILS", "")
+	if _, err := loadWithRequiredBase(t); err == nil {
+		t.Fatal("expected error: enabled OIDC with empty allowlist")
+	}
+
+	t.Setenv("OIDC_ALLOWED_SUBJECTS", "sub-1")
+	c, err = loadWithRequiredBase(t)
+	if err != nil {
+		t.Fatalf("valid OIDC config errored: %v", err)
+	}
+	if !c.OIDCEnabled() || c.OIDCClientID != "publisher" {
+		t.Fatalf("bad config: %+v", c)
+	}
+}
+
 func TestFeedEnvVars(t *testing.T) {
 	if got := getEnv("PUBLIC_FEED_TOKEN", ""); got != "" {
 		t.Errorf("default PUBLIC_FEED_TOKEN = %q, want empty", got)
