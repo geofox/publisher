@@ -166,6 +166,31 @@ func buildPostRecord(p Post) map[string]any {
 	return record
 }
 
+// mediaEmbed wraps uploaded image entries (alt/image/aspectRatio maps as built
+// in Post) as the right embed. <=4 keeps the classic app.bsky.embed.images —
+// byte-for-byte what we always sent, and the only shape pre-1.123 clients
+// render. 5+ uses app.bsky.embed.gallery: items are union members (each needs
+// its own $type) and the gallery lexicon REQUIRES aspectRatio, so entries
+// missing one (undecodable dimensions) get a 1:1 fallback. Input maps are
+// copied, not mutated.
+func mediaEmbed(images []map[string]any) map[string]any {
+	if len(images) <= 4 {
+		return map[string]any{"$type": "app.bsky.embed.images", "images": images}
+	}
+	items := make([]map[string]any, len(images))
+	for i, im := range images {
+		it := map[string]any{"$type": "app.bsky.embed.gallery#image"}
+		for k, v := range im {
+			it[k] = v
+		}
+		if _, ok := it["aspectRatio"]; !ok {
+			it["aspectRatio"] = map[string]int{"width": 1, "height": 1}
+		}
+		items[i] = it
+	}
+	return map[string]any{"$type": "app.bsky.embed.gallery", "items": items}
+}
+
 func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 	if uniseg.GraphemeClusterCount(p.Text) > maxGraphemes {
 		return Result{}, fmt.Errorf("text exceeds %d graphemes", maxGraphemes)
@@ -194,7 +219,7 @@ func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 
 	record := buildPostRecord(p)
 	if len(images) > 0 {
-		imageEmbed := map[string]any{"$type": "app.bsky.embed.images", "images": images}
+		imageEmbed := mediaEmbed(images)
 		if p.Quote != nil {
 			record["embed"] = map[string]any{
 				"$type":  "app.bsky.embed.recordWithMedia",
