@@ -53,10 +53,14 @@ import (
 const (
 	maxPublishRequestBytes int64 = 256 << 10 // 256 KB
 	maxUploadRequestBytes  int64 = 64 << 20  // 64 MB
-	maxPostRequestBytes    int64 = 64 << 20  // 64 MB (spec + up to 4 images)
+	maxPostRequestBytes    int64 = 128 << 20 // 128 MB (spec + up to 10 phone-sized images)
 	maxVerifyRequestBytes  int64 = 512 << 10 // 512 KB (pasted event JSON or a URL)
 	maxThreadPreviewBytes  int64 = 256 << 10 // 256 KB (draft text for split preview)
 )
+
+// maxImagesPerPost is the composer-wide image cap, matching Bluesky's gallery
+// soft limit. Per-platform overflow (Mastodon's 4) splits into the reply chain.
+const maxImagesPerPost = 10
 
 // Dispatcher is implemented by dispatch.Dispatcher; extracted as an interface
 // so the api package has no concrete dependency on the dispatcher and tests
@@ -1400,8 +1404,8 @@ func (a *API) assembleImages(r *http.Request, specs []imageSpec) ([]dispatch.Img
 	if r.MultipartForm != nil {
 		files = r.MultipartForm.File["image"]
 	}
-	if len(files) > 4 || len(specs) > 4 {
-		return nil, nil, fmt.Errorf("max 4 images")
+	if len(files) > maxImagesPerPost || len(specs) > maxImagesPerPost {
+		return nil, nil, fmt.Errorf("max %d images", maxImagesPerPost)
 	}
 	fetch := a.fetchMedia
 	if fetch == nil {

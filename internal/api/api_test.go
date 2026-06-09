@@ -71,7 +71,7 @@ func TestAPIPostTooManyImages(t *testing.T) {
 	mw := multipart.NewWriter(&buf)
 	spec, _ := json.Marshal(map[string]any{"master_text": "hi", "platforms": []string{"nostr"}})
 	_ = mw.WriteField("spec", string(spec))
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 11; i++ {
 		fw, _ := mw.CreateFormFile("image", "x.png")
 		_, _ = fw.Write([]byte("img"))
 	}
@@ -81,7 +81,7 @@ func TestAPIPostTooManyImages(t *testing.T) {
 	rec := httptest.NewRecorder()
 	a.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("5 images: code = %d, want 400", rec.Code)
+		t.Errorf("11 images: code = %d, want 400", rec.Code)
 	}
 }
 
