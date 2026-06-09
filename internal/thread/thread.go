@@ -30,6 +30,58 @@ func LimitFor(platform string) int {
 	}
 }
 
+// MaxImagesFor returns the per-platform image cap for one post. 0 means "no
+// cap" (Nostr appends URLs/imeta, no attachment slots). Bluesky's 10 is the
+// app.bsky.embed.gallery client soft limit (1.123+); Mastodon's 4 is the
+// vanilla server default; Threads carousels take 10 comfortably (API max 20).
+func MaxImagesFor(platform string) int {
+	switch platform {
+	case "bluesky", "threads":
+		return 10
+	case "mastodon":
+		return 4
+	default: // nostr and unknown
+		return 0
+	}
+}
+
+// PlanMedia assigns nImages images to a chain's segments: up to cap per
+// segment, filling in order from the head. If images outrun the text
+// segments, image-only segments are appended, so len(result) >= nSegments.
+// cap <= 0 puts everything on the head (today's behavior for Nostr).
+// Pure and deterministic: resume/republish re-derive the identical plan.
+func PlanMedia(nImages, nSegments, cap int) []int {
+	if nSegments < 1 {
+		nSegments = 1
+	}
+	counts := make([]int, nSegments)
+	if nImages <= 0 {
+		return counts
+	}
+	if cap <= 0 {
+		counts[0] = nImages
+		return counts
+	}
+	rem := nImages
+	for i := 0; i < nSegments && rem > 0; i++ {
+		c := cap
+		if rem < c {
+			c = rem
+		}
+		counts[i] = c
+		rem -= c
+	}
+	for rem > 0 {
+		c := cap
+		if rem < c {
+			c = rem
+		}
+		counts = append(counts, c)
+		rem -= c
+	}
+	return counts
+}
+
 // Split returns the ordered segments for one platform plus any warnings (e.g. a
 // token longer than the limit had to be hard-split). limit <= 0 means no length
 // splitting (manual --- markers are still honoured).
