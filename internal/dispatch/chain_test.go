@@ -174,7 +174,9 @@ func TestRunChainSingleSegmentNoChain(t *testing.T) {
 	}
 }
 
-func TestRunChainMediaOnHeadOnly(t *testing.T) {
+func TestRunChainImagesUnderCapStayOnHead(t *testing.T) {
+	// When the number of images is at or below the platform cap, the plan is
+	// [n, 0, ...]: all images land on the head segment, none on subsequent ones.
 	f := &fakeBsky{failAt: -1}
 	d := &Dispatcher{Bluesky: f}
 	imgs := []Img{{BlossomURL: "https://b/x"}}
@@ -294,6 +296,11 @@ func TestRunChainSpreadsImagesAcrossTextSegments(t *testing.T) {
 			t.Errorf("seg%d images=%d want %d", i, f.calls[i].nImgs, want)
 		}
 	}
+	for i, want := range []string{"one", "two", "three"} {
+		if f.calls[i].text != want {
+			t.Errorf("seg%d text=%q want %q", i, f.calls[i].text, want)
+		}
+	}
 }
 
 func TestRetryResumesPartialThread(t *testing.T) {
@@ -329,5 +336,30 @@ func TestRetryResumesPartialThread(t *testing.T) {
 	}
 	if len(tg.Segments) != 2 || tg.Segments[1].Status != "success" || tg.Segments[1].RemoteID == "" {
 		t.Errorf("segment 1 not resumed: %+v", tg.Segments)
+	}
+}
+
+func TestResumeRepostsSegmentImageSlices(t *testing.T) {
+	f := &fakeMastoChain{}
+	d := &Dispatcher{Mastodon: f}
+	tg := store.Target{
+		Platform: "mastodon",
+		Segments: []store.Segment{
+			{Ordinal: 0, Text: "hello", RemoteID: "m0", Status: "success"},
+			{Ordinal: 1, Text: "", Status: "failed"},
+			{Ordinal: 2, Text: "", Status: "pending"},
+		},
+	}
+	out := d.resumeSegments(context.Background(), tg, Overrides{}, make([]Img, 10), nil)
+	if out.Status != "success" {
+		t.Fatalf("status=%s err=%s", out.Status, out.Error)
+	}
+	if len(f.calls) != 2 {
+		t.Fatalf("want 2 re-posts (segments 1 and 2), got %d", len(f.calls))
+	}
+	// Plan for 10 images over 3 segments at cap 4 is [4,4,2]: the resumed
+	// segments must carry THEIR slices, not zero (old head-only rule).
+	if f.calls[0].nImgs != 4 || f.calls[1].nImgs != 2 {
+		t.Errorf("resumed image counts = %d,%d want 4,2", f.calls[0].nImgs, f.calls[1].nImgs)
 	}
 }

@@ -448,17 +448,31 @@ func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Ove
 		rootID, rootCID = segs[0].RemoteID, segs[0].CID
 		parentID, parentCID = segs[start-1].RemoteID, segs[start-1].CID
 	}
+
+	// Re-derive the media plan deterministically (same inputs as runChain).
+	// Recorded segments can outnumber the plan's needs (fewer images re-fetched
+	// than planned: a Blossom ref may have been skipped) — never the reverse for
+	// targets recorded by this code path.
+	plan := thread.PlanMedia(len(imgs), len(segs), thread.MaxImagesFor(tg.Platform))
+	starts := make([]int, len(plan))
+	offset := 0
+	for i, c := range plan {
+		starts[i] = offset
+		offset += c
+	}
+
 	for i := start; i < len(segs); i++ {
 		var replyTo *ReplyRef
 		if i > 0 {
 			replyTo = &ReplyRef{RootID: rootID, RootCID: rootCID, ParentID: parentID, ParentCID: parentCID}
 		}
 		var segImgs []Img
+		if i < len(plan) {
+			segImgs = imgs[starts[i] : starts[i]+plan[i]]
+		}
 		var segImetas []gonostr.Tag
-		// i==0 (start==0) means the stored head itself failed: re-post the whole
-		// chain from scratch, carrying media/imeta on the head.
 		if i == 0 {
-			segImgs, segImetas = imgs, imetas
+			segImetas = imetas // nostr-only; nostr never splits media
 		}
 		r := d.runPlatform(ctx, tg.Platform, segs[i].Text, ov, segImgs, segImetas, replyTo)
 		segs[i] = store.Segment{Ordinal: i, Text: segs[i].Text, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID, Status: r.Status, Error: r.Error}
