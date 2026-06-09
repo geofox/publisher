@@ -184,6 +184,13 @@ func extractImages(embed json.RawMessage) []SourceMedia {
 			Fullsize string `json:"fullsize"`
 			Alt      string `json:"alt"`
 		} `json:"images"`
+		// app.bsky.embed.gallery#view (5–10 image posts) uses "items" with
+		// "thumbnail" instead of images#view's "thumb".
+		Items []struct {
+			Thumbnail string `json:"thumbnail"`
+			Fullsize  string `json:"fullsize"`
+			Alt       string `json:"alt"`
+		} `json:"items"`
 	}
 	if json.Unmarshal(embed, &e) != nil {
 		return nil
@@ -196,6 +203,15 @@ func extractImages(embed json.RawMessage) []SourceMedia {
 		}
 		if u != "" {
 			out = append(out, SourceMedia{URL: u, Alt: im.Alt})
+		}
+	}
+	for _, it := range e.Items {
+		u := it.Fullsize
+		if u == "" {
+			u = it.Thumbnail
+		}
+		if u != "" {
+			out = append(out, SourceMedia{URL: u, Alt: it.Alt})
 		}
 	}
 	return out
