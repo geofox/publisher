@@ -106,3 +106,20 @@ func TestMediaEmbedFivePlusUsesGallery(t *testing.T) {
 		t.Error("input entries were mutated")
 	}
 }
+
+func TestMediaEmbedTenImagesAndEmptyAlt(t *testing.T) {
+	imgs := galleryEntries(10)
+	imgs[3]["alt"] = ""
+	emb := mediaEmbed(imgs)
+	if emb["$type"] != "app.bsky.embed.gallery" {
+		t.Fatalf("$type=%v", emb["$type"])
+	}
+	items := emb["items"].([]map[string]any)
+	if len(items) != 10 {
+		t.Fatalf("items len=%d", len(items))
+	}
+	// alt is REQUIRED by the lexicon but may be empty — it must survive as "".
+	if alt, ok := items[3]["alt"]; !ok || alt != "" {
+		t.Errorf(`empty alt must be present: %v ok=%v`, alt, ok)
+	}
+}
