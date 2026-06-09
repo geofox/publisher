@@ -5,3 +5,6 @@
 
 # brainstorming mockups (visual companion)
 .superpowers/
+
+# local design specs — kept out of the public repo (live local / private repo)
+docs/superpowers/
