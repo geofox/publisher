@@ -363,3 +363,27 @@ func TestResumeRepostsSegmentImageSlices(t *testing.T) {
 		t.Errorf("resumed image counts = %d,%d want 4,2", f.calls[0].nImgs, f.calls[1].nImgs)
 	}
 }
+
+func TestResumeFullRetryDistributesImages(t *testing.T) {
+	f := &fakeMastoChain{}
+	d := &Dispatcher{Mastodon: f}
+	// Head itself failed (no RemoteID anywhere): the whole chain re-posts.
+	// Segments 1 and 2 are image-only overflow segments, hence empty text.
+	tg := store.Target{
+		Platform: "mastodon",
+		Segments: []store.Segment{
+			{Ordinal: 0, Text: "hello", Status: "failed"},
+			{Ordinal: 1, Text: "", Status: "pending"},
+			{Ordinal: 2, Text: "", Status: "pending"},
+		},
+	}
+	out := d.resumeSegments(context.Background(), tg, Overrides{}, make([]Img, 10), nil)
+	if out.Status != "success" || len(f.calls) != 3 {
+		t.Fatalf("status=%s calls=%d", out.Status, len(f.calls))
+	}
+	for i, want := range []int{4, 4, 2} {
+		if f.calls[i].nImgs != want {
+			t.Errorf("seg%d images=%d want %d", i, f.calls[i].nImgs, want)
+		}
+	}
+}

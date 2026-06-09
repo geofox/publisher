@@ -450,15 +450,27 @@ func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Ove
 	}
 
 	// Re-derive the media plan deterministically (same inputs as runChain).
-	// Recorded segments can outnumber the plan's needs (fewer images re-fetched
-	// than planned: a Blossom ref may have been skipped) — never the reverse for
-	// targets recorded by this code path.
+	// Per-segment media assignments are not persisted (the plan is recomputed
+	// from counts), so if a Blossom re-fetch skipped an image the surviving
+	// images re-index and later segments can shift content by one position.
+	// That's the accepted trade-off for a schema-free resume; skips are rare
+	// and best-effort by design.
 	plan := thread.PlanMedia(len(imgs), len(segs), thread.MaxImagesFor(tg.Platform))
 	starts := make([]int, len(plan))
 	offset := 0
 	for i, c := range plan {
 		starts[i] = offset
 		offset += c
+	}
+	// More images than the recorded segments can carry (legacy or hand-edited
+	// data): plan entries beyond len(segs) would never post — say so.
+	if len(plan) > len(segs) {
+		dropped := 0
+		for _, c := range plan[len(segs):] {
+			dropped += c
+		}
+		slog.WarnContext(ctx, "resume: trailing images exceed recorded segments, dropped",
+			"platform", tg.Platform, "images", len(imgs), "dropped", dropped)
 	}
 
 	for i := start; i < len(segs); i++ {
