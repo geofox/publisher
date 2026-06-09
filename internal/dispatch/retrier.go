@@ -207,4 +207,3 @@ func (r *Retrier) alertGaveUp(ctx context.Context, postID string, platforms, rel
 		slog.ErrorContext(ctx, "retrier: give-up alert failed", "err", err)
 	}
 }
-

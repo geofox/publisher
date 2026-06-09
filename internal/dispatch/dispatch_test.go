@@ -230,7 +230,7 @@ func TestNostrStatusFromRelays(t *testing.T) {
 
 func TestPostAlertsOnFailure(t *testing.T) {
 	st := openDispatchStore(t)
-	al := &fakeAlerter{} // defined in retrier_test.go (same package)
+	al := &fakeAlerter{}                     // defined in retrier_test.go (same package)
 	d := &Dispatcher{Store: st, Alerter: al} // no adapters → bluesky post fails
 	rec := d.Post(context.Background(), PostSpec{
 		MasterText: "hello", Platforms: []string{"bluesky"},
