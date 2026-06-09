@@ -110,19 +110,30 @@ func Split(text string, limit int, opts Opts) (segments []string, warnings []str
 func SplitWithMedia(text string, limit, nImages, cap int, opts Opts) (segs []string, plan []int, warnings []string) {
 	segs, warnings = Split(text, limit, opts)
 	plan = PlanMedia(nImages, len(segs), cap)
-	if extra := len(plan) - len(segs); extra > 0 && opts.Number && limit > 0 {
-		// Re-number with the extras in the totals, then re-derive the plan from
-		// the (possibly shifted) text segment count; iterate to the fixpoint.
+	if extra := len(plan) - len(segs); extra > 0 && opts.Number {
 		text = strings.ReplaceAll(text, "\r\n", "\n")
-		for i := 0; i < 4; i++ {
-			segs, warnings = number(text, limit, extra)
-			plan = PlanMedia(nImages, len(segs), cap)
-			if len(plan)-len(segs) == extra {
-				break
+		if limit <= 0 {
+			// No length budget: segments are marker-driven and fixed, so the
+			// plan can't shift — just re-stamp counters with the chain total.
+			segs, warnings = splitAt(text, limit)
+			segs = appendCounters(segs, len(plan))
+		} else {
+			// Re-number with the extras in the totals, then re-derive the plan
+			// from the (possibly shifted) text segment count; iterate to the
+			// fixpoint. Converges in <=2 passes (the overflow total is fixed by
+			// ceil(nImages/cap)); 4 is a safety margin like number()'s own cap.
+			for i := 0; i < 4; i++ {
+				segs, warnings = number(text, limit, extra)
+				plan = PlanMedia(nImages, len(segs), cap)
+				if len(plan)-len(segs) == extra {
+					break
+				}
+				extra = len(plan) - len(segs)
 			}
-			extra = len(plan) - len(segs)
 		}
 	}
+	// Image-only segments carry a bare "k/n" counter (no leading space — the
+	// counter IS the whole text), or empty text when numbering is off.
 	for i := len(segs); i < len(plan); i++ {
 		t := ""
 		if opts.Number {

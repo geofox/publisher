@@ -87,3 +87,16 @@ func TestSplitWithMediaNumberedTextThreadCountsExtras(t *testing.T) {
 		t.Fatalf("segs=%v", segs)
 	}
 }
+
+func TestSplitWithMediaNoLimitCappedNumbered(t *testing.T) {
+	// limit<=0 with a cap is unreachable from current platforms (nostr is
+	// uncapped) but the exported API must keep counters consistent: marker
+	// segments are fixed, so totals just re-stamp with the full chain length.
+	segs, plan, _ := SplitWithMedia("a\n---\nb", 0, 10, 4, Opts{Number: true})
+	if !reflect.DeepEqual(plan, []int{4, 4, 2}) {
+		t.Fatalf("plan=%v", plan)
+	}
+	if len(segs) != 3 || segs[0] != "a 1/3" || segs[1] != "b 2/3" || segs[2] != "3/3" {
+		t.Fatalf("segs=%v", segs)
+	}
+}
