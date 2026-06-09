@@ -48,7 +48,7 @@ func MaxImagesFor(platform string) int {
 // PlanMedia assigns nImages images to a chain's segments: up to cap per
 // segment, filling in order from the head. If images outrun the text
 // segments, image-only segments are appended, so len(result) >= nSegments.
-// cap <= 0 puts everything on the head (today's behavior for Nostr).
+// cap <= 0 puts everything on the head (Nostr's behavior).
 // Pure and deterministic: resume/republish re-derive the identical plan.
 func PlanMedia(nImages, nSegments, cap int) []int {
 	if nSegments < 1 {
@@ -94,9 +94,43 @@ func Split(text string, limit int, opts Opts) (segments []string, warnings []str
 	if limit <= 0 {
 		// No length budget (Nostr): segments are marker-driven and fixed, so the
 		// counter has no budget to reserve — just append it.
-		return appendCounters(segs), warns
+		return appendCounters(segs, len(segs)), warns
 	}
-	return number(text, limit)
+	return number(text, limit, 0)
+}
+
+// SplitWithMedia splits text for one platform AND assigns its images to the
+// resulting chain (PlanMedia). When images outrun the text segments
+// (Mastodon's 4-attachment cap), image-only segments are appended: empty text,
+// or just the "k/n" counter when numbering is on. Numbering interacts with the
+// plan — counters consume grapheme budget, which can grow the text segment
+// count, which shrinks the appended-extras count — so this is the single
+// orchestrating entry point; dispatch and the thread-preview endpoint must
+// both use it so they cannot diverge. len(segs) == len(plan) always.
+func SplitWithMedia(text string, limit, nImages, cap int, opts Opts) (segs []string, plan []int, warnings []string) {
+	segs, warnings = Split(text, limit, opts)
+	plan = PlanMedia(nImages, len(segs), cap)
+	if extra := len(plan) - len(segs); extra > 0 && opts.Number && limit > 0 {
+		// Re-number with the extras in the totals, then re-derive the plan from
+		// the (possibly shifted) text segment count; iterate to the fixpoint.
+		text = strings.ReplaceAll(text, "\r\n", "\n")
+		for i := 0; i < 4; i++ {
+			segs, warnings = number(text, limit, extra)
+			plan = PlanMedia(nImages, len(segs), cap)
+			if len(plan)-len(segs) == extra {
+				break
+			}
+			extra = len(plan) - len(segs)
+		}
+	}
+	for i := len(segs); i < len(plan); i++ {
+		t := ""
+		if opts.Number {
+			t = strconv.Itoa(i+1) + "/" + strconv.Itoa(len(plan))
+		}
+		segs = append(segs, t)
+	}
+	return segs, plan, warnings
 }
 
 // splitAt produces segments honouring markers and wrapping over-limit pieces to
@@ -232,26 +266,30 @@ func graphemeLen(s string) int { return uniseg.GraphemeClusterCount(s) }
 // number computes a stable segment count under the counter-budget constraint
 // (the " k/n" suffix consumes graphemes, and its width depends on n, which
 // depends on the budget) by iterating to a fixpoint, then appends the counters.
+// extra counts trailing image-only posts appended after the text segments:
+// they are part of the chain, so counters render k/(n+extra) and the counter
+// budget is sized to the full total.
 //
 // Convergence: splitAt is monotone (smaller limit ⇒ same-or-more segments), so n
 // only grows across iterations, and counterWidth is a step function of n's digit
 // count. n stabilizes once it stops crossing a digit boundary (9→10, 99→100,
 // 999→1000) — at most three transitions, each costing one iteration, so the loop
 // converges in ≤4 passes; the cap of 6 is a safety margin.
-func number(text string, limit int) ([]string, []string) {
+func number(text string, limit, extra int) ([]string, []string) {
 	segs, warns := splitAt(text, limit)
 	n := len(segs)
 	for i := 0; i < 6; i++ {
-		w := counterWidth(n)
+		w := counterWidth(n + extra)
 		eff := limit - w
 		if eff < 1 {
 			return segs, warns // pathological tiny limit: skip numbering
 		}
 		segs, warns = splitAt(text, eff)
-		// Defensive: Split only calls number when the full-budget split already
-		// yields >=2 segments, and reducing the budget can only add segments, so
-		// this never fires — but guard rather than emit a "1/1" lone post.
-		if len(segs) < 2 {
+		// Defensive: with extra==0, Split only calls number when the full-budget
+		// split already yields >=2 segments, and reducing the budget can only add
+		// segments — guard rather than emit a "1/1" lone post. With extras the
+		// chain has >=2 posts even for a single text segment.
+		if len(segs)+extra < 2 {
 			return splitAt(text, limit)
 		}
 		if len(segs) == n {
@@ -259,14 +297,14 @@ func number(text string, limit int) ([]string, []string) {
 		}
 		n = len(segs)
 	}
-	return appendCounters(segs), warns
+	return appendCounters(segs, len(segs)+extra), warns
 }
 
-// appendCounters appends a " k/n" suffix to each segment in a chain.
-func appendCounters(segs []string) []string {
+// appendCounters appends a " k/total" suffix to each segment in a chain.
+func appendCounters(segs []string, total int) []string {
 	out := make([]string, len(segs))
 	for i, s := range segs {
-		out[i] = s + " " + strconv.Itoa(i+1) + "/" + strconv.Itoa(len(segs))
+		out[i] = s + " " + strconv.Itoa(i+1) + "/" + strconv.Itoa(total)
 	}
 	return out
 }

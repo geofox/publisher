@@ -27,11 +27,63 @@ func TestPlanMedia(t *testing.T) {
 		{"appends image-only segments", 10, 1, 4, []int{4, 4, 2}},
 		{"exact fit no append", 8, 2, 4, []int{4, 4}},
 		{"zero segments treated as one", 2, 0, 4, []int{2}},
+		{"negative images treated as zero", -1, 2, 4, []int{0, 0}},
 	}
 	for _, c := range cases {
 		got := PlanMedia(c.nImages, c.nSegments, c.cap)
 		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: PlanMedia(%d,%d,%d)=%v want %v", c.name, c.nImages, c.nSegments, c.cap, got, c.want)
 		}
+	}
+}
+
+func TestSplitWithMediaNoOverflowMatchesSplit(t *testing.T) {
+	segs, plan, _ := SplitWithMedia("short note", 300, 3, 10, Opts{})
+	if len(segs) != 1 || segs[0] != "short note" {
+		t.Fatalf("segs=%v", segs)
+	}
+	if !reflect.DeepEqual(plan, []int{3}) {
+		t.Fatalf("plan=%v", plan)
+	}
+}
+
+func TestSplitWithMediaUncappedAllOnHead(t *testing.T) {
+	segs, plan, _ := SplitWithMedia("a\n---\nb", 0, 5, 0, Opts{})
+	if len(segs) != 2 {
+		t.Fatalf("segs=%v", segs)
+	}
+	if !reflect.DeepEqual(plan, []int{5, 0}) {
+		t.Fatalf("plan=%v", plan)
+	}
+}
+
+func TestSplitWithMediaOverflowAppendsEmptySegments(t *testing.T) {
+	segs, plan, _ := SplitWithMedia("hello", 500, 10, 4, Opts{})
+	if !reflect.DeepEqual(plan, []int{4, 4, 2}) {
+		t.Fatalf("plan=%v", plan)
+	}
+	if len(segs) != 3 || segs[0] != "hello" || segs[1] != "" || segs[2] != "" {
+		t.Fatalf("segs=%v", segs)
+	}
+}
+
+func TestSplitWithMediaOverflowNumbered(t *testing.T) {
+	segs, plan, _ := SplitWithMedia("hello", 500, 10, 4, Opts{Number: true})
+	if !reflect.DeepEqual(plan, []int{4, 4, 2}) {
+		t.Fatalf("plan=%v", plan)
+	}
+	if len(segs) != 3 || segs[0] != "hello 1/3" || segs[1] != "2/3" || segs[2] != "3/3" {
+		t.Fatalf("segs=%v", segs)
+	}
+}
+
+func TestSplitWithMediaNumberedTextThreadCountsExtras(t *testing.T) {
+	// Two marker segments + 10 images at cap 4 → one appended post, total 3.
+	segs, plan, _ := SplitWithMedia("one\n---\ntwo", 500, 10, 4, Opts{Number: true})
+	if !reflect.DeepEqual(plan, []int{4, 4, 2}) {
+		t.Fatalf("plan=%v", plan)
+	}
+	if len(segs) != 3 || segs[0] != "one 1/3" || segs[1] != "two 2/3" || segs[2] != "3/3" {
+		t.Fatalf("segs=%v", segs)
 	}
 }
