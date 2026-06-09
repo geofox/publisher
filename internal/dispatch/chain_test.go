@@ -225,6 +225,77 @@ func TestResumeSegmentsContinuesFromFailure(t *testing.T) {
 	}
 }
 
+// fakeMastoChain records PostText calls so chain media-plan tests can assert
+// the per-segment image distribution.
+type fakeMastoChain struct{ calls []fakeCall }
+
+func (f *fakeMastoChain) PostText(_ context.Context, text string, _ Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
+	i := len(f.calls)
+	f.calls = append(f.calls, fakeCall{text: text, replyTo: replyTo, nImgs: len(imgs)})
+	return TargetResult{
+		Platform: "mastodon", Status: "success",
+		RemoteID: "m" + itoa(i), RemoteURL: "https://m/" + itoa(i),
+	}, nil
+}
+func (f *fakeMastoChain) Reblog(context.Context, string) (TargetResult, error) {
+	return TargetResult{Platform: "mastodon", Status: "success"}, nil
+}
+func (f *fakeMastoChain) QuoteStatus(context.Context, string, string, []Img) (TargetResult, error) {
+	return TargetResult{Platform: "mastodon", Status: "success"}, nil
+}
+
+func TestRunChainSplitsImagesOverMastodonCap(t *testing.T) {
+	f := &fakeMastoChain{}
+	d := &Dispatcher{Mastodon: f}
+	out := d.runChain(context.Background(), "mastodon", "hello", Overrides{}, make([]Img, 10), nil, false, nil)
+	if out.Status != "success" {
+		t.Fatalf("status=%s err=%s", out.Status, out.Error)
+	}
+	if len(f.calls) != 3 {
+		t.Fatalf("want 3 posts (4+4+2), got %d", len(f.calls))
+	}
+	for i, want := range []int{4, 4, 2} {
+		if f.calls[i].nImgs != want {
+			t.Errorf("seg%d images=%d want %d", i, f.calls[i].nImgs, want)
+		}
+	}
+	if f.calls[0].text != "hello" || f.calls[1].text != "" || f.calls[2].text != "" {
+		t.Errorf("texts wrong: %+v", f.calls)
+	}
+	if f.calls[1].replyTo == nil || f.calls[1].replyTo.RootID != "m0" {
+		t.Errorf("image-only segments must thread under the head: %+v", f.calls[1].replyTo)
+	}
+	if len(out.Segments) != 3 {
+		t.Errorf("want 3 recorded segments, got %d", len(out.Segments))
+	}
+}
+
+func TestRunChainBlueskyTenImagesSinglePost(t *testing.T) {
+	f := &fakeBsky{failAt: -1}
+	d := &Dispatcher{Bluesky: f}
+	out := d.runChain(context.Background(), "bluesky", "hello", Overrides{}, make([]Img, 10), nil, false, nil)
+	if out.Status != "success" || len(f.calls) != 1 || f.calls[0].nImgs != 10 {
+		t.Fatalf("want single post with 10 images: %+v (status=%s)", f.calls, out.Status)
+	}
+	if len(out.Segments) != 0 {
+		t.Errorf("single post must not record segments: %+v", out.Segments)
+	}
+}
+
+func TestRunChainSpreadsImagesAcrossTextSegments(t *testing.T) {
+	f := &fakeMastoChain{}
+	d := &Dispatcher{Mastodon: f}
+	out := d.runChain(context.Background(), "mastodon", "one\n---\ntwo\n---\nthree", Overrides{}, make([]Img, 10), nil, false, nil)
+	if out.Status != "success" || len(f.calls) != 3 {
+		t.Fatalf("calls=%d status=%s", len(f.calls), out.Status)
+	}
+	for i, want := range []int{4, 4, 2} {
+		if f.calls[i].nImgs != want {
+			t.Errorf("seg%d images=%d want %d", i, f.calls[i].nImgs, want)
+		}
+	}
+}
+
 func TestRetryResumesPartialThread(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "resume.db"))
 	if err != nil {

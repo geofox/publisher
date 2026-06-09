@@ -20,7 +20,9 @@ func (f *fakeNostrActor) PublishText(_ context.Context, _ string, _ *int, _ []go
 	f.lastReply = replyTo
 	return TargetResult{Platform: "nostr", Status: "success", RemoteID: "ev1"}, nil
 }
-func (f *fakeNostrActor) RebroadcastToRelay(context.Context, string, string) (bool, string) { return true, "" }
+func (f *fakeNostrActor) RebroadcastToRelay(context.Context, string, string) (bool, string) {
+	return true, ""
+}
 func (f *fakeNostrActor) Repost(context.Context, string, string, int, string) (TargetResult, error) {
 	return TargetResult{Platform: "nostr", Status: "success"}, nil
 }
@@ -108,8 +110,8 @@ func TestInteractQuoteFansOut(t *testing.T) {
 	d := &Dispatcher{Bluesky: bsky, Mastodon: masto}
 	post := d.Interact(context.Background(), InteractSpec{
 		Action: actionQuote, SourcePlatform: "bluesky",
-		Ref:           InteractRef{URI: "at://x", CID: "cidx"},
-		SourceURL:     "https://bsky.app/x", SourceAuthor: "@alice",
+		Ref:       InteractRef{URI: "at://x", CID: "cidx"},
+		SourceURL: "https://bsky.app/x", SourceAuthor: "@alice",
 		SourcePreview: SourcePreview{Author: "@alice", Text: "the original"},
 		Text:          "great point",
 		Fanout:        []string{"mastodon"},
@@ -190,8 +192,8 @@ func TestInteractQuoteFanoutReproduces(t *testing.T) {
 	d := &Dispatcher{Bluesky: bsky, Mastodon: masto}
 	post := d.Interact(context.Background(), InteractSpec{
 		Action: actionQuote, SourcePlatform: "bluesky",
-		Ref:           InteractRef{URI: "at://src", CID: "csrc"},
-		SourceURL:     "https://bsky/9", SourceAuthor: "@bird",
+		Ref:       InteractRef{URI: "at://src", CID: "csrc"},
+		SourceURL: "https://bsky/9", SourceAuthor: "@bird",
 		SourcePreview: SourcePreview{Author: "@bird", Text: "tweet text"},
 		Text:          "look", Fanout: []string{"mastodon"},
 	})
@@ -269,7 +271,7 @@ func TestCapMedia(t *testing.T) {
 }
 
 func TestMediaMax(t *testing.T) {
-	for p, want := range map[string]int{"bluesky": 4, "mastodon": 4, "threads": 4, "nostr": 0} {
+	for p, want := range map[string]int{"bluesky": 10, "mastodon": 4, "threads": 10, "nostr": 0} {
 		if mediaMax(p) != want {
 			t.Errorf("mediaMax(%q)=%d want %d", p, mediaMax(p), want)
 		}
@@ -295,8 +297,8 @@ func TestInteractMastodonQuoteCarriesMedia(t *testing.T) {
 	d := &Dispatcher{Mastodon: masto}
 	post := d.Interact(context.Background(), InteractSpec{
 		Action: actionQuote, SourcePlatform: "mastodon",
-		Ref:    InteractRef{LocalID: "42"},
-		Text:   "look", Images: []Img{{Alt: "x"}},
+		Ref:  InteractRef{LocalID: "42"},
+		Text: "look", Images: []Img{{Alt: "x"}},
 	})
 	if len(masto.quoteImgs) != 1 || masto.quoteImgs[0].Alt != "x" {
 		t.Errorf("mastodon native quote should carry the attached media, got %#v", masto.quoteImgs)

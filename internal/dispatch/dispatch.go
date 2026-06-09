@@ -344,12 +344,14 @@ func (d *Dispatcher) runHead(ctx context.Context, plat, text string, ov Override
 }
 
 // runChain splits text to the platform's limit and posts the segments as a
-// reply-chain (segment k+1 replies to segment k; media on the head only). A
+// reply-chain (segment k+1 replies to segment k). Images are distributed per
+// thread.PlanMedia: head first, capped per platform, with image-only segments
+// appended when images outrun the text (Mastodon's 4-attachment cap). A
 // single segment posts exactly as before, with no Segments recorded. An
 // optional head action (reply/quote via headSpec; nil = plain post) lets the
 // chain's head segment thread under or quote a source post.
 func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrides, imgs []Img, imetas []gonostr.Tag, number bool, head *headSpec) chainOutcome {
-	segTexts, _ := thread.Split(text, thread.LimitFor(plat), thread.Opts{Number: number})
+	segTexts, plan, _ := thread.SplitWithMedia(text, thread.LimitFor(plat), len(imgs), thread.MaxImagesFor(plat), thread.Opts{Number: number})
 	if len(segTexts) <= 1 {
 		r := d.runHead(ctx, plat, text, ov, imgs, imetas, head)
 		return chainOutcome{
@@ -366,16 +368,24 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 	for i, st := range segTexts {
 		out.Segments = append(out.Segments, store.Segment{Ordinal: i, Text: st, Status: "pending"})
 	}
+	// starts[i] is the offset of segment i's image slice (the plan is a
+	// contiguous partition of imgs, so slicing preserves operator order).
+	starts := make([]int, len(plan))
+	off := 0
+	for i, c := range plan {
+		starts[i] = off
+		off += c
+	}
 	var rootID, rootCID, parentID, parentCID string
 	for i, st := range segTexts {
 		var replyTo *ReplyRef
 		if i > 0 {
 			replyTo = &ReplyRef{RootID: rootID, RootCID: rootCID, ParentID: parentID, ParentCID: parentCID}
 		}
-		var segImgs []Img
+		segImgs := imgs[starts[i] : starts[i]+plan[i]]
 		var segImetas []gonostr.Tag
 		if i == 0 {
-			segImgs, segImetas = imgs, imetas // media + imeta on the head only
+			segImetas = imetas // nostr-only, and nostr (cap 0) never splits media
 		}
 		var r TargetResult
 		if i == 0 {
@@ -602,17 +612,17 @@ type SourcePreview struct {
 }
 
 type InteractSpec struct {
-	Action         string // reply|repost|quote
-	SourcePlatform string
-	Ref            InteractRef
-	SourceURL      string
-	SourceAuthor   string
-	Text           string
-	Overrides      map[string]Overrides // keyed by platform
-	Fanout         []string             // quote only: other platforms for link-quotes
-	Force          bool
-	Images         []Img
-	MediaRecords   []store.Media
+	Action             string // reply|repost|quote
+	SourcePlatform     string
+	Ref                InteractRef
+	SourceURL          string
+	SourceAuthor       string
+	Text               string
+	Overrides          map[string]Overrides // keyed by platform
+	Fanout             []string             // quote only: other platforms for link-quotes
+	Force              bool
+	Images             []Img
+	MediaRecords       []store.Media
 	Number             bool          // k/n counters on threaded segments
 	SourcePreview      SourcePreview // for fan-out reproduction
 	SourceImages       []Img         // original's media, re-hosted (fan-out only)
@@ -660,16 +670,9 @@ func capMediaRecords(user, source []store.Media, max int) []store.Media {
 	return out
 }
 
-// mediaMax is the per-platform attachment cap (matches the app's 4-image limit;
-// nostr has no fixed cap).
-func mediaMax(plat string) int {
-	switch plat {
-	case "bluesky", "mastodon", "threads":
-		return 4
-	default:
-		return 0
-	}
-}
+// mediaMax is the per-platform attachment cap. Single source of truth lives in
+// thread.MaxImagesFor so dispatch, preview, and the splitter cannot diverge.
+func mediaMax(plat string) int { return thread.MaxImagesFor(plat) }
 
 // fanoutChain posts an assembled reproduction (commentary + original text + url,
 // with re-hosted source media capped per platform) as a normal thread.
@@ -880,7 +883,8 @@ func (d *Dispatcher) Schedule(ctx context.Context, spec PostSpec, at time.Time) 
 		// Pre-split exactly as runChain does at dispatch time, so a scheduled
 		// over-limit post fires as a reply-chain (the fire path threads any target
 		// with >1 segment) instead of one over-limit post the platform rejects.
-		if segTexts, _ := thread.Split(text, thread.LimitFor(plat), thread.Opts{Number: spec.Number}); len(segTexts) > 1 {
+		// Media overflow counts too: 10 images on Mastodon is a 3-post chain.
+		if segTexts, _, _ := thread.SplitWithMedia(text, thread.LimitFor(plat), len(spec.MediaRecords), thread.MaxImagesFor(plat), thread.Opts{Number: spec.Number}); len(segTexts) > 1 {
 			for i, st := range segTexts {
 				tg.Segments = append(tg.Segments, store.Segment{Ordinal: i, Text: st, Status: "pending"})
 			}
