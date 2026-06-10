@@ -1207,6 +1207,7 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		Text      string   `json:"text"`
 		Platforms []string `json:"platforms"`
 		Number    bool     `json:"number"`
+		Images    int      `json:"images"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		var mbe *http.MaxBytesError
@@ -1222,19 +1223,26 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "text is required")
 		return
 	}
+	if req.Images < 0 {
+		req.Images = 0
+	}
+	if req.Images > maxImagesPerPost {
+		req.Images = maxImagesPerPost
+	}
 	type preview struct {
 		Platform string   `json:"platform"`
 		Count    int      `json:"count"`
 		Segments []string `json:"segments"`
+		Imgs     []int    `json:"imgs"`
 		Warnings []string `json:"warnings,omitempty"`
 	}
 	out := struct {
 		Previews []preview `json:"previews"`
 	}{Previews: []preview{}}
 	for _, p := range req.Platforms {
-		segs, warns := thread.Split(req.Text, thread.LimitFor(p), thread.Opts{Number: req.Number})
+		segs, plan, warns := thread.SplitWithMedia(req.Text, thread.LimitFor(p), req.Images, thread.MaxImagesFor(p), thread.Opts{Number: req.Number})
 		out.Previews = append(out.Previews, preview{
-			Platform: p, Count: len(segs), Segments: segs, Warnings: warns,
+			Platform: p, Count: len(segs), Segments: segs, Imgs: plan, Warnings: warns,
 		})
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)

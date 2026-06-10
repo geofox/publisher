@@ -62,3 +62,40 @@ func TestThreadPreviewBadJSONIs400(t *testing.T) {
 		t.Fatalf("bad json should be 400, got %d", rec.Code)
 	}
 }
+
+func TestThreadPreviewMediaOverflowSplits(t *testing.T) {
+	body, _ := json.Marshal(map[string]any{
+		"text": "hello", "platforms": []string{"mastodon", "bluesky"}, "images": 10,
+	})
+	rec := postPreview(t, string(body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Previews []struct {
+			Platform string   `json:"platform"`
+			Count    int      `json:"count"`
+			Segments []string `json:"segments"`
+			Imgs     []int    `json:"imgs"`
+		} `json:"previews"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	byp := map[string]struct {
+		count int
+		imgs  []int
+	}{}
+	for _, p := range out.Previews {
+		byp[p.Platform] = struct {
+			count int
+			imgs  []int
+		}{p.Count, p.Imgs}
+	}
+	if m := byp["mastodon"]; m.count != 3 || len(m.imgs) != 3 || m.imgs[0] != 4 || m.imgs[1] != 4 || m.imgs[2] != 2 {
+		t.Errorf("mastodon: %+v", m)
+	}
+	if b := byp["bluesky"]; b.count != 1 || len(b.imgs) != 1 || b.imgs[0] != 10 {
+		t.Errorf("bluesky: %+v", b)
+	}
+}
