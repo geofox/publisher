@@ -13,7 +13,7 @@ function threadBadgeStatic(count) {
 }
 
 // mediaMax mirrors Go thread.MaxImagesFor (per-platform attachment cap; 0 = none).
-function mediaMax(p) {
+export function mediaMax(p) {
   if (p === "mastodon") return 4;
   return p === "bluesky" || p === "threads" ? 10 : 0;
 }
@@ -21,7 +21,7 @@ function mediaMax(p) {
 // previewMedia returns the {url,alt} images the preview should show for platform p:
 // your attached images, plus — on a fan-out platform — the original's media to be
 // re-hosted, capped per platform (matching dispatch.capMedia: user first).
-function previewMedia(p) {
+export function previewMedia(p) {
   const user = state.images.map((i) => ({ url: i.url, alt: i.alt }));
   const it = state.interaction;
   if (!it || p === it.platform) return user;
@@ -269,13 +269,16 @@ export function renderPreview() {
   // preview already rendered above stays in place.
   const text = postedText(p);
   const number = document.getElementById("threadnum")?.checked ?? true;
-  // A draft can only become a thread if it has a manual `---` marker line or
-  // exceeds the platform's limit. Otherwise the synchronous single-post card
-  // above is already correct — skip the network round-trip so typing stays snappy
-  // (the seq bump above discards any thread fetch still in flight from a longer
-  // earlier state).
+  // A draft can only become a thread if it has a manual `---` marker line,
+  // exceeds the platform's limit, or carries more images than the platform's
+  // cap (overflow spills into appended image-only posts). Otherwise the
+  // synchronous single-post card above is already correct — skip the network
+  // round-trip so typing stays snappy (the seq bump above discards any thread
+  // fetch still in flight from a longer earlier state).
   const limit = META[p].limit;
-  if (!/^[ \t]*---[ \t]*$/m.test(text) && (!limit || gcount(text) <= limit)) {
+  const mmax = mediaMax(p);
+  const mediaOverflow = mmax > 0 && previewMedia(p).length > mmax;
+  if (!mediaOverflow && !/^[ \t]*---[ \t]*$/m.test(text) && (!limit || gcount(text) <= limit)) {
     clearTimeout(_threadDebounce);
     return;
   }

@@ -1,7 +1,7 @@
 "use strict";
 import { el, $, gcount, wcount, flash, confirmModal, META, ORDER } from "./common.js";
 import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv, setInflight, getInflight, clearInflight } from "./state.js";
-import { renderPreview } from "./preview.js";
+import { renderPreview, mediaMax, previewMedia } from "./preview.js";
 import { resultRow, openDetail } from "./history.js";
 import { brandTile, icon, PLATFORM_META } from "./brands.js";
 
@@ -84,7 +84,12 @@ function splitThread(text, limit, number = true) {
 
 function threadInfoFor(p) {
   const parts = splitThread(postedText(p), META[p].limit, numberingOn());
-  return { posts: parts.length, threaded: parts.length > 1, parts };
+  // Media overflow forms a chain too: images beyond the platform cap spill
+  // into appended image-only posts (mirrors thread.PlanMedia's totals).
+  const mmax = mediaMax(p);
+  const mediaPosts = mmax > 0 ? Math.ceil(previewMedia(p).length / mmax) : 0;
+  const posts = Math.max(parts.length, mediaPosts, 1);
+  return { posts, threaded: posts > 1, parts };
 }
 
 // targetCount → {text, cls} for a platform's live count. State colors mirror the
