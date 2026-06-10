@@ -20,6 +20,7 @@ import (
 	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/thread"
+	"github.com/geofox/publisher/internal/unfurl"
 )
 
 type TargetResult struct {
@@ -64,6 +65,12 @@ type Overrides struct {
 	// quote-posts (postgate).
 	BlueskyReply         string `json:"bluesky_reply"`
 	BlueskyDisableQuotes bool   `json:"bluesky_disable_quotes"`
+	// LinkCard, when non-nil on the bluesky override, attaches an
+	// app.bsky.embed.external card. It is computed by the dispatcher (never
+	// user input) and persisted via fields_json exactly as attached, so
+	// retry/resume re-attach the same card. Only the chain segment matching
+	// LinkCard.Segment carries it.
+	LinkCard *unfurl.Card `json:"link_card,omitempty"`
 }
 
 type Img struct {
@@ -844,6 +851,7 @@ func ov2fields(o Overrides) map[string]any {
 		"langs": o.Langs, "topic_tag": o.TopicTag,
 		"threads_reply_control": o.ThreadsReplyControl,
 		"bluesky_reply":         o.BlueskyReply, "bluesky_disable_quotes": o.BlueskyDisableQuotes,
+		"link_card": o.LinkCard,
 	}
 }
 
