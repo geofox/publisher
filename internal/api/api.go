@@ -34,6 +34,7 @@ import (
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/thread"
 	"github.com/geofox/publisher/internal/translate"
+	"github.com/geofox/publisher/internal/unfurl"
 	"github.com/geofox/publisher/internal/verify"
 	"github.com/geofox/publisher/internal/web"
 )
@@ -100,6 +101,11 @@ type Translator interface {
 	Translate(ctx context.Context, text, target string) (translated, detectedSource string, err error)
 }
 
+// UnfurlService is the preview's view of the unfurl service.
+type UnfurlService interface {
+	Unfurl(ctx context.Context, url string) (*unfurl.Card, error)
+}
+
 // API holds the dependencies for the HTTP handlers.
 type API struct {
 	np        *pubnostr.Publisher
@@ -149,6 +155,10 @@ type API struct {
 	EndSession bool
 	// AppBaseURL is the public origin (scheme://host) used to build post-logout redirects.
 	AppBaseURL string
+
+	// Unfurl builds bluesky link cards for the thread preview; may be nil
+	// (no cards in previews). Satisfied by *unfurl.Service.
+	Unfurl UnfurlService
 }
 
 // New creates a new API with the given publisher and media pipeline.
@@ -1229,17 +1239,51 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 	if req.Images > maxImagesPerPost {
 		req.Images = maxImagesPerPost
 	}
+	type cardJSON struct {
+		Segment     int    `json:"segment"`
+		URI         string `json:"uri"`
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		ThumbURL    string `json:"thumb_url,omitempty"`
+	}
 	type preview struct {
-		Platform string   `json:"platform"`
-		Count    int      `json:"count"`
-		Segments []string `json:"segments"`
-		Imgs     []int    `json:"imgs"`
-		Warnings []string `json:"warnings,omitempty"`
+		Platform string    `json:"platform"`
+		Count    int       `json:"count"`
+		Segments []string  `json:"segments"`
+		Imgs     []int     `json:"imgs"`
+		Card     *cardJSON `json:"card,omitempty"`
+		Warnings []string  `json:"warnings,omitempty"`
 	}
 	out := struct {
 		Previews []preview `json:"previews"`
 	}{Previews: []preview{}}
 	for _, p := range req.Platforms {
+		if p == "bluesky" {
+			// Same planner as dispatch (PlanBlueskyCard), so the previewed
+			// text, counts and card placement are exactly what posting does.
+			// The unfurl gets a tight budget: a slow page degrades the
+			// preview to "no card" instead of hanging the composer.
+			var card *unfurl.Card
+			if a.Unfurl != nil {
+				if u, _, ok := unfurl.CardURL(req.Text); ok {
+					uctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+					if c, err := a.Unfurl.Unfurl(uctx, u); err == nil {
+						card = c
+					}
+					cancel()
+				}
+			}
+			cp := dispatch.PlanBlueskyCard(req.Text, card, req.Images, req.Number)
+			pv := preview{Platform: p, Count: len(cp.Segs), Segments: cp.Segs, Imgs: cp.Plan, Warnings: cp.Warnings}
+			if cp.Card != nil {
+				pv.Card = &cardJSON{
+					Segment: cp.Card.Segment, URI: cp.Card.URI, Title: cp.Card.Title,
+					Description: cp.Card.Description, ThumbURL: cp.Card.ThumbURL,
+				}
+			}
+			out.Previews = append(out.Previews, pv)
+			continue
+		}
 		segs, plan, warns := thread.SplitWithMedia(req.Text, thread.LimitFor(p), req.Images, thread.MaxImagesFor(p), thread.Opts{Number: req.Number})
 		out.Previews = append(out.Previews, preview{
 			Platform: p, Count: len(segs), Segments: segs, Imgs: plan, Warnings: warns,
