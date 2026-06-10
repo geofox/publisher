@@ -26,12 +26,13 @@ import (
 	"github.com/geofox/publisher/internal/metrics"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/notify"
+	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/relaysync"
 	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
-	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/threads"
 	"github.com/geofox/publisher/internal/translate"
+	"github.com/geofox/publisher/internal/unfurl"
 	"github.com/geofox/publisher/internal/verify"
 )
 
@@ -81,6 +82,7 @@ func main() {
 	tc := threads.New(cfg.ThreadsToken, cfg.ThreadsUserID)
 	mc := mastodon.New(cfg.MastodonBaseURL, cfg.MastodonToken)
 	bc := bluesky.New(cfg.BlueskyPDSURL, cfg.BlueskyIdentifier, cfg.BlueskyAppPassword)
+	uf := unfurl.New()
 	d := &dispatch.Dispatcher{
 		Nostr:    dispatch.NostrAdapter{P: np},
 		Mastodon: dispatch.MastodonAdapter{C: mc},
@@ -89,10 +91,12 @@ func main() {
 		Store:    st,
 		Fetcher:  mp,
 		Notify:   feed.NewWebhook(cfg.FeedWebhookURL, cfg.FeedWebhookToken),
+		Unfurler: uf,
 	}
 	a := api.New(np, mp)
 	a.Store = st
 	a.Dispatch = d
+	a.Unfurl = uf
 	a.UserLanguages = cfg.UserLanguages
 	a.PublicFeedToken = cfg.PublicFeedToken
 	a.Progress = progress.NewRegistry()
