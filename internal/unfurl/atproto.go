@@ -1,0 +1,73 @@
+package unfurl
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"strings"
+)
+
+// resolveRef resolves an at://did/collection/rkey URI to a StrongRef: DID
+// document → owner's PDS → unauthenticated com.atproto.repo.getRecord for the
+// record's CID. Handle-based at:// URIs are rejected (site.standard tags are
+// specified to carry DIDs).
+func (s *Service) resolveRef(ctx context.Context, atURI string) (StrongRef, error) {
+	rest := strings.TrimPrefix(atURI, "at://")
+	if rest == atURI {
+		return StrongRef{}, fmt.Errorf("not an at:// uri: %q", atURI)
+	}
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
+		return StrongRef{}, fmt.Errorf("malformed at:// uri: %q", atURI)
+	}
+	did, collection, rkey := parts[0], parts[1], parts[2]
+	if !strings.HasPrefix(did, "did:") {
+		return StrongRef{}, fmt.Errorf("at:// authority is not a DID: %q", did)
+	}
+	pds, err := s.resolvePDS(ctx, did)
+	if err != nil {
+		return StrongRef{}, err
+	}
+	q := url.Values{"repo": {did}, "collection": {collection}, "rkey": {rkey}}
+	var rec struct {
+		URI string `json:"uri"`
+		CID string `json:"cid"`
+	}
+	if err := s.getJSON(ctx, pds+"/xrpc/com.atproto.repo.getRecord?"+q.Encode(), &rec); err != nil {
+		return StrongRef{}, fmt.Errorf("getRecord %s: %w", atURI, err)
+	}
+	if rec.CID == "" {
+		return StrongRef{}, fmt.Errorf("getRecord %s: empty cid", atURI)
+	}
+	return StrongRef{URI: rec.URI, CID: rec.CID}, nil
+}
+
+// resolvePDS returns the PDS base URL from the DID document's atproto_pds
+// service entry. Supports did:plc (via the PLC directory) and did:web.
+func (s *Service) resolvePDS(ctx context.Context, did string) (string, error) {
+	var docURL string
+	switch {
+	case strings.HasPrefix(did, "did:plc:"):
+		docURL = s.PLCDirectory + "/" + did
+	case strings.HasPrefix(did, "did:web:"):
+		docURL = "https://" + strings.TrimPrefix(did, "did:web:") + "/.well-known/did.json"
+	default:
+		return "", fmt.Errorf("unsupported DID method: %s", did)
+	}
+	var doc struct {
+		Service []struct {
+			ID              string `json:"id"`
+			Type            string `json:"type"`
+			ServiceEndpoint string `json:"serviceEndpoint"`
+		} `json:"service"`
+	}
+	if err := s.getJSON(ctx, docURL, &doc); err != nil {
+		return "", fmt.Errorf("resolve %s: %w", did, err)
+	}
+	for _, svc := range doc.Service {
+		if svc.Type == "AtprotoPersonalDataServer" || strings.HasSuffix(svc.ID, "#atproto_pds") {
+			return strings.TrimRight(svc.ServiceEndpoint, "/"), nil
+		}
+	}
+	return "", fmt.Errorf("no atproto_pds service in DID document for %s", did)
+}
