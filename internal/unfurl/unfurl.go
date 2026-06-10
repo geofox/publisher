@@ -16,6 +16,7 @@ const (
 	userAgent       = "publisher-link-preview/1.0"
 	maxHTMLBytes    = 2 << 20  // 2MB of HTML is plenty for <head> metadata
 	maxThumbBytes   = 10 << 20 // pre-resize cap; bluesky fitBlob shrinks to ≤1MB
+	maxJSONBytes    = 1 << 20  // DID docs and getRecord responses are small
 	cacheTTL        = 15 * time.Minute
 	negativeTTL     = time.Minute
 	maxCacheEntries = 16 // entries hold thumb bytes — keep the cache tiny
@@ -85,7 +86,8 @@ func (s *Service) getJSON(ctx context.Context, url string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("GET %s returned %d", url, resp.StatusCode)
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("GET %s returned %d: %s", url, resp.StatusCode, string(rb))
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
+	return json.NewDecoder(io.LimitReader(resp.Body, maxJSONBytes)).Decode(out)
 }

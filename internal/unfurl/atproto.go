@@ -42,6 +42,18 @@ func (s *Service) resolveRef(ctx context.Context, atURI string) (StrongRef, erro
 	return StrongRef{URI: rec.URI, CID: rec.CID}, nil
 }
 
+// didWebDocURL maps a did:web identifier to its DID document URL: bare
+// domains use /.well-known/did.json; path-form DIDs (colon-separated path
+// segments) use https://<domain>/<path>/did.json.
+func didWebDocURL(did string) string {
+	rest := strings.TrimPrefix(did, "did:web:")
+	parts := strings.Split(rest, ":")
+	if len(parts) == 1 {
+		return "https://" + parts[0] + "/.well-known/did.json"
+	}
+	return "https://" + strings.Join(parts, "/") + "/did.json"
+}
+
 // resolvePDS returns the PDS base URL from the DID document's atproto_pds
 // service entry. Supports did:plc (via the PLC directory) and did:web.
 func (s *Service) resolvePDS(ctx context.Context, did string) (string, error) {
@@ -50,7 +62,7 @@ func (s *Service) resolvePDS(ctx context.Context, did string) (string, error) {
 	case strings.HasPrefix(did, "did:plc:"):
 		docURL = s.PLCDirectory + "/" + did
 	case strings.HasPrefix(did, "did:web:"):
-		docURL = "https://" + strings.TrimPrefix(did, "did:web:") + "/.well-known/did.json"
+		docURL = didWebDocURL(did)
 	default:
 		return "", fmt.Errorf("unsupported DID method: %s", did)
 	}
@@ -65,6 +77,9 @@ func (s *Service) resolvePDS(ctx context.Context, did string) (string, error) {
 		return "", fmt.Errorf("resolve %s: %w", did, err)
 	}
 	for _, svc := range doc.Service {
+		if svc.ServiceEndpoint == "" {
+			continue
+		}
 		if svc.Type == "AtprotoPersonalDataServer" || strings.HasSuffix(svc.ID, "#atproto_pds") {
 			return strings.TrimRight(svc.ServiceEndpoint, "/"), nil
 		}
