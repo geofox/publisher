@@ -68,6 +68,8 @@ type ExternalCard struct {
 }
 
 // ExternalRef is a com.atproto.repo.strongRef to a backing Atmosphere record.
+// It mirrors unfurl.StrongRef 1:1; the dispatch adapter maps between them so
+// this package keeps zero internal dependencies.
 type ExternalRef struct{ URI, CID string }
 
 // externalEmbed wraps card fields as an app.bsky.embed.external embed.

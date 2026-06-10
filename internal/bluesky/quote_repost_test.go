@@ -120,7 +120,7 @@ func TestAuthorityOf(t *testing.T) {
 	cases := map[string]string{
 		"at://did:plc:abc/app.bsky.feed.post/3k":      "did:plc:abc",
 		"at://alice.bsky.social/app.bsky.feed.post/x": "alice.bsky.social",
-		"did:plc:naked":                               "did:plc:naked",
+		"did:plc:naked": "did:plc:naked",
 	}
 	for in, want := range cases {
 		if got := authorityOf(in); got != want {
