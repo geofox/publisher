@@ -136,6 +136,16 @@ func (a BlueskyAdapter) PostBsky(ctx context.Context, text string, o Overrides, 
 			ParentURI: replyTo.ParentID, ParentCID: replyTo.ParentCID,
 		}
 	}
+	if o.LinkCard != nil {
+		ext := &bluesky.ExternalCard{
+			URI: o.LinkCard.URI, Title: o.LinkCard.Title, Description: o.LinkCard.Description,
+			Thumb: o.LinkCard.ThumbData, ThumbMime: o.LinkCard.ThumbMime,
+		}
+		for _, ref := range o.LinkCard.Refs {
+			ext.Refs = append(ext.Refs, bluesky.ExternalRef{URI: ref.URI, CID: ref.CID})
+		}
+		bp.External = ext
+	}
 	res, err := a.C.Post(ctx, bp)
 	// Post returns the published-post Result even when a gate write fails, so
 	// record the link regardless.

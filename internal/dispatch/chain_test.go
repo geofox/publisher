@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/geofox/publisher/internal/store"
+	"github.com/geofox/publisher/internal/unfurl"
 )
 
 // fakeBsky is a scriptable BlueskyPoster: it records each call (text, replyTo,
@@ -20,11 +21,12 @@ type fakeCall struct {
 	text    string
 	replyTo *ReplyRef
 	nImgs   int
+	card    *unfurl.Card
 }
 
-func (f *fakeBsky) PostBsky(_ context.Context, text string, _ Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
+func (f *fakeBsky) PostBsky(_ context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
 	i := len(f.calls)
-	f.calls = append(f.calls, fakeCall{text: text, replyTo: replyTo, nImgs: len(imgs)})
+	f.calls = append(f.calls, fakeCall{text: text, replyTo: replyTo, nImgs: len(imgs), card: o.LinkCard})
 	if f.failAt >= 0 && i >= f.failAt {
 		return TargetResult{Platform: "bluesky", Status: "failed", Error: "boom"}, nil
 	}

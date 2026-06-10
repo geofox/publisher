@@ -101,6 +101,13 @@ type ThreadsPoster interface {
 	PostThreads(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error)
 }
 
+// Unfurler builds link cards. Satisfied by *unfurl.Service; an interface so
+// dispatch tests can fake it. May be nil — links then post without cards.
+type Unfurler interface {
+	Unfurl(ctx context.Context, url string) (*unfurl.Card, error)
+	Thumb(ctx context.Context, url string) (data []byte, mime string, err error)
+}
+
 // Interaction action kinds for runAction.
 const (
 	actionReply  = "reply"
@@ -169,6 +176,7 @@ type Dispatcher struct {
 	Threads  ThreadsPoster
 	Store    *store.Store // may be nil in unit tests
 	Fetcher  Fetcher
+	Unfurler Unfurler     // may be nil; attachLinkCard guards it
 	Notify   PostNotifier // may be nil; notify() guards it
 	Alerter  Notifier     // may be nil; alertFailure guards it
 }
@@ -321,7 +329,8 @@ type chainOutcome struct {
 	Platform                    string
 	Status                      string
 	Error                       string
-	FinalText                   string // what this target actually sent (head text)
+	FinalText                   string       // what this target actually sent (head text)
+	LinkCard                    *unfurl.Card // bluesky link card as actually attached (nil = none)
 	HeadRemoteID, HeadRemoteURL string
 	LatencyMS                   int
 	Relays                      []store.RelayState
@@ -358,11 +367,25 @@ func (d *Dispatcher) runHead(ctx context.Context, plat, text string, ov Override
 // optional head action (reply/quote via headSpec; nil = plain post) lets the
 // chain's head segment thread under or quote a source post.
 func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrides, imgs []Img, imetas []gonostr.Tag, number bool, head *headSpec) chainOutcome {
-	segTexts, plan, _ := thread.SplitWithMedia(text, thread.LimitFor(plat), len(imgs), thread.MaxImagesFor(plat), thread.Opts{Number: number})
+	var card *unfurl.Card
+	var segTexts []string
+	var plan []int
+	if plat == "bluesky" {
+		cp := PlanBlueskyCard(text, ov.LinkCard, len(imgs), number)
+		segTexts, plan, text, card = cp.Segs, cp.Plan, cp.Text, cp.Card
+	} else {
+		segTexts, plan, _ = thread.SplitWithMedia(text, thread.LimitFor(plat), len(imgs), thread.MaxImagesFor(plat), thread.Opts{Number: number})
+	}
+	// Only the card's own segment carries it; re-attached per segment below.
+	ov.LinkCard = nil
 	if len(segTexts) <= 1 {
-		r := d.runHead(ctx, plat, text, ov, imgs, imetas, head)
+		headOv := ov
+		if card != nil {
+			headOv.LinkCard = card
+		}
+		r := d.runHead(ctx, plat, text, headOv, imgs, imetas, head)
 		return chainOutcome{
-			Platform: plat, Status: r.Status, Error: r.Error, FinalText: text,
+			Platform: plat, Status: r.Status, Error: r.Error, FinalText: text, LinkCard: card,
 			HeadRemoteID: r.RemoteID, HeadRemoteURL: r.RemoteURL, LatencyMS: r.LatencyMS,
 			Relays: r.Relays, SignedEventJSON: r.SignedEventJSON,
 			RequestJSON: r.RequestJSON, ResponseJSON: r.ResponseJSON,
@@ -394,11 +417,15 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 		if i == 0 {
 			segImetas = imetas // nostr-only, and nostr (cap 0) never splits media
 		}
+		segOv := ov
+		if card != nil && i == card.Segment {
+			segOv.LinkCard = card
+		}
 		var r TargetResult
 		if i == 0 {
-			r = d.runHead(ctx, plat, st, ov, segImgs, segImetas, head)
+			r = d.runHead(ctx, plat, st, segOv, segImgs, segImetas, head)
 		} else {
-			r = d.runPlatform(ctx, plat, st, ov, segImgs, segImetas, replyTo)
+			r = d.runPlatform(ctx, plat, st, segOv, segImgs, segImetas, replyTo)
 		}
 		out.Segments[i] = store.Segment{
 			Ordinal: i, Text: st, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID,
@@ -426,6 +453,7 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 	}
 	out.Status = chainStatus(out.Segments, len(segTexts))
 	out.FinalText = text
+	out.LinkCard = card
 	return out
 }
 
@@ -435,6 +463,8 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 // No store writes — returns the updated outcome.
 func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag) chainOutcome {
 	segs := append([]store.Segment(nil), tg.Segments...)
+	card := ov.LinkCard
+	ov.LinkCard = nil
 	start := 0
 	// A segment with a RemoteID is already live on-platform (success, or partial —
 	// e.g. nostr posted but a relay flapped, or bluesky posted but a gate write
@@ -493,7 +523,11 @@ func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Ove
 		if i == 0 {
 			segImetas = imetas // nostr-only; nostr never splits media
 		}
-		r := d.runPlatform(ctx, tg.Platform, segs[i].Text, ov, segImgs, segImetas, replyTo)
+		segOv := ov
+		if card != nil && i == card.Segment {
+			segOv.LinkCard = card
+		}
+		r := d.runPlatform(ctx, tg.Platform, segs[i].Text, segOv, segImgs, segImetas, replyTo)
 		segs[i] = store.Segment{Ordinal: i, Text: segs[i].Text, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID, Status: r.Status, Error: r.Error}
 		if i == 0 {
 			rootID, rootCID = r.RemoteID, r.CID
@@ -558,6 +592,47 @@ func buildImetas(recs []store.Media) []gonostr.Tag {
 	return out
 }
 
+// attachLinkCard unfurls the bluesky-effective text's card URL (trailing,
+// else first) into spec.Overrides["bluesky"].LinkCard. Best-effort: on any
+// unfurl error the post proceeds exactly as before — bare faceted link, no
+// card. Placement and trailing-strip happen later in PlanBlueskyCard.
+func (d *Dispatcher) attachLinkCard(ctx context.Context, spec *PostSpec) {
+	if d.Unfurler == nil {
+		return
+	}
+	targeted := false
+	for _, p := range spec.Platforms {
+		if p == "bluesky" {
+			targeted = true
+			break
+		}
+	}
+	if !targeted {
+		return
+	}
+	ov := spec.Overrides["bluesky"]
+	text := spec.MasterText
+	if ov.Text != "" {
+		text = ov.Text
+	}
+	u, _, ok := unfurl.CardURL(text)
+	if !ok {
+		return
+	}
+	uctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	card, err := d.Unfurler.Unfurl(uctx, u)
+	if err != nil {
+		slog.WarnContext(ctx, "unfurl failed; posting without link card", "url", u, "err", err)
+		return
+	}
+	ov.LinkCard = card
+	if spec.Overrides == nil {
+		spec.Overrides = map[string]Overrides{}
+	}
+	spec.Overrides["bluesky"] = ov
+}
+
 func (d *Dispatcher) Post(ctx context.Context, spec PostSpec) *store.Post {
 	return d.PostWithID(ctx, newID(), spec)
 }
@@ -572,6 +647,7 @@ func (d *Dispatcher) PostWithID(ctx context.Context, id string, spec PostSpec) *
 	ctx = logging.With(ctx, "post_id", rec.ID)
 
 	imetas := buildImetas(spec.MediaRecords)
+	d.attachLinkCard(ctx, &spec)
 
 	// One result slot per platform, written by its own goroutine (distinct
 	// indices → no mutex, and rec.Targets stays in platforms order).
@@ -597,9 +673,11 @@ func (d *Dispatcher) PostWithID(ctx context.Context, id string, spec PostSpec) *
 
 	succ, failed := 0, 0
 	for _, o := range outcomes {
-		fields, _ := json.Marshal(ov2fields(spec.Overrides[o.Platform]))
+		ovp := spec.Overrides[o.Platform]
+		ovp.LinkCard = o.LinkCard // persist the card only as actually attached
+		fields, _ := json.Marshal(ov2fields(ovp))
 		tg := store.Target{
-			Platform: o.Platform, FinalText: finalText(spec, o.Platform), FieldsJSON: string(fields),
+			Platform: o.Platform, FinalText: o.FinalText, FieldsJSON: string(fields),
 			Status: o.Status, RemoteID: o.HeadRemoteID, RemoteURL: o.HeadRemoteURL, LatencyMS: o.LatencyMS,
 			Relays: o.Relays, SignedEventJSON: o.SignedEventJSON, Segments: o.Segments,
 			Attempts: []store.Attempt{{
@@ -880,6 +958,19 @@ func (d *Dispatcher) dispatchTargets(ctx context.Context, post *store.Post, want
 				slog.Warn("dispatchTargets: bad fields_json, using zero overrides", "target_id", tg.ID, "err", err)
 			}
 		}
+		// A persisted card has no thumb bytes (json:"-"); re-download
+		// best-effort so a retried/fired post still carries its thumbnail.
+		if ov.LinkCard != nil && ov.LinkCard.ThumbURL != "" && d.Unfurler != nil {
+			tctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			data, mime, err := d.Unfurler.Thumb(tctx, ov.LinkCard.ThumbURL)
+			cancel()
+			if err != nil {
+				slog.WarnContext(ctx, "link card thumb re-fetch failed; card posts without thumb",
+					"url", ov.LinkCard.ThumbURL, "err", err)
+			} else {
+				ov.LinkCard.ThumbData, ov.LinkCard.ThumbMime = data, mime
+			}
+		}
 		if len(tg.Segments) > 1 { // threaded target → resume the chain
 			if err := d.resumeChain(ctx, tg, ov, imgs, imetas); err != nil {
 				return err
@@ -907,10 +998,20 @@ func (d *Dispatcher) Schedule(ctx context.Context, spec PostSpec, at time.Time) 
 		Platforms: platforms, DelaySeconds: spec.DelaySeconds, Source: spec.Source,
 		Status: "scheduled", ScheduledAt: &atUTC, Media: spec.MediaRecords,
 	}
+	d.attachLinkCard(ctx, &spec)
 	for _, plat := range platforms {
-		// ov2fields returns a map of JSON-safe values only, so Marshal can't fail.
-		fields, _ := json.Marshal(ov2fields(spec.Overrides[plat]))
+		ov := spec.Overrides[plat]
 		text := finalText(spec, plat)
+		var segTexts []string
+		if plat == "bluesky" {
+			cp := PlanBlueskyCard(text, ov.LinkCard, len(spec.MediaRecords), spec.Number)
+			text, segTexts = cp.Text, cp.Segs
+			ov.LinkCard = cp.Card // persist only as actually placed
+		} else {
+			segTexts, _, _ = thread.SplitWithMedia(text, thread.LimitFor(plat), len(spec.MediaRecords), thread.MaxImagesFor(plat), thread.Opts{Number: spec.Number})
+		}
+		// ov2fields returns a map of JSON-safe values only, so Marshal can't fail.
+		fields, _ := json.Marshal(ov2fields(ov))
 		tg := store.Target{
 			Platform: plat, FinalText: text, FieldsJSON: string(fields), Status: "scheduled",
 		}
@@ -918,7 +1019,7 @@ func (d *Dispatcher) Schedule(ctx context.Context, spec PostSpec, at time.Time) 
 		// over-limit post fires as a reply-chain (the fire path threads any target
 		// with >1 segment) instead of one over-limit post the platform rejects.
 		// Media overflow counts too: 10 images on Mastodon is a 3-post chain.
-		if segTexts, _, _ := thread.SplitWithMedia(text, thread.LimitFor(plat), len(spec.MediaRecords), thread.MaxImagesFor(plat), thread.Opts{Number: spec.Number}); len(segTexts) > 1 {
+		if len(segTexts) > 1 {
 			for i, st := range segTexts {
 				tg.Segments = append(tg.Segments, store.Segment{Ordinal: i, Text: st, Status: "pending"})
 			}
