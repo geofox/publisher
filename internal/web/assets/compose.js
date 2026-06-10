@@ -1006,7 +1006,7 @@ export function composeInit() {
   $("#addimg").addEventListener("click", () => $("#imgfile").click());
   $("#imgfile").addEventListener("change", e => {
     const file = e.target.files[0]; if (!file) return;
-    if (state.images.length >= 4) { flash("Max 4 images"); return; }
+    if (state.images.length >= 10) { flash("Max 10 images"); return; }
     state.images.push({ file, url: URL.createObjectURL(file), alt: "" });
     e.target.value = ""; renderImages();
   });

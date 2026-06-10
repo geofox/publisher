@@ -12,9 +12,10 @@ function threadBadgeStatic(count) {
   return b;
 }
 
-// mediaMax mirrors Go dispatch.mediaMax (per-platform attachment cap; 0 = none).
+// mediaMax mirrors Go thread.MaxImagesFor (per-platform attachment cap; 0 = none).
 function mediaMax(p) {
-  return p === "bluesky" || p === "mastodon" || p === "threads" ? 4 : 0;
+  if (p === "mastodon") return 4;
+  return p === "bluesky" || p === "threads" ? 10 : 0;
 }
 
 // previewMedia returns the {url,alt} images the preview should show for platform p:
@@ -34,12 +35,10 @@ function previewMedia(p) {
   return out;
 }
 
-// mediaGrid builds the <div.pv-media> thumbnail grid for platform p (your
-// attached images + any re-hosted source media), or returns null when there's
-// nothing to show. Shared by the single-post card and the threaded view so both
-// previews render media identically.
-function mediaGrid(p) {
-  const media = previewMedia(p);
+// mediaGridFrom builds the <div.pv-media> thumbnail grid for an explicit media
+// list. >4 images add a count line — Bluesky renders those as a swipeable
+// carousel, so the grid here is a contact sheet, not the final layout.
+function mediaGridFrom(media) {
   if (!media.length) return null;
   const g = el("div", { class: "pv-media" });
   for (const im of media) {
@@ -47,7 +46,17 @@ function mediaGrid(p) {
       el("img", { src: im.url, alt: im.alt || "" }),
       el("figcaption", { class: im.alt ? "" : "muted", text: im.alt ? "alt ✓" : "no alt" })));
   }
+  if (media.length > 4) {
+    const wrapEl = el("div", {});
+    wrapEl.append(el("div", { class: "muted", text: `${media.length} images` }), g);
+    return wrapEl;
+  }
   return g;
+}
+
+// mediaGrid keeps the per-platform signature used by the single-post card.
+function mediaGrid(p) {
+  return mediaGridFrom(previewMedia(p));
 }
 
 // quotedCard renders the source post being quoted/replied-to (shown under the
@@ -100,7 +109,7 @@ export async function threadPreview(container, text, platform, number) {
     const resp = await fetch("/api/thread-preview", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, platforms: [platform], number }),
+      body: JSON.stringify({ text, platforms: [platform], number, images: previewMedia(platform).length }),
     });
     data = await resp.json();
   } catch {
@@ -123,6 +132,13 @@ export async function threadPreview(container, text, platform, number) {
     el("span", { class: "grow" }),
     threadBadgeStatic(pv.count),
   ));
+  // Per-segment media slices from the server's plan (pv.imgs); fall back to
+  // the old head-only rule if the field is missing (stale cached bundle).
+  const media = previewMedia(platform);
+  const counts = Array.isArray(pv.imgs) ? pv.imgs : null;
+  const starts = [];
+  let moff = 0;
+  if (counts) for (const c of counts) { starts.push(moff); moff += c; }
   pv.segments.forEach((seg, i) => {
     const rail = el("div", { class: "pv-seg-rail" }, el("div", { class: "pv-seg-num", text: String(i + 1) }));
     if (i < pv.count - 1) rail.append(el("div", { class: "pv-seg-line" }));
@@ -132,11 +148,9 @@ export async function threadPreview(container, text, platform, number) {
       el("div", { class: "pv-seg-n", style: "margin-top:4px", text: `${i + 1}/${pv.count}` }),
       el("div", { class: "pv-seg-count" + (limit && segLen > limit ? " over" : ""), text: limit ? `${segLen}/${limit}` : `${segLen} chars` }),
     );
-    // Attached media rides on the head segment only — this mirrors dispatch's
-    // runChain ("media on the head only"), so the preview shows the image where
-    // it will actually post: with the opening post, not buried at the tail.
-    if (i === 0) {
-      const g = mediaGrid(platform);
+    const segMedia = counts ? media.slice(starts[i], starts[i] + (counts[i] || 0)) : (i === 0 ? media : []);
+    if (segMedia.length) {
+      const g = mediaGridFrom(segMedia);
       if (g) main.append(g);
     }
     wrap.appendChild(el("div", { class: "pv-seg" }, rail, main));
