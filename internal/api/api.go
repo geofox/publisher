@@ -1404,7 +1404,18 @@ func (a *API) assembleImages(r *http.Request, specs []imageSpec) ([]dispatch.Img
 	if r.MultipartForm != nil {
 		files = r.MultipartForm.File["image"]
 	}
-	if len(files) > maxImagesPerPost || len(specs) > maxImagesPerPost {
+	// Every multipart file contributes at most one image; every Blossom-ref
+	// spec entry contributes at most one more without consuming a file (the
+	// trailing defensive loop processes leftover files). Bound the combined
+	// total — but NOT len(specs)+len(files): a fresh-upload spec entry and the
+	// file it consumes are the same image.
+	blossomRefs := 0
+	for _, s := range specs {
+		if s.BlossomURL != "" {
+			blossomRefs++
+		}
+	}
+	if len(files)+blossomRefs > maxImagesPerPost || len(specs) > maxImagesPerPost {
 		return nil, nil, fmt.Errorf("max %d images", maxImagesPerPost)
 	}
 	fetch := a.fetchMedia

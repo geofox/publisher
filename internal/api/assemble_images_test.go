@@ -40,3 +40,17 @@ func TestAssembleImagesRejectsEleven(t *testing.T) {
 		t.Fatalf("11 specs must hit the cap, got %v", err)
 	}
 }
+
+func TestAssembleImagesRejectsCombinedOverflow(t *testing.T) {
+	// 6 fresh files + 6 Blossom references = 12 assembled images: Blossom-ref
+	// specs don't consume files, and leftover files are processed by the
+	// defensive trailing loop — the cap must bound the combined total.
+	a := &API{}
+	specs := make([]imageSpec, 6)
+	for i := range specs {
+		specs[i].BlossomURL = "https://blossom.example/" + strconv.Itoa(i)
+	}
+	if _, _, err := a.assembleImages(multipartWithImages(t, 6), specs); err == nil || !strings.Contains(err.Error(), "max 10 images") {
+		t.Fatalf("6 files + 6 blossom refs must hit the cap, got %v", err)
+	}
+}
