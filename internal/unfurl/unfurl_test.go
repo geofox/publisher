@@ -2,12 +2,15 @@ package unfurl
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rivo/uniseg"
 )
 
 // newPageServer serves an OG page at /post, a thumb at /t.jpg, and counts
@@ -140,5 +143,30 @@ func TestUnfurlReturnsIsolatedCards(t *testing.T) {
 	}
 	if b.Title != "T" || string(b.ThumbData) != "jpegbytes" {
 		t.Fatalf("cache entry was corrupted by caller mutation: title=%q thumb=%q", b.Title, b.ThumbData)
+	}
+}
+
+func TestUnfurlBoundsCardText(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/big", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<html><head><meta property="og:title" content="T"/><meta property="og:description" content="%s"/></head><body></body></html>`, strings.Repeat("x", 5000))
+	})
+	mux.HandleFunc("/blank", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><head><meta property="og:title" content="   "/></head><body></body></html>`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	s := newTestService(srv)
+	c, err := s.Unfurl(context.Background(), srv.URL+"/big")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := uniseg.GraphemeClusterCount(c.Description); n != 1000 || !strings.HasSuffix(c.Description, "…") {
+		t.Fatalf("description not bounded: %d graphemes", n)
+	}
+	if _, err := s.Unfurl(context.Background(), srv.URL+"/blank"); err == nil {
+		t.Fatal("whitespace-only title must yield no card")
 	}
 }

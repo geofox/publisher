@@ -36,6 +36,7 @@ func TestStripTrailing(t *testing.T) {
 		{"strips trailing newline too", "read this\nhttps://x.com/a\n", "https://x.com/a", "read this"},
 		{"not a suffix → unchanged", "https://x.com/a then text", "https://x.com/a", "https://x.com/a then text"},
 		{"url-only → empty", "https://x.com/a", "https://x.com/a", ""},
+		{"strips crlf", "read this https://x.com/a\r\n", "https://x.com/a", "read this"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -73,6 +73,18 @@ func TestThreadPreviewNoUnfurlerUnchanged(t *testing.T) {
 	}
 }
 
+func TestThreadPreviewInteractionSkipsCard(t *testing.T) {
+	a := &API{Unfurl: &fakeUnfurl{card: &unfurl.Card{URI: "https://x.com/a", Title: "T"}}}
+	out := postPreviewAPI(t, a, `{"text":"nice https://x.com/a","platforms":["bluesky"],"number":true,"images":0,"interaction":true}`)
+	pv := out["previews"].([]any)[0].(map[string]any)
+	if _, ok := pv["card"]; ok {
+		t.Fatal("interaction previews must not plan a card")
+	}
+	if pv["segments"].([]any)[0].(string) != "nice https://x.com/a" {
+		t.Fatalf("interaction preview must keep the URL: %v", pv["segments"])
+	}
+}
+
 func TestThreadPreviewBlueskyCardOnLastSegment(t *testing.T) {
 	long := strings.Repeat("word ", 120) + "\nhttps://x.com/a"
 	a := &API{Unfurl: &fakeUnfurl{card: &unfurl.Card{URI: "https://x.com/a", Title: "T"}}}

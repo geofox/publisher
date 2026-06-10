@@ -62,6 +62,9 @@ func TestResolveRefRejectsNonDID(t *testing.T) {
 	if _, err := s.resolveRef(context.Background(), "https://not-at.example.com/x"); err == nil {
 		t.Fatal("expected error for non-at:// uri")
 	}
+	if _, err := s.resolveRef(context.Background(), "at://did:plc:abc?x=1/site.standard.document/3k"); err == nil {
+		t.Fatal("expected error for DID with query smuggling")
+	}
 }
 
 func TestDIDWebDocURL(t *testing.T) {

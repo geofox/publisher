@@ -1214,10 +1214,11 @@ func (a *API) handleVerify(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxThreadPreviewBytes)
 	var req struct {
-		Text      string   `json:"text"`
-		Platforms []string `json:"platforms"`
-		Number    bool     `json:"number"`
-		Images    int      `json:"images"`
+		Text        string   `json:"text"`
+		Platforms   []string `json:"platforms"`
+		Number      bool     `json:"number"`
+		Images      int      `json:"images"`
+		Interaction bool     `json:"interaction"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		var mbe *http.MaxBytesError
@@ -1264,7 +1265,9 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 			// The unfurl gets a tight budget: a slow page degrades the
 			// preview to "no card" instead of hanging the composer.
 			var card *unfurl.Card
-			if a.Unfurl != nil {
+			// Interactions never carry cards in v1 (InteractWithID scrubs
+			// them), so their previews must not plan one either.
+			if a.Unfurl != nil && !req.Interaction {
 				if u, _, ok := unfurl.CardURL(req.Text); ok {
 					uctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 					if c, err := a.Unfurl.Unfurl(uctx, u); err == nil {

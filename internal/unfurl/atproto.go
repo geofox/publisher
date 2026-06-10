@@ -4,8 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 )
+
+// didRe constrains DIDs embedded in at:// URIs to RFC-ish DID syntax — in
+// particular no '/', '?' or '#', which would smuggle path/query segments
+// into the PLC directory or did:web URL we build from it.
+var didRe = regexp.MustCompile(`^did:[a-z0-9]+:[A-Za-z0-9._%:-]+$`)
 
 // resolveRef resolves an at://did/collection/rkey URI to a StrongRef: DID
 // document → owner's PDS → unauthenticated com.atproto.repo.getRecord for the
@@ -21,8 +27,8 @@ func (s *Service) resolveRef(ctx context.Context, atURI string) (StrongRef, erro
 		return StrongRef{}, fmt.Errorf("malformed at:// uri: %q", atURI)
 	}
 	did, collection, rkey := parts[0], parts[1], parts[2]
-	if !strings.HasPrefix(did, "did:") {
-		return StrongRef{}, fmt.Errorf("at:// authority is not a DID: %q", did)
+	if !didRe.MatchString(did) {
+		return StrongRef{}, fmt.Errorf("at:// authority is not a valid DID: %q", did)
 	}
 	pds, err := s.resolvePDS(ctx, did)
 	if err != nil {

@@ -6,6 +6,7 @@ package unfurl
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // urlRe and the punctuation trim mirror bluesky/facets.go, so the card URL is
@@ -34,9 +35,9 @@ func CardURL(text string) (url string, trailing bool, ok bool) {
 // StripTrailing removes a trailing URL (and the whitespace before it) from
 // text. Text that doesn't end with the URL is returned unchanged.
 func StripTrailing(text, url string) string {
-	t := strings.TrimRight(text, " \t\n")
+	t := strings.TrimRightFunc(text, unicode.IsSpace)
 	if !strings.HasSuffix(t, url) {
 		return text
 	}
-	return strings.TrimRight(strings.TrimSuffix(t, url), " \t\n")
+	return strings.TrimRightFunc(strings.TrimSuffix(t, url), unicode.IsSpace)
 }

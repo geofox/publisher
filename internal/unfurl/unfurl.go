@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/geofox/publisher/internal/verify"
+	"github.com/rivo/uniseg"
 )
 
 const (
@@ -23,6 +24,9 @@ const (
 	cacheTTL        = 15 * time.Minute
 	negativeTTL     = time.Minute
 	maxCacheEntries = 16 // entries hold thumb bytes — keep the cache tiny
+
+	maxTitleGraphemes = 300  // bluesky clients render ~2 lines; PDS caps record size
+	maxDescGraphemes  = 1000 // keep cards (and persisted fields_json) bounded
 )
 
 // StrongRef pins one atproto record version (com.atproto.repo.strongRef).
@@ -129,6 +133,23 @@ func (s *Service) Unfurl(ctx context.Context, rawURL string) (*Card, error) {
 	return card, err
 }
 
+// truncateGraphemes caps s at max grapheme clusters, appending an ellipsis
+// when truncated. Cards must stay small: the PDS caps record JSON size, and
+// an unbounded og:description would fail the whole post.
+func truncateGraphemes(s string, max int) string {
+	if uniseg.GraphemeClusterCount(s) <= max {
+		return s
+	}
+	g := uniseg.NewGraphemes(s)
+	var b strings.Builder
+	n := 0
+	for g.Next() && n < max-1 {
+		b.WriteString(g.Str())
+		n++
+	}
+	return b.String() + "…"
+}
+
 func (s *Service) unfurl(ctx context.Context, rawURL string) (*Card, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
@@ -154,10 +175,12 @@ func (s *Service) unfurl(ctx context.Context, rawURL string) (*Card, error) {
 	// Redirects may have moved us: resolve relative og:image against the
 	// final URL, but keep the card's URI exactly as the operator wrote it.
 	m := parseHTML(io.LimitReader(resp.Body, maxHTMLBytes), resp.Request.URL)
-	if m.Title == "" {
+	title := truncateGraphemes(strings.TrimSpace(m.Title), maxTitleGraphemes)
+	if title == "" {
 		return nil, fmt.Errorf("no usable title at %s", rawURL)
 	}
-	card := &Card{URI: rawURL, Title: m.Title, Description: m.Description, ThumbURL: m.Image}
+	desc := truncateGraphemes(strings.TrimSpace(m.Description), maxDescGraphemes)
+	card := &Card{URI: rawURL, Title: title, Description: desc, ThumbURL: m.Image}
 	// site.standard refs are an enhancement — failures degrade to a plain card.
 	for _, at := range []string{m.DocumentURI, m.PublicationURI} {
 		if at == "" {

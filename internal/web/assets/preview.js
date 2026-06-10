@@ -128,7 +128,7 @@ export async function threadPreview(container, text, platform, number) {
     const resp = await fetch("/api/thread-preview", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, platforms: [platform], number, images: previewMedia(platform).length }),
+      body: JSON.stringify({ text, platforms: [platform], number, images: previewMedia(platform).length, interaction: !!state.interaction }),
     });
     data = await resp.json();
   } catch {
