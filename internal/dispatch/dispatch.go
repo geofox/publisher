@@ -592,6 +592,18 @@ func buildImetas(recs []store.Media) []gonostr.Tag {
 	return out
 }
 
+// scrubLinkCards drops any client-supplied link_card from incoming overrides.
+// LinkCard is dispatcher-computed only (attachLinkCard + PlanBlueskyCard);
+// a request-supplied card must never reach an adapter or fields_json.
+func scrubLinkCards(overrides map[string]Overrides) {
+	for k, ov := range overrides {
+		if ov.LinkCard != nil {
+			ov.LinkCard = nil
+			overrides[k] = ov
+		}
+	}
+}
+
 // attachLinkCard unfurls the bluesky-effective text's card URL (trailing,
 // else first) into spec.Overrides["bluesky"].LinkCard. Best-effort: on any
 // unfurl error the post proceeds exactly as before — bare faceted link, no
@@ -647,6 +659,7 @@ func (d *Dispatcher) PostWithID(ctx context.Context, id string, spec PostSpec) *
 	ctx = logging.With(ctx, "post_id", rec.ID)
 
 	imetas := buildImetas(spec.MediaRecords)
+	scrubLinkCards(spec.Overrides)
 	d.attachLinkCard(ctx, &spec)
 
 	// One result slot per platform, written by its own goroutine (distinct
@@ -822,6 +835,7 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 		},
 	}
 	ctx = logging.With(ctx, "post_id", rec.ID)
+	scrubLinkCards(spec.Overrides)
 	var outcomes []chainOutcome
 	switch spec.Action {
 	case actionRepost:
@@ -998,6 +1012,7 @@ func (d *Dispatcher) Schedule(ctx context.Context, spec PostSpec, at time.Time) 
 		Platforms: platforms, DelaySeconds: spec.DelaySeconds, Source: spec.Source,
 		Status: "scheduled", ScheduledAt: &atUTC, Media: spec.MediaRecords,
 	}
+	scrubLinkCards(spec.Overrides)
 	d.attachLinkCard(ctx, &spec)
 	for _, plat := range platforms {
 		ov := spec.Overrides[plat]

@@ -142,6 +142,40 @@ func TestResumeReattachesPersistedCard(t *testing.T) {
 	}
 }
 
+func TestPostScrubsInjectedLinkCard(t *testing.T) {
+	f := &fakeBsky{failAt: -1}
+	// No Unfurler wired: attachLinkCard is a no-op, so an injected card would
+	// survive to the adapter without the boundary scrub.
+	d := &Dispatcher{Bluesky: f}
+	rec := d.Post(context.Background(), PostSpec{
+		MasterText: "hello https://x.com/a", Platforms: []string{"bluesky"},
+		Overrides: map[string]Overrides{"bluesky": {LinkCard: &unfurl.Card{URI: "https://x.com/a", Title: "Crafted"}}},
+	})
+	if f.calls[0].card != nil {
+		t.Fatalf("injected link_card must be scrubbed: %+v", f.calls[0].card)
+	}
+	if !strings.Contains(rec.Targets[0].FieldsJSON, `"link_card":null`) {
+		t.Fatalf("injected card must not persist: %s", rec.Targets[0].FieldsJSON)
+	}
+}
+
+func TestInteractScrubsInjectedLinkCard(t *testing.T) {
+	f := &fakeBsky{failAt: -1}
+	d := &Dispatcher{Bluesky: f}
+	rec := d.Interact(context.Background(), InteractSpec{
+		Action: "reply", SourcePlatform: "bluesky",
+		Ref:       InteractRef{URI: "at://src", CID: "c1"},
+		Text:      "nice post https://x.com/a",
+		Overrides: map[string]Overrides{"bluesky": {LinkCard: &unfurl.Card{URI: "https://x.com/a", Title: "Crafted"}}},
+	})
+	if len(f.calls) == 0 || f.calls[0].card != nil {
+		t.Fatalf("interact must never carry a card: %+v", f.calls)
+	}
+	if !strings.Contains(rec.Targets[0].FieldsJSON, `"link_card":null`) {
+		t.Fatalf("injected card must not persist on interact: %s", rec.Targets[0].FieldsJSON)
+	}
+}
+
 func TestScheduleFreezesCardAndFiresWithIt(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
