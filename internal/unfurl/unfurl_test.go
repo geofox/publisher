@@ -5,17 +5,22 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 // newPageServer serves an OG page at /post, a thumb at /t.jpg, and counts
-// page hits (for cache assertions).
+// page hits (for cache assertions). The counter is incremented under a mutex
+// so concurrent-test goroutines do not race on it.
 func newPageServer(t *testing.T, hits *int) *httptest.Server {
 	t.Helper()
+	var mu sync.Mutex
 	mux := http.NewServeMux()
 	mux.HandleFunc("/post", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		*hits++
+		mu.Unlock()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(`<html><head>
 			<meta property="og:title" content="T"/>
@@ -101,5 +106,39 @@ func TestUnfurlSSRFGuardBlocksLoopback(t *testing.T) {
 	_, err := s.Unfurl(context.Background(), "http://127.0.0.1:1/x")
 	if err == nil || !strings.Contains(err.Error(), "blocked") {
 		t.Fatalf("expected blocked non-public address error, got %v", err)
+	}
+}
+
+func TestUnfurlConcurrentSameURL(t *testing.T) {
+	hits := 0
+	srv := newPageServer(t, &hits)
+	s := newTestService(srv)
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); _, _ = s.Unfurl(context.Background(), srv.URL+"/post") }()
+	}
+	wg.Wait()
+	if hits == 0 || hits > 10 {
+		t.Fatalf("unexpected page fetch count: %d", hits)
+	}
+}
+
+func TestUnfurlReturnsIsolatedCards(t *testing.T) {
+	hits := 0
+	srv := newPageServer(t, &hits)
+	s := newTestService(srv)
+	a, err := s.Unfurl(context.Background(), srv.URL+"/post")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Title = "mutated"
+	a.ThumbData[0] = 'X'
+	b, err := s.Unfurl(context.Background(), srv.URL+"/post") // cache hit
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Title != "T" || string(b.ThumbData) != "jpegbytes" {
+		t.Fatalf("cache entry was corrupted by caller mutation: title=%q thumb=%q", b.Title, b.ThumbData)
 	}
 }

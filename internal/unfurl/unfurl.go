@@ -48,6 +48,22 @@ type Card struct {
 	ThumbMime string `json:"-"`
 }
 
+// deepCopy returns a Card whose slice fields do not alias the receiver, so
+// callers can never mutate a cached entry through a returned pointer.
+func (c *Card) deepCopy() *Card {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	if len(c.Refs) > 0 {
+		cp.Refs = append([]StrongRef(nil), c.Refs...)
+	}
+	if len(c.ThumbData) > 0 {
+		cp.ThumbData = append([]byte(nil), c.ThumbData...)
+	}
+	return &cp
+}
+
 type cacheEntry struct {
 	card *Card
 	err  error
@@ -100,6 +116,10 @@ func (s *Service) getJSON(ctx context.Context, url string, out any) error {
 // and failures are both cached (failures briefly), so composer-preview
 // keystrokes can't hammer a slow or broken site. A page with no usable title
 // yields an error — no card.
+//
+// Concurrent calls for the same URL may each fetch independently (no
+// singleflight); the last writer wins in the cache. At most one redundant
+// fetch per TTL window — acceptable for a single-operator app.
 func (s *Service) Unfurl(ctx context.Context, rawURL string) (*Card, error) {
 	if c, hit, err := s.cached(rawURL); hit {
 		return c, err
@@ -203,7 +223,7 @@ func (s *Service) cached(url string) (c *Card, hit bool, err error) {
 	if !ok || time.Now().After(e.exp) {
 		return nil, false, nil
 	}
-	return e.card, true, e.err
+	return e.card.deepCopy(), true, e.err
 }
 
 func (s *Service) store(url string, card *Card, err error) {
@@ -212,6 +232,8 @@ func (s *Service) store(url string, card *Card, err error) {
 	if len(s.cache) >= maxCacheEntries {
 		// Entries carry thumb bytes, so the cache stays tiny: drop expired
 		// entries, and if still full just reset — a miss only costs a refetch.
+		// No LRU: thumb bytes make a priority structure pointless at 16
+		// entries; a full reset only costs refetches.
 		now := time.Now()
 		for k, e := range s.cache {
 			if now.After(e.exp) {
@@ -226,5 +248,5 @@ func (s *Service) store(url string, card *Card, err error) {
 	if err != nil {
 		ttl = negativeTTL
 	}
-	s.cache[url] = cacheEntry{card: card, err: err, exp: time.Now().Add(ttl)}
+	s.cache[url] = cacheEntry{card: card.deepCopy(), err: err, exp: time.Now().Add(ttl)}
 }
