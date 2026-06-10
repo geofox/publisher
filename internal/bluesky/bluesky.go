@@ -42,6 +42,10 @@ type Post struct {
 	// Reply, when non-nil, makes this post a reply (used for threading).
 	Reply *ReplyRef
 	Quote *QuoteRef // when set, embeds the quoted post
+	// External, when non-nil, attaches an app.bsky.embed.external link card.
+	// The record has a single embed slot, so it is ignored when the post
+	// carries images or a quote (dispatch enforces this; Post re-checks).
+	External *ExternalCard
 }
 
 // ReplyRef threads a post into an existing conversation. For a self-thread the
@@ -52,6 +56,36 @@ type ReplyRef struct {
 
 // QuoteRef, when set on a Post, embeds a quoted post (app.bsky.embed.record).
 type QuoteRef struct{ URI, CID string }
+
+// ExternalCard is the data for an app.bsky.embed.external link card. Refs
+// carry site.standard strongRefs so Bluesky hydrates the enhanced preview
+// (publication, author, reading time).
+type ExternalCard struct {
+	URI, Title, Description string
+	Thumb                   []byte // optional thumbnail bytes (pre-resize)
+	ThumbMime               string
+	Refs                    []ExternalRef
+}
+
+// ExternalRef is a com.atproto.repo.strongRef to a backing Atmosphere record.
+type ExternalRef struct{ URI, CID string }
+
+// externalEmbed wraps card fields as an app.bsky.embed.external embed.
+// thumbBlob is the uploaded blob ref, or nil for a card without a thumbnail.
+func externalEmbed(c ExternalCard, thumbBlob json.RawMessage) map[string]any {
+	ext := map[string]any{"uri": c.URI, "title": c.Title, "description": c.Description}
+	if thumbBlob != nil {
+		ext["thumb"] = thumbBlob
+	}
+	if len(c.Refs) > 0 {
+		refs := make([]map[string]any, len(c.Refs))
+		for i, r := range c.Refs {
+			refs[i] = map[string]any{"uri": r.URI, "cid": r.CID}
+		}
+		ext["associatedRefs"] = refs
+	}
+	return map[string]any{"$type": "app.bsky.embed.external", "external": ext}
+}
 
 // ReplyGate selects the app.bsky.feed.threadgate allow rules. All-false = nobody.
 type ReplyGate struct {
@@ -229,6 +263,21 @@ func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 		} else {
 			record["embed"] = imageEmbed
 		}
+	}
+
+	// Link card: only when the single embed slot is free (no images, no
+	// quote). A failed thumb resize/upload degrades to a card without a
+	// thumbnail — the card must never fail the post.
+	if p.External != nil && len(images) == 0 && p.Quote == nil {
+		var thumbBlob json.RawMessage
+		if len(p.External.Thumb) > 0 {
+			if out, mime, _, _, err := fitBlob(p.External.Thumb, p.External.ThumbMime); err == nil {
+				if blob, err := c.uploadBlob(ctx, s.AccessJwt, out, mime); err == nil {
+					thumbBlob = blob
+				}
+			}
+		}
+		record["embed"] = externalEmbed(*p.External, thumbBlob)
 	}
 
 	uri, cid, err := c.createRecord(ctx, s, "app.bsky.feed.post", "", record)
