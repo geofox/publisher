@@ -59,6 +59,25 @@ function mediaGrid(p) {
   return mediaGridFrom(previewMedia(p));
 }
 
+// linkCardEl renders the bluesky external-embed mock the server planned for
+// this draft (thumb left, title/description/host right). The thumb loads
+// straight from the external site — CSP img-src already allows https:.
+function linkCardEl(card) {
+  const a = el("a", { class: "pv-linkcard", href: card.uri, target: "_blank", rel: "noopener" });
+  if (card.thumb_url) {
+    a.append(el("img", { class: "pv-linkcard-thumb", src: card.thumb_url, alt: "",
+      onerror: (e) => e.target.remove() }));
+  }
+  const txt = el("div", { class: "pv-linkcard-txt" });
+  txt.append(el("div", { class: "pv-linkcard-title", text: card.title }));
+  if (card.description) txt.append(el("div", { class: "pv-linkcard-desc", text: card.description }));
+  let host = "";
+  try { host = new URL(card.uri).hostname; } catch { /* leave empty */ }
+  if (host) txt.append(el("div", { class: "pv-linkcard-host", text: host }));
+  a.append(txt);
+  return a;
+}
+
 // quotedCard renders the source post being quoted/replied-to (shown under the
 // source-platform preview; on fan-out platforms the original is already inline in
 // postedText so no card is needed).
@@ -116,7 +135,15 @@ export async function threadPreview(container, text, platform, number) {
     return false; // network hiccup → fall back to normal preview
   }
   const pv = (data.previews || []).find((p) => p.platform === platform);
-  if (!pv || pv.count < 2) return false;
+  if (!pv) return false;
+  if (pv.count < 2) {
+    if (!pv.card) return false;
+    // Single post with a link card: re-render with the authoritative
+    // (possibly URL-stripped) text and the planned card attached.
+    container.innerHTML = "";
+    _renderSinglePost(container, platform, { text: pv.segments[0], card: pv.card });
+    return true;
+  }
 
   container.innerHTML = "";
   // The whole thread view is wrapped in a p-{platform} card so .pv-tok token
@@ -153,6 +180,7 @@ export async function threadPreview(container, text, platform, number) {
       const g = mediaGridFrom(segMedia);
       if (g) main.append(g);
     }
+    if (pv.card && pv.card.segment === i) main.append(linkCardEl(pv.card));
     wrap.appendChild(el("div", { class: "pv-seg" }, rail, main));
   });
   (pv.warnings || []).forEach((wmsg) => {
@@ -195,9 +223,11 @@ function truncate(text, limit) {
 }
 
 // _renderSinglePost renders the existing single-post preview card into host.
-function _renderSinglePost(host, p) {
+// opts.text overrides the local draft text (server-stripped trailing URL) and
+// opts.card appends the planned bluesky link card.
+function _renderSinglePost(host, p, opts = {}) {
   const meta = META[p], ov = state.ov[p];
-  const text = postedText(p), n = gcount(text);
+  const text = opts.text != null ? opts.text : postedText(p), n = gcount(text);
   const cwText = p === "mastodon" ? ov.spoiler_text : p === "nostr" ? ov.content_warning : "";
 
   const card = el("div", { class: "pv-card p-" + p });
@@ -233,6 +263,8 @@ function _renderSinglePost(host, p) {
   // re-hosted media, capped per platform exactly like dispatch does on send.
   const g = mediaGrid(p);
   if (g) card.append(g);
+
+  if (opts.card) card.append(linkCardEl(opts.card));
 
   // settings line (platform-specific)
   const bits = [];
@@ -278,7 +310,11 @@ export function renderPreview() {
   const limit = META[p].limit;
   const mmax = mediaMax(p);
   const mediaOverflow = mmax > 0 && previewMedia(p).length > mmax;
-  if (!mediaOverflow && !/^[ \t]*---[ \t]*$/m.test(text) && (!limit || gcount(text) <= limit)) {
+  // A bluesky draft containing a URL also needs the server round-trip: the
+  // card plan (and trailing-URL strip) only exists server-side. Interactions
+  // never carry cards in v1, so they keep the fast path.
+  const wantsCard = p === "bluesky" && !state.interaction && /https?:\/\/\S+/.test(text);
+  if (!wantsCard && !mediaOverflow && !/^[ \t]*---[ \t]*$/m.test(text) && (!limit || gcount(text) <= limit)) {
     clearTimeout(_threadDebounce);
     return;
   }
