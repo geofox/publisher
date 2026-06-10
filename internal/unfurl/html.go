@@ -33,7 +33,9 @@ loop:
 			break loop
 		case html.TextToken:
 			if inTitle && docTitle == "" {
-				docTitle = strings.TrimSpace(html.UnescapeString(string(z.Text())))
+				// z.Text() already unescapes HTML entities; trim the whitespace
+				// pretty-printed HTML adds around the title.
+				docTitle = strings.TrimSpace(string(z.Text()))
 			}
 		case html.StartTagToken, html.SelfClosingTagToken:
 			name, hasAttr := z.TagName()
@@ -41,10 +43,12 @@ loop:
 			for hasAttr {
 				var k, v []byte
 				k, v, hasAttr = z.TagAttr()
-				attrs[strings.ToLower(string(k))] = string(v)
+				attrs[string(k)] = string(v)
 			}
 			switch string(name) {
 			case "title":
+				// Also fires for <svg><title> inside <head>; in practice such
+				// pages carry og:title, which takes priority over the fallback.
 				inTitle = true
 			case "meta":
 				key := attrs["property"]
@@ -67,6 +71,8 @@ loop:
 					twImage = val
 				}
 			case "link":
+				// rel is matched whole, not as a space-separated token set;
+				// site.standard tags are emitted without additional rel values.
 				switch strings.ToLower(attrs["rel"]) {
 				case "site.standard.document":
 					m.DocumentURI = attrs["href"]

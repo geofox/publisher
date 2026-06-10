@@ -52,6 +52,20 @@ func TestParseHTMLFallbacks(t *testing.T) {
 	}
 }
 
+func TestParseHTMLAttributeVariants(t *testing.T) {
+	doc := `<html><head>
+		<meta name="og:title" content="Name Variant">
+		<meta property="og:image" content="https://abs.example.com/i.png">
+	</head><body></body></html>`
+	m := parseHTML(strings.NewReader(doc), mustURL(t, "https://example.com/post"))
+	if m.Title != "Name Variant" {
+		t.Fatalf("meta name= variant not honored: %q", m.Title)
+	}
+	if m.Image != "https://abs.example.com/i.png" {
+		t.Fatalf("absolute og:image must pass through unchanged: %q", m.Image)
+	}
+}
+
 func TestParseHTMLNoMetadata(t *testing.T) {
 	m := parseHTML(strings.NewReader(`<html><head></head><body>x</body></html>`), mustURL(t, "https://e.com/"))
 	if m.Title != "" || m.Image != "" {
