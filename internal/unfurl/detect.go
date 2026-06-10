@@ -31,8 +31,8 @@ func CardURL(text string) (url string, trailing bool, ok bool) {
 	return trimURL(text[first[0]:first[1]]), false, true
 }
 
-// StripTrailing removes a trailing url (and the whitespace before it) from
-// text. Text that doesn't end with url is returned unchanged.
+// StripTrailing removes a trailing URL (and the whitespace before it) from
+// text. Text that doesn't end with the URL is returned unchanged.
 func StripTrailing(text, url string) string {
 	t := strings.TrimRight(text, " \t\n")
 	if !strings.HasSuffix(t, url) {

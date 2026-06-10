@@ -13,19 +13,18 @@ func TestCardURL(t *testing.T) {
 		{"no url", "hello world", "", false, false},
 		{"trailing url", "read this https://example.com/a", "https://example.com/a", true, true},
 		{"url only", "https://example.com/a", "https://example.com/a", true, true},
-		{"mid-text url", "see https://example.com/a for more", "https://example.com/a", false, false},
-		{"two urls, none trailing", "https://a.com/1 and https://b.com/2 end", "https://a.com/1", false, false},
+		{"mid-text url", "see https://example.com/a for more", "https://example.com/a", false, true},
+		{"two urls, none trailing", "https://a.com/1 and https://b.com/2 end", "https://a.com/1", false, true},
 		{"two urls, last trailing wins", "https://a.com/1 then https://b.com/2", "https://b.com/2", true, true},
 		{"trailing whitespace ok", "link https://example.com/a \n", "https://example.com/a", true, true},
-		{"trailing punctuation is not trailing", "link https://example.com/a.", "https://example.com/a", false, false},
+		{"trailing punctuation is not trailing", "link https://example.com/a.", "https://example.com/a", false, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			u, trailing, ok := CardURL(c.text)
-			wantOK := c.wantURL != ""
-			if ok != wantOK || u != c.wantURL || trailing != c.trailing {
+			if ok != c.ok || u != c.wantURL || trailing != c.trailing {
 				t.Fatalf("CardURL(%q) = (%q, %v, %v), want (%q, %v, %v)",
-					c.text, u, trailing, ok, c.wantURL, c.trailing, wantOK)
+					c.text, u, trailing, ok, c.wantURL, c.trailing, c.ok)
 			}
 		})
 	}
