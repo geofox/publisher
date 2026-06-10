@@ -200,3 +200,20 @@ func TestScheduleFreezesCardAndFiresWithIt(t *testing.T) {
 		t.Fatalf("fire must post the stripped text with the card: %+v", f.calls)
 	}
 }
+
+func TestMultiPlatformCardStripsBlueskyOnly(t *testing.T) {
+	bsky := &fakeBsky{failAt: -1}
+	masto := &fakeMastoChain{}
+	uf := &fakeUnfurler{card: &unfurl.Card{URI: "https://x.com/a", Title: "T"}}
+	d := &Dispatcher{Bluesky: bsky, Mastodon: masto, Unfurler: uf}
+	d.Post(context.Background(), PostSpec{
+		MasterText: "hello https://x.com/a",
+		Platforms:  []string{"bluesky", "mastodon"},
+	})
+	if len(bsky.calls) != 1 || bsky.calls[0].text != "hello" || bsky.calls[0].card == nil {
+		t.Fatalf("bluesky must strip the URL and carry the card: %+v", bsky.calls)
+	}
+	if len(masto.calls) != 1 || masto.calls[0].text != "hello https://x.com/a" {
+		t.Fatalf("mastodon must keep the URL untouched: %+v", masto.calls)
+	}
+}
