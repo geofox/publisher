@@ -14,6 +14,7 @@ require (
 	github.com/prometheus/client_golang v1.17.0
 	github.com/rivo/uniseg v0.4.7
 	golang.org/x/image v0.40.0
+	golang.org/x/net v0.55.0
 	golang.org/x/oauth2 v0.36.0
 	modernc.org/sqlite v1.50.1
 )
@@ -99,7 +100,6 @@ require (
 	go.uber.org/zap v1.26.0 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394 // indirect
-	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
