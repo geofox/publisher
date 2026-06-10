@@ -77,3 +77,22 @@ func TestPlanCardURLOnlyPostKeepsURL(t *testing.T) {
 		t.Fatalf("URL-only post: card=%v text=%q", cp.Card, cp.Text)
 	}
 }
+
+func TestPlanCardMidTextImagesOnHeadSegmentReverts(t *testing.T) {
+	// The mid-text URL lands on the image-bearing head segment; the rule is a
+	// full revert — never a fallback to a later, URL-free segment.
+	cp := PlanBlueskyCard("see https://x.com/a for more", card("https://x.com/a"), 2, true)
+	if cp.Card != nil {
+		t.Fatal("images on the head segment must revert even for a mid-text URL")
+	}
+	if cp.Text != "see https://x.com/a for more" {
+		t.Fatalf("revert must restore text: %q", cp.Text)
+	}
+}
+
+func TestPlanCardTrailingWithoutNumbering(t *testing.T) {
+	cp := PlanBlueskyCard("hello https://x.com/a", card("https://x.com/a"), 0, false)
+	if cp.Card == nil || cp.Card.Segment != 0 || cp.Text != "hello" {
+		t.Fatalf("number=false must not change card planning: %+v", cp)
+	}
+}
