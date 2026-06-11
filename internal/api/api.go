@@ -33,6 +33,7 @@ import (
 	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/thread"
+	"github.com/geofox/publisher/internal/transcode"
 	"github.com/geofox/publisher/internal/translate"
 	"github.com/geofox/publisher/internal/unfurl"
 	"github.com/geofox/publisher/internal/verify"
@@ -1219,6 +1220,14 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		Number      bool     `json:"number"`
 		Images      int      `json:"images"`
 		Interaction bool     `json:"interaction"`
+		// Media carries per-image metadata so previews can badge planned
+		// platform-fit conversions. Optional: an older cached bundle sends
+		// only the count — previews then skip fit notes.
+		Media []struct {
+			SizeBytes int64  `json:"size_bytes"`
+			Mime      string `json:"mime"`
+			Dim       string `json:"dim"`
+		} `json:"media"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		var mbe *http.MaxBytesError
@@ -1240,6 +1249,17 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 	if req.Images > maxImagesPerPost {
 		req.Images = maxImagesPerPost
 	}
+	var metas []transcode.Meta
+	for _, m := range req.Media {
+		w, h := transcode.ParseDim(m.Dim)
+		metas = append(metas, transcode.Meta{SizeBytes: m.SizeBytes, Mime: m.Mime, W: w, H: h})
+	}
+	if len(metas) > maxImagesPerPost {
+		metas = metas[:maxImagesPerPost]
+	}
+	if len(metas) > 0 {
+		req.Images = len(metas) // media[] is authoritative when present
+	}
 	type cardJSON struct {
 		Segment     int    `json:"segment"`
 		URI         string `json:"uri"`
@@ -1248,12 +1268,13 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		ThumbURL    string `json:"thumb_url,omitempty"`
 	}
 	type preview struct {
-		Platform string    `json:"platform"`
-		Count    int       `json:"count"`
-		Segments []string  `json:"segments"`
-		Imgs     []int     `json:"imgs"`
-		Card     *cardJSON `json:"card,omitempty"`
-		Warnings []string  `json:"warnings,omitempty"`
+		Platform string             `json:"platform"`
+		Count    int                `json:"count"`
+		Segments []string           `json:"segments"`
+		Imgs     []int              `json:"imgs"`
+		Card     *cardJSON          `json:"card,omitempty"`
+		Warnings []string           `json:"warnings,omitempty"`
+		FitNotes []dispatch.FitNote `json:"fit_notes,omitempty"`
 	}
 	out := struct {
 		Previews []preview `json:"previews"`
@@ -1277,7 +1298,7 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			cp := dispatch.PlanBlueskyCard(req.Text, card, req.Images, req.Number)
-			pv := preview{Platform: p, Count: len(cp.Segs), Segments: cp.Segs, Imgs: cp.Plan, Warnings: cp.Warnings}
+			pv := preview{Platform: p, Count: len(cp.Segs), Segments: cp.Segs, Imgs: cp.Plan, Warnings: cp.Warnings, FitNotes: dispatch.PlanMediaFit(p, metas)}
 			if cp.Card != nil {
 				pv.Card = &cardJSON{
 					Segment: cp.Card.Segment, URI: cp.Card.URI, Title: cp.Card.Title,
@@ -1289,7 +1310,7 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		}
 		segs, plan, warns := thread.SplitWithMedia(req.Text, thread.LimitFor(p), req.Images, thread.MaxImagesFor(p), thread.Opts{Number: req.Number})
 		out.Previews = append(out.Previews, preview{
-			Platform: p, Count: len(segs), Segments: segs, Imgs: plan, Warnings: warns,
+			Platform: p, Count: len(segs), Segments: segs, Imgs: plan, Warnings: warns, FitNotes: dispatch.PlanMediaFit(p, metas),
 		})
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)

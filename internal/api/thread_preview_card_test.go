@@ -100,3 +100,44 @@ func TestThreadPreviewBlueskyCardOnLastSegment(t *testing.T) {
 		t.Fatalf("card.segment = %v, want %v (last segment)", card["segment"], want)
 	}
 }
+
+func TestThreadPreviewFitNotes(t *testing.T) {
+	a := &API{}
+	// 3 MB JPEG: over bluesky's ~1.9 MB cap → bluesky gets 1 fit note.
+	// nostr has no profile → no fit notes.
+	body := `{"text":"hello","platforms":["bluesky","nostr"],"media":[{"size_bytes":3000000,"mime":"image/jpeg","dim":"4000x3000"}]}`
+	out := postPreviewAPI(t, a, body)
+
+	previews := out["previews"].([]any)
+	byp := map[string]map[string]any{}
+	for _, raw := range previews {
+		pv := raw.(map[string]any)
+		byp[pv["platform"].(string)] = pv
+	}
+
+	// bluesky: exactly 1 fit_note, ordinal 0, note contains "JPEG"
+	bsPV := byp["bluesky"]
+	bsNotes, ok := bsPV["fit_notes"].([]any)
+	if !ok || len(bsNotes) != 1 {
+		t.Fatalf("bluesky fit_notes = %v, want exactly 1", bsPV["fit_notes"])
+	}
+	note := bsNotes[0].(map[string]any)
+	if note["ordinal"].(float64) != 0 {
+		t.Fatalf("bluesky fit_note ordinal = %v, want 0", note["ordinal"])
+	}
+	if n, _ := note["note"].(string); !strings.Contains(n, "JPEG") {
+		t.Fatalf("bluesky fit_note = %q, want it to contain JPEG", n)
+	}
+
+	// nostr: no fit_notes key (omitempty)
+	nostrPV := byp["nostr"]
+	if fn, exists := nostrPV["fit_notes"]; exists {
+		t.Fatalf("nostr fit_notes = %v, want none (no profile)", fn)
+	}
+
+	// media[] is authoritative: 1 image in the plan
+	bsImgs := bsPV["imgs"].([]any)
+	if len(bsImgs) != 1 {
+		t.Fatalf("bluesky imgs = %v, want [1] (media[] authoritative)", bsImgs)
+	}
+}
