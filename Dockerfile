@@ -20,13 +20,28 @@ COPY . .
 ARG VERSION=dev
 ARG COMMIT=none
 
-# Trim path + strip symbol table → smallest static binary.
+# Trim path + strip symbol table → smallest static binary. `nodynamic` compiles
+# out gen2brain/heic's dynamic-library path (ebitengine/purego): purego's
+# cgo_import_dynamic pragmas would otherwise make the binary dynamically linked
+# even with CGO_ENABLED=0 — and FROM scratch has no ld-linux interpreter, so the
+# container dies with "exec /publisher: no such file or directory" (v1.8.0).
+# HEIC decoding stays fully functional via the WASM path (which the code forces
+# at runtime anyway with heic.ForceWasmMode).
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build \
       -trimpath \
+      -tags nodynamic \
       -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
       -o /publisher \
       ./cmd/publisher
+
+# Regression guard: a dynamically linked binary embeds its interpreter path
+# (ld-linux/ld-musl); fail the image build here rather than crash-loop on the
+# host. grep -a treats the ELF as text; static binaries contain neither string.
+RUN if grep -qaE 'ld-(linux|musl)' /publisher; then \
+      echo "FATAL: /publisher is dynamically linked — scratch cannot exec it" >&2; \
+      exit 1; \
+    fi
 
 # ---- runtime ----
 FROM scratch
