@@ -706,16 +706,87 @@ function fieldsFor(p, ov) {
 // Images
 // ---------------------------------------------------------------------------
 
+// compressFile sends a File through POST /api/media/compress and returns the
+// re-encoded JPEG as a new File. Used by the per-attachment presets and the
+// HEIC attach-time auto-conversion. Aborts any in-flight request for the same
+// attachment (rapid preset switching must not pile up server transcodes).
+async function compressFile(img, file, preset) {
+  if (img._compressAbort) img._compressAbort.abort();
+  const ctl = new AbortController();
+  img._compressAbort = ctl;
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("preset", preset);
+    const r = await fetch("/api/media/compress", { method: "POST", body: fd, credentials: "same-origin", signal: ctl.signal });
+    if (!r.ok) {
+      let msg = "HTTP " + r.status;
+      try { msg = (await r.json()).error || msg; } catch { /* body not json */ }
+      throw new Error(msg);
+    }
+    const blob = await r.blob();
+    const stem = (file.name || "image").replace(/\.[^.]+$/, "");
+    return new File([blob], stem + ".jpg", { type: blob.type || "image/jpeg" });
+  } finally {
+    if (img._compressAbort === ctl) img._compressAbort = null;
+  }
+}
+
+function fmtBytes(n) {
+  return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+}
+
+const isHeic = (f) => /^image\/hei[cf]$/.test(f.type) || /\.hei[cf]$/i.test(f.name || "");
+
 export function renderImages() {
   const c = $("#images"); c.innerHTML = "";
   state.images.forEach((img, i) => {
-    c.append(el("div", { class: "thumb" },
-      el("img", { src: img.url, alt: "" }),
+    const thumb = el("img", { src: img.url, alt: "",
+      onload: e => {
+        // Capture intrinsic dims once; the preview sends them as fit-planning
+        // metadata. Guard prevents a render loop.
+        if (!img.dim && e.target.naturalWidth) {
+          img.dim = e.target.naturalWidth + "x" + e.target.naturalHeight;
+          renderPreview();
+        }
+      } });
+    const kids = [thumb,
       el("input", { type: "text", placeholder: "alt text", value: img.alt,
-        oninput: e => { img.alt = e.target.value; renderPreview(); } }),
-      el("button", { class: "rm", type: "button", text: "remove",
-        onclick: () => { URL.revokeObjectURL(img.url); state.images.splice(i, 1); renderImages(); } }),
-    ));
+        oninput: e => { img.alt = e.target.value; renderPreview(); } })];
+    // Size line + compress preset menu — fresh attachments only (restored
+    // draft images are Blossom references without local bytes).
+    if (img.orig) {
+      const sizeTxt = img.file !== img.orig
+        ? `${fmtBytes(img.orig.size)} → ${fmtBytes(img.file.size)}`
+        : fmtBytes(img.file.size);
+      kids.push(el("div", { class: "imgsize", text: sizeTxt }));
+      const sel = el("select", { class: "preset", title: "compress",
+        onchange: async ev => {
+          const v = ev.target.value;
+          try {
+            const f = v === "original" ? img.orig : await compressFile(img, img.orig, v);
+            URL.revokeObjectURL(img.url);
+            img.file = f; img.url = URL.createObjectURL(f); img.preset = v;
+            img.size_bytes = f.size; img.mime = f.type; img.dim = "";
+            renderImages();
+          } catch (err) {
+            if (err.name === "AbortError") return; // superseded by a newer pick
+            flash("Compress failed: " + err.message);
+            ev.target.value = img.preset;
+          }
+        } });
+      for (const [v, label] of [["original", "original"], ["large", "large ≤2048px"],
+                                ["medium", "medium ≤1600px"], ["small", "small ≤1080px"]]) {
+        sel.append(el("option", { value: v, text: label }));
+      }
+      sel.value = img.preset || "original";
+      kids.push(sel);
+    } else if (img.size_bytes) {
+      kids.push(el("div", { class: "imgsize", text: fmtBytes(img.size_bytes) }));
+    }
+    kids.push(el("button", { class: "rm", type: "button", text: "remove",
+      onclick: () => { URL.revokeObjectURL(img.url); state.images.splice(i, 1); renderImages(); } }));
+    c.append(el("div", { class: "thumb" }, ...kids));
   });
   renderMeta(); renderPreview();
 }
@@ -1009,11 +1080,27 @@ export function composeInit() {
   $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); autoGrow(e.target); });
   autoGrow($("#master")); // size correctly if a draft was already in the field at init
   $("#addimg").addEventListener("click", () => $("#imgfile").click());
-  $("#imgfile").addEventListener("change", e => {
+  $("#imgfile").addEventListener("change", async e => {
     const file = e.target.files[0]; if (!file) return;
+    e.target.value = "";
     if (state.images.length >= 10) { flash("Max 10 images"); return; }
-    state.images.push({ file, url: URL.createObjectURL(file), alt: "" });
-    e.target.value = ""; renderImages();
+    // orig is kept so presets always re-derive from the as-attached file (no
+    // generational quality stacking) and "original" is a true client-side revert.
+    const entry = { file, orig: file, url: "", alt: "", preset: "original",
+                    size_bytes: file.size, mime: file.type, dim: "" };
+    if (isHeic(file)) {
+      // Chrome can't render HEIC previews — convert server-side immediately so
+      // the thumbnail works and nothing downstream ever sees HEIC. The
+      // converted JPEG becomes this entry's "original".
+      try {
+        entry.file = await compressFile(entry, file, "convert");
+        entry.orig = entry.file;
+        entry.size_bytes = entry.file.size; entry.mime = entry.file.type;
+      } catch (err) { flash("HEIC convert failed: " + err.message); return; }
+    }
+    entry.url = URL.createObjectURL(entry.file);
+    state.images.push(entry);
+    renderImages();
   });
   $("#schedat").addEventListener("input", updateSched);
   $("#schedclear").addEventListener("click", () => { $("#schedat").value = ""; updateSched(); });
