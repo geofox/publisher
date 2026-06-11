@@ -1,6 +1,8 @@
 package transcode
 
 import (
+	"image"
+	"os"
 	"strings"
 	"testing"
 )
@@ -51,24 +53,83 @@ func TestProfileNeeds(t *testing.T) {
 	}
 }
 
-func TestProfileFitThreadsConvertsWebP(t *testing.T) {
+func TestProfileFitThreadsFormatHandling(t *testing.T) {
+	// Sniff correction: PNG bytes lying as webp are identified as PNG, which
+	// Threads accepts — passthrough, no pointless re-encode.
 	src := encPNG(t, noiseImg(t, 50, 50))
-	// Declared mime drives the Needs check; the decoder sniffs real bytes for
-	// the re-encode. PNG bytes declared as webp = cheap way to force the
-	// format-violation path without a webp encoder.
 	r, err := Threads.Fit(src, "image/webp")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !r.Changed || r.Mime != "image/jpeg" {
-		t.Fatalf("webp-for-threads must re-encode to JPEG, got changed=%v mime=%s", r.Changed, r.Mime)
+	if r.Changed {
+		t.Fatal("PNG mislabeled as webp must sniff-correct and pass through")
 	}
-	r2, err := Threads.Fit(src, "image/png")
+	// A genuinely disallowed format (HEIC fixture) is re-encoded to JPEG.
+	heicBytes, err := os.ReadFile("testdata/sample.heic")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r2.Changed {
-		t.Fatal("small PNG already satisfies threads — must pass through")
+	r2, err := Threads.Fit(heicBytes, "image/heic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r2.Changed || r2.Mime != "image/jpeg" {
+		t.Fatalf("HEIC for threads must re-encode to JPEG: changed=%v mime=%s", r2.Changed, r2.Mime)
+	}
+	// Undecodable bytes violating the profile fail loudly instead of shipping.
+	if _, err := Threads.Fit([]byte("not an image"), "image/gif"); err == nil {
+		t.Fatal("undecodable disallowed-format input must error, not pass through")
+	}
+}
+
+func flatImg(t *testing.T, w, h int) *image.RGBA {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for i := 0; i < len(img.Pix); i += 4 {
+		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = 30, 90, 200, 255
+	}
+	return img
+}
+
+// TestNeedsFitAgreement pins the package invariant: for decodable input,
+// Needs(meta)==false ⇒ Fit passthrough (byte-identical), and Needs==true ⇒
+// Fit changes the bytes (or errors). Built after a review found the old
+// square-edge pixel translation silently re-encoding every 4032x3024 phone
+// photo for Mastodon without a badge.
+func TestNeedsFitAgreement(t *testing.T) {
+	cases := []struct {
+		name string
+		prof Profile
+		img  *image.RGBA
+	}{
+		{"iphone 12MP", Mastodon, flatImg(t, 4032, 3024)},   // 12.2 MP, edge > 4000: must pass through
+		{"panorama 12MP", Mastodon, flatImg(t, 8000, 1500)}, // long edge, under area cap: must pass through
+		{"over area 20MP", Mastodon, flatImg(t, 5000, 4000)},
+		{"small square", Mastodon, flatImg(t, 500, 500)},
+		{"small bluesky", Bluesky, flatImg(t, 800, 600)},
+	}
+	for _, c := range cases {
+		src := encJPEG(t, c.img, 85)
+		b := c.img.Bounds()
+		meta := Meta{SizeBytes: int64(len(src)), Mime: "image/jpeg", W: b.Dx(), H: b.Dy()}
+		need, reason := c.prof.Needs(meta)
+		r, err := c.prof.Fit(src, "image/jpeg")
+		if err != nil {
+			t.Fatalf("%s: fit error: %v", c.name, err)
+		}
+		if need != r.Changed {
+			t.Fatalf("%s: Needs=%v (%s) but Fit.Changed=%v — predicate disagreement", c.name, need, reason, r.Changed)
+		}
+		if r.Changed && c.prof.MaxPixels > 0 {
+			if int64(r.W)*int64(r.H) > c.prof.MaxPixels {
+				t.Fatalf("%s: fitted to %dx%d, still over %d px", c.name, r.W, r.H, c.prof.MaxPixels)
+			}
+			// Aspect ratio preserved within rounding.
+			in, out := float64(b.Dx())/float64(b.Dy()), float64(r.W)/float64(r.H)
+			if in/out > 1.01 || out/in > 1.01 {
+				t.Fatalf("%s: aspect drifted %f → %f", c.name, in, out)
+			}
+		}
 	}
 }
 

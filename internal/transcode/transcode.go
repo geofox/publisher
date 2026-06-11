@@ -14,6 +14,7 @@ import (
 	"image"
 	"image/jpeg"
 	_ "image/png"
+	"math"
 
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
@@ -46,6 +47,7 @@ const (
 type ImageParams struct {
 	MaxBytes    int64 // output byte ceiling; 0 = none
 	MaxLongEdge int   // output long-edge ceiling in px; 0 = keep dimensions
+	MaxPixels   int64 // output pixel-area ceiling; 0 = none (bomb guard still applies)
 	Format      Format
 	Quality     int // JPEG quality for re-encodes
 }
@@ -77,6 +79,9 @@ func Image(src []byte, mime string, p ImageParams) (Result, error) {
 	if p.MaxLongEdge < 0 {
 		p.MaxLongEdge = 0
 	}
+	if p.MaxPixels < 0 {
+		p.MaxPixels = 0
+	}
 	underCap := p.MaxBytes == 0 || int64(len(src)) <= p.MaxBytes
 
 	cfg, _, cerr := image.DecodeConfig(bytes.NewReader(src))
@@ -87,7 +92,8 @@ func Image(src []byte, mime string, p ImageParams) (Result, error) {
 		return Result{}, fmt.Errorf("image %dx%d exceeds %d-pixel cap", cfg.Width, cfg.Height, maxPixels)
 	}
 	if p.Format == KeepIfAllowed && underCap &&
-		cerr == nil && edgeOK(cfg.Width, cfg.Height, p.MaxLongEdge) {
+		cerr == nil && edgeOK(cfg.Width, cfg.Height, p.MaxLongEdge) &&
+		areaOK(cfg.Width, cfg.Height, p.MaxPixels) {
 		return Result{Bytes: src, Mime: mime, W: cfg.Width, H: cfg.Height}, nil
 	}
 
@@ -102,6 +108,9 @@ func Image(src []byte, mime string, p ImageParams) (Result, error) {
 	cur := flattenToWhite(img)
 	if !edgeOK(cur.Bounds().Dx(), cur.Bounds().Dy(), p.MaxLongEdge) {
 		cur = scaleToEdge(cur, p.MaxLongEdge)
+	}
+	if b := cur.Bounds(); !areaOK(b.Dx(), b.Dy(), p.MaxPixels) {
+		cur = scaleToArea(cur, p.MaxPixels)
 	}
 	for i := 0; i < maxFitIterations; i++ {
 		var buf bytes.Buffer
@@ -128,6 +137,41 @@ func edgeOK(w, h, maxEdge int) bool {
 		return true
 	}
 	return w <= maxEdge && h <= maxEdge
+}
+
+func areaOK(w, h int, maxPixels int64) bool {
+	if maxPixels == 0 {
+		return true
+	}
+	return int64(w)*int64(h) <= maxPixels
+}
+
+// scaleToArea shrinks img so its pixel count fits maxPixels, preserving the
+// aspect ratio (unlike a square edge bound, panoramas keep their long edge
+// proportionally). float64 sqrt/mult are IEEE-deterministic, and the trailing
+// guard loop makes the result exact.
+func scaleToArea(img *image.RGBA, maxPixels int64) *image.RGBA {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	f := math.Sqrt(float64(maxPixels) / (float64(w) * float64(h)))
+	nw, nh := int(float64(w)*f), int(float64(h)*f)
+	if nw < 1 {
+		nw = 1
+	}
+	if nh < 1 {
+		nh = 1
+	}
+	for int64(nw)*int64(nh) > maxPixels && (nw > 1 || nh > 1) {
+		if nw > 1 {
+			nw--
+		}
+		if nh > 1 {
+			nh--
+		}
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), img, b, draw.Over, nil)
+	return dst
 }
 
 // flattenToWhite composites img over a white background (JPEG has no alpha).

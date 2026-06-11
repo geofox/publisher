@@ -1,15 +1,18 @@
 package transcode
 
 import (
+	"bytes"
 	"fmt"
+	"image"
 	"strconv"
 	"strings"
 )
 
 // Profile is one platform's media constraints. Needs (metadata-only, cheap —
 // safe on every preview refresh) and Fit (pixel work, dispatch-time) apply the
-// same predicate, which is what keeps preview badges and published bytes in
-// agreement.
+// same constraints, so preview badges and published bytes agree for decodable
+// input; Fit additionally sniff-corrects lying mimes and errors on
+// unconvertible violations.
 type Profile struct {
 	Name      string
 	MaxBytes  int64
@@ -84,28 +87,33 @@ func (p Profile) mimeOK(mime string) bool {
 }
 
 // Fit returns src unchanged when it satisfies the profile and a deterministic
-// JPEG re-encode under the profile's ceilings otherwise. Note: when the
-// profile has a pixel cap, the cap is translated to a square long-edge bound —
-// an extreme panorama under the area cap but over that edge gets downscaled
-// slightly more than strictly necessary; the output is still valid everywhere.
+// JPEG re-encode under the profile's ceilings otherwise. The declared mime is
+// corrected by sniffing the actual bytes first (browsers and remote servers
+// lie), so the format decision is made on truth; Needs, which only has
+// metadata, stays optimistic — dispatch re-checking here is the contract.
 func (p Profile) Fit(src []byte, mime string) (Result, error) {
-	maxEdge := 0
-	if p.MaxPixels > 0 {
-		maxEdge = intSqrt(p.MaxPixels)
+	if _, format, err := image.DecodeConfig(bytes.NewReader(src)); err == nil {
+		mime = "image/" + format
 	}
-	format := KeepIfAllowed
+	enc := KeepIfAllowed
 	if !p.mimeOK(mime) {
-		format = JPEG
+		enc = JPEG
 	}
-	return Image(src, mime, ImageParams{MaxBytes: p.MaxBytes, MaxLongEdge: maxEdge, Format: format, Quality: p.Quality})
-}
-
-func intSqrt(n int64) int {
-	x := int64(1)
-	for x*x <= n {
-		x++
+	r, err := Image(src, mime, ImageParams{MaxBytes: p.MaxBytes, MaxPixels: p.MaxPixels, Format: enc, Quality: p.Quality})
+	if err != nil {
+		return r, err
 	}
-	return int(x - 1)
+	// Undecodable input that violates the profile passed through Image()'s
+	// small-input escape: fail loudly rather than ship bytes the platform is
+	// guaranteed to reject. (A decodable result always satisfies the profile.)
+	// Note: this Needs check omits W/H (unknown for undecodable bytes), so a
+	// >100MP decodable bomb that sneaks under MaxBytes still passes through here.
+	if !r.Changed {
+		if need, reason := p.Needs(Meta{SizeBytes: int64(len(r.Bytes)), Mime: r.Mime}); need {
+			return Result{}, fmt.Errorf("media violates %s constraints (%s) and cannot be converted", p.Name, reason)
+		}
+	}
+	return r, nil
 }
 
 // ParseDim splits a "WxH" media-row dim string; (0,0) when malformed.
@@ -114,9 +122,9 @@ func ParseDim(dim string) (w, h int) {
 	if !ok {
 		return 0, 0
 	}
-	w, _ = strconv.Atoi(a)
-	h, _ = strconv.Atoi(b)
-	if w < 0 || h < 0 {
+	w, errW := strconv.Atoi(a)
+	h, errH := strconv.Atoi(b)
+	if errW != nil || errH != nil || w <= 0 || h <= 0 {
 		return 0, 0
 	}
 	return w, h
