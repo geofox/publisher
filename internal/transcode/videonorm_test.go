@@ -1,8 +1,12 @@
 package transcode
 
 import (
+	"bytes"
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -99,6 +103,85 @@ func TestNormalizeRotatedPortrait(t *testing.T) {
 	}
 	if o.W != 240 || o.H != 320 {
 		t.Fatalf("output dims %dx%d, want 240x320 (autorotation + display-fitted scale)", o.W, o.H)
+	}
+}
+
+func TestNormalizeArgsFPSClamp(t *testing.T) {
+	cases := []struct{ in, want float64 }{
+		{0, 60}, {90, 60}, {-5, 60},
+		{15, 30}, {12, 24}, {10, 40}, {23, 46}, {24, 24}, {60, 60}, {29.97, 29.97},
+	}
+	for _, c := range cases {
+		s := strings.Join(normalizeArgs("a", "b", NormParams{W: 2, H: 2, FPS: c.in, HasAudio: false}), " ")
+		want := "-r " + strconv.FormatFloat(c.want, 'f', -1, 64)
+		if !strings.Contains(s, want+" ") && !strings.HasSuffix(s, want) {
+			t.Fatalf("fps %v: args %q missing %q", c.in, s, want)
+		}
+	}
+}
+
+func TestNormalizeSilentInput(t *testing.T) {
+	ffmpeg, ffprobe := requireFFmpeg(t)
+	out := filepath.Join(t.TempDir(), "silent.mp4")
+	// video-only fixture: build without the sine audio input
+	in := filepath.Join(t.TempDir(), "noaudio.mp4")
+	if b, err := exec.Command(ffmpeg, "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=30",
+		"-c:v", "libx264", "-an", "-y", in).CombinedOutput(); err != nil {
+		t.Fatalf("fixture: %v\n%s", err, b)
+	}
+	if err := Normalize(context.Background(), ffmpeg, in, out,
+		NormParams{W: 320, H: 240, FPS: 30, HasAudio: false, DurationSecs: 1}, nil); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Probe(context.Background(), ffprobe, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.HasAudio {
+		t.Fatal("silent input must yield no audio stream")
+	}
+}
+
+func TestNormalizeJunkInputErrors(t *testing.T) {
+	ffmpeg, _ := requireFFmpeg(t)
+	in := filepath.Join(t.TempDir(), "junk.mov")
+	os.WriteFile(in, []byte("not a video"), 0o644)
+	err := Normalize(context.Background(), ffmpeg, in, filepath.Join(t.TempDir(), "o.mp4"),
+		NormParams{W: 2, H: 2, FPS: 30}, nil)
+	if err == nil {
+		t.Fatal("junk must error")
+	}
+	if len(err.Error()) > 800 {
+		t.Fatalf("error not bounded: %d bytes", len(err.Error()))
+	}
+}
+
+func TestNormalizeFaststart(t *testing.T) {
+	ffmpeg, _ := requireFFmpeg(t)
+	in := makeFixture(t, ffmpeg)
+	out := in + ".fs.mp4"
+	if err := Normalize(context.Background(), ffmpeg, in, out,
+		NormParams{W: 320, H: 240, FPS: 30, HasAudio: true, DurationSecs: 2}, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moov, mdat := bytes.Index(b, []byte("moov")), bytes.Index(b, []byte("mdat"))
+	if moov < 0 || mdat < 0 || moov > mdat {
+		t.Fatalf("faststart violated: moov@%d mdat@%d", moov, mdat)
+	}
+}
+
+func TestNormalizeCancelledCtx(t *testing.T) {
+	ffmpeg, _ := requireFFmpeg(t)
+	in := makeFixture(t, ffmpeg)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := Normalize(ctx, ffmpeg, in, in+".c.mp4", NormParams{W: 320, H: 240, FPS: 30, DurationSecs: 2}, nil)
+	if err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("want wrapped ctx error, got %v", err)
 	}
 }
 
