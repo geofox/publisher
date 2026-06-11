@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"image"
+	"image/jpeg"
 	"image/png"
 	"os"
 	"testing"
@@ -100,5 +101,38 @@ func TestPrepThreadsImgsNilHostIsIdentity(t *testing.T) {
 	ti, err := prepThreadsImgs(context.Background(), imgs, nil)
 	if err != nil || ti[0].URL != "https://b/heic" {
 		t.Fatalf("nil host must keep canonical URLs (old behavior): %+v err=%v", ti, err)
+	}
+}
+
+// flatJPEG returns an over-16MP JPEG that violates the mastodon pixel cap
+// while staying tiny in bytes (uniform color compresses to almost nothing).
+func flatJPEG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for i := 0; i < len(img.Pix); i += 4 {
+		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = 30, 90, 200, 255
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestFitImgsReencodesViolations(t *testing.T) {
+	src := flatJPEG(t, 5000, 4000) // 20 MP > mastodon's 16 MP cap
+	imgs := []Img{{Bytes: src, Mime: "image/jpeg", Alt: "big", BlossomURL: "https://b/big"}}
+	out, err := fitImgs("mastodon", imgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(out[0].Bytes, src) {
+		t.Fatal("over-pixel-cap image must be re-encoded for mastodon")
+	}
+	if out[0].Mime != "image/jpeg" || out[0].Alt != "big" || out[0].BlossomURL != "https://b/big" {
+		t.Fatalf("swap must replace bytes+mime only: %+v", out[0])
+	}
+	if !bytes.Equal(imgs[0].Bytes, src) {
+		t.Fatal("input slice must not be mutated")
 	}
 }

@@ -86,9 +86,16 @@ func (a NostrAdapter) RebroadcastToRelay(ctx context.Context, signedEventJSON, r
 type MastodonAdapter struct{ C *mastodon.Client }
 
 func (a MastodonAdapter) PostText(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
+	spoiler := firstNonEmpty(o.SpoilerText, o.ContentWarning)
+	r := TargetResult{Platform: "mastodon"}
+	reqB, _ := json.Marshal(map[string]any{
+		"text": text, "visibility": o.Visibility, "language": o.Language, "spoiler_text": spoiler,
+	})
+	r.RequestJSON = string(reqB)
+
 	fitted, err := fitImgs("mastodon", imgs)
 	if err != nil {
-		r := TargetResult{Platform: "mastodon", Status: "failed", Error: err.Error()}
+		r.Status, r.Error = "failed", err.Error()
 		return r, err
 	}
 	var mi []mastodon.Image
@@ -96,18 +103,12 @@ func (a MastodonAdapter) PostText(ctx context.Context, text string, o Overrides,
 		mi = append(mi, mastodon.Image{Bytes: im.Bytes, Alt: im.Alt})
 	}
 	p := mastodon.Post{
-		Text: text, SpoilerText: firstNonEmpty(o.SpoilerText, o.ContentWarning),
+		Text: text, SpoilerText: spoiler,
 		Sensitive: o.Sensitive, Visibility: o.Visibility, Language: o.Language, Images: mi,
 	}
 	if replyTo != nil {
 		p.InReplyToID = replyTo.ParentID
 	}
-	r := TargetResult{Platform: "mastodon"}
-	reqB, _ := json.Marshal(map[string]any{
-		"text": text, "visibility": o.Visibility, "language": o.Language, "spoiler_text": p.SpoilerText,
-	})
-	r.RequestJSON = string(reqB)
-
 	res, err := a.C.Post(ctx, p)
 	if err != nil {
 		r.Status, r.Error = "failed", err.Error()
@@ -185,15 +186,16 @@ type ThreadsAdapter struct {
 
 func (a ThreadsAdapter) PostThreads(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
 	r := TargetResult{Platform: "threads"}
+	reqB, _ := json.Marshal(map[string]any{
+		"text": text, "topic_tag": o.TopicTag, "images": len(imgs), "reply_control": o.ThreadsReplyControl,
+	})
+	r.RequestJSON = string(reqB)
+
 	ti, err := prepThreadsImgs(ctx, imgs, a.Host)
 	if err != nil {
 		r.Status, r.Error = "failed", err.Error()
 		return r, err
 	}
-	reqB, _ := json.Marshal(map[string]any{
-		"text": text, "topic_tag": o.TopicTag, "images": len(ti), "reply_control": o.ThreadsReplyControl,
-	})
-	r.RequestJSON = string(reqB)
 
 	tp := threads.Post{Text: text, TopicTag: o.TopicTag, Images: ti, ReplyControl: o.ThreadsReplyControl}
 	if replyTo != nil {
@@ -336,9 +338,11 @@ func fitImgs(plat string, imgs []Img) ([]Img, error) {
 // Threads ingests by URL (Meta fetches it), so an image violating the Threads
 // profile is re-encoded and re-hosted via host, and Meta gets the variant URL.
 // Blossom is content-addressed (sha256 keys): the deterministic re-encode
-// yields the same bytes → same URL on every (re)dispatch, so retries re-host
-// as a no-op. nil host keeps the pre-feature behavior (canonical URLs, no
-// fitting).
+// yields the same bytes → same URL on every (re)dispatch, so retries converge
+// on one stable variant URL. The work itself is NOT skipped (variant shas have
+// no media row, so the pipeline's Lookup can't short-circuit) — each redrive
+// re-encodes and re-PUTs; bounded by the retrier's attempt cap. nil host keeps
+// the pre-feature behavior (canonical URLs, no fitting).
 func prepThreadsImgs(ctx context.Context, imgs []Img, host func(ctx context.Context, body []byte, mime string) (string, error)) ([]threads.Image, error) {
 	var ti []threads.Image
 	for i, im := range imgs {
