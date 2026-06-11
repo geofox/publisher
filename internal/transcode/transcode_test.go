@@ -210,8 +210,8 @@ func jpegBomb(t *testing.T, w, h int) []byte {
 	// SOS: FF DA | len(2be) | ncomp(1) | comp[2*1] | 3 spec bytes | data
 	// len = 2 + 1 + 2*1 + 3 = 8
 	buf.Write([]byte{0xff, 0xda, 0x00, 0x08})
-	buf.Write([]byte{1})       // 1 component
-	buf.Write([]byte{1, 0x00}) // comp selector + Huffman table ids
+	buf.Write([]byte{1})        // 1 component
+	buf.Write([]byte{1, 0x00})  // comp selector + Huffman table ids
 	buf.Write([]byte{0, 63, 0}) // Ss, Se, Ah/Al
 	buf.Write([]byte{0x00})     // minimal (invalid) scan data
 	// EOI
