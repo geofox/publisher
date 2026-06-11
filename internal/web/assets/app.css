@@ -345,6 +345,7 @@ textarea.master,.verify-input{}
 .pv-seg-count{margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--faint)}
 .pv-seg-count.over{color:var(--red)}
 .pv-warn{color:var(--amber);font-size:12px;margin-top:6px}
+.pv-fitnote { font-size: 0.72rem; color: var(--faint); padding: 2px 8px; opacity: 0.85; }
 
 /* ── Glass bottom sheet (thread review) ─────────────────────────────────── */
 .sheet-bk{position:fixed;inset:0;z-index:60;background:rgba(20,24,40,.28);-webkit-backdrop-filter:blur(1px);backdrop-filter:blur(1px);display:flex;align-items:flex-end;animation:fade .18s ease-out}

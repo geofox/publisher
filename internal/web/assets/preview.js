@@ -117,6 +117,16 @@ function platformSwitch(p) {
   return sel;
 }
 
+// appendFitNotes renders the planned platform-fit conversions ("image 2
+// → JPEG (over 1.9 MB)") under a preview card. Server-planned (PlanMediaFit),
+// so the badge and the dispatch-time re-encode share one predicate.
+function appendFitNotes(host, platform, notes) {
+  for (const n of notes || []) {
+    host.appendChild(el("div", { class: "pv-fitnote",
+      text: `image ${n.ordinal + 1} ${n.note} for ${META[platform].label}` }));
+  }
+}
+
 // threadPreview fetches the per-platform split for the focused platform and
 // renders the segment chain into `container`. Returns true if it rendered a
 // multi-segment thread, false if the draft fits in one post (caller renders the
@@ -125,10 +135,32 @@ export async function threadPreview(container, text, platform, number) {
   if (!text.trim()) return false;
   let data;
   try {
+    // Build the media metadata array from state.images (which carry size_bytes,
+    // mime, dim for both fresh files and restored drafts). Fan-out source media
+    // from interaction previews only have {url,alt} — send zeros for those;
+    // the server uses the array to raise image-count only, never to split wrong.
+    const pvMedia = previewMedia(platform);
+    const userCount = state.images.length;
+    const media = pvMedia.map((_, idx) => {
+      if (idx < userCount) {
+        const img = state.images[idx];
+        return {
+          size_bytes: img.file ? img.file.size : (img.size_bytes || 0),
+          mime: img.file ? img.file.type : (img.mime || ""),
+          dim: img.dim || "",
+        };
+      }
+      return { size_bytes: 0, mime: "", dim: "" };
+    });
     const resp = await fetch("/api/thread-preview", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, platforms: [platform], number, images: previewMedia(platform).length, interaction: !!state.interaction }),
+      body: JSON.stringify({
+        text, platforms: [platform], number,
+        images: pvMedia.length,
+        media,
+        interaction: !!state.interaction,
+      }),
     });
     data = await resp.json();
   } catch {
@@ -136,12 +168,15 @@ export async function threadPreview(container, text, platform, number) {
   }
   const pv = (data.previews || []).find((p) => p.platform === platform);
   if (!pv) return false;
+  const fitNotes = pv.fit_notes || [];
   if (pv.count < 2) {
-    if (!pv.card) return false;
-    // Single post with a link card: re-render with the authoritative
+    if (!pv.card && !fitNotes.length) return false;
+    // Single post with a link card or fit notes: re-render with the authoritative
     // (possibly URL-stripped) text and the planned card attached.
     container.innerHTML = "";
     _renderSinglePost(container, platform, { text: pv.segments[0], card: pv.card });
+    // Append fit notes inside the platform card that _renderSinglePost created.
+    appendFitNotes(container.querySelector(".pv-card") || container, platform, fitNotes);
     return true;
   }
 
@@ -186,6 +221,7 @@ export async function threadPreview(container, text, platform, number) {
   (pv.warnings || []).forEach((wmsg) => {
     wrap.appendChild(el("div", { class: "pv-warn", text: wmsg }));
   });
+  appendFitNotes(wrap, platform, fitNotes);
   container.appendChild(wrap);
   return true;
 }
