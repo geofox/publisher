@@ -158,8 +158,10 @@ func scaleToEdge(img *image.RGBA, maxEdge int) *image.RGBA {
 }
 
 // decode dispatches to the right decoder and bakes JPEG EXIF orientation in.
-// HEIC needs an explicit decoder (gen2brain/heic registers no format); see
-// heic.go. Orientation: libheif applies HEIC transforms itself, and PNG/WebP
+// HEIC goes through an explicit decoder: gen2brain/heic registers a format for
+// heic-major-brand files only, so the explicit path is what covers the other
+// brands (heix/hevc/…). Orientation: libheif applies HEIC transforms itself,
+// and PNG/WebP
 // don't carry EXIF orientation in practice, so only JPEG needs the bake.
 func decode(src []byte, mime string) (image.Image, error) {
 	if IsHEIC(mime, src) {
@@ -176,7 +178,3 @@ func decode(src []byte, mime string) (image.Image, error) {
 	}
 	return img, nil
 }
-
-// Stubs — replaced by heic.go (Task 3).
-func IsHEIC(string, []byte) bool             { return false }
-func decodeHEIC([]byte) (image.Image, error) { return nil, fmt.Errorf("heic: not wired") }
