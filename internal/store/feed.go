@@ -104,13 +104,13 @@ func (s *Store) PublicFeed(limit int) ([]Post, error) {
 		}
 		trows.Close()
 
-		mrows, err := s.sql.Query(`SELECT ordinal, blossom_url, sha256, mime, dim, blurhash, size_bytes, alt FROM media WHERE post_id=? ORDER BY ordinal`, out[i].ID)
+		mrows, err := s.sql.Query(`SELECT ordinal, blossom_url, sha256, mime, dim, blurhash, size_bytes, alt, COALESCE(duration_secs,0) FROM media WHERE post_id=? ORDER BY ordinal`, out[i].ID)
 		if err != nil {
 			return nil, err
 		}
 		for mrows.Next() {
 			var m Media
-			if err := mrows.Scan(&m.Ordinal, &m.BlossomURL, &m.SHA256, &m.Mime, &m.Dim, &m.Blurhash, &m.SizeBytes, &m.Alt); err != nil {
+			if err := mrows.Scan(&m.Ordinal, &m.BlossomURL, &m.SHA256, &m.Mime, &m.Dim, &m.Blurhash, &m.SizeBytes, &m.Alt, &m.DurationSecs); err != nil {
 				mrows.Close()
 				return nil, err
 			}

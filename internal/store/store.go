@@ -59,7 +59,16 @@ func (s *Store) migrate() error {
 	if err := s.addColumnIfMissing("target_relays", "gave_up_at", "TIMESTAMP"); err != nil {
 		return err
 	}
-	return s.addColumnIfMissing("target_relays", "retry_count", "INTEGER NOT NULL DEFAULT 0")
+	if err := s.addColumnIfMissing("target_relays", "retry_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("media", "duration_secs", "INTEGER"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("draft_media", "duration_secs", "INTEGER"); err != nil {
+		return err
+	}
+	return nil
 }
 
 // addColumnIfMissing performs an idempotent ALTER TABLE ADD COLUMN (SQLite has

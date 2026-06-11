@@ -10,29 +10,29 @@ import (
 
 // Interaction records that a Post is a reply/repost/quote of an external source.
 type Interaction struct {
-	Action         string `json:"action"`          // reply|repost|quote
+	Action         string `json:"action"` // reply|repost|quote
 	SourcePlatform string `json:"source_platform"`
 	SourceURL      string `json:"source_url"`
 	SourceAuthor   string `json:"source_author"`
 }
 
 type Post struct {
-	ID           string       `json:"id"`
-	CreatedAt    time.Time    `json:"created_at"`
-	MasterText   string       `json:"master_text"`
-	Platforms    []string     `json:"platforms"`
-	DelaySeconds int          `json:"delay_seconds"`
-	Source       string       `json:"source"`
-	Status       string       `json:"status"`
-	ScheduledAt  *time.Time   `json:"scheduled_at,omitempty"`
-	FiredAt      *time.Time   `json:"fired_at,omitempty"` // list view: latest target attempt time (actual publish/retry)
+	ID           string     `json:"id"`
+	CreatedAt    time.Time  `json:"created_at"`
+	MasterText   string     `json:"master_text"`
+	Platforms    []string   `json:"platforms"`
+	DelaySeconds int        `json:"delay_seconds"`
+	Source       string     `json:"source"`
+	Status       string     `json:"status"`
+	ScheduledAt  *time.Time `json:"scheduled_at,omitempty"`
+	FiredAt      *time.Time `json:"fired_at,omitempty"` // list view: latest target attempt time (actual publish/retry)
 	// FirstSuccessAt is the earliest time the post went live on ANY platform
 	// (MIN over successful attempts). Set only by PublicFeed, never serialized.
 	// Retries append later attempt rows, so this never moves once set.
-	FirstSuccessAt *time.Time `json:"-"`
-	Targets      []Target     `json:"targets,omitempty"`
-	Media        []Media      `json:"media,omitempty"`
-	Interaction  *Interaction `json:"interaction,omitempty"`
+	FirstSuccessAt *time.Time   `json:"-"`
+	Targets        []Target     `json:"targets,omitempty"`
+	Media          []Media      `json:"media,omitempty"`
+	Interaction    *Interaction `json:"interaction,omitempty"`
 }
 
 type Target struct {
@@ -65,14 +65,15 @@ type Attempt struct {
 }
 
 type Media struct {
-	Ordinal    int    `json:"ordinal"`
-	BlossomURL string `json:"blossom_url"`
-	SHA256     string `json:"sha256"`
-	Mime       string `json:"mime"`
-	Dim        string `json:"dim"`
-	Blurhash   string `json:"blurhash"`
-	SizeBytes  int64  `json:"size_bytes"`
-	Alt        string `json:"alt"`
+	Ordinal      int    `json:"ordinal"`
+	BlossomURL   string `json:"blossom_url"`
+	SHA256       string `json:"sha256"`
+	Mime         string `json:"mime"`
+	Dim          string `json:"dim"`
+	Blurhash     string `json:"blurhash"`
+	SizeBytes    int64  `json:"size_bytes"`
+	Alt          string `json:"alt"`
+	DurationSecs int64  `json:"duration_secs,omitempty"` // video only; 0 for images
 }
 
 type RelayState struct {
@@ -121,9 +122,9 @@ func (s *Store) SavePost(p *Post) error {
 	}
 	for _, m := range p.Media {
 		if _, err = tx.Exec(
-			`INSERT INTO media(post_id,ordinal,blossom_url,sha256,mime,dim,blurhash,size_bytes,alt)
-			 VALUES(?,?,?,?,?,?,?,?,?)`,
-			p.ID, m.Ordinal, m.BlossomURL, m.SHA256, m.Mime, m.Dim, m.Blurhash, m.SizeBytes, m.Alt,
+			`INSERT INTO media(post_id,ordinal,blossom_url,sha256,mime,dim,blurhash,size_bytes,alt,duration_secs)
+			 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+			p.ID, m.Ordinal, m.BlossomURL, m.SHA256, m.Mime, m.Dim, m.Blurhash, m.SizeBytes, m.Alt, m.DurationSecs,
 		); err != nil {
 			return err
 		}
@@ -193,14 +194,14 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		}
 	}
 
-	mrows, err := s.sql.Query(`SELECT ordinal,blossom_url,sha256,mime,dim,blurhash,size_bytes,alt FROM media WHERE post_id=? ORDER BY ordinal`, id)
+	mrows, err := s.sql.Query(`SELECT ordinal,blossom_url,sha256,mime,dim,blurhash,size_bytes,alt,COALESCE(duration_secs,0) FROM media WHERE post_id=? ORDER BY ordinal`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer mrows.Close()
 	for mrows.Next() {
 		var m Media
-		if err := mrows.Scan(&m.Ordinal, &m.BlossomURL, &m.SHA256, &m.Mime, &m.Dim, &m.Blurhash, &m.SizeBytes, &m.Alt); err != nil {
+		if err := mrows.Scan(&m.Ordinal, &m.BlossomURL, &m.SHA256, &m.Mime, &m.Dim, &m.Blurhash, &m.SizeBytes, &m.Alt, &m.DurationSecs); err != nil {
 			return nil, err
 		}
 		p.Media = append(p.Media, m)

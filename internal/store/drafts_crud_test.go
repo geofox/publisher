@@ -52,6 +52,34 @@ func TestCreateAndGetDraft(t *testing.T) {
 	}
 }
 
+func TestDraftMediaDurationRoundtrip(t *testing.T) {
+	s := openTestStore(t)
+	d := &Draft{
+		ID:         "ddur1",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		MasterText: "video draft",
+		Spec:       `{}`,
+		Media: []Media{
+			{Ordinal: 0, BlossomURL: "https://blossom/v", SHA256: "vv", Mime: "video/mp4",
+				Dim: "1920x1080", SizeBytes: 99999, Alt: "video clip", DurationSecs: 7},
+		},
+	}
+	if err := s.CreateDraft(d); err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	got, err := s.GetDraft("ddur1")
+	if err != nil {
+		t.Fatalf("GetDraft: %v", err)
+	}
+	if len(got.Media) != 1 {
+		t.Fatalf("expected 1 media row, got %d", len(got.Media))
+	}
+	if got.Media[0].DurationSecs != 7 {
+		t.Errorf("DurationSecs: got %d, want 7", got.Media[0].DurationSecs)
+	}
+}
+
 func TestGetDraftNotFound(t *testing.T) {
 	s := openTestStore(t)
 	if _, err := s.GetDraft("missing"); err == nil {

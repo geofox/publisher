@@ -57,7 +57,9 @@ func TestSaveAndGetPost(t *testing.T) {
 
 func TestSavePostScrubsAttemptSecrets(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "t.db"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
 	rec := &Post{
 		ID: "p1", CreatedAt: time.Now().UTC(), Platforms: []string{"mastodon"}, Source: "web", Status: "success",
@@ -66,9 +68,13 @@ func TestSavePostScrubsAttemptSecrets(t *testing.T) {
 				RequestJSON:  `{"Authorization":"Bearer SECRET123","text":"hi"}`,
 				ResponseJSON: `{"ok":true}`, AttemptedAt: time.Now()}}}},
 	}
-	if err := db.SavePost(rec); err != nil { t.Fatal(err) }
+	if err := db.SavePost(rec); err != nil {
+		t.Fatal(err)
+	}
 	got, err := db.GetPost("p1")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	rj := got.Targets[0].Attempts[0].RequestJSON
 	if strings.Contains(rj, "SECRET123") {
 		t.Errorf("secret persisted unscrubbed: %s", rj)
@@ -163,7 +169,7 @@ func TestListPostsCarriesInteraction(t *testing.T) {
 	rec := &Post{ID: "li1", CreatedAt: time.Now().UTC().Truncate(time.Second),
 		Platforms: []string{"bluesky"}, Source: "web", Status: "success",
 		Interaction: &Interaction{Action: "repost", SourcePlatform: "bluesky", SourceAuthor: "@bob"},
-		Targets: []Target{{Platform: "bluesky", Status: "success"}}}
+		Targets:     []Target{{Platform: "bluesky", Status: "success"}}}
 	if err := db.SavePost(rec); err != nil {
 		t.Fatal(err)
 	}
@@ -211,6 +217,37 @@ func TestPostWithoutInteractionLoadsNil(t *testing.T) {
 	got, _ := db.GetPost("n1")
 	if got.Interaction != nil {
 		t.Fatalf("normal post should have nil interaction, got %+v", got.Interaction)
+	}
+}
+
+func TestMediaDurationRoundtrip(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "dur.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	rec := &Post{
+		ID: "dur1", CreatedAt: time.Now().UTC().Truncate(time.Second),
+		MasterText: "clip", Platforms: []string{"nostr"}, Source: "web", Status: "success",
+		Targets: []Target{{Platform: "nostr", Status: "success"}},
+		Media: []Media{
+			{Ordinal: 0, BlossomURL: "https://b/x", SHA256: "aa", Mime: "video/mp4",
+				Dim: "1280x720", SizeBytes: 12345, Alt: "clip", DurationSecs: 42},
+		},
+	}
+	if err := db.SavePost(rec); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetPost("dur1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Media) != 1 {
+		t.Fatalf("expected 1 media row, got %d", len(got.Media))
+	}
+	if got.Media[0].DurationSecs != 42 {
+		t.Errorf("DurationSecs: got %d, want 42", got.Media[0].DurationSecs)
 	}
 }
 

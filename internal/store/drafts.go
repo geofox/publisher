@@ -112,9 +112,9 @@ func (s *Store) CreateDraft(d *Draft) error {
 func insertDraftMedia(tx *sql.Tx, draftID string, media []Media) error {
 	for _, m := range media {
 		if _, err := tx.Exec(
-			`INSERT INTO draft_media(draft_id, ordinal, blossom_url, sha256, mime, dim, blurhash, size_bytes, alt)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			draftID, m.Ordinal, m.BlossomURL, m.SHA256, m.Mime, m.Dim, m.Blurhash, m.SizeBytes, m.Alt,
+			`INSERT INTO draft_media(draft_id, ordinal, blossom_url, sha256, mime, dim, blurhash, size_bytes, alt, duration_secs)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			draftID, m.Ordinal, m.BlossomURL, m.SHA256, m.Mime, m.Dim, m.Blurhash, m.SizeBytes, m.Alt, m.DurationSecs,
 		); err != nil {
 			return fmt.Errorf("insertDraftMedia: %w", err)
 		}
@@ -158,7 +158,7 @@ func (s *Store) GetDraft(id string) (*Draft, error) {
 func (s *Store) getDraftMedia(draftID string) ([]Media, error) {
 	rows, err := s.sql.Query(
 		`SELECT ordinal, blossom_url, sha256, COALESCE(mime,''), COALESCE(dim,''),
-		        COALESCE(blurhash,''), COALESCE(size_bytes,0), COALESCE(alt,'')
+		        COALESCE(blurhash,''), COALESCE(size_bytes,0), COALESCE(alt,''), COALESCE(duration_secs,0)
 		 FROM draft_media WHERE draft_id=? ORDER BY ordinal`, draftID,
 	)
 	if err != nil {
@@ -168,7 +168,7 @@ func (s *Store) getDraftMedia(draftID string) ([]Media, error) {
 	var out []Media
 	for rows.Next() {
 		var m Media
-		if err := rows.Scan(&m.Ordinal, &m.BlossomURL, &m.SHA256, &m.Mime, &m.Dim, &m.Blurhash, &m.SizeBytes, &m.Alt); err != nil {
+		if err := rows.Scan(&m.Ordinal, &m.BlossomURL, &m.SHA256, &m.Mime, &m.Dim, &m.Blurhash, &m.SizeBytes, &m.Alt, &m.DurationSecs); err != nil {
 			return nil, err
 		}
 		out = append(out, m)

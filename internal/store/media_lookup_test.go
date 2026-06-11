@@ -24,8 +24,8 @@ func TestLookupMediaURL_postsAndDrafts(t *testing.T) {
 	post := &Post{
 		ID: "p1", CreatedAt: time.Now().UTC(), MasterText: "x",
 		Platforms: []string{"nostr"}, Source: "test", Status: "sent",
-		Targets:   []Target{{Platform: "nostr", Status: "sent"}},
-		Media:     []Media{{Ordinal: 0, BlossomURL: "https://blossom/p", SHA256: "p-sha"}},
+		Targets: []Target{{Platform: "nostr", Status: "sent"}},
+		Media:   []Media{{Ordinal: 0, BlossomURL: "https://blossom/p", SHA256: "p-sha"}},
 	}
 	if err := s.SavePost(post); err != nil {
 		t.Fatalf("SavePost: %v", err)
