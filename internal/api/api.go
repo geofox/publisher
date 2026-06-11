@@ -615,16 +615,18 @@ func (a *API) handleCompressMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := transcode.Image(body, fh.Header.Get("Content-Type"), params)
 	if err != nil {
-		// Input problem (pixel bomb, unconvertible), not a server fault: 422
+		// Unconvertible input, not a server fault: 422
 		// so the composer flashes the reason and keeps the original file.
 		httpx.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 	if !res.Changed {
 		// Presets force JPEG, so decodable input always re-encodes; an
-		// unchanged result means transcode's undecodable-passthrough fired.
+		// unchanged result means transcode's passthrough fired — either the
+		// image was not decodable, or it exceeded the 100 MP pixel cap
+		// (pixel presets carry no MaxBytes, so no transcode error is returned).
 		// Never hand the original back as if it were compressed.
-		httpx.WriteError(w, http.StatusUnprocessableEntity, "not a decodable image")
+		httpx.WriteError(w, http.StatusUnprocessableEntity, "image could not be compressed (not decodable, or over the 100 MP cap)")
 		return
 	}
 	slog.Info("compress_media", "preset", r.FormValue("preset"),
