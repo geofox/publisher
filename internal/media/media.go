@@ -13,6 +13,7 @@ import (
 	_ "image/png"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -27,14 +28,15 @@ import (
 // raw bytes (kept so platform clients that need a binary upload — Bluesky,
 // Mastodon — don't re-download).
 type Result struct {
-	URL      string    `json:"url"`
-	SHA256   string    `json:"sha256"`
-	Size     int64     `json:"size"`
-	Mime     string    `json:"mime"`
-	Dim      string    `json:"dim,omitempty"`
-	Blurhash string    `json:"blurhash,omitempty"`
-	Imeta    nostr.Tag `json:"imeta"`
-	Bytes    []byte    `json:"-"`
+	URL          string    `json:"url"`
+	SHA256       string    `json:"sha256"`
+	Size         int64     `json:"size"`
+	Mime         string    `json:"mime"`
+	Dim          string    `json:"dim,omitempty"`
+	Blurhash     string    `json:"blurhash,omitempty"`
+	DurationSecs int64     `json:"duration_secs,omitempty"`
+	Imeta        nostr.Tag `json:"imeta"`
+	Bytes        []byte    `json:"-"`
 }
 
 type Pipeline struct {
@@ -113,6 +115,12 @@ func ImetaTag(url, mime, sha, dim, blurhash string) nostr.Tag {
 }
 
 func (p *Pipeline) blossomUpload(ctx context.Context, body []byte, sha, mime string) (string, error) {
+	return p.blossomUploadStream(ctx, bytes.NewReader(body), int64(len(body)), sha, mime)
+}
+
+// blossomUploadStream is blossomUpload with a streaming body (the auth event
+// signs the sha, not the bytes, so streaming changes nothing semantically).
+func (p *Pipeline) blossomUploadStream(ctx context.Context, body io.Reader, size int64, sha, mime string) (string, error) {
 	auth := nostr.Event{
 		PubKey: p.OwnerPub, CreatedAt: nostr.Timestamp(time.Now().Unix()), Kind: 24242,
 		Tags: nostr.Tags{
@@ -128,13 +136,13 @@ func (p *Pipeline) blossomUpload(ctx context.Context, body []byte, sha, mime str
 	if err != nil {
 		return "", fmt.Errorf("marshal auth: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, p.BlossomURL+"/upload", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, p.BlossomURL+"/upload", body)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Authorization", "Nostr "+base64.StdEncoding.EncodeToString(authJSON))
 	req.Header.Set("Content-Type", mime)
-	req.ContentLength = int64(len(body))
+	req.ContentLength = size
 	resp, err := p.HTTP.Do(req)
 	if err != nil {
 		return "", err
@@ -156,8 +164,13 @@ func (p *Pipeline) blossomUpload(ctx context.Context, body []byte, sha, mime str
 	return bd.URL, nil
 }
 
+// FetchCap bounds re-pulled media in RAM. Raised from 64 MB for video: the
+// dispatch fetch policy only pulls video bytes when a byte-upload platform's
+// gate (≤100 MB) can use them, so 110 MB covers the worst legitimate case.
+const FetchCap = 110 << 20
+
 // Fetch GETs the bytes at url (used to re-pull archived media from Blossom for
-// retries). Returns the body and Content-Type. Capped at 64 MB.
+// retries). Returns the body and Content-Type. Capped at FetchCap.
 func (p *Pipeline) Fetch(ctx context.Context, url string) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -171,11 +184,75 @@ func (p *Pipeline) Fetch(ctx context.Context, url string) ([]byte, string, error
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, "", fmt.Errorf("fetch %s: %d", url, resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, FetchCap))
 	if err != nil {
 		return nil, "", err
 	}
 	return body, resp.Header.Get("Content-Type"), nil
+}
+
+// ProcessFile is the streaming sibling of Process for large media (video):
+// sha256 and the Blossom PUT both stream from disk so a 1 GB canonical never
+// occupies RAM. No blurhash for video; dim and duration come from the caller's
+// probe. progress (nil ok) receives upload fractions. Result.Bytes stays nil —
+// consumers fetch by URL under the dispatch fetch policy.
+func (p *Pipeline) ProcessFile(ctx context.Context, path, mime, dim string, durationSecs int64, progress func(float64)) (Result, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return Result{}, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return Result{}, err
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return Result{}, fmt.Errorf("hash: %w", err)
+	}
+	sha := hex.EncodeToString(h.Sum(nil))
+	if mime == "" {
+		mime = "application/octet-stream"
+	}
+	mk := func(url string) Result {
+		return Result{URL: url, SHA256: sha, Size: st.Size(), Mime: mime, Dim: dim,
+			DurationSecs: durationSecs, Imeta: ImetaTag(url, mime, sha, dim, "")}
+	}
+	if p.Lookup != nil {
+		if existing, ok, lerr := p.Lookup(sha); lerr != nil {
+			return Result{}, fmt.Errorf("media: lookup sha256: %w", lerr)
+		} else if ok {
+			return mk(existing), nil
+		}
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return Result{}, err
+	}
+	body := io.Reader(f)
+	if progress != nil {
+		body = &countingReader{r: f, total: st.Size(), cb: progress}
+	}
+	url, err := p.blossomUploadStream(ctx, body, st.Size(), sha, mime)
+	if err != nil {
+		return Result{}, fmt.Errorf("blossom upload: %w", err)
+	}
+	return mk(url), nil
+}
+
+type countingReader struct {
+	r     io.Reader
+	total int64
+	read  int64
+	cb    func(float64)
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.read += int64(n)
+	if c.total > 0 {
+		c.cb(float64(c.read) / float64(c.total))
+	}
+	return n, err
 }
 
 // maxImagePixels caps the decoded pixel count to defuse decompression bombs: a

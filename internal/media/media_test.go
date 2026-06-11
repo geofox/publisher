@@ -5,11 +5,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"image"
 	"image/jpeg"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -143,5 +146,73 @@ func TestProcessRejectsCorruptHEIC(t *testing.T) {
 	p := New(srv.URL, sk, nostr.GetPublicKey(sk))
 	if _, err := p.Process(context.Background(), corrupt, "image/heic"); err == nil {
 		t.Fatal("corrupt HEIC must be rejected, not stored as canonical")
+	}
+}
+
+func TestProcessFileStreamsWithProgress(t *testing.T) {
+	var received int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, _ := io.Copy(io.Discard, r.Body)
+		received = n
+		json.NewEncoder(w).Encode(map[string]string{"url": "https://b/streamed"})
+	}))
+	defer srv.Close()
+
+	sk := nostr.Generate()
+	p := New(srv.URL, sk, nostr.GetPublicKey(sk))
+
+	f := filepath.Join(t.TempDir(), "v.mp4")
+	payload := bytes.Repeat([]byte("x"), 1<<20) // 1 MiB
+	os.WriteFile(f, payload, 0o644)
+
+	var lastPct float64
+	res, err := p.ProcessFile(context.Background(), f, "video/mp4", "1280x720", 42,
+		func(frac float64) { lastPct = frac })
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	if res.SHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatal("sha must cover the file bytes")
+	}
+	if res.URL != "https://b/streamed" || res.Mime != "video/mp4" || res.Dim != "1280x720" {
+		t.Fatalf("res = %+v", res)
+	}
+	if res.DurationSecs != 42 {
+		t.Fatalf("duration = %d", res.DurationSecs)
+	}
+	if res.Bytes != nil {
+		t.Fatal("ProcessFile must not retain bytes in RAM")
+	}
+	if received != int64(len(payload)) {
+		t.Fatalf("server received %d bytes", received)
+	}
+	if lastPct < 0.99 {
+		t.Fatalf("progress last=%f", lastPct)
+	}
+	joined := strings.Join(res.Imeta, "|")
+	if !strings.Contains(joined, "m video/mp4") || !strings.Contains(joined, "dim 1280x720") {
+		t.Fatalf("imeta = %v", res.Imeta)
+	}
+}
+
+func TestProcessFileLookupShortCircuits(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("lookup hit must not touch Blossom, got %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	sk := nostr.Generate()
+	p := New(srv.URL, sk, nostr.GetPublicKey(sk))
+	p.Lookup = func(sha string) (string, bool, error) { return "https://b/cached", true, nil }
+
+	f := filepath.Join(t.TempDir(), "v.mp4")
+	os.WriteFile(f, []byte("payload"), 0o644)
+	res, err := p.ProcessFile(context.Background(), f, "video/mp4", "10x10", 3, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.URL != "https://b/cached" {
+		t.Fatalf("url = %s", res.URL)
 	}
 }
