@@ -177,8 +177,6 @@ func decode(src []byte, mime string) (image.Image, error) {
 	return img, nil
 }
 
-// Stubs — replaced by orient.go (Task 2) and heic.go (Task 3).
-func jpegOrientation([]byte) int                        { return 1 }
-func applyOrientation(i image.Image, _ int) image.Image { return i }
-func IsHEIC(string, []byte) bool                        { return false }
-func decodeHEIC([]byte) (image.Image, error)            { return nil, fmt.Errorf("heic: not wired") }
+// Stubs — replaced by heic.go (Task 3).
+func IsHEIC(string, []byte) bool             { return false }
+func decodeHEIC([]byte) (image.Image, error) { return nil, fmt.Errorf("heic: not wired") }
