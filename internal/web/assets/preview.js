@@ -346,11 +346,14 @@ export function renderPreview() {
   const limit = META[p].limit;
   const mmax = mediaMax(p);
   const mediaOverflow = mmax > 0 && previewMedia(p).length > mmax;
+  // Any attached media also needs the server round-trip: the fit_notes
+  // (e.g. "image 1 → JPEG (over 1.9 MB)") only exist in the server response.
+  const hasMedia = previewMedia(p).length > 0;
   // A bluesky draft containing a URL also needs the server round-trip: the
   // card plan (and trailing-URL strip) only exists server-side. Interactions
   // never carry cards in v1, so they keep the fast path.
   const wantsCard = p === "bluesky" && !state.interaction && /https?:\/\/\S+/.test(text);
-  if (!wantsCard && !mediaOverflow && !/^[ \t]*---[ \t]*$/m.test(text) && (!limit || gcount(text) <= limit)) {
+  if (!wantsCard && !hasMedia && !mediaOverflow && !/^[ \t]*---[ \t]*$/m.test(text) && (!limit || gcount(text) <= limit)) {
     clearTimeout(_threadDebounce);
     return;
   }
