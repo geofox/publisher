@@ -61,11 +61,11 @@ func TestFitBlobNonImagePassThrough(t *testing.T) {
 
 // bigJPEG encodes deterministic noise (rand.NewSource(42)) at growing
 // dimensions until the resulting JPEG exceeds minBytes but stays under
-// 1,998,848 bytes (the ~2 MB image ceiling). It starts at 1300x975 at q90
-// and steps up by 50 px; the test fails if no size hits the window.
+// transcode.Bluesky.MaxBytes (the ~2 MB image ceiling). It starts at 1300x975
+// at q90 and steps up by 50 px; the test fails if no size hits the window.
 func bigJPEG(t *testing.T, minBytes int) []byte {
 	t.Helper()
-	const maxBytes = 1_998_848
+	maxBytes := int(transcode.Bluesky.MaxBytes)
 	for w := 1300; w <= 4000; w += 50 {
 		h := w * 3 / 4
 		rng := rand.New(rand.NewSource(42))

@@ -19,7 +19,7 @@ import (
 const (
 	userAgent       = "publisher-link-preview/1.0"
 	maxHTMLBytes    = 2 << 20  // 2MB of HTML is plenty for <head> metadata
-	maxThumbBytes   = 10 << 20 // pre-resize cap; bluesky fitBlob shrinks to ≤1MB
+	maxThumbBytes   = 10 << 20 // pre-resize cap; bluesky fitThumb shrinks to ≤1MB
 	maxJSONBytes    = 1 << 20  // DID docs and getRecord responses are small
 	cacheTTL        = 15 * time.Minute
 	negativeTTL     = time.Minute
