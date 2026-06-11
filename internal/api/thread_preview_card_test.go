@@ -135,9 +135,37 @@ func TestThreadPreviewFitNotes(t *testing.T) {
 		t.Fatalf("nostr fit_notes = %v, want none (no profile)", fn)
 	}
 
-	// media[] is authoritative: 1 image in the plan
+	// media[] is authoritative: plan must contain exactly 1 image segment
 	bsImgs := bsPV["imgs"].([]any)
 	if len(bsImgs) != 1 {
-		t.Fatalf("bluesky imgs = %v, want [1] (media[] authoritative)", bsImgs)
+		t.Fatalf("bluesky imgs len = %v, want 1 (media[] authoritative)", bsImgs)
 	}
+	if bsImgs[0].(float64) != 1 {
+		t.Fatalf("bluesky imgs[0] = %v, want 1 (single image placed in segment 0)", bsImgs[0])
+	}
+
+	// only-raise rule: images:3 + media:[1 entry] must keep the 3-image plan
+	// (count not shrunk) while still returning the 1 fit note for the one
+	// media entry whose metadata was provided.
+	t.Run("count not shrunk when media has fewer entries than images", func(t *testing.T) {
+		body2 := `{"text":"hello","platforms":["bluesky"],"images":3,"media":[{"size_bytes":3000000,"mime":"image/jpeg","dim":"4000x3000"}]}`
+		out2 := postPreviewAPI(t, a, body2)
+		pv2 := out2["previews"].([]any)[0].(map[string]any)
+
+		// plan must reflect 3 images (count not shrunk to 1)
+		imgs2 := pv2["imgs"].([]any)
+		total2 := 0
+		for _, v := range imgs2 {
+			total2 += int(v.(float64))
+		}
+		if total2 != 3 {
+			t.Fatalf("bluesky imgs total = %d, want 3 (count must not be shrunk by media[] with fewer entries)", total2)
+		}
+
+		// still exactly 1 fit note (for the 1 media entry provided)
+		notes2, ok2 := pv2["fit_notes"].([]any)
+		if !ok2 || len(notes2) != 1 {
+			t.Fatalf("bluesky fit_notes = %v, want exactly 1", pv2["fit_notes"])
+		}
+	})
 }

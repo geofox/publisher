@@ -1251,14 +1251,17 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	var metas []transcode.Meta
 	for _, m := range req.Media {
-		w, h := transcode.ParseDim(m.Dim)
-		metas = append(metas, transcode.Meta{SizeBytes: m.SizeBytes, Mime: m.Mime, W: w, H: h})
+		iw, ih := transcode.ParseDim(m.Dim)
+		metas = append(metas, transcode.Meta{SizeBytes: m.SizeBytes, Mime: m.Mime, W: iw, H: ih})
 	}
 	if len(metas) > maxImagesPerPost {
 		metas = metas[:maxImagesPerPost]
 	}
-	if len(metas) > 0 {
-		req.Images = len(metas) // media[] is authoritative when present
+	if len(metas) > 0 && len(metas) > req.Images {
+		// media[] is authoritative when it covers more images than the count;
+		// when a buggy client sends fewer media entries than images, keep the
+		// larger count so the SPLIT PLAN stays right and only badges go missing.
+		req.Images = len(metas)
 	}
 	type cardJSON struct {
 		Segment     int    `json:"segment"`
