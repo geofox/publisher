@@ -102,6 +102,7 @@ function quotedCard() {
 // maybeAppendQuotedCard adds the source card after the platform preview when the
 // focused platform is the interaction's source (native reply/quote embeds it).
 function maybeAppendQuotedCard(host, p) {
+  if (host.querySelector(".pv-quoted")) return;
   const it = state.interaction;
   if (it && p === it.platform) host.append(quotedCard());
 }
@@ -131,7 +132,7 @@ function appendFitNotes(host, platform, notes) {
 // renders the segment chain into `container`. Returns true if it rendered a
 // multi-segment thread, false if the draft fits in one post (caller renders the
 // normal single-post preview).
-export async function threadPreview(container, text, platform, number) {
+export async function threadPreview(container, text, platform, number, isStale = () => false) {
   if (!text.trim()) return false;
   let data;
   try {
@@ -166,6 +167,10 @@ export async function threadPreview(container, text, platform, number) {
   } catch {
     return false; // network hiccup → fall back to normal preview
   }
+  // A newer renderPreview() call already owns the container; discard this response
+  // without touching the DOM. Return true so the caller's !rendered branch (which
+  // would repaint a single-post card) is also skipped — the newer render stands.
+  if (isStale()) return true;
   const pv = (data.previews || []).find((p) => p.platform === platform);
   if (!pv) return false;
   const fitNotes = pv.fit_notes || [];
@@ -344,23 +349,23 @@ export function renderPreview() {
   // round-trip so typing stays snappy (the seq bump above discards any thread
   // fetch still in flight from a longer earlier state).
   const limit = META[p].limit;
-  const mmax = mediaMax(p);
-  const mediaOverflow = mmax > 0 && previewMedia(p).length > mmax;
-  // Any attached media also needs the server round-trip: the fit_notes
-  // (e.g. "image 1 → JPEG (over 1.9 MB)") only exist in the server response.
-  const hasMedia = previewMedia(p).length > 0;
+  // Any attached media needs the server round-trip: fit_notes (e.g. "image 1
+  // → JPEG (over 1.9 MB)") and per-platform overflow splits only exist in the
+  // server response.
+  const pvMedia = previewMedia(p);
+  const hasMedia = pvMedia.length > 0;
   // A bluesky draft containing a URL also needs the server round-trip: the
   // card plan (and trailing-URL strip) only exists server-side. Interactions
   // never carry cards in v1, so they keep the fast path.
   const wantsCard = p === "bluesky" && !state.interaction && /https?:\/\/\S+/.test(text);
-  if (!wantsCard && !hasMedia && !mediaOverflow && !/^[ \t]*---[ \t]*$/m.test(text) && (!limit || gcount(text) <= limit)) {
+  if (!wantsCard && !hasMedia && !/^[ \t]*---[ \t]*$/m.test(text) && (!limit || gcount(text) <= limit)) {
     clearTimeout(_threadDebounce);
     return;
   }
   clearTimeout(_threadDebounce);
   _threadDebounce = setTimeout(() => {
     _threadDebounce = null;
-    threadPreview(host, text, p, number).then(rendered => {
+    threadPreview(host, text, p, number, () => seq !== _threadSeq).then(rendered => {
       // Discard the response if a newer renderPreview() call owns the view now.
       if (seq !== _threadSeq) return;
       // If threadPreview returned false the single-post preview is still showing
