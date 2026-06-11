@@ -19,6 +19,7 @@ import (
 
 	"fiatjaf.com/nostr"
 	"github.com/buckket/go-blurhash"
+	"github.com/geofox/publisher/internal/transcode"
 	_ "golang.org/x/image/webp"
 )
 
@@ -55,6 +56,19 @@ func New(blossomURL string, nsec nostr.SecretKey, pub nostr.PubKey) *Pipeline {
 // Process hashes the bytes, extracts image metadata, uploads to Blossom (always),
 // and returns the full Result. mime falls back to application/octet-stream.
 func (p *Pipeline) Process(ctx context.Context, body []byte, mime string) (Result, error) {
+	// HEIC never becomes a canonical object: convert before hashing so the
+	// stored sha256/dim/blurhash/imeta describe the JPEG that platforms and
+	// browsers actually consume. Belt-and-braces with the composer's
+	// attach-time conversion — this also covers token-API /upload-media
+	// clients. A conversion that cannot produce JPEG (corrupt input passes
+	// through transcode.Image unchanged) is rejected outright.
+	if transcode.IsHEIC(mime, body) {
+		conv, cerr := convertHEIC(body, mime)
+		if cerr != nil {
+			return Result{}, fmt.Errorf("heic convert: %w", cerr)
+		}
+		body, mime = conv.Bytes, conv.Mime
+	}
 	sum := sha256.Sum256(body)
 	sha := hex.EncodeToString(sum[:])
 	if mime == "" {
@@ -168,6 +182,22 @@ func (p *Pipeline) Fetch(ctx context.Context, url string) ([]byte, string, error
 // few-KB image header can declare gigapixel dimensions that blow up RAM on a
 // full Decode. ~100 MP covers any real-world photo while bounding the bitmap.
 const maxImagePixels = 100_000_000
+
+// convertHEIC re-encodes a HEIC upload as full-size JPEG (the composer's
+// "convert" preset), so the rest of the pipeline only ever sees web formats.
+// transcode.Image passes undecodable input through unchanged rather than
+// erroring — map that to an explicit error here.
+func convertHEIC(body []byte, mime string) (transcode.Result, error) {
+	p, _ := transcode.PresetParams("convert")
+	r, err := transcode.Image(body, mime, p)
+	if err != nil {
+		return transcode.Result{}, err
+	}
+	if !r.Changed || r.Mime != "image/jpeg" {
+		return transcode.Result{}, fmt.Errorf("undecodable heic (%d bytes)", len(body))
+	}
+	return r, nil
+}
 
 func extractImageMeta(buf []byte) (dim, bh string, err error) {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(buf))
