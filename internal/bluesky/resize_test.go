@@ -6,10 +6,12 @@ import (
 	"image/png"
 	"math/rand"
 	"testing"
+
+	"github.com/geofox/publisher/internal/transcode"
 )
 
 func TestFitBlobShrinksLargeImage(t *testing.T) {
-	// 1500x1500 random RGBA → PNG is incompressible and well over 1 MB.
+	// 1500x1500 random RGBA → PNG is incompressible and well over 2 MB.
 	img := image.NewRGBA(image.Rect(0, 0, 1500, 1500))
 	rng := rand.New(rand.NewSource(1))
 	_, _ = rng.Read(img.Pix)
@@ -17,15 +19,15 @@ func TestFitBlobShrinksLargeImage(t *testing.T) {
 	if err := png.Encode(&buf, img); err != nil {
 		t.Fatal(err)
 	}
-	if buf.Len() <= maxBlobBytes {
+	if buf.Len() <= int(transcode.Bluesky.MaxBytes) {
 		t.Fatalf("precondition: test image only %d bytes", buf.Len())
 	}
 	out, mime, w, h, err := fitBlob(buf.Bytes(), "image/png")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) > maxBlobBytes {
-		t.Errorf("output %d bytes exceeds cap %d", len(out), maxBlobBytes)
+	if len(out) > int(transcode.Bluesky.MaxBytes) {
+		t.Errorf("output %d bytes exceeds cap %d", len(out), transcode.Bluesky.MaxBytes)
 	}
 	if mime != "image/jpeg" {
 		t.Errorf("expected re-encode to jpeg, got %s", mime)

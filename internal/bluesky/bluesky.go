@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/geofox/publisher/internal/transcode"
 	"github.com/rivo/uniseg"
 )
 
@@ -421,6 +422,18 @@ func authorityOf(atURI string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// fitBlob adapts the shared bluesky transcode profile to the
+// (bytes, mime, w, h) tuple the embed builders consume. The bespoke resize
+// ladder that lived in resize.go moved to internal/transcode; the ceiling is
+// now ~2 MB, tracking the app.bsky.embed.images lexicon (maxSize 2,000,000).
+func fitBlob(in []byte, mime string) ([]byte, string, int, int, error) {
+	r, err := transcode.Bluesky.Fit(in, mime)
+	if err != nil {
+		return nil, "", 0, 0, err
+	}
+	return r.Bytes, r.Mime, r.W, r.H, nil
 }
 
 // webURL builds a bsky.app permalink. authority is the profile segment — a
