@@ -1,9 +1,12 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"image"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -101,11 +104,39 @@ func TestProcessConvertsHEIC(t *testing.T) {
 	}
 }
 
+func TestProcessJPEGUntouched(t *testing.T) {
+	// Re-fetch paths re-Process canonical objects; non-HEIC bytes must come
+	// back byte-identical (sha of input == stored sha).
+	img := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
+		t.Fatal(err)
+	}
+	src := buf.Bytes()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/upload" || r.Method != http.MethodPut {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"url":"https://blossom.example/jpeg"}`))
+	}))
+	defer srv.Close()
+	sk := nostr.Generate()
+	p := New(srv.URL, sk, nostr.GetPublicKey(sk))
+	res, err := p.Process(context.Background(), src, "image/jpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(src)
+	if res.SHA256 != hex.EncodeToString(sum[:]) || !bytes.Equal(res.Bytes, src) {
+		t.Fatal("non-HEIC input must pass through Process byte-identical")
+	}
+}
+
 func TestProcessRejectsCorruptHEIC(t *testing.T) {
 	corrupt := []byte("\x00\x00\x00\x18ftypheic garbage garbage")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"url":"https://blossom.example/corrupt"}`))
+		t.Errorf("corrupt HEIC must be rejected before any Blossom request, got %s %s", r.Method, r.URL.Path)
 	}))
 	defer srv.Close()
 	sk := nostr.Generate()

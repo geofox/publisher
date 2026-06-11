@@ -188,7 +188,10 @@ const maxImagePixels = 100_000_000
 // transcode.Image passes undecodable input through unchanged rather than
 // erroring — map that to an explicit error here.
 func convertHEIC(body []byte, mime string) (transcode.Result, error) {
-	p, _ := transcode.PresetParams("convert")
+	p, ok := transcode.PresetParams("convert")
+	if !ok {
+		panic("transcode: convert preset missing") // same-repo constant; drift is a programmer error
+	}
 	r, err := transcode.Image(body, mime, p)
 	if err != nil {
 		return transcode.Result{}, err

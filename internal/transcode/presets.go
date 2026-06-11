@@ -9,7 +9,11 @@ package transcode
 func PresetParams(name string) (ImageParams, bool) {
 	switch name {
 	case "convert":
-		return ImageParams{Format: JPEG, Quality: 90}, true
+		// MaxBytes guards against JPEG inflation (HEIC is ~2x denser): output
+		// must stay under the 64 MB pipeline Fetch/upload cap or re-fetched
+		// drafts would silently truncate. The ladder only kicks in for
+		// pathological inputs; ordinary phone photos never hit it.
+		return ImageParams{Format: JPEG, Quality: 90, MaxBytes: 64 << 20}, true
 	case "large":
 		return ImageParams{Format: JPEG, Quality: 82, MaxLongEdge: 2048}, true
 	case "medium":

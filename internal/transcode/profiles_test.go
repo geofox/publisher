@@ -8,13 +8,26 @@ import (
 )
 
 func TestPresetParams(t *testing.T) {
-	for name, edge := range map[string]int{"convert": 0, "large": 2048, "medium": 1600, "small": 1080} {
-		p, ok := PresetParams(name)
+	cases := []struct {
+		name     string
+		edge     int
+		maxBytes int64
+	}{
+		{"convert", 0, 64 << 20},
+		{"large", 2048, 0},
+		{"medium", 1600, 0},
+		{"small", 1080, 0},
+	}
+	for _, c := range cases {
+		p, ok := PresetParams(c.name)
 		if !ok {
-			t.Fatalf("preset %q missing", name)
+			t.Fatalf("preset %q missing", c.name)
 		}
-		if p.MaxLongEdge != edge || p.Format != JPEG {
-			t.Fatalf("preset %q = %+v, want JPEG with edge %d", name, p, edge)
+		if p.MaxLongEdge != c.edge || p.Format != JPEG {
+			t.Fatalf("preset %q = %+v, want JPEG with edge %d", c.name, p, c.edge)
+		}
+		if p.MaxBytes != c.maxBytes {
+			t.Fatalf("preset %q MaxBytes = %d, want %d", c.name, p.MaxBytes, c.maxBytes)
 		}
 	}
 	if _, ok := PresetParams("original"); ok {
