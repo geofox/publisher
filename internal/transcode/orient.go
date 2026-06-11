@@ -14,8 +14,16 @@ func jpegOrientation(b []byte) int {
 	}
 	i := 2
 	for i+4 <= len(b) && b[i] == 0xFF {
+		// Skip 0xFF fill bytes (legal padding before any marker).
+		if b[i+1] == 0xFF {
+			i++
+			continue
+		}
 		marker, size := b[i+1], int(binary.BigEndian.Uint16(b[i+2:]))
-		if marker == 0xDA || size < 2 { // start-of-scan: no more metadata
+		if marker == 0xDA { // start-of-scan: no more metadata segments follow
+			return 1
+		}
+		if size < 2 { // malformed length field — bail upright
 			return 1
 		}
 		if marker == 0xE1 && i+4+size-2 <= len(b) {
@@ -60,6 +68,9 @@ func exifOrientation(p []byte) int {
 		if entry+12 > len(tiff) {
 			return 0
 		}
+		// Type SHORT (3) only — deliberate strictness. Some broken writers
+		// emit LONG (4); they fail safe to upright rather than risk a
+		// misparsed value.
 		if bo.Uint16(tiff[entry:]) == 0x0112 && bo.Uint16(tiff[entry+2:]) == 3 {
 			o := int(bo.Uint16(tiff[entry+8:]))
 			if o >= 1 && o <= 8 {
