@@ -10,6 +10,17 @@ var videoBoxes = map[string][2]int{
 	"480p":  {854, 480},
 }
 
+// evenFloor2 rounds down to even with a floor of 2: libx264 needs even dims,
+// and ffmpeg's scale filter chokes on 0. Degenerate aspect ratios (>~400:1
+// garbage uploads) sacrifice AR fidelity — and a 1px source gets bumped to 2,
+// technically an upscale — rather than emit an invalid scale arg.
+func evenFloor2(x int) int {
+	if x < 2 {
+		return 2
+	}
+	return x &^ 1
+}
+
 // FitVideoDims fits (w,h) inside the preset's box, preserving aspect ratio,
 // never upscaling, rounding DOWN to even (libx264 yuv420p needs even dims).
 // Inputs are DISPLAY dimensions (Probe rotation-corrects them), so portrait
@@ -24,15 +35,18 @@ func FitVideoDims(w, h int, preset string) (int, int) {
 		bw, bh = bh, bw
 	}
 	if w <= bw && h <= bh {
-		return w &^ 1, h &^ 1
+		return evenFloor2(w), evenFloor2(h)
 	}
 	// Try both pin-width and pin-height; pick whichever result fits inside the
 	// box (integer division can cause the other to exceed by a pixel or two).
 	// Prefer the larger area when both fit.
-	pw, ph := bw, (h*bw/w)&^1
-	qw, qh := (w*bh/h)&^1, bh
-	pwFits := pw <= bw && ph <= bh
-	qwFits := qw <= bw && qh <= bh
+	// Gate pin eligibility so we never upscale: pin-width only when w >= bw,
+	// pin-height only when h >= bh. At least one pin stays eligible because
+	// the no-scale early return didn't fire (w > bw || h > bh).
+	pw, ph := bw, evenFloor2(h*bw/w)
+	qw, qh := evenFloor2(w*bh/h), bh
+	pwFits := w >= bw && pw <= bw && ph <= bh
+	qwFits := h >= bh && qw <= bw && qh <= bh
 	if pwFits && qwFits {
 		if pw*ph >= qw*qh {
 			return pw, ph
@@ -84,7 +98,7 @@ func VideoGate(plat string, v VideoInfo) (fail string, warns []string) {
 			fail = "video over 1 GB (Threads cap)"
 		}
 		if v.DurationSecs > ThreadsVideoMaxSecs {
-			fail = joinFail(fail, fmt.Sprintf("video over 300 s (%ds)", v.DurationSecs))
+			fail = joinFail(fail, fmt.Sprintf("video over 5 min (Threads cap, %ds)", v.DurationSecs))
 		}
 	}
 	return fail, warns
