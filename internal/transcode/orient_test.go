@@ -13,34 +13,7 @@ import (
 // carrying only the orientation tag (0x0112).
 func exifJPEG(t *testing.T, img image.Image, orientation uint16) []byte {
 	t.Helper()
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
-		t.Fatal(err)
-	}
-	plain := buf.Bytes()
-
-	// TIFF body, big-endian: header + one-entry IFD0.
-	tiff := &bytes.Buffer{}
-	tiff.WriteString("MM")                               // big-endian
-	binary.Write(tiff, binary.BigEndian, uint16(42))     // TIFF magic
-	binary.Write(tiff, binary.BigEndian, uint32(8))      // IFD0 offset
-	binary.Write(tiff, binary.BigEndian, uint16(1))      // 1 entry
-	binary.Write(tiff, binary.BigEndian, uint16(0x0112)) // Orientation
-	binary.Write(tiff, binary.BigEndian, uint16(3))      // SHORT
-	binary.Write(tiff, binary.BigEndian, uint32(1))      // count
-	binary.Write(tiff, binary.BigEndian, orientation)    // value
-	binary.Write(tiff, binary.BigEndian, uint16(0))      // value padding
-	binary.Write(tiff, binary.BigEndian, uint32(0))      // next IFD: none
-
-	app1 := &bytes.Buffer{}
-	app1.Write([]byte{0xFF, 0xE1})
-	payload := append([]byte("Exif\x00\x00"), tiff.Bytes()...)
-	binary.Write(app1, binary.BigEndian, uint16(len(payload)+2))
-	app1.Write(payload)
-
-	// Splice right after SOI (FF D8).
-	out := append([]byte{0xFF, 0xD8}, app1.Bytes()...)
-	return append(out, plain[2:]...)
+	return buildExifJPEG(img, orientation)
 }
 
 // cornerImg is 4x2: red top-left 2x2 block, white everywhere else.  A 2x2
