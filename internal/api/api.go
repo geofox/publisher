@@ -199,6 +199,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/identity", a.handleIdentity)
 	mux.HandleFunc("GET /api/public/feed", a.handlePublicFeed)
 	mux.HandleFunc("POST /api/translate", a.handleTranslate)
+	mux.HandleFunc("POST /api/media/compress", a.handleCompressMedia)
 	mux.HandleFunc("GET /api/drafts", a.handleListDrafts)
 	mux.HandleFunc("POST /api/drafts", a.handleCreateDraft)
 	mux.HandleFunc("GET /api/drafts/{id}", a.handleGetDraft)
@@ -568,6 +569,70 @@ func (a *API) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		Blurhash: res.Blurhash,
 		Imeta:    res.Imeta,
 	})
+}
+
+// ─── POST /api/media/compress ────────────────────────────────────────────
+//
+// On-demand composer compression: multipart {file, preset} in, re-encoded
+// image bytes out. Stateless — nothing is stored; the client swaps its
+// in-memory File for the response, so the compressed version is what later
+// rides /api/post and becomes the canonical Blossom object. Also serves the
+// HEIC attach-time auto-conversion (preset "convert").
+func (a *API) handleCompressMedia(w http.ResponseWriter, r *http.Request) {
+	if r.ContentLength > maxUploadRequestBytes {
+		httpx.WriteError(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("upload exceeds %d bytes (%d MB) — Content-Length: %d",
+				maxUploadRequestBytes, maxUploadRequestBytes>>20, r.ContentLength))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadRequestBytes)
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			httpx.WriteError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("upload exceeds %d bytes (%d MB)",
+					maxUploadRequestBytes, maxUploadRequestBytes>>20))
+			return
+		}
+		httpx.WriteError(w, http.StatusBadRequest, "parse multipart: "+err.Error())
+		return
+	}
+	params, ok := transcode.PresetParams(r.FormValue("preset"))
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "unknown preset")
+		return
+	}
+	f, fh, err := r.FormFile("file")
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "missing 'file' field: "+err.Error())
+		return
+	}
+	defer f.Close()
+	body, err := io.ReadAll(f)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "read body: "+err.Error())
+		return
+	}
+	res, err := transcode.Image(body, fh.Header.Get("Content-Type"), params)
+	if err != nil {
+		// Input problem (pixel bomb, unconvertible), not a server fault: 422
+		// so the composer flashes the reason and keeps the original file.
+		httpx.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if !res.Changed {
+		// Presets force JPEG, so decodable input always re-encodes; an
+		// unchanged result means transcode's undecodable-passthrough fired.
+		// Never hand the original back as if it were compressed.
+		httpx.WriteError(w, http.StatusUnprocessableEntity, "not a decodable image")
+		return
+	}
+	slog.Info("compress_media", "preset", r.FormValue("preset"),
+		"in_bytes", len(body), "out_bytes", len(res.Bytes), "mime", res.Mime)
+	w.Header().Set("Content-Type", res.Mime)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	w.Write(res.Bytes)
 }
 
 // ─── /api/post ───────────────────────────────────────────────────────────
