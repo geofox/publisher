@@ -60,16 +60,16 @@ func TestImagePassthroughWhenFits(t *testing.T) {
 
 func TestImageFitsUnderByteCeiling(t *testing.T) {
 	src := encPNG(t, noiseImg(t, 1400, 1400)) // multi-MB PNG
-	cap := int64(300 * 1024)
-	r, err := Image(src, "image/png", ImageParams{MaxBytes: cap, Format: KeepIfAllowed, Quality: 85})
+	ceiling := int64(300 * 1024)
+	r, err := Image(src, "image/png", ImageParams{MaxBytes: ceiling, Format: KeepIfAllowed, Quality: 85})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !r.Changed || r.Mime != "image/jpeg" {
 		t.Fatalf("oversized PNG must re-encode to JPEG (changed=%v mime=%s)", r.Changed, r.Mime)
 	}
-	if int64(len(r.Bytes)) > cap {
-		t.Fatalf("output %d bytes exceeds cap %d", len(r.Bytes), cap)
+	if int64(len(r.Bytes)) > ceiling {
+		t.Fatalf("output %d bytes exceeds ceiling %d", len(r.Bytes), ceiling)
 	}
 	if r.W <= 0 || r.H <= 0 {
 		t.Fatal("re-encode must report output dimensions")
@@ -150,6 +150,39 @@ func TestImageUndecodableButSmallPassesThrough(t *testing.T) {
 		ImageParams{MaxBytes: 1 << 20, Format: KeepIfAllowed, Quality: 85})
 	if err != nil || r.Changed {
 		t.Fatalf("undecodable-but-small must pass through: changed=%v err=%v", r.Changed, err)
+	}
+}
+
+func TestImageQualityZeroDefaults(t *testing.T) {
+	src := encPNG(t, noiseImg(t, 200, 200))
+	zero, err := Image(src, "image/png", ImageParams{Format: JPEG})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q85, err := Image(src, "image/png", ImageParams{Format: JPEG, Quality: 85})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(zero.Bytes, q85.Bytes) {
+		t.Fatal("Quality 0 must default to 85, not the encoder's quality-1 clamp")
+	}
+}
+
+func TestImageKeepIfAllowedDeniedByLongEdge(t *testing.T) {
+	src := encJPEG(t, noiseImg(t, 1000, 500), 85)
+	r, err := Image(src, "image/jpeg", ImageParams{MaxBytes: 10 << 20, MaxLongEdge: 800, Format: KeepIfAllowed, Quality: 85})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Changed || r.W != 800 || r.H != 400 {
+		t.Fatalf("under-cap but over-edge must re-encode downscaled: changed=%v %dx%d", r.Changed, r.W, r.H)
+	}
+}
+
+func TestImageLadderExhaustionErrors(t *testing.T) {
+	src := encPNG(t, noiseImg(t, 400, 400))
+	if _, err := Image(src, "image/png", ImageParams{MaxBytes: 1, Format: JPEG, Quality: 85}); err == nil {
+		t.Fatal("impossible byte ceiling must error after ladder exhaustion")
 	}
 }
 

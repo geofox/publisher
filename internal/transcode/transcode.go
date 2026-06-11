@@ -3,7 +3,9 @@
 // applied at dispatch. Functions are pure — identical input bytes and params
 // yield identical output bytes — which is what lets dispatch, thread-preview
 // and the retrier derive the same variant independently (preview == post ==
-// retry, the link-card idiom).
+// retry, the link-card idiom). Determinism holds within one binary; encoder
+// output may change across Go releases, so never persist hashes of derived
+// variants.
 package transcode
 
 import (
@@ -19,8 +21,8 @@ import (
 
 // maxPixels defuses decompression bombs (a tiny header declaring gigapixel
 // dimensions) before a full Decode allocates the bitmap. ~100 MP covers any
-// real photo. Single authority — internal/bluesky and internal/media used to
-// carry their own copies.
+// real photo. Single authority — replaces the separate copies in
+// internal/bluesky and internal/media as later tasks migrate them.
 const maxPixels = 100_000_000
 
 // maxFitIterations bounds the downscale ladder; with 15% shrink per round the
@@ -34,8 +36,10 @@ const (
 	// satisfies the params; re-encodes to JPEG otherwise. Used by the
 	// platform-fit profiles.
 	KeepIfAllowed Format = iota
-	// JPEG always re-encodes. Used by the on-demand presets so the output
-	// format is predictable and metadata is always stripped.
+	// JPEG always re-encodes decodable input. Used by the on-demand presets
+	// so the output format is predictable and metadata is stripped.
+	// (Undecodable-but-small input still passes through — callers that must
+	// guarantee JPEG out check Result.Mime.)
 	JPEG
 )
 
@@ -61,6 +65,18 @@ type Result struct {
 // Undecodable or pixel-bomb input passes through untouched when it already
 // fits p.MaxBytes (the old fitBlob contract) and errors otherwise.
 func Image(src []byte, mime string, p ImageParams) (Result, error) {
+	// Normalize params defensively: Go's jpeg encoder clamps Quality 0 to 1
+	// (worst), not to a sane default — a forgotten field must not silently
+	// degrade every published image. Negative ceilings are treated as unset.
+	if p.Quality <= 0 {
+		p.Quality = 85
+	}
+	if p.MaxBytes < 0 {
+		p.MaxBytes = 0
+	}
+	if p.MaxLongEdge < 0 {
+		p.MaxLongEdge = 0
+	}
 	underCap := p.MaxBytes == 0 || int64(len(src)) <= p.MaxBytes
 
 	cfg, _, cerr := image.DecodeConfig(bytes.NewReader(src))
