@@ -131,6 +131,12 @@ export async function saveActiveDraft() {
   setStatus("saving", "saving…");
   const spec = buildSpec();
   spec.tags = currentTagChips();
+  // A compress still in flight would resolve onto detached entries after the
+  // save swaps state.images for blossom refs — abort them; the save uploads
+  // whatever each attachment's file is right now.
+  for (const img of state.images) {
+    if (img._compressAbort) { img._compressAbort.abort(); img._compressAbort = null; }
+  }
   const fd = new FormData();
   fd.append("spec", JSON.stringify(spec));
   state.images.forEach((img, idx) => {

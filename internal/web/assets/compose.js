@@ -429,7 +429,7 @@ export function exitInteraction() {
   const prev = state.interaction && state.interaction.prevPlatforms;
   state.interaction = null;
   state.master = "";
-  state.images.forEach((i) => URL.revokeObjectURL(i.url));
+  state.images.forEach((i) => { if (i._compressAbort) i._compressAbort.abort(); URL.revokeObjectURL(i.url); });
   state.images = [];
   const m = $("#master"); if (m) { m.value = ""; autoGrow(m); }
   state.platforms = prev && prev.size ? new Set(prev) : new Set(ORDER);
@@ -763,6 +763,9 @@ export function renderImages() {
       const sel = el("select", { class: "preset", title: "compress",
         onchange: async ev => {
           const v = ev.target.value;
+          // A pending compress for this attachment is now superseded no
+          // matter what was picked — original included.
+          if (img._compressAbort) { img._compressAbort.abort(); img._compressAbort = null; }
           try {
             const f = v === "original" ? img.orig : await compressFile(img, img.orig, v);
             URL.revokeObjectURL(img.url);
@@ -785,7 +788,7 @@ export function renderImages() {
       kids.push(el("div", { class: "imgsize", text: fmtBytes(img.size_bytes) }));
     }
     kids.push(el("button", { class: "rm", type: "button", text: "remove",
-      onclick: () => { URL.revokeObjectURL(img.url); state.images.splice(i, 1); renderImages(); } }));
+      onclick: () => { if (img._compressAbort) img._compressAbort.abort(); URL.revokeObjectURL(img.url); state.images.splice(i, 1); renderImages(); } }));
     c.append(el("div", { class: "thumb" }, ...kids));
   });
   renderMeta(); renderPreview();
@@ -861,7 +864,7 @@ function updateSched() {
 // all return to empty, and every dependent view is refreshed so no stale text,
 // thumbnail, count, thread badge, or preview lingers.
 export function resetComposer() {
-  state.images.forEach((i) => { if (i.url) URL.revokeObjectURL(i.url); });
+  state.images.forEach((i) => { if (i._compressAbort) i._compressAbort.abort(); if (i.url) URL.revokeObjectURL(i.url); });
   state.images = [];
   state.master = "";
   state.interaction = null;
@@ -1098,6 +1101,7 @@ export function composeInit() {
         entry.size_bytes = entry.file.size; entry.mime = entry.file.type;
       } catch (err) { flash("HEIC convert failed: " + err.message); return; }
     }
+    if (state.images.length >= 10) { flash("Max 10 images"); return; }
     entry.url = URL.createObjectURL(entry.file);
     state.images.push(entry);
     renderImages();
