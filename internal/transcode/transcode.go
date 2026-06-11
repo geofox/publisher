@@ -6,6 +6,11 @@
 // retry, the link-card idiom). Determinism holds within one binary; encoder
 // output may change across Go releases, so never persist hashes of derived
 // variants.
+//
+// image/gif is deliberately not registered anywhere in this binary: GIFs pass
+// through as opaque bytes (or fail loudly where a profile forbids them).
+// Registering it would make dispatch silently flatten animations to a
+// first-frame JPEG.
 package transcode
 
 import (

@@ -613,6 +613,15 @@ func (a *API) handleCompressMedia(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "read body: "+err.Error())
 		return
 	}
+	select {
+	case compressSem <- struct{}{}:
+		defer func() { <-compressSem }()
+	case <-r.Context().Done():
+		return // client gave up while queued (abort on preset switch)
+	}
+	if r.Context().Err() != nil {
+		return
+	}
 	res, err := transcode.Image(body, fh.Header.Get("Content-Type"), params)
 	if err != nil {
 		// Unconvertible input, not a server fault: 422
@@ -1416,6 +1425,12 @@ func (a *API) handleResolve(w http.ResponseWriter, r *http.Request) {
 }
 
 // ─── POST /api/interact ──────────────────────────────────────────────────────
+
+// compressSem bounds concurrent transcodes: each can transiently allocate
+// hundreds of MB (decode + flatten + orientation copies of a ~100MP image),
+// and this host has no swap. Two slots keep the composer snappy while making
+// pile-ups impossible.
+var compressSem = make(chan struct{}, 2)
 
 // sourceMediaClient is SSRF-guarded: source media URLs come from a pasted
 // (untrusted) post, so a fetch must never reach internal/loopback addresses.

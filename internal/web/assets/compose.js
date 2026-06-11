@@ -1,6 +1,6 @@
 "use strict";
 import { el, $, gcount, wcount, flash, confirmModal, META, ORDER } from "./common.js";
-import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv, setInflight, getInflight, clearInflight } from "./state.js";
+import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen } from "./state.js";
 import { renderPreview, mediaMax, previewMedia } from "./preview.js";
 import { resultRow, openDetail } from "./history.js";
 import { brandTile, icon, PLATFORM_META } from "./brands.js";
@@ -399,8 +399,7 @@ export function startInteraction(src, action) {
         ? state.interaction.prevPlatforms : new Set(state.platforms),
     };
     state.master = "";
-    state.images.forEach((i) => URL.revokeObjectURL(i.url));
-    state.images = [];
+    clearImages();
     ORDER.forEach((p) => { state.ov[p] = defaultOv(p); }); // drop stale per-platform overrides
     state.platforms = new Set([src.platform]);
     state.focus = src.platform;
@@ -429,8 +428,7 @@ export function exitInteraction() {
   const prev = state.interaction && state.interaction.prevPlatforms;
   state.interaction = null;
   state.master = "";
-  state.images.forEach((i) => { if (i._compressAbort) i._compressAbort.abort(); URL.revokeObjectURL(i.url); });
-  state.images = [];
+  clearImages();
   const m = $("#master"); if (m) { m.value = ""; autoGrow(m); }
   state.platforms = prev && prev.size ? new Set(prev) : new Set(ORDER);
   if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
@@ -450,8 +448,7 @@ export function loadDraft(input) {
     if (input.text !== undefined && input.master_text === undefined) {
       state.interaction = null;
       state.master = input.text || "";
-      state.images.forEach((i) => URL.revokeObjectURL(i.url));
-      state.images = [];
+      clearImages();
       if (input.lang) {
         state.ov.bluesky.langs = input.lang;
         state.ov.mastodon.language = input.lang;
@@ -473,7 +470,7 @@ export function loadDraft(input) {
     // full spec shape
     state.interaction = input.interaction || null;
     state.master = input.master_text || "";
-    state.images.forEach((i) => URL.revokeObjectURL(i.url));
+    clearImages();
     state.platforms = new Set(input.platforms && input.platforms.length ? input.platforms : ORDER);
     if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
     // reset overrides to defaults, then apply saved overrides
@@ -498,6 +495,7 @@ export function loadDraft(input) {
       // derive a displayable URL from blossom_url for the thumbnail strip
       url: m.blossom_url || "",
     }));
+    bumpImagesGen();
     state.activeDraftId = input.id || null;
     state.dirty = false;
     const tab = document.querySelector('.tab[data-view="compose"]');
@@ -864,8 +862,7 @@ function updateSched() {
 // all return to empty, and every dependent view is refreshed so no stale text,
 // thumbnail, count, thread badge, or preview lingers.
 export function resetComposer() {
-  state.images.forEach((i) => { if (i._compressAbort) i._compressAbort.abort(); if (i.url) URL.revokeObjectURL(i.url); });
-  state.images = [];
+  clearImages();
   state.master = "";
   state.interaction = null;
   for (const p of Object.keys(state.ov)) state.ov[p] = defaultOv(p);
@@ -1091,6 +1088,7 @@ export function composeInit() {
     // generational quality stacking) and "original" is a true client-side revert.
     const entry = { file, orig: file, url: "", alt: "", preset: "original",
                     size_bytes: file.size, mime: file.type, dim: "" };
+    const gen = imagesGen;
     if (isHeic(file)) {
       // Chrome can't render HEIC previews — convert server-side immediately so
       // the thumbnail works and nothing downstream ever sees HEIC. The
@@ -1101,6 +1099,7 @@ export function composeInit() {
         entry.size_bytes = entry.file.size; entry.mime = entry.file.type;
       } catch (err) { flash("HEIC convert failed: " + err.message); return; }
     }
+    if (gen !== imagesGen) return; // composer was cleared/replaced mid-convert
     if (state.images.length >= 10) { flash("Max 10 images"); return; }
     entry.url = URL.createObjectURL(entry.file);
     state.images.push(entry);

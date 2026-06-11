@@ -1,5 +1,5 @@
 "use strict";
-import { state, buildSpec, defaultOv } from "./state.js";
+import { state, buildSpec, defaultOv, clearImages, bumpImagesGen } from "./state.js";
 import { loadDraft, markDirty, renderImages } from "./compose.js";
 import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
 
@@ -162,12 +162,14 @@ export async function saveActiveDraft() {
     state.activeDraftId = saved.id;
     state.dirty = false;
     // refresh state.images to use the server-returned media (so subsequent saves don't re-upload)
+    clearImages();
     state.images = (saved.media || []).map(m => ({
       blossom_url: m.blossom_url, sha256: m.sha256, mime: m.mime,
       dim: m.dim, blurhash: m.blurhash, size_bytes: m.size_bytes,
       alt: m.alt || "", ordinal: m.ordinal, file: null,
       url: m.blossom_url || "",
     }));
+    bumpImagesGen();
     // Re-render the thumbnail strip so each alt input's oninput rebinds to the
     // NEW state.images objects. Without this, the inputs stay bound to the
     // pre-save objects and a subsequent alt edit is written to a detached object
@@ -194,7 +196,7 @@ export function newDraft() {
   state.master = "";
   state.activeDraftId = null;
   state.dirty = false;
-  state.images = [];
+  clearImages();
   state.interaction = null;
   // reset overrides to defaults — iterate state.ov keys for safety
   for (const p of Object.keys(state.ov)) state.ov[p] = defaultOv(p);
@@ -324,7 +326,7 @@ export async function deleteActiveDraft() {
     state.activeDraftId = null;
     state.dirty = false;
     state.master = "";
-    state.images = [];
+    clearImages();
     const ta = document.getElementById("master") || document.getElementById("m");
     if (ta) ta.value = "";
     setStatus("", "");

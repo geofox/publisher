@@ -24,7 +24,7 @@ func init() {
 // cleanly — exactly the pinned corrupt-HEIC passthrough contract.
 var heicBrands = map[string]bool{
 	"heic": true, "heix": true, "heim": true, "heis": true,
-	"hevc": true, "mif1": true, "msf1": true,
+	"hevc": true, "hevx": true, "mif1": true, "msf1": true,
 }
 
 // IsHEIC reports whether the media is HEIC/HEIF, by declared mime or by

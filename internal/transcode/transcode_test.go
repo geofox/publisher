@@ -186,6 +186,39 @@ func TestImageLadderExhaustionErrors(t *testing.T) {
 	}
 }
 
+// jpegBomb hand-crafts a JPEG declaring w×h in the SOF0 segment. Go's JPEG
+// DecodeConfig succeeds (reads SOF0 dims when it finds the SOS marker), but
+// the image is undecodable (no valid Huffman tables, no real scan data), so
+// Image() passes it through unchanged. Useful to test Fit's re-check path
+// where dims come from the header but the payload can't be transcoded.
+func jpegBomb(t *testing.T, w, h int) []byte {
+	t.Helper()
+	// Go's JPEG DecodeConfig (configOnly=true) returns early at the SOS
+	// marker without decoding the scan data — so we include a minimal SOS.
+	// The scan data is one zero byte; Decode will fail on it, which is fine.
+	buf := &bytes.Buffer{}
+	// SOI
+	buf.Write([]byte{0xff, 0xd8})
+	// SOF0: FF C0 | len(2be) | precision(1) | height(2be) | width(2be) | ncomp(1) | comp[3]
+	// len = 2(len field) + 1(prec) + 2(h) + 2(w) + 1(ncomp) + 3*1(comp) = 11
+	buf.Write([]byte{0xff, 0xc0, 0x00, 0x0b})
+	buf.Write([]byte{8}) // 8-bit precision
+	buf.Write([]byte{byte(h >> 8), byte(h & 0xff)})
+	buf.Write([]byte{byte(w >> 8), byte(w & 0xff)})
+	buf.Write([]byte{1})          // 1 component (grayscale)
+	buf.Write([]byte{1, 0x11, 0}) // comp id, sampling, qtable
+	// SOS: FF DA | len(2be) | ncomp(1) | comp[2*1] | 3 spec bytes | data
+	// len = 2 + 1 + 2*1 + 3 = 8
+	buf.Write([]byte{0xff, 0xda, 0x00, 0x08})
+	buf.Write([]byte{1})       // 1 component
+	buf.Write([]byte{1, 0x00}) // comp selector + Huffman table ids
+	buf.Write([]byte{0, 63, 0}) // Ss, Se, Ah/Al
+	buf.Write([]byte{0x00})     // minimal (invalid) scan data
+	// EOI
+	buf.Write([]byte{0xff, 0xd9})
+	return buf.Bytes()
+}
+
 // pngBomb hand-crafts a PNG IHDR declaring w×h without allocating the bitmap
 // (mirrors internal/bluesky/bomb_test.go).
 func pngBomb(t *testing.T, w, h int) []byte {

@@ -1,6 +1,7 @@
 package transcode
 
 import (
+	"bytes"
 	"image"
 	"os"
 	"strings"
@@ -170,5 +171,34 @@ func TestParseDim(t *testing.T) {
 	}
 	if w, h := ParseDim("garbage"); w != 0 || h != 0 {
 		t.Fatalf("bad dim must yield 0,0, got %d,%d", w, h)
+	}
+}
+
+func TestProfileFitRejectsOversizeBombLoudly(t *testing.T) {
+	// A JPEG declaring dims just over Mastodon's 16MP pixel cap but under the
+	// global 100MP bomb guard — tiny bytes, undecodable data section. Fit must
+	// error, not ship the original for the platform to reject.
+	//
+	// JPEG DecodeConfig reads the SOF0 marker dimensions without validating
+	// the image data, so the declared dims are visible to Fit's sniff. Image()
+	// can't decode the garbage payload, returns passthrough (Changed=false).
+	// The re-check in Fit now has cw/ch from the header → must error loudly.
+	bomb := jpegBomb(t, 4100, 4100) // 16.81 MP > Mastodon.MaxPixels (16 MP)
+	if _, err := Mastodon.Fit(bomb, "image/jpeg"); err == nil {
+		t.Fatal("over-pixel-cap bomb must fail the fit loudly, not pass through")
+	}
+}
+
+func TestGIFStaysUndecodable(t *testing.T) {
+	// Minimal GIF89a header bytes; if any package in the binary ever
+	// registers image/gif, this starts decoding and dispatch would silently
+	// flatten animations — fail here first.
+	gif := []byte("GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;")
+	if _, _, err := image.Decode(bytes.NewReader(gif)); err == nil {
+		t.Fatal("image/gif got registered in this binary — transcode would now flatten animated GIFs; decide deliberately")
+	}
+	r, err := Image(gif, "image/gif", ImageParams{MaxBytes: 1 << 20, Format: KeepIfAllowed, Quality: 85})
+	if err != nil || r.Changed {
+		t.Fatalf("undecodable small GIF must pass through: changed=%v err=%v", r.Changed, err)
 	}
 }

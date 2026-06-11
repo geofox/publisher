@@ -131,6 +131,24 @@ export function buildSpec() {
   return spec;
 }
 
+// imagesGen increments whenever state.images is cleared or wholesale
+// replaced; async attach flows capture it before awaiting and discard their
+// result if the composer moved on underneath them.
+export let imagesGen = 0;
+
+// clearImages aborts in-flight compresses, revokes preview URLs, empties the
+// array and bumps the generation — the one safe way to discard attachments.
+export function clearImages() {
+  for (const i of state.images) {
+    if (i._compressAbort) i._compressAbort.abort();
+    if (i.url) URL.revokeObjectURL(i.url);
+  }
+  state.images = [];
+  imagesGen++;
+}
+
+export function bumpImagesGen() { imagesGen++; }
+
 // In-flight post id: stashed on submit so a refresh can re-attach to the live
 // progress stream; cleared when the post reaches a terminal state or the modal
 // is closed.

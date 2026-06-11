@@ -24,7 +24,7 @@ type Profile struct {
 var (
 	// Bluesky: app.bsky.embed.images / .gallery lexicon maxSize is 2,000,000
 	// bytes (decimal — bumped from 1 MB upstream 2026-04, atproto#4823;
-	// verified against the geoffrey.cc PDS, pds:0.4.5001 / @atproto/pds 0.5.1).
+	// verified against the operator's self-hosted PDS, 2026-06).
 	// 1952*1024 keeps the stay-just-under idiom of the old 976*1024.
 	Bluesky = Profile{Name: "bluesky", MaxBytes: 1952 * 1024, Quality: 85}
 	// BlueskyThumb: the app.bsky.embed.external thumb blob is still capped at
@@ -96,8 +96,10 @@ func (p Profile) mimeOK(mime string) bool {
 // lie), so the format decision is made on truth; Needs, which only has
 // metadata, stays optimistic — dispatch re-checking here is the contract.
 func (p Profile) Fit(src []byte, mime string) (Result, error) {
-	if _, format, err := image.DecodeConfig(bytes.NewReader(src)); err == nil {
+	var cw, ch int
+	if cfg, format, err := image.DecodeConfig(bytes.NewReader(src)); err == nil {
 		mime = "image/" + format
+		cw, ch = cfg.Width, cfg.Height
 	}
 	enc := KeepIfAllowed
 	if !p.mimeOK(mime) {
@@ -110,10 +112,10 @@ func (p Profile) Fit(src []byte, mime string) (Result, error) {
 	// Undecodable input that violates the profile passed through Image()'s
 	// small-input escape: fail loudly rather than ship bytes the platform is
 	// guaranteed to reject. (A decodable result always satisfies the profile.)
-	// Note: this Needs check omits W/H (unknown for undecodable bytes), so a
-	// >100MP decodable bomb that sneaks under MaxBytes still passes through here.
+	// Dims come from the already-parsed header, so a decodable-but-unconvertible
+	// input (pixel bomb over the profile's area cap) fails loudly here too.
 	if !r.Changed {
-		if need, reason := p.Needs(Meta{SizeBytes: int64(len(r.Bytes)), Mime: r.Mime}); need {
+		if need, reason := p.Needs(Meta{SizeBytes: int64(len(r.Bytes)), Mime: r.Mime, W: cw, H: ch}); need {
 			return Result{}, fmt.Errorf("media violates %s constraints (%s) and cannot be converted", p.Name, reason)
 		}
 	}
