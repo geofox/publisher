@@ -87,7 +87,13 @@ func main() {
 		Nostr:    dispatch.NostrAdapter{P: np},
 		Mastodon: dispatch.MastodonAdapter{C: mc},
 		Bluesky:  dispatch.BlueskyAdapter{C: bc},
-		Threads:  dispatch.ThreadsAdapter{C: tc},
+		Threads: dispatch.ThreadsAdapter{C: tc, Host: func(ctx context.Context, body []byte, mime string) (string, error) {
+			res, err := mp.Process(ctx, body, mime)
+			if err != nil {
+				return "", err
+			}
+			return res.URL, nil
+		}},
 		Store:    st,
 		Fetcher:  mp,
 		Notify:   feed.NewWebhook(cfg.FeedWebhookURL, cfg.FeedWebhookToken),

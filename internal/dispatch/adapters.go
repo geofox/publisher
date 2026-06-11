@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/threads"
+	"github.com/geofox/publisher/internal/transcode"
 )
 
 // Compile-time checks that the adapters satisfy the dispatcher interfaces.
@@ -84,8 +86,13 @@ func (a NostrAdapter) RebroadcastToRelay(ctx context.Context, signedEventJSON, r
 type MastodonAdapter struct{ C *mastodon.Client }
 
 func (a MastodonAdapter) PostText(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
+	fitted, err := fitImgs("mastodon", imgs)
+	if err != nil {
+		r := TargetResult{Platform: "mastodon", Status: "failed", Error: err.Error()}
+		return r, err
+	}
 	var mi []mastodon.Image
-	for _, im := range imgs {
+	for _, im := range fitted {
 		mi = append(mi, mastodon.Image{Bytes: im.Bytes, Alt: im.Alt})
 	}
 	p := mastodon.Post{
@@ -168,14 +175,21 @@ func (a BlueskyAdapter) PostBsky(ctx context.Context, text string, o Overrides, 
 	return r, nil
 }
 
-type ThreadsAdapter struct{ C *threads.Client }
+type ThreadsAdapter struct {
+	C *threads.Client
+	// Host uploads derived variant bytes and returns a public URL (wired to
+	// the media pipeline in main). Nil disables fitting (tests, degraded
+	// boot) — Threads then receives canonical URLs as before this feature.
+	Host func(ctx context.Context, body []byte, mime string) (string, error)
+}
 
 func (a ThreadsAdapter) PostThreads(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
-	var ti []threads.Image
-	for _, im := range imgs {
-		ti = append(ti, threads.Image{URL: im.BlossomURL, Alt: im.Alt})
-	}
 	r := TargetResult{Platform: "threads"}
+	ti, err := prepThreadsImgs(ctx, imgs, a.Host)
+	if err != nil {
+		r.Status, r.Error = "failed", err.Error()
+		return r, err
+	}
 	reqB, _ := json.Marshal(map[string]any{
 		"text": text, "topic_tag": o.TopicTag, "images": len(ti), "reply_control": o.ThreadsReplyControl,
 	})
@@ -228,8 +242,13 @@ func (a MastodonAdapter) Reblog(ctx context.Context, id string) (TargetResult, e
 }
 
 func (a MastodonAdapter) QuoteStatus(ctx context.Context, text, quotedID string, imgs []Img) (TargetResult, error) {
+	fitted, err := fitImgs("mastodon", imgs)
+	if err != nil {
+		r := TargetResult{Platform: "mastodon", Status: "failed", Error: err.Error()}
+		return r, err
+	}
 	var mi []mastodon.Image
-	for _, im := range imgs {
+	for _, im := range fitted {
 		mi = append(mi, mastodon.Image{Bytes: im.Bytes, Alt: im.Alt})
 	}
 	res, err := a.C.QuotePost(ctx, text, quotedID, mi)
@@ -286,6 +305,60 @@ func neventMention(eventID, author, relayHint string) string {
 		return ""
 	}
 	return "nostr:" + nevent
+}
+
+// fitImgs re-encodes any image violating plat's transcode profile, leaving
+// fitting images (and platforms without a profile) untouched. Bluesky fits
+// inside bluesky.Post (fitBlob) and Threads hosts a variant instead — see
+// prepThreadsImgs. An image that cannot be fitted fails the whole target:
+// better a recorded per-target error the retrier can redrive than a
+// guaranteed platform-side rejection.
+func fitImgs(plat string, imgs []Img) ([]Img, error) {
+	prof, ok := transcode.ProfileFor(plat)
+	if !ok {
+		return imgs, nil
+	}
+	out := make([]Img, len(imgs))
+	for i, im := range imgs {
+		out[i] = im
+		r, err := prof.Fit(im.Bytes, im.Mime)
+		if err != nil {
+			return nil, fmt.Errorf("fit image %d for %s: %w", i, plat, err)
+		}
+		if r.Changed {
+			out[i].Bytes, out[i].Mime = r.Bytes, r.Mime
+		}
+	}
+	return out, nil
+}
+
+// prepThreadsImgs maps dispatch images to the URL+Alt pairs Threads consumes.
+// Threads ingests by URL (Meta fetches it), so an image violating the Threads
+// profile is re-encoded and re-hosted via host, and Meta gets the variant URL.
+// Blossom is content-addressed (sha256 keys): the deterministic re-encode
+// yields the same bytes → same URL on every (re)dispatch, so retries re-host
+// as a no-op. nil host keeps the pre-feature behavior (canonical URLs, no
+// fitting).
+func prepThreadsImgs(ctx context.Context, imgs []Img, host func(ctx context.Context, body []byte, mime string) (string, error)) ([]threads.Image, error) {
+	var ti []threads.Image
+	for i, im := range imgs {
+		url := im.BlossomURL
+		if host != nil {
+			r, err := transcode.Threads.Fit(im.Bytes, im.Mime)
+			if err != nil {
+				return nil, fmt.Errorf("fit image %d for threads: %w", i, err)
+			}
+			if r.Changed {
+				u, herr := host(ctx, r.Bytes, r.Mime)
+				if herr != nil {
+					return nil, fmt.Errorf("host threads variant %d: %w", i, herr)
+				}
+				url = u
+			}
+		}
+		ti = append(ti, threads.Image{URL: url, Alt: im.Alt})
+	}
+	return ti, nil
 }
 
 func firstNonEmpty(a, b string) string {
