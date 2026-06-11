@@ -27,6 +27,10 @@ var (
 	// verified against the geoffrey.cc PDS, pds:0.4.5001 / @atproto/pds 0.5.1).
 	// 1952*1024 keeps the stay-just-under idiom of the old 976*1024.
 	Bluesky = Profile{Name: "bluesky", MaxBytes: 1952 * 1024, Quality: 85}
+	// BlueskyThumb: the app.bsky.embed.external thumb blob is still capped at
+	// 1,000,000 bytes (the 2026-04 2 MB bump applied only to images/gallery;
+	// verified 2026-06-11). Same stay-just-under idiom as the old image cap.
+	BlueskyThumb = Profile{Name: "bluesky-thumb", MaxBytes: 976 * 1024, Quality: 85}
 	// Mastodon: conservative vanilla defaults; instances vary. A future
 	// enhancement could read /api/v2/instance announced limits.
 	Mastodon = Profile{Name: "mastodon", MaxBytes: 8 << 20, MaxPixels: 16_000_000, Quality: 85}

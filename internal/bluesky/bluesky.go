@@ -274,7 +274,7 @@ func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 	if p.External != nil && len(images) == 0 && p.Quote == nil {
 		var thumbBlob json.RawMessage
 		if len(p.External.Thumb) > 0 {
-			if out, mime, _, _, err := fitBlob(p.External.Thumb, p.External.ThumbMime); err == nil {
+			if out, mime, err := fitThumb(p.External.Thumb, p.External.ThumbMime); err == nil {
 				if blob, err := c.uploadBlob(ctx, s.AccessJwt, out, mime); err == nil {
 					thumbBlob = blob
 				}
@@ -434,6 +434,18 @@ func fitBlob(in []byte, mime string) ([]byte, string, int, int, error) {
 		return nil, "", 0, 0, err
 	}
 	return r.Bytes, r.Mime, r.W, r.H, nil
+}
+
+// fitThumb fits link-card thumbnails to the external-embed thumb ceiling,
+// which is still 1 MB — fitBlob's ~2 MB ceiling tracks the images/gallery
+// lexicons and would let a 1–1.95 MB thumb through to a createRecord
+// validation failure that sinks the whole post.
+func fitThumb(in []byte, mime string) ([]byte, string, error) {
+	r, err := transcode.BlueskyThumb.Fit(in, mime)
+	if err != nil {
+		return nil, "", err
+	}
+	return r.Bytes, r.Mime, nil
 }
 
 // webURL builds a bsky.app permalink. authority is the profile segment — a
