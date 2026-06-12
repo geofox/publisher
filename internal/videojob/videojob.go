@@ -39,6 +39,8 @@ const (
 	StateError       = "error"
 )
 
+const maxInputDuration = 20 * time.Minute
+
 const (
 	// storeTimeout bounds the Blossom streaming upload: the streaming HTTP client
 	// deliberately has no overall timeout (a 1 GB body fits no fixed budget), so
@@ -172,6 +174,10 @@ func (r *Runner) run(ctx context.Context, id, inPath, preset string) {
 	pcancel()
 	if err != nil {
 		fail(fmt.Errorf("probe: %w", err))
+		return
+	}
+	if meta.DurationSecs > maxInputDuration.Seconds() {
+		fail(fmt.Errorf("probe: video is %.0f min — longer than the %d-minute limit", meta.DurationSecs/60, int(maxInputDuration.Minutes())))
 		return
 	}
 

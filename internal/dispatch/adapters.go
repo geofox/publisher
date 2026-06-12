@@ -329,12 +329,15 @@ func (a MastodonAdapter) Reblog(ctx context.Context, id string) (TargetResult, e
 }
 
 func (a MastodonAdapter) QuoteStatus(ctx context.Context, text, quotedID string, imgs []Img) (TargetResult, error) {
-	if reason := gateVideo("mastodon", imgs); reason != "" {
+	// v1: mastodon quotes are text+images only — an attached video is dropped
+	// here (bluesky quotes carry it natively); the composer's video XOR
+	// images rule makes this unreachable in practice.
+	_, rest := splitVideo(imgs)
+	if reason := gateVideo("mastodon", rest); reason != "" {
 		r := TargetResult{Platform: "mastodon", Status: "failed", Error: reason}
 		return r, fmt.Errorf("%s", reason)
 	}
-	v, imgRest := splitVideo(imgs)
-	fitted, err := fitImgs("mastodon", imgRest)
+	fitted, err := fitImgs("mastodon", rest)
 	if err != nil {
 		r := TargetResult{Platform: "mastodon", Status: "failed", Error: err.Error()}
 		return r, err
@@ -343,10 +346,6 @@ func (a MastodonAdapter) QuoteStatus(ctx context.Context, text, quotedID string,
 	for _, im := range fitted {
 		mi = append(mi, mastodon.Image{Bytes: im.Bytes, Alt: im.Alt})
 	}
-	// v1: mastodon quotes are text+images only — an attached video is dropped here
-	// (bluesky quotes carry it natively); the composer's video XOR images rule makes
-	// this unreachable in practice.
-	_ = v
 	res, err := a.C.QuotePost(ctx, text, quotedID, mi)
 	if err != nil {
 		return TargetResult{Platform: "mastodon"}, err
@@ -416,11 +415,10 @@ func fitImgs(plat string, imgs []Img) ([]Img, error) {
 	}
 	out := make([]Img, len(imgs))
 	for i, im := range imgs {
+		out[i] = im
 		if im.IsVideo() {
-			out[i] = im
 			continue
 		}
-		out[i] = im
 		r, err := prof.Fit(im.Bytes, im.Mime)
 		if err != nil {
 			return nil, fmt.Errorf("fit image %d for %s: %w", i, plat, err)

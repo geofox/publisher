@@ -263,7 +263,7 @@ func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 	// set, skip the image-upload loop entirely (composer enforces exclusivity).
 	var videoEmbed map[string]any
 	if p.Video != nil {
-		blob, err := c.uploadBlob(ctx, s.AccessJwt, p.Video.Bytes, "video/mp4")
+		blob, err := c.uploadVideoBlob(ctx, s.AccessJwt, p.Video.Bytes, "video/mp4")
 		if err != nil {
 			return Result{}, fmt.Errorf("video blob: %w", err)
 		}
@@ -407,18 +407,34 @@ func (c *Client) createSession(ctx context.Context) (session, error) {
 	return s, nil
 }
 
-func (c *Client) uploadBlob(ctx context.Context, accessJwt string, data []byte, mime string) (json.RawMessage, error) {
+func (c *Client) uploadBlobWith(ctx context.Context, cl *http.Client, accessJwt string, data []byte, mime string) (json.RawMessage, error) {
 	var resp struct {
 		Blob json.RawMessage `json:"blob"`
-	}
-	cl := c.uploadHTTP
-	if cl == nil {
-		cl = c.HTTP
 	}
 	if err := c.doWith(ctx, cl, "/xrpc/com.atproto.repo.uploadBlob", mime, accessJwt, data, &resp); err != nil {
 		return nil, fmt.Errorf("uploadBlob: %w", err)
 	}
 	return resp.Blob, nil
+}
+
+// uploadBlob uploads a blob (image or thumb) using the bounded HTTP client
+// (30 s timeout). Use this for images and link-card thumbnails.
+func (c *Client) uploadBlob(ctx context.Context, accessJwt string, data []byte, mime string) (json.RawMessage, error) {
+	return c.uploadBlobWith(ctx, c.HTTP, accessJwt, data, mime)
+}
+
+// uploadVideoBlob uploads a video blob using uploadHTTP (no global timeout)
+// with a size-scaled deadline: 60 s base + 8 s per MiB. Falls back to c.HTTP
+// when uploadHTTP is nil (tests).
+func (c *Client) uploadVideoBlob(ctx context.Context, accessJwt string, data []byte, mime string) (json.RawMessage, error) {
+	cl := c.uploadHTTP
+	if cl == nil {
+		cl = c.HTTP
+	}
+	budget := time.Duration(60+8*len(data)/(1<<20)) * time.Second
+	vctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	return c.uploadBlobWith(vctx, cl, accessJwt, data, mime)
 }
 
 func (c *Client) createRecord(ctx context.Context, s session, collection, rkey string, record map[string]any) (uri, cid string, err error) {

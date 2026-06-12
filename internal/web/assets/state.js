@@ -100,7 +100,7 @@ function ovFor(p) {
 // reference the server re-fetches. Shared by buildSpec and buildInteractSpec so
 // both paths carry references identically.
 export function imageSpecs() {
-  return state.images.map((i, idx) => {
+  return state.images.filter(i => !(i.video && i.phase !== "ready")).map((i, idx) => {
     if (i.file) {
       return { ordinal: idx, ref: "img_" + idx, alt: i.alt };
     }
