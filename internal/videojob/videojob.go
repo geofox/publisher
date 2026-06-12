@@ -242,7 +242,7 @@ func (r *Runner) run(ctx context.Context, id, inPath, preset string) {
 		res.PosterURL = posterURL
 		// Rebuild the payload imeta with the poster (ProcessFile cannot know
 		// it); dispatch composes identically from the store row at post time.
-		res.Imeta = media.ImetaTag(res.URL, res.Mime, res.SHA256, res.Dim, "", posterURL)
+		res.Imeta = media.ImetaTag(res.URL, res.Mime, res.SHA256, res.Dim, res.Blurhash, posterURL)
 	}
 	r.set(id, func(j *Job) { j.State, j.Pct, j.Media, j.doneAt = StateDone, 1, &res, time.Now() })
 }
