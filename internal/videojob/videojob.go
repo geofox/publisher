@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -65,11 +66,13 @@ var ErrBusy = errors.New("videojob: transcode queue is full")
 type Transcoder interface {
 	Probe(ctx context.Context, path string) (transcode.VideoMeta, error)
 	Normalize(ctx context.Context, in, out string, p transcode.NormParams, progress func(float64)) error
+	ExtractPoster(ctx context.Context, in, out string, atSecs float64) error
 }
 
-// Storer is the seam to media.Pipeline.ProcessFile.
+// Storer is the seam to media.Pipeline.ProcessFile and Process.
 type Storer interface {
 	ProcessFile(ctx context.Context, path, mime, dim string, durationSecs int64, progress func(float64)) (media.Result, error)
+	Process(ctx context.Context, body []byte, mime string) (media.Result, error)
 }
 
 type Job struct {
@@ -202,6 +205,28 @@ func (r *Runner) run(ctx context.Context, id, inPath, preset string) {
 		return
 	}
 
+	// Poster: best-effort single-frame JPEG — a video without a poster is
+	// strictly better than a failed upload, so every error here only warns.
+	// One fresh 1-minute ctx bounds extract AND upload: tctx's duration-scaled
+	// budget may be nearly spent after a long transcode, and the upload rides
+	// the no-overall-timeout streaming client (storeTimeout philosophy: the
+	// job provides the ceiling) — unbounded, a stall here would wedge the
+	// single transcode slot forever.
+	posterPath := out + ".poster.jpg"
+	defer os.Remove(posterPath)
+	var posterURL string
+	pjctx, pjcancel := context.WithTimeout(ctx, time.Minute)
+	if perr := r.tc.ExtractPoster(pjctx, out, posterPath, transcode.PosterAt(meta.DurationSecs)); perr != nil {
+		slog.Warn("video poster extract failed", "job", id, "err", perr)
+	} else if pb, rerr := os.ReadFile(posterPath); rerr != nil {
+		slog.Warn("video poster read failed", "job", id, "err", rerr)
+	} else if pres, uerr := r.store.Process(pjctx, pb, "image/jpeg"); uerr != nil {
+		slog.Warn("video poster upload failed", "job", id, "err", uerr)
+	} else {
+		posterURL = pres.URL
+	}
+	pjcancel()
+
 	r.set(id, func(j *Job) { j.State = StateUploading; j.Pct = 0 })
 	sctx, scancel := context.WithTimeout(ctx, storeTimeout)
 	defer scancel()
@@ -212,6 +237,12 @@ func (r *Runner) run(ctx context.Context, id, inPath, preset string) {
 	if err != nil {
 		fail(fmt.Errorf("store: %w", err))
 		return
+	}
+	if posterURL != "" {
+		res.PosterURL = posterURL
+		// Rebuild the payload imeta with the poster (ProcessFile cannot know
+		// it); dispatch composes identically from the store row at post time.
+		res.Imeta = media.ImetaTag(res.URL, res.Mime, res.SHA256, res.Dim, "", posterURL)
 	}
 	r.set(id, func(j *Job) { j.State, j.Pct, j.Media, j.doneAt = StateDone, 1, &res, time.Now() })
 }

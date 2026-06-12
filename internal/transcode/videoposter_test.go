@@ -20,6 +20,9 @@ func TestPosterArgs(t *testing.T) {
 	if strings.Contains(s, "-noautorotate") {
 		t.Fatal("autorotation must stay on for posters too (portrait frames)")
 	}
+	if strings.Index(s, "-ss") > strings.Index(s, "-i ") {
+		t.Fatal("-ss must precede -i (fast input seek)")
+	}
 }
 
 func TestPosterAt(t *testing.T) {
@@ -32,8 +35,7 @@ func TestPosterAt(t *testing.T) {
 }
 
 func TestExtractPosterRealFile(t *testing.T) {
-	ffmpeg, ffprobe := requireFFmpeg(t)
-	_ = ffprobe
+	ffmpeg, _ := requireFFmpeg(t)
 	in := makeFixture(t, ffmpeg)
 	out := filepath.Join(t.TempDir(), "poster.jpg")
 	if err := ExtractPoster(context.Background(), ffmpeg, in, out, PosterAt(2)); err != nil {

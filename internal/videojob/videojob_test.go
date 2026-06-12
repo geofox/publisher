@@ -14,9 +14,10 @@ import (
 )
 
 type fakeTC struct {
-	meta     transcode.VideoMeta
-	probeErr error
-	normErr  error
+	meta      transcode.VideoMeta
+	probeErr  error
+	normErr   error
+	posterErr error
 }
 
 func (f fakeTC) Probe(ctx context.Context, path string) (transcode.VideoMeta, error) {
@@ -32,10 +33,18 @@ func (f fakeTC) Normalize(ctx context.Context, in, out string, p transcode.NormP
 	}
 	return os.WriteFile(out, []byte("normalized-bytes"), 0o644)
 }
+func (f fakeTC) ExtractPoster(ctx context.Context, in, out string, atSecs float64) error {
+	if f.posterErr != nil {
+		return f.posterErr
+	}
+	return os.WriteFile(out, []byte("\xFF\xD8poster"), 0o644)
+}
 
 type fakeStore struct {
-	res media.Result
-	err error
+	res        media.Result
+	err        error
+	processErr error
+	gotPoster  *[]byte // when non-nil, Process records the body it received
 }
 
 func (f fakeStore) ProcessFile(ctx context.Context, path, mime, dim string, dur int64, progress func(float64)) (media.Result, error) {
@@ -43,6 +52,15 @@ func (f fakeStore) ProcessFile(ctx context.Context, path, mime, dim string, dur 
 		progress(1)
 	}
 	return f.res, f.err
+}
+func (f fakeStore) Process(ctx context.Context, body []byte, mime string) (media.Result, error) {
+	if f.gotPoster != nil {
+		*f.gotPoster = append([]byte(nil), body...)
+	}
+	if f.processErr != nil {
+		return media.Result{}, f.processErr
+	}
+	return media.Result{URL: "https://b/poster"}, nil
 }
 
 // gateTC blocks Normalize until release is closed, letting tests control
@@ -59,6 +77,9 @@ func (g gateTC) Normalize(ctx context.Context, in, out string, p transcode.NormP
 	g.entered <- struct{}{}
 	<-g.release
 	return os.WriteFile(out, []byte("n"), 0o644)
+}
+func (g gateTC) ExtractPoster(ctx context.Context, in, out string, atSecs float64) error {
+	return os.WriteFile(out, []byte("\xFF\xD8poster"), 0o644)
 }
 
 func newRunner(t *testing.T, tc Transcoder, st Storer) *Runner {
@@ -216,5 +237,51 @@ func TestSweepWorkdir(t *testing.T) {
 	ents, _ := os.ReadDir(work)
 	if len(ents) != 0 {
 		t.Fatalf("sweep left %v", ents)
+	}
+}
+
+func TestJobPosterHappyPath(t *testing.T) {
+	want := media.Result{URL: "https://b/v", SHA256: "ss", Mime: "video/mp4", Dim: "1280x720", DurationSecs: 3,
+		Imeta: media.ImetaTag("https://b/v", "video/mp4", "ss", "1280x720", "", "")}
+	var posterBody []byte
+	r := newRunner(t,
+		fakeTC{meta: transcode.VideoMeta{W: 1920, H: 1080, DurationSecs: 2.5, FPS: 30, HasAudio: true}},
+		fakeStore{res: want, gotPoster: &posterBody})
+	id := submit(t, r, "720p")
+	j := waitState(t, r, id, StateDone)
+	if j.Media.PosterURL != "https://b/poster" {
+		t.Fatalf("poster = %q", j.Media.PosterURL)
+	}
+	if string(posterBody) != "\xFF\xD8poster" {
+		t.Fatalf("extracted poster bytes did not reach Process: %q", posterBody)
+	}
+	joined := strings.Join(j.Media.Imeta, "|")
+	if !strings.Contains(joined, "image https://b/poster") {
+		t.Fatalf("rebuilt imeta missing poster: %v", j.Media.Imeta)
+	}
+}
+
+func TestJobPosterFailureIsBestEffort(t *testing.T) {
+	r := newRunner(t,
+		fakeTC{meta: transcode.VideoMeta{W: 100, H: 100, DurationSecs: 1, FPS: 30}, posterErr: errors.New("boom")},
+		fakeStore{res: media.Result{URL: "https://b/v", Mime: "video/mp4"}})
+	id := submit(t, r, "1080p")
+	j := waitState(t, r, id, StateDone) // job must still complete
+	if j.Media.PosterURL != "" {
+		t.Fatalf("poster must be empty on extract failure, got %q", j.Media.PosterURL)
+	}
+	if strings.Contains(strings.Join(j.Media.Imeta, "|"), "image ") {
+		t.Fatal("no poster => no imeta image field")
+	}
+}
+
+func TestJobPosterUploadFailureIsBestEffort(t *testing.T) {
+	r := newRunner(t,
+		fakeTC{meta: transcode.VideoMeta{W: 100, H: 100, DurationSecs: 1, FPS: 30}},
+		fakeStore{res: media.Result{URL: "https://b/v", Mime: "video/mp4"}, processErr: errors.New("blossom down")})
+	id := submit(t, r, "1080p")
+	j := waitState(t, r, id, StateDone)
+	if j.Media.PosterURL != "" {
+		t.Fatalf("poster must be empty on upload failure, got %q", j.Media.PosterURL)
 	}
 }

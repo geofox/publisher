@@ -23,11 +23,17 @@ func (vtFake) Probe(ctx context.Context, path string) (transcode.VideoMeta, erro
 func (vtFake) Normalize(ctx context.Context, in, out string, p transcode.NormParams, progress func(float64)) error {
 	return os.WriteFile(out, []byte("norm"), 0o644)
 }
+func (vtFake) ExtractPoster(ctx context.Context, in, out string, atSecs float64) error {
+	return os.WriteFile(out, []byte("\xFF\xD8poster"), 0o644)
+}
 
 type vsFake struct{}
 
 func (vsFake) ProcessFile(ctx context.Context, path, mime, dim string, dur int64, progress func(float64)) (media.Result, error) {
 	return media.Result{URL: "https://b/vid", SHA256: "ff", Mime: "video/mp4", Dim: dim, DurationSecs: dur, Size: 4}, nil
+}
+func (vsFake) Process(ctx context.Context, body []byte, mime string) (media.Result, error) {
+	return media.Result{URL: "https://b/poster"}, nil
 }
 
 func newVideoAPI(t *testing.T) *API {
@@ -133,6 +139,9 @@ func (gateVT) Probe(ctx context.Context, path string) (transcode.VideoMeta, erro
 func (g gateVT) Normalize(ctx context.Context, in, out string, p transcode.NormParams, _ func(float64)) error {
 	<-g.release
 	return os.WriteFile(out, []byte("n"), 0o644)
+}
+func (gateVT) ExtractPoster(ctx context.Context, in, out string, atSecs float64) error {
+	return os.WriteFile(out, []byte("\xFF\xD8poster"), 0o644)
 }
 
 func TestVideoUploadQueueFull429(t *testing.T) {
