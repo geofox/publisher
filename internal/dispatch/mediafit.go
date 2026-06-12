@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/geofox/publisher/internal/transcode"
 )
@@ -27,6 +28,9 @@ func PlanMediaFit(plat string, metas []transcode.Meta) []FitNote {
 	}
 	var notes []FitNote
 	for i, m := range metas {
+		if strings.HasPrefix(m.Mime, "video/") {
+			continue // video gates are separate (VideoGate)
+		}
 		if need, reason := prof.Needs(m); need {
 			notes = append(notes, FitNote{Ordinal: i, Note: fmt.Sprintf("→ JPEG (%s)", reason)})
 		}

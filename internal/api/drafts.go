@@ -110,6 +110,13 @@ func (a *API) buildDraftFromRequest(r *http.Request, id string) (*store.Draft, s
 				return nil, "", http.StatusBadRequest, fmt.Sprintf("image %d: read: %v", i, err)
 			}
 			mime := fhs[0].Header.Get("Content-Type")
+			sniff := body
+			if len(sniff) > 512 {
+				sniff = sniff[:512]
+			}
+			if strings.HasPrefix(mime, "video/") || strings.HasPrefix(http.DetectContentType(sniff), "video/") {
+				return nil, "", http.StatusBadRequest, fmt.Sprintf("image %d: video files must go through POST /api/media/video (async transcode pipeline)", i)
+			}
 			res, err := a.media.Process(r.Context(), body, mime)
 			if err != nil {
 				return nil, "", http.StatusBadGateway, fmt.Sprintf("image %d: upload: %v", i, err)

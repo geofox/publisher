@@ -1654,11 +1654,15 @@ func (a *API) handleInteract(w http.ResponseWriter, r *http.Request) {
 		if ferr != nil {
 			continue
 		}
+		if strings.HasPrefix(mime, "video/") {
+			continue // skip source video: re-hosting is best-effort, quote proceeds without it
+		}
 		res, perr := a.media.Process(r.Context(), body, mime)
 		if perr != nil {
 			continue
 		}
-		srcImgs = append(srcImgs, dispatch.Img{Bytes: res.Bytes, Mime: res.Mime, Alt: m.Alt, BlossomURL: res.URL})
+		srcImgs = append(srcImgs, dispatch.Img{Bytes: res.Bytes, Mime: res.Mime, Alt: m.Alt, BlossomURL: res.URL,
+			SizeBytes: res.Size})
 		srcRecs = append(srcRecs, store.Media{
 			Ordinal: i, BlossomURL: res.URL, SHA256: res.SHA256, Mime: res.Mime,
 			Dim: res.Dim, Blurhash: res.Blurhash, SizeBytes: res.Size, Alt: m.Alt,
@@ -1748,7 +1752,15 @@ func (a *API) assembleImages(r *http.Request, specs []imageSpec) ([]dispatch.Img
 		if err != nil {
 			return media.Result{}, fmt.Errorf("read image: %w", err)
 		}
-		res, err := a.media.Process(r.Context(), body, fh.Header.Get("Content-Type"))
+		mime := fh.Header.Get("Content-Type")
+		sniff := body
+		if len(sniff) > 512 {
+			sniff = sniff[:512]
+		}
+		if strings.HasPrefix(mime, "video/") || strings.HasPrefix(http.DetectContentType(sniff), "video/") {
+			return media.Result{}, fmt.Errorf("video files must go through POST /api/media/video (async transcode pipeline)")
+		}
+		res, err := a.media.Process(r.Context(), body, mime)
 		if err != nil {
 			return media.Result{}, &mediaError{err: fmt.Errorf("media: %w", err)}
 		}
@@ -1759,7 +1771,7 @@ func (a *API) assembleImages(r *http.Request, specs []imageSpec) ([]dispatch.Img
 	var recs []store.Media
 	add := func(res media.Result, alt string) {
 		imgs = append(imgs, dispatch.Img{Bytes: res.Bytes, Mime: res.Mime, Alt: alt, BlossomURL: res.URL,
-			Dim: res.Dim, DurationSecs: res.DurationSecs})
+			Dim: res.Dim, DurationSecs: res.DurationSecs, SizeBytes: res.Size})
 		recs = append(recs, store.Media{
 			Ordinal: len(recs), BlossomURL: res.URL, SHA256: res.SHA256, Mime: res.Mime,
 			Dim: res.Dim, Blurhash: res.Blurhash, SizeBytes: res.Size, Alt: alt,
@@ -1779,7 +1791,7 @@ func (a *API) assembleImages(r *http.Request, specs []imageSpec) ([]dispatch.Img
 				// platforms gate out first. A failed best-effort fetch leaves
 				// Bytes nil — the adapter gate then fails that target loudly.
 				img := dispatch.Img{Mime: s.Mime, Alt: s.Alt, BlossomURL: s.BlossomURL,
-					Dim: s.Dim, DurationSecs: s.DurationSecs}
+					Dim: s.Dim, DurationSecs: s.DurationSecs, SizeBytes: s.SizeBytes}
 				if s.SizeBytes > 0 && s.SizeBytes <= media.FetchCap {
 					if body, _, ferr := fetch(r.Context(), s.BlossomURL); ferr == nil {
 						img.Bytes = body

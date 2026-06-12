@@ -80,6 +80,7 @@ type Img struct {
 	BlossomURL   string
 	Dim          string // "WxH" of the canonical object ("" if unknown)
 	DurationSecs int64  // video only; 0 for images
+	SizeBytes    int64  // canonical object size; 0 if unknown
 }
 
 // IsVideo reports whether this attachment is a video (drives the adapter
@@ -960,12 +961,20 @@ func ov2fields(o Overrides) map[string]any {
 func (d *Dispatcher) dispatchTargets(ctx context.Context, post *store.Post, want func(store.Target) bool) error {
 	var imgs []Img
 	for _, m := range post.Media {
-		var data []byte
-		var mime string
-		if d.Fetcher != nil {
-			data, mime, _ = d.Fetcher.Fetch(ctx, m.BlossomURL) // best-effort; Bluesky/Mastodon need bytes
+		img := Img{Mime: m.Mime, Alt: m.Alt, BlossomURL: m.BlossomURL,
+			Dim: m.Dim, DurationSecs: m.DurationSecs, SizeBytes: m.SizeBytes}
+		// Videos: fetch only when a byte platform could use them (mirror
+		// assembleImages' policy); URL platforms ride metadata-only. A failed
+		// best-effort fetch leaves Bytes nil — adapter gates fail loudly.
+		if d.Fetcher != nil && (!img.IsVideo() || (m.SizeBytes > 0 && m.SizeBytes <= media.FetchCap)) {
+			if body, fmime, err := d.Fetcher.Fetch(ctx, m.BlossomURL); err == nil {
+				img.Bytes = body
+				if img.Mime == "" {
+					img.Mime = fmime
+				}
+			}
 		}
-		imgs = append(imgs, Img{Bytes: data, Mime: mime, Alt: m.Alt, BlossomURL: m.BlossomURL})
+		imgs = append(imgs, img)
 	}
 	imetas := buildImetas(post.Media)
 	for _, tg := range post.Targets {

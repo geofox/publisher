@@ -24,16 +24,16 @@ func gateVideo(plat string, imgs []Img) string {
 		if !im.IsVideo() {
 			continue
 		}
-		info := transcode.VideoInfo{SizeBytes: int64(len(im.Bytes)), DurationSecs: im.DurationSecs}
-		if im.Bytes == nil {
-			info.SizeBytes = 0 // unknown here; assembleImages only strips bytes >110MB
+		size := im.SizeBytes
+		if size == 0 {
+			size = int64(len(im.Bytes))
 		}
+		info := transcode.VideoInfo{SizeBytes: size, DurationSecs: im.DurationSecs}
 		if fail, _ := transcode.VideoGate(plat, info); fail != "" {
 			return fmt.Sprintf("video %d: %s", i, fail)
 		}
-		// Byte platforms cannot post a video whose bytes we don't hold.
-		if im.Bytes == nil && (plat == "bluesky" || plat == "mastodon") {
-			return fmt.Sprintf("video %d exceeds %s's size cap", i, plat)
+		if len(im.Bytes) == 0 && (plat == "bluesky" || plat == "mastodon") {
+			return fmt.Sprintf("video %d: bytes unavailable for %s (over its size cap or fetch failed)", i, plat)
 		}
 	}
 	return ""
