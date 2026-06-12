@@ -44,6 +44,22 @@ func (f fakeStore) ProcessFile(ctx context.Context, path, mime, dim string, dur 
 	return f.res, f.err
 }
 
+// gateTC blocks Normalize until release is closed, letting tests control
+// exactly when a job finishes and probe its queued peers.
+type gateTC struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g gateTC) Probe(ctx context.Context, path string) (transcode.VideoMeta, error) {
+	return transcode.VideoMeta{W: 100, H: 100, DurationSecs: 1, FPS: 30}, nil
+}
+func (g gateTC) Normalize(ctx context.Context, in, out string, p transcode.NormParams, _ func(float64)) error {
+	g.entered <- struct{}{}
+	<-g.release
+	return os.WriteFile(out, []byte("n"), 0o644)
+}
+
 func newRunner(t *testing.T, tc Transcoder, st Storer) *Runner {
 	t.Helper()
 	return NewRunner(tc, st, t.TempDir())
@@ -69,13 +85,22 @@ func waitState(t *testing.T, r *Runner, id, want string) Job {
 	return Job{}
 }
 
-func submit(t *testing.T, r *Runner, preset string) string {
+func writeTempIn(t *testing.T) string {
 	t.Helper()
 	in := filepath.Join(t.TempDir(), "in.mov")
 	if err := os.WriteFile(in, []byte("raw"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return r.Submit(context.Background(), in, preset)
+	return in
+}
+
+func submit(t *testing.T, r *Runner, preset string) string {
+	t.Helper()
+	id, err := r.Submit(context.Background(), writeTempIn(t), preset)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	return id
 }
 
 func TestJobHappyPath(t *testing.T) {
@@ -102,27 +127,44 @@ func TestJobProbeError(t *testing.T) {
 	}
 }
 
-type slowTC struct{ d time.Duration }
-
-func (s slowTC) Probe(ctx context.Context, path string) (transcode.VideoMeta, error) {
-	return transcode.VideoMeta{W: 100, H: 100, DurationSecs: 1, FPS: 30}, nil
-}
-func (s slowTC) Normalize(ctx context.Context, in, out string, p transcode.NormParams, progress func(float64)) error {
-	time.Sleep(s.d)
-	return os.WriteFile(out, []byte("n"), 0o644)
-}
-
 func TestJobsSerialize(t *testing.T) {
-	r := newRunner(t, slowTC{d: 300 * time.Millisecond}, fakeStore{res: media.Result{URL: "u"}})
+	g := gateTC{entered: make(chan struct{}, 8), release: make(chan struct{})}
+	r := newRunner(t, g, fakeStore{res: media.Result{URL: "u"}})
 	id1 := submit(t, r, "1080p")
+	// Wait until job 1 provably holds the semaphore (inside Normalize).
+	<-g.entered
 	id2 := submit(t, r, "1080p")
-	time.Sleep(50 * time.Millisecond)
 	j2, _ := r.Get(id2)
 	if j2.State != StateQueued {
 		t.Fatalf("second job state = %s, want queued", j2.State)
 	}
+	close(g.release)
 	waitState(t, r, id1, StateDone)
 	waitState(t, r, id2, StateDone)
+}
+
+func TestSubmitRejectsWhenFull(t *testing.T) {
+	g := gateTC{entered: make(chan struct{}, 8), release: make(chan struct{})}
+	r := newRunner(t, g, fakeStore{res: media.Result{URL: "u"}})
+	var ids []string
+	for i := 0; i < 3; i++ {
+		id, err := r.Submit(context.Background(), writeTempIn(t), "1080p")
+		if err != nil {
+			t.Fatalf("submit %d: %v", i, err)
+		}
+		ids = append(ids, id)
+	}
+	rejectedIn := writeTempIn(t)
+	if _, err := r.Submit(context.Background(), rejectedIn, "1080p"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("4th submit: %v, want ErrBusy", err)
+	}
+	if _, err := os.Stat(rejectedIn); !os.IsNotExist(err) {
+		t.Fatal("rejected submit must still consume (delete) the input")
+	}
+	close(g.release)
+	for _, id := range ids {
+		waitState(t, r, id, StateDone)
+	}
 }
 
 func TestJobTempCleanup(t *testing.T) {
@@ -146,7 +188,10 @@ func TestJobInputRemovedOnError(t *testing.T) {
 	if err := os.WriteFile(in, []byte("raw"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	id := r.Submit(context.Background(), in, "1080p")
+	id, err := r.Submit(context.Background(), in, "1080p")
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
 	waitState(t, r, id, StateError)
 	if _, err := os.Stat(in); !os.IsNotExist(err) {
 		t.Fatal("input temp must be removed on error too")

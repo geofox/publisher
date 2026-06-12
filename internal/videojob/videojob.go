@@ -4,12 +4,16 @@
 // Jobs do not survive restarts (spec §3.1): the poll 404s and the composer
 // asks the user to re-attach. The workdir must absorb ~2x the output size
 // transiently (ffmpeg's +faststart second pass writes an adjacent temp file).
+// Shutdown abort is intentionally absent: the daemon runs in a container whose
+// teardown kills ffmpeg with the process, and SweepWorkdir reclaims disk at
+// next start.
 package videojob
 
 import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -30,10 +34,24 @@ const (
 	StateError       = "error"
 )
 
-// storeTimeout bounds the Blossom streaming upload: the streaming HTTP client
-// deliberately has no overall timeout (a 1 GB body fits no fixed budget), so
-// the job provides the ceiling instead.
-const storeTimeout = 15 * time.Minute
+const (
+	// storeTimeout bounds the Blossom streaming upload: the streaming HTTP client
+	// deliberately has no overall timeout (a 1 GB body fits no fixed budget), so
+	// the job provides the ceiling instead.
+	storeTimeout = 15 * time.Minute
+
+	// maxPending bounds simultaneous on-disk input files (each up to 1 GB) —
+	// queued jobs hold their uploads on disk while parked on the semaphore.
+	maxPending = 3
+
+	// evictAfter prunes terminal jobs from the registry (the composer stops
+	// polling within seconds; an hour is ample for debugging).
+	evictAfter = time.Hour
+)
+
+// ErrBusy rejects a Submit when maxPending jobs are queued/running; the
+// endpoint maps it to 429.
+var ErrBusy = errors.New("videojob: transcode queue is full")
 
 // Transcoder is the seam between the job engine and ffmpeg, fake-able in
 // tests (and in the API tests one layer up).
@@ -48,11 +66,12 @@ type Storer interface {
 }
 
 type Job struct {
-	ID    string        `json:"job_id"`
-	State string        `json:"state"`
-	Pct   float64       `json:"pct"`
-	Err   string        `json:"error,omitempty"`
-	Media *media.Result `json:"media,omitempty"`
+	ID     string        `json:"job_id"`
+	State  string        `json:"state"`
+	Pct    float64       `json:"pct"`
+	Err    string        `json:"error,omitempty"`
+	Media  *media.Result `json:"media,omitempty"`
+	doneAt time.Time
 }
 
 type Runner struct {
@@ -72,15 +91,32 @@ func NewRunner(tc Transcoder, store Storer, workdir string) *Runner {
 }
 
 // Submit registers a job for the (already fully received) upload at inPath
-// and starts it asynchronously. The caller hands over ownership of inPath —
-// the job deletes it when finished either way.
-func (r *Runner) Submit(ctx context.Context, inPath, preset string) string {
-	id := newID()
+// and starts it asynchronously. Submit CONSUMES inPath unconditionally — on
+// rejection it is deleted, so callers never branch on cleanup. Terminal jobs
+// older than evictAfter are pruned here (the only place the registry grows).
+func (r *Runner) Submit(ctx context.Context, inPath, preset string) (string, error) {
 	r.mu.Lock()
+	pending := 0
+	for jid, j := range r.jobs {
+		switch j.State {
+		case StateDone, StateError:
+			if time.Since(j.doneAt) > evictAfter {
+				delete(r.jobs, jid)
+			}
+		default:
+			pending++
+		}
+	}
+	if pending >= maxPending {
+		r.mu.Unlock()
+		os.Remove(inPath)
+		return "", ErrBusy
+	}
+	id := newID()
 	r.jobs[id] = &Job{ID: id, State: StateQueued}
 	r.mu.Unlock()
 	go r.run(context.WithoutCancel(ctx), id, inPath, preset)
-	return id
+	return id, nil
 }
 
 func (r *Runner) Get(id string) (Job, bool) {
@@ -106,10 +142,14 @@ func (r *Runner) run(ctx context.Context, id, inPath, preset string) {
 	r.sem <- struct{}{}
 	defer func() { <-r.sem }()
 
-	fail := func(err error) { r.set(id, func(j *Job) { j.State, j.Err = StateError, err.Error() }) }
+	fail := func(err error) {
+		r.set(id, func(j *Job) { j.State, j.Err, j.doneAt = StateError, err.Error(), time.Now() })
+	}
 
 	r.set(id, func(j *Job) { j.State = StateProbing })
-	meta, err := r.tc.Probe(ctx, inPath)
+	pctx, pcancel := context.WithTimeout(ctx, time.Minute)
+	meta, err := r.tc.Probe(pctx, inPath)
+	pcancel()
 	if err != nil {
 		fail(fmt.Errorf("probe: %w", err))
 		return
@@ -147,18 +187,21 @@ func (r *Runner) run(ctx context.Context, id, inPath, preset string) {
 		fail(fmt.Errorf("store: %w", err))
 		return
 	}
-	r.set(id, func(j *Job) { j.State, j.Pct, j.Media = StateDone, 1, &res })
+	r.set(id, func(j *Job) { j.State, j.Pct, j.Media, j.doneAt = StateDone, 1, &res, time.Now() })
 }
 
+// newID generates a random job identifier. _, _ = rand.Read(b) never errors
+// since Go 1.24; a failure indicates an OS entropy crisis and would crash.
 func newID() string {
 	b := make([]byte, 8)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return "vj_" + hex.EncodeToString(b)
 }
 
 // SweepWorkdir removes leftovers from jobs killed by a restart (spec §7) —
 // inputs, outputs, and ffmpeg faststart temp files alike. Called once at
 // startup; the workdir is DEDICATED to this runner (never a shared /tmp).
+// flat dir assumed; subdirectories are skipped (os.Remove fails non-empty, ignored).
 func (r *Runner) SweepWorkdir() {
 	ents, err := os.ReadDir(r.workdir)
 	if err != nil {
