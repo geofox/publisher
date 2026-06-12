@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,6 +196,15 @@ func TestJobInputRemovedOnError(t *testing.T) {
 	waitState(t, r, id, StateError)
 	if _, err := os.Stat(in); !os.IsNotExist(err) {
 		t.Fatal("input temp must be removed on error too")
+	}
+}
+
+func TestJobRejectsOverlongInput(t *testing.T) {
+	r := newRunner(t, fakeTC{meta: transcode.VideoMeta{W: 100, H: 100, DurationSecs: 1300, FPS: 30}}, fakeStore{})
+	id := submit(t, r, "1080p")
+	j := waitState(t, r, id, StateError)
+	if !strings.Contains(j.Err, "minute limit") {
+		t.Fatalf("err = %q, want minute-limit rejection", j.Err)
 	}
 }
 
