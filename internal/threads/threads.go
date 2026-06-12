@@ -19,7 +19,10 @@ type Image struct {
 }
 
 // Video represents a single video to attach to a Threads post.
-type Video struct{ URL string }
+type Video struct {
+	URL string
+	Alt string
+}
 
 // Post describes the content of a single Threads post.
 type Post struct {
@@ -109,6 +112,9 @@ func (c *Client) createMain(ctx context.Context, p Post, deadline time.Time) (st
 			"media_type": {"VIDEO"},
 			"video_url":  {p.Video.URL},
 			"text":       {p.Text},
+		}
+		if p.Video.Alt != "" {
+			v.Set("alt_text", p.Video.Alt)
 		}
 		c.addTopic(v, p.TopicTag)
 		c.addReplyControl(v, p.ReplyControl)

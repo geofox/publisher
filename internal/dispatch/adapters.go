@@ -35,6 +35,9 @@ func gateVideo(plat string, imgs []Img) string {
 		if len(im.Bytes) == 0 && (plat == "bluesky" || plat == "mastodon") {
 			return fmt.Sprintf("video %d: bytes unavailable for %s (over its size cap or fetch failed)", i, plat)
 		}
+		if im.BlossomURL == "" && plat == "threads" {
+			return fmt.Sprintf("video %d: no canonical URL for threads (ingests by URL)", i)
+		}
 	}
 	return ""
 }
@@ -269,7 +272,7 @@ func (a ThreadsAdapter) PostThreads(ctx context.Context, text string, o Override
 
 	tp := threads.Post{Text: text, TopicTag: o.TopicTag, Images: ti, ReplyControl: o.ThreadsReplyControl}
 	if vid != nil {
-		tp.Video = &threads.Video{URL: vid.BlossomURL}
+		tp.Video = &threads.Video{URL: vid.BlossomURL, Alt: vid.Alt}
 	}
 	if replyTo != nil {
 		tp.ReplyToID = replyTo.ParentID
@@ -340,7 +343,10 @@ func (a MastodonAdapter) QuoteStatus(ctx context.Context, text, quotedID string,
 	for _, im := range fitted {
 		mi = append(mi, mastodon.Image{Bytes: im.Bytes, Alt: im.Alt})
 	}
-	_ = v // QuotePost doesn't yet carry video; splitVideo ensures it's not treated as image
+	// v1: mastodon quotes are text+images only — an attached video is dropped here
+	// (bluesky quotes carry it natively); the composer's video XOR images rule makes
+	// this unreachable in practice.
+	_ = v
 	res, err := a.C.QuotePost(ctx, text, quotedID, mi)
 	if err != nil {
 		return TargetResult{Platform: "mastodon"}, err

@@ -43,20 +43,22 @@ type Result struct {
 }
 
 type Client struct {
-	c            *gomast.Client
-	baseURL      string
-	token        string
-	http         *http.Client
-	pollInterval time.Duration
+	c                *gomast.Client
+	baseURL          string
+	token            string
+	http             *http.Client
+	pollInterval     time.Duration
+	videoPollTimeout time.Duration
 }
 
 func New(baseURL, token string) *Client {
 	return &Client{
-		c:            gomast.NewClient(&gomast.Config{Server: baseURL, AccessToken: token}),
-		baseURL:      strings.TrimRight(baseURL, "/"),
-		token:        token,
-		http:         &http.Client{Timeout: 15 * time.Second},
-		pollInterval: 2 * time.Second,
+		c:                gomast.NewClient(&gomast.Config{Server: baseURL, AccessToken: token}),
+		baseURL:          strings.TrimRight(baseURL, "/"),
+		token:            token,
+		http:             &http.Client{Timeout: 15 * time.Second},
+		pollInterval:     2 * time.Second,
+		videoPollTimeout: 5 * time.Minute,
 	}
 }
 
@@ -99,7 +101,8 @@ func (cl *Client) Post(ctx context.Context, p Post) (Result, error) {
 // waitMediaReady polls GET /api/v1/media/:id until the server returns 200
 // (processing complete) or a non-206 error status. 206 = still processing.
 func (cl *Client) waitMediaReady(ctx context.Context, id string) error {
-	for i := 0; i < 150; i++ {
+	deadline := time.Now().Add(cl.videoPollTimeout)
+	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, cl.baseURL+"/api/v1/media/"+id, nil)
 		if err != nil {
 			return err
@@ -119,11 +122,13 @@ func (cl *Client) waitMediaReady(ctx context.Context, id string) error {
 		default:
 			return fmt.Errorf("media %s processing: status %d", id, resp.StatusCode)
 		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("media %s not processed within %s", id, cl.videoPollTimeout)
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(cl.pollInterval):
 		}
 	}
-	return fmt.Errorf("media %s not processed after %d polls", id, 150)
 }

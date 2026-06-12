@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -168,12 +169,22 @@ type Client struct {
 	Identifier  string
 	AppPassword string
 	HTTP        *http.Client
+	// uploadHTTP carries blob uploads (videos up to 100 MB): no overall
+	// Client.Timeout — a fixed budget can't fit large blobs on slow links.
+	// Transport bounds the hang-prone phases instead; ctx provides the
+	// ceiling.
+	uploadHTTP *http.Client
 }
 
 func New(pds, identifier, appPassword string) *Client {
 	return &Client{
 		PDS: strings.TrimRight(pds, "/"), Identifier: identifier, AppPassword: appPassword,
 		HTTP: &http.Client{Timeout: 30 * time.Second},
+		uploadHTTP: &http.Client{Transport: &http.Transport{
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 120 * time.Second,
+		}},
 	}
 }
 
@@ -400,7 +411,11 @@ func (c *Client) uploadBlob(ctx context.Context, accessJwt string, data []byte, 
 	var resp struct {
 		Blob json.RawMessage `json:"blob"`
 	}
-	if err := c.do(ctx, "/xrpc/com.atproto.repo.uploadBlob", mime, accessJwt, data, &resp); err != nil {
+	cl := c.uploadHTTP
+	if cl == nil {
+		cl = c.HTTP
+	}
+	if err := c.doWith(ctx, cl, "/xrpc/com.atproto.repo.uploadBlob", mime, accessJwt, data, &resp); err != nil {
 		return nil, fmt.Errorf("uploadBlob: %w", err)
 	}
 	return resp.Blob, nil
@@ -423,8 +438,15 @@ func (c *Client) createRecord(ctx context.Context, s session, collection, rkey s
 }
 
 // do POSTs body to the PDS path and decodes a JSON response into out. A bearer
-// token is attached when accessJwt is non-empty.
+// token is attached when accessJwt is non-empty. It uses the client's default
+// HTTP client (c.HTTP).
 func (c *Client) do(ctx context.Context, path, contentType, accessJwt string, body []byte, out any) error {
+	return c.doWith(ctx, c.HTTP, path, contentType, accessJwt, body, out)
+}
+
+// doWith is like do but uses the supplied http.Client instead of c.HTTP,
+// allowing per-call client selection (e.g. uploadHTTP for large blob uploads).
+func (c *Client) doWith(ctx context.Context, cl *http.Client, path, contentType, accessJwt string, body []byte, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.PDS+path, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -433,7 +455,7 @@ func (c *Client) do(ctx context.Context, path, contentType, accessJwt string, bo
 	if accessJwt != "" {
 		req.Header.Set("Authorization", "Bearer "+accessJwt)
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := cl.Do(req)
 	if err != nil {
 		return err
 	}

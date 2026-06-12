@@ -54,6 +54,43 @@ func TestPostVideoCreatesVideoContainer(t *testing.T) {
 	}
 }
 
+// TestPostVideoAltTextSetOnContainer verifies that a non-empty Alt is forwarded
+// as alt_text on the VIDEO container query.
+func TestPostVideoAltTextSetOnContainer(t *testing.T) {
+	var createQuery string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/me/threads", func(w http.ResponseWriter, r *http.Request) {
+		createQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "valt1"})
+	})
+	mux.HandleFunc("/valt1", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "FINISHED"})
+	})
+	mux.HandleFunc("/me/threads_publish", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "vmed_alt"})
+	})
+	mux.HandleFunc("/vmed_alt", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"permalink": "https://t/p"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New("tok", "me")
+	c.BaseURL = srv.URL
+	c.PollInterval = time.Millisecond
+
+	_, err := c.Post(context.Background(), Post{
+		Text:  "watch",
+		Video: &Video{URL: "https://blossom/clip.mp4", Alt: "a short clip"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(createQuery, "alt_text=a+short+clip") && !strings.Contains(createQuery, "alt_text=a%20short%20clip") {
+		t.Fatalf("create query must contain alt_text: %q", createQuery)
+	}
+}
+
 // TestPostVideoUsesVideoPollTimeout verifies that a video post uses
 // VideoPollTimeout instead of PollTimeout. We set PollTimeout=0 so a text
 // post would fail immediately; the video post must succeed with a generous

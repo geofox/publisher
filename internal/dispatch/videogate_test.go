@@ -17,6 +17,7 @@ func TestGateVideo(t *testing.T) {
 		{"mastodon", Img{Mime: "video/mp4", Bytes: nil, BlossomURL: "u"}, "bytes unavailable"},
 		{"threads", Img{Mime: "video/mp4", Bytes: nil, BlossomURL: "u", DurationSecs: 301}, "over 5 min"},
 		{"threads", Img{Mime: "video/mp4", Bytes: nil, BlossomURL: "u", DurationSecs: 299}, ""},
+		{"threads", Img{Mime: "video/mp4", Bytes: []byte("v"), BlossomURL: "", DurationSecs: 60}, "no canonical URL"},
 		{"nostr", Img{Mime: "video/mp4", Bytes: nil, BlossomURL: "u", DurationSecs: 9999}, ""},
 		{"bluesky", Img{Mime: "image/jpeg", Bytes: held}, ""}, // images untouched
 		// Canonical SizeBytes drives gate even without bytes (retry path).
