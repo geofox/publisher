@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,9 +32,11 @@ import (
 	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/threads"
+	"github.com/geofox/publisher/internal/transcode"
 	"github.com/geofox/publisher/internal/translate"
 	"github.com/geofox/publisher/internal/unfurl"
 	"github.com/geofox/publisher/internal/verify"
+	"github.com/geofox/publisher/internal/videojob"
 )
 
 // Build metadata, overridable at link time:
@@ -106,6 +109,21 @@ func main() {
 	a.UserLanguages = cfg.UserLanguages
 	a.PublicFeedToken = cfg.PublicFeedToken
 	a.Progress = progress.NewRegistry()
+	// Video pipeline: enabled only when ffmpeg is actually present (dev hosts
+	// without it run image-only; the endpoints 503 with a clear message).
+	if _, err := os.Stat(cfg.FFmpegPath); err == nil {
+		work := cfg.VideoWorkdir
+		if work == "" {
+			work = filepath.Join(os.TempDir(), "publisher-video")
+		}
+		os.MkdirAll(work, 0o700)
+		vr := videojob.NewRunner(transcode.NewExecTranscoder(cfg.FFmpegPath, cfg.FFprobePath), mp, work)
+		vr.SweepWorkdir()
+		a.VideoJobs = vr
+		a.VideoWorkdir = work
+	} else {
+		slog.Warn("video pipeline disabled", "ffmpeg", cfg.FFmpegPath)
+	}
 	// Operator's own cross-platform identity for the composer (real handle/name/
 	// avatar). Each platform is wired only when its credentials are configured;
 	// Nostr is always available (npub derives from the owner pubkey).

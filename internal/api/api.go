@@ -13,7 +13,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +39,7 @@ import (
 	"github.com/geofox/publisher/internal/translate"
 	"github.com/geofox/publisher/internal/unfurl"
 	"github.com/geofox/publisher/internal/verify"
+	"github.com/geofox/publisher/internal/videojob"
 	"github.com/geofox/publisher/internal/web"
 )
 
@@ -63,6 +66,10 @@ const (
 // maxImagesPerPost is the composer-wide image cap, matching Bluesky's gallery
 // soft limit. Per-platform overflow (Mastodon's 4) splits into the reply chain.
 const maxImagesPerPost = 10
+
+// maxVideoUploadBytes caps the async video endpoint (spec: 1 GB, streamed to
+// disk — never RAM). The +1 MiB slack covers multipart framing.
+const maxVideoUploadBytes = 1<<30 + 1<<20
 
 // Dispatcher is implemented by dispatch.Dispatcher; extracted as an interface
 // so the api package has no concrete dependency on the dispatcher and tests
@@ -160,6 +167,17 @@ type API struct {
 	// Unfurl builds bluesky link cards for the thread preview; may be nil
 	// (no cards in previews). Satisfied by *unfurl.Service.
 	Unfurl UnfurlService
+
+	// VideoJobs runs the async probe→transcode→upload pipeline for video
+	// attachments. nil when ffmpeg is not present on the host (the endpoints
+	// return 503 with a clear message).
+	VideoJobs *videojob.Runner
+
+	// VideoWorkdir is the dedicated directory for video upload temp files and
+	// transcode outputs. Falls back to filepath.Join(os.TempDir(),
+	// "publisher-video") when empty. Must be separate from bare os.TempDir()
+	// because the runner's startup sweep removes everything in the workdir.
+	VideoWorkdir string
 }
 
 // New creates a new API with the given publisher and media pipeline.
@@ -200,6 +218,8 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/public/feed", a.handlePublicFeed)
 	mux.HandleFunc("POST /api/translate", a.handleTranslate)
 	mux.HandleFunc("POST /api/media/compress", a.handleCompressMedia)
+	mux.HandleFunc("POST /api/media/video", a.handleVideoUpload)
+	mux.HandleFunc("GET /api/media/video/{id}", a.handleVideoJob)
 	mux.HandleFunc("GET /api/drafts", a.handleListDrafts)
 	mux.HandleFunc("POST /api/drafts", a.handleCreateDraft)
 	mux.HandleFunc("GET /api/drafts/{id}", a.handleGetDraft)
@@ -644,6 +664,112 @@ func (a *API) handleCompressMedia(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	w.Write(res.Bytes)
+}
+
+// ─── POST /api/media/video ──────────────────────────────────────────────
+//
+// Async attach-time video ingest: the multipart body STREAMS to a temp file
+// in the dedicated video workdir (1 GB cap, zero RAM buffering via
+// MultipartReader), then a videojob runs probe → ffmpeg normalize → Blossom,
+// polled by the composer at GET /api/media/video/{id}. Preset rides the query
+// string so parts are never buffered while hunting for a field.
+func (a *API) handleVideoUpload(w http.ResponseWriter, r *http.Request) {
+	if a.VideoJobs == nil {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "video pipeline not configured (ffmpeg missing)")
+		return
+	}
+	if r.ContentLength > maxVideoUploadBytes {
+		httpx.WriteError(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("upload exceeds %d bytes (%d MB)", maxVideoUploadBytes, maxVideoUploadBytes>>20))
+		return
+	}
+	preset := r.URL.Query().Get("preset")
+	if preset == "" {
+		preset = "1080p"
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxVideoUploadBytes)
+	mr, err := r.MultipartReader()
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "multipart: "+err.Error())
+		return
+	}
+	var tmpPath string
+	for {
+		part, perr := mr.NextPart()
+		if perr == io.EOF {
+			break
+		}
+		if perr != nil {
+			var mbe *http.MaxBytesError
+			if errors.As(perr, &mbe) {
+				httpx.WriteError(w, http.StatusRequestEntityTooLarge, "upload exceeds cap")
+			} else {
+				httpx.WriteError(w, http.StatusBadRequest, "multipart: "+perr.Error())
+			}
+			return
+		}
+		if part.FormName() != "file" {
+			io.Copy(io.Discard, part)
+			continue
+		}
+		dir := a.videoWorkdir()
+		tmp, terr := os.CreateTemp(dir, "upload-*.video")
+		if terr != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "tmp: "+terr.Error())
+			return
+		}
+		_, cerr := io.Copy(tmp, part)
+		tmp.Close()
+		if cerr != nil {
+			os.Remove(tmp.Name())
+			var mbe *http.MaxBytesError
+			if errors.As(cerr, &mbe) {
+				httpx.WriteError(w, http.StatusRequestEntityTooLarge, "upload exceeds cap")
+			} else {
+				httpx.WriteError(w, http.StatusBadRequest, "read: "+cerr.Error())
+			}
+			return
+		}
+		tmpPath = tmp.Name()
+		break
+	}
+	if tmpPath == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "missing 'file' part")
+		return
+	}
+	id, err := a.VideoJobs.Submit(r.Context(), tmpPath, preset)
+	if err != nil {
+		// ErrBusy is the only Submit error; the input was already consumed.
+		httpx.WriteError(w, http.StatusTooManyRequests, err.Error())
+		return
+	}
+	slog.Info("video_job_submitted", "job", id, "preset", preset)
+	httpx.WriteJSON(w, http.StatusAccepted, map[string]string{"job_id": id})
+}
+
+// videoWorkdir is the DEDICATED dir for uploads and transcode outputs — never
+// bare os.TempDir(): the runner's startup sweep deletes everything in its
+// workdir, and dev /tmp is RAM-backed tmpfs. Configurable via VIDEO_WORKDIR.
+func (a *API) videoWorkdir() string {
+	d := a.VideoWorkdir
+	if d == "" {
+		d = filepath.Join(os.TempDir(), "publisher-video")
+	}
+	os.MkdirAll(d, 0o700)
+	return d
+}
+
+func (a *API) handleVideoJob(w http.ResponseWriter, r *http.Request) {
+	if a.VideoJobs == nil {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "video pipeline not configured")
+		return
+	}
+	j, ok := a.VideoJobs.Get(r.PathValue("id"))
+	if !ok {
+		httpx.WriteError(w, http.StatusNotFound, "unknown job (restarted? re-attach the video)")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, j)
 }
 
 // ─── /api/post ───────────────────────────────────────────────────────────

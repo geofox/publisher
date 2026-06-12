@@ -74,6 +74,14 @@ type Config struct {
 	AutoRetryMaxDelay    time.Duration
 	RetrierTick          time.Duration
 
+	// Video pipeline. Enabled only when FFmpegPath points at an existing binary.
+	// VideoWorkdir overrides the default tempdir location for upload staging and
+	// transcode outputs (never bare os.TempDir(): the runner's startup sweep
+	// deletes everything in the workdir; dev /tmp is RAM-backed tmpfs).
+	FFmpegPath   string
+	FFprobePath  string
+	VideoWorkdir string
+
 	// OIDC Relying-Party auth. When OIDCIssuer is empty, auth is dormant and all
 	// gates are off (behaves exactly as before — relies on the reverse proxy).
 	OIDCIssuer          string
@@ -176,6 +184,10 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("OWNER_PUBKEY (%s) does not match the pubkey derived from NSEC_HEX (%s)",
 			c.OwnerPubkey.Hex(), derived.Hex())
 	}
+
+	c.FFmpegPath = getEnv("FFMPEG_PATH", "/usr/local/bin/ffmpeg")
+	c.FFprobePath = getEnv("FFPROBE_PATH", "/usr/local/bin/ffprobe")
+	c.VideoWorkdir = getEnv("VIDEO_WORKDIR", "")
 
 	c.OIDCIssuer = strings.TrimRight(getEnv("OIDC_ISSUER", ""), "/")
 	c.OIDCClientID = getEnv("OIDC_CLIENT_ID", "")

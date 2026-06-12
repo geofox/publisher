@@ -12,6 +12,19 @@ import (
 	"strings"
 )
 
+// ExecTranscoder satisfies videojob.Transcoder with the real binaries.
+type ExecTranscoder struct{ FFmpeg, FFprobe string }
+
+func NewExecTranscoder(ffmpeg, ffprobe string) ExecTranscoder {
+	return ExecTranscoder{FFmpeg: ffmpeg, FFprobe: ffprobe}
+}
+func (e ExecTranscoder) Probe(ctx context.Context, path string) (VideoMeta, error) {
+	return Probe(ctx, e.FFprobe, path)
+}
+func (e ExecTranscoder) Normalize(ctx context.Context, in, out string, p NormParams, progress func(float64)) error {
+	return Normalize(ctx, e.FFmpeg, in, out, p, progress)
+}
+
 // VideoMeta is the probed shape of a video file. W, H are display
 // (rotation-corrected) dimensions. DurationSecs is fractional; store rows
 // round up (a 2.5 s clip gates as 3 s — conservative). FPS is the average
