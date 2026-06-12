@@ -1450,9 +1450,10 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		// platform-fit conversions. Optional: an older cached bundle sends
 		// only the count — previews then skip fit notes.
 		Media []struct {
-			SizeBytes int64  `json:"size_bytes"`
-			Mime      string `json:"mime"`
-			Dim       string `json:"dim"`
+			SizeBytes    int64  `json:"size_bytes"`
+			Mime         string `json:"mime"`
+			Dim          string `json:"dim"`
+			DurationSecs int64  `json:"duration_secs"`
 		} `json:"media"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1488,6 +1489,28 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		// when a buggy client sends fewer media entries than images, keep the
 		// larger count so the SPLIT PLAN stays right and only badges go missing.
 		req.Images = len(metas)
+	}
+	// videoNotes maps video metas through the same VideoGate dispatch uses —
+	// ✗ marks a hard per-target failure, ⚠ an advisory. Image metas are
+	// handled by PlanMediaFit (which skips videos); ordinals stay aligned
+	// because both iterate req.Media by index.
+	videoNotes := func(plat string) []dispatch.FitNote {
+		var out []dispatch.FitNote
+		for i, m := range req.Media {
+			if !strings.HasPrefix(m.Mime, "video/") {
+				continue
+			}
+			fail, warns := transcode.VideoGate(plat, transcode.VideoInfo{
+				SizeBytes: m.SizeBytes, DurationSecs: m.DurationSecs,
+			})
+			if fail != "" {
+				out = append(out, dispatch.FitNote{Ordinal: i, Note: "✗ " + fail + " — this target will fail"})
+			}
+			for _, wmsg := range warns {
+				out = append(out, dispatch.FitNote{Ordinal: i, Note: "⚠ " + wmsg})
+			}
+		}
+		return out
 	}
 	type cardJSON struct {
 		Segment     int    `json:"segment"`
@@ -1527,7 +1550,7 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			cp := dispatch.PlanBlueskyCard(req.Text, card, req.Images, req.Number)
-			pv := preview{Platform: p, Count: len(cp.Segs), Segments: cp.Segs, Imgs: cp.Plan, Warnings: cp.Warnings, FitNotes: dispatch.PlanMediaFit(p, metas)}
+			pv := preview{Platform: p, Count: len(cp.Segs), Segments: cp.Segs, Imgs: cp.Plan, Warnings: cp.Warnings, FitNotes: append(dispatch.PlanMediaFit(p, metas), videoNotes(p)...)}
 			if cp.Card != nil {
 				pv.Card = &cardJSON{
 					Segment: cp.Card.Segment, URI: cp.Card.URI, Title: cp.Card.Title,
@@ -1539,7 +1562,7 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		}
 		segs, plan, warns := thread.SplitWithMedia(req.Text, thread.LimitFor(p), req.Images, thread.MaxImagesFor(p), thread.Opts{Number: req.Number})
 		out.Previews = append(out.Previews, preview{
-			Platform: p, Count: len(segs), Segments: segs, Imgs: plan, Warnings: warns, FitNotes: dispatch.PlanMediaFit(p, metas),
+			Platform: p, Count: len(segs), Segments: segs, Imgs: plan, Warnings: warns, FitNotes: append(dispatch.PlanMediaFit(p, metas), videoNotes(p)...),
 		})
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)

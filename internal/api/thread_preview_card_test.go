@@ -101,6 +101,71 @@ func TestThreadPreviewBlueskyCardOnLastSegment(t *testing.T) {
 	}
 }
 
+func TestThreadPreviewVideoNotes(t *testing.T) {
+	a := &API{}
+	body := `{"text":"clip","platforms":["bluesky","threads","nostr"],
+	  "media":[{"size_bytes":150000000,"mime":"video/mp4","dim":"1920x1080","duration_secs":400}]}`
+	out := postPreviewAPI(t, a, body)
+
+	previews := out["previews"].([]any)
+	byp := map[string]map[string]any{}
+	for _, raw := range previews {
+		pv := raw.(map[string]any)
+		byp[pv["platform"].(string)] = pv
+	}
+
+	// bluesky: exactly 2 notes — one "✗ … over 100 MB …" (hard) and one "⚠ … 3 min …" (advisory)
+	bsPV := byp["bluesky"]
+	bsNotes, ok := bsPV["fit_notes"].([]any)
+	if !ok || len(bsNotes) != 2 {
+		t.Fatalf("bluesky fit_notes = %v, want exactly 2", bsPV["fit_notes"])
+	}
+	hardNote := bsNotes[0].(map[string]any)["note"].(string)
+	advisoryNote := bsNotes[1].(map[string]any)["note"].(string)
+	if !strings.HasPrefix(hardNote, "✗") || !strings.Contains(hardNote, "over 100 MB") {
+		t.Fatalf("bluesky fit_notes[0] = %q, want ✗ prefix and 'over 100 MB'", hardNote)
+	}
+	if !strings.HasPrefix(advisoryNote, "⚠") || !strings.Contains(advisoryNote, "3 min") {
+		t.Fatalf("bluesky fit_notes[1] = %q, want ⚠ prefix and '3 min'", advisoryNote)
+	}
+
+	// threads: at least 1 note containing "over 5 min" prefixed "✗"
+	thPV := byp["threads"]
+	thNotes, ok := thPV["fit_notes"].([]any)
+	if !ok || len(thNotes) < 1 {
+		t.Fatalf("threads fit_notes = %v, want at least 1", thPV["fit_notes"])
+	}
+	var found5min bool
+	for _, raw := range thNotes {
+		n := raw.(map[string]any)["note"].(string)
+		if strings.HasPrefix(n, "✗") && strings.Contains(n, "over 5 min") {
+			found5min = true
+		}
+	}
+	if !found5min {
+		t.Fatalf("threads fit_notes = %v, want a ✗ note containing 'over 5 min'", thNotes)
+	}
+
+	// nostr: no fit_notes key (nil)
+	nostrPV := byp["nostr"]
+	if fn, exists := nostrPV["fit_notes"]; exists {
+		t.Fatalf("nostr fit_notes = %v, want none", fn)
+	}
+
+	// no preview may contain a "→ JPEG" note (PlanMediaFit must keep skipping video metas)
+	for _, raw := range previews {
+		pv := raw.(map[string]any)
+		plat := pv["platform"].(string)
+		fnSlice, _ := pv["fit_notes"].([]any)
+		for _, fnRaw := range fnSlice {
+			n, _ := fnRaw.(map[string]any)["note"].(string)
+			if strings.Contains(n, "→ JPEG") {
+				t.Fatalf("platform %s: got image fit note %q for a video meta — PlanMediaFit must skip it", plat, n)
+			}
+		}
+	}
+}
+
 func TestThreadPreviewFitNotes(t *testing.T) {
 	a := &API{}
 	// 3 MB JPEG: over bluesky's ~1.9 MB cap → bluesky gets 1 fit note.
