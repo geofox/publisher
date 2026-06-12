@@ -35,13 +35,23 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
       -o /publisher \
       ./cmd/publisher
 
-# Regression guard: a dynamically linked binary embeds its interpreter path
-# (ld-linux/ld-musl); fail the image build here rather than crash-loop on the
-# host. grep -a treats the ELF as text; static binaries contain neither string.
-RUN if grep -qaE 'ld-(linux|musl)' /publisher; then \
-      echo "FATAL: /publisher is dynamically linked — scratch cannot exec it" >&2; \
-      exit 1; \
-    fi
+# Donor for the runtime /tmp (scratch has no filesystem; streamed video
+# uploads + transcode outputs land there — the overlay layer is disk-backed).
+RUN mkdir -p /newtmp && chmod 1777 /newtmp
+
+# ---- linkage guard ----
+# A dynamically linked binary in FROM scratch dies at exec with a misleading
+# "no such file or directory" (the missing file is the ELF interpreter) — it
+# crash-looped v1.8.0 in production. Fail the BUILD instead, for every binary
+# that ships: a dynamic loader path embedded in the file means dynamic linkage.
+FROM build AS check
+COPY --from=mwader/static-ffmpeg:7.1.1@sha256:6769881cc02c80d33e387750a8e144d162adfab2775e934dd97899261dda3a0c /ffmpeg /ffprobe /check/
+RUN cp /publisher /check/publisher && \
+    for b in /check/publisher /check/ffmpeg /check/ffprobe; do \
+      if grep -qaE 'ld-(linux|musl)' "$b"; then \
+        echo "FATAL: $b is dynamically linked — scratch cannot exec it" >&2; exit 1; \
+      fi; \
+    done && touch /check/ok
 
 # ---- runtime ----
 FROM scratch
@@ -49,10 +59,19 @@ FROM scratch
 # CA bundle (for outbound TLS to blossom + relays over wss://).
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
-# Static binary.
-COPY --from=build /publisher /publisher
+# Static binary — copied from the check stage so the linkage guard is on the
+# critical path.
+COPY --from=check /check/publisher /publisher
+
+# Static ffmpeg/ffprobe — also guard-gated via the check stage.
+COPY --from=check /check/ffmpeg /check/ffprobe /usr/local/bin/
+
+# Writable /tmp for streamed video uploads and transcode outputs.
+COPY --from=build /newtmp /tmp
 
 ENV PORT=8080
+ENV FFMPEG_PATH=/usr/local/bin/ffmpeg
+ENV FFPROBE_PATH=/usr/local/bin/ffprobe
 EXPOSE 8080
 
 ENTRYPOINT ["/publisher"]
