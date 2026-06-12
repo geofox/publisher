@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -114,13 +113,16 @@ func main() {
 	if _, err := os.Stat(cfg.FFmpegPath); err == nil {
 		work := cfg.VideoWorkdir
 		if work == "" {
-			work = filepath.Join(os.TempDir(), "publisher-video")
+			work = videojob.DefaultWorkdir()
 		}
-		os.MkdirAll(work, 0o700)
-		vr := videojob.NewRunner(transcode.NewExecTranscoder(cfg.FFmpegPath, cfg.FFprobePath), mp, work)
-		vr.SweepWorkdir()
-		a.VideoJobs = vr
-		a.VideoWorkdir = work
+		if err := os.MkdirAll(work, 0o700); err != nil {
+			slog.Error("video workdir unavailable — video pipeline disabled", "path", work, "err", err)
+		} else {
+			vr := videojob.NewRunner(transcode.NewExecTranscoder(cfg.FFmpegPath, cfg.FFprobePath), mp, work)
+			vr.SweepWorkdir()
+			a.VideoJobs = vr
+			a.VideoWorkdir = work
+		}
 	} else {
 		slog.Warn("video pipeline disabled", "ffmpeg", cfg.FFmpegPath)
 	}

@@ -25,6 +25,11 @@ import (
 	"github.com/geofox/publisher/internal/transcode"
 )
 
+// DefaultWorkdir is the fallback when VIDEO_WORKDIR is unset. Dedicated dir —
+// never bare os.TempDir(): SweepWorkdir deletes everything in it, and dev
+// /tmp is often RAM-backed tmpfs.
+func DefaultWorkdir() string { return filepath.Join(os.TempDir(), "publisher-video") }
+
 const (
 	StateQueued      = "queued"
 	StateProbing     = "probing"
@@ -127,6 +132,21 @@ func (r *Runner) Get(id string) (Job, bool) {
 		return Job{}, false
 	}
 	return *j, true
+}
+
+// Full reports whether Submit would currently reject with ErrBusy — a cheap
+// pre-check so the endpoint can 429 BEFORE receiving a 1 GB body. Best-effort
+// (TOCTOU vs. Submit is harmless: Submit re-checks authoritatively).
+func (r *Runner) Full() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pending := 0
+	for _, j := range r.jobs {
+		if j.State != StateDone && j.State != StateError {
+			pending++
+		}
+	}
+	return pending >= maxPending
 }
 
 func (r *Runner) set(id string, f func(*Job)) {

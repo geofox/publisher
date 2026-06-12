@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"mime/multipart"
 	"net"
@@ -15,7 +16,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -174,9 +174,9 @@ type API struct {
 	VideoJobs *videojob.Runner
 
 	// VideoWorkdir is the dedicated directory for video upload temp files and
-	// transcode outputs. Falls back to filepath.Join(os.TempDir(),
-	// "publisher-video") when empty. Must be separate from bare os.TempDir()
-	// because the runner's startup sweep removes everything in the workdir.
+	// transcode outputs. Falls back to videojob.DefaultWorkdir() when empty.
+	// Must be separate from bare os.TempDir() because the runner's startup
+	// sweep removes everything in the workdir.
 	VideoWorkdir string
 }
 
@@ -678,6 +678,19 @@ func (a *API) handleVideoUpload(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusServiceUnavailable, "video pipeline not configured (ffmpeg missing)")
 		return
 	}
+	// The server's global Read/WriteTimeouts (60s/120s) are sized for normal
+	// API calls; a 1 GB upload needs minutes. Extend the deadlines for this
+	// request only (≈4.7 Mbit/s floor — still a slow-loris bound, and the
+	// endpoint is session-gated). ErrNotSupported (httptest) is ignored.
+	rc := http.NewResponseController(w)
+	d := time.Now().Add(30 * time.Minute)
+	_ = rc.SetReadDeadline(d)
+	_ = rc.SetWriteDeadline(d.Add(time.Minute))
+
+	if a.VideoJobs.Full() {
+		httpx.WriteError(w, http.StatusTooManyRequests, "transcode queue is full — wait for the current video to finish")
+		return
+	}
 	if r.ContentLength > maxVideoUploadBytes {
 		httpx.WriteError(w, http.StatusRequestEntityTooLarge,
 			fmt.Sprintf("upload exceeds %d bytes (%d MB)", maxVideoUploadBytes, maxVideoUploadBytes>>20))
@@ -722,6 +735,14 @@ func (a *API) handleVideoUpload(w http.ResponseWriter, r *http.Request) {
 		tmp.Close()
 		if cerr != nil {
 			os.Remove(tmp.Name())
+			var pe *fs.PathError
+			if errors.As(cerr, &pe) && pe.Op == "write" {
+				// Server-side staging failure (disk full etc.) — never blame
+				// the client, never leak the filesystem path.
+				slog.Error("video upload staging failed", "err", cerr)
+				httpx.WriteError(w, http.StatusInsufficientStorage, "server storage error while staging upload")
+				return
+			}
 			var mbe *http.MaxBytesError
 			if errors.As(cerr, &mbe) {
 				httpx.WriteError(w, http.StatusRequestEntityTooLarge, "upload exceeds cap")
@@ -753,9 +774,11 @@ func (a *API) handleVideoUpload(w http.ResponseWriter, r *http.Request) {
 func (a *API) videoWorkdir() string {
 	d := a.VideoWorkdir
 	if d == "" {
-		d = filepath.Join(os.TempDir(), "publisher-video")
+		d = videojob.DefaultWorkdir()
 	}
-	os.MkdirAll(d, 0o700)
+	if err := os.MkdirAll(d, 0o700); err != nil {
+		slog.Error("video workdir unavailable", "path", d, "err", err)
+	}
 	return d
 }
 

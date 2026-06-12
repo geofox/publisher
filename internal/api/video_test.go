@@ -123,3 +123,46 @@ func TestVideoUploadRejectsWhenDisabled(t *testing.T) {
 		t.Fatalf("status %d, want 503 when video pipeline disabled", rec.Code)
 	}
 }
+
+// gateVT blocks Normalize until released — lets tests hold jobs in flight.
+type gateVT struct{ release chan struct{} }
+
+func (gateVT) Probe(ctx context.Context, path string) (transcode.VideoMeta, error) {
+	return transcode.VideoMeta{W: 320, H: 240, DurationSecs: 1, FPS: 30}, nil
+}
+func (g gateVT) Normalize(ctx context.Context, in, out string, p transcode.NormParams, _ func(float64)) error {
+	<-g.release
+	return os.WriteFile(out, []byte("n"), 0o644)
+}
+
+func TestVideoUploadQueueFull429(t *testing.T) {
+	g := gateVT{release: make(chan struct{})}
+	a := &API{}
+	a.VideoJobs = videojob.NewRunner(g, vsFake{}, t.TempDir())
+	a.VideoWorkdir = t.TempDir()
+	for i := 0; i < 3; i++ {
+		if rec := postVideo(t, a, []byte("v"), "1080p"); rec.Code != 202 {
+			t.Fatalf("submit %d: %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	rec := postVideo(t, a, []byte("v"), "1080p")
+	if rec.Code != 429 {
+		t.Fatalf("status %d, want 429", rec.Code)
+	}
+	close(g.release)
+}
+
+func TestVideoUploadMissingFilePart400(t *testing.T) {
+	a := newVideoAPI(t)
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	mw.WriteField("preset", "720p") // a field part but no file part
+	mw.Close()
+	req := httptest.NewRequest("POST", "/api/media/video", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	a.Routes().ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("status %d, want 400", rec.Code)
+	}
+}
