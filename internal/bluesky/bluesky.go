@@ -29,10 +29,21 @@ type Image struct {
 	Alt   string
 }
 
+// Video is one attached video (canonical H.264 MP4, ≤100 MB per the lexicon).
+type Video struct {
+	Bytes []byte
+	Alt   string
+	W, H  int
+}
+
 type Post struct {
 	Text   string
 	Langs  []string
 	Images []Image
+	// Video, when non-nil, attaches an app.bsky.embed.video. The record has a
+	// single embed slot: video takes precedence over Images and External
+	// (composer enforces exclusivity; Post re-checks like External does).
+	Video *Video
 	// ReplyGate, when non-nil, writes an app.bsky.feed.threadgate restricting who
 	// can reply. A nil gate means anyone can reply; an all-false gate (e.g. from
 	// "nobody") writes an empty allow list, which means nobody can reply.
@@ -45,7 +56,7 @@ type Post struct {
 	Quote *QuoteRef // when set, embeds the quoted post
 	// External, when non-nil, attaches an app.bsky.embed.external link card.
 	// The record has a single embed slot, so it is ignored when the post
-	// carries images or a quote (dispatch enforces this; Post re-checks).
+	// carries images, a video, or a quote (dispatch enforces this; Post re-checks).
 	External *ExternalCard
 }
 
@@ -237,25 +248,54 @@ func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 		return Result{}, err
 	}
 
+	// Video embed: upload blob and build app.bsky.embed.video. When a video is
+	// set, skip the image-upload loop entirely (composer enforces exclusivity).
+	var videoEmbed map[string]any
+	if p.Video != nil {
+		blob, err := c.uploadBlob(ctx, s.AccessJwt, p.Video.Bytes, "video/mp4")
+		if err != nil {
+			return Result{}, fmt.Errorf("video blob: %w", err)
+		}
+		videoEmbed = map[string]any{"$type": "app.bsky.embed.video", "video": blob}
+		if p.Video.Alt != "" {
+			videoEmbed["alt"] = p.Video.Alt
+		}
+		if p.Video.W > 0 && p.Video.H > 0 {
+			videoEmbed["aspectRatio"] = map[string]int{"width": p.Video.W, "height": p.Video.H}
+		}
+	}
+
 	var images []map[string]any
-	for _, img := range p.Images {
-		out, mime, w, h, err := fitBlob(img.Bytes, img.Mime)
-		if err != nil {
-			return Result{}, err
+	if p.Video == nil {
+		for _, img := range p.Images {
+			out, mime, w, h, err := fitBlob(img.Bytes, img.Mime)
+			if err != nil {
+				return Result{}, err
+			}
+			blob, err := c.uploadBlob(ctx, s.AccessJwt, out, mime)
+			if err != nil {
+				return Result{}, err
+			}
+			entry := map[string]any{"alt": img.Alt, "image": blob}
+			if w > 0 && h > 0 {
+				entry["aspectRatio"] = map[string]int{"width": w, "height": h}
+			}
+			images = append(images, entry)
 		}
-		blob, err := c.uploadBlob(ctx, s.AccessJwt, out, mime)
-		if err != nil {
-			return Result{}, err
-		}
-		entry := map[string]any{"alt": img.Alt, "image": blob}
-		if w > 0 && h > 0 {
-			entry["aspectRatio"] = map[string]int{"width": w, "height": h}
-		}
-		images = append(images, entry)
 	}
 
 	record := buildPostRecord(p)
-	if len(images) > 0 {
+	if videoEmbed != nil {
+		if p.Quote != nil {
+			record["embed"] = map[string]any{
+				"$type":  "app.bsky.embed.recordWithMedia",
+				"record": map[string]any{"$type": "app.bsky.embed.record", "record": map[string]any{"uri": p.Quote.URI, "cid": p.Quote.CID}},
+				"media":  videoEmbed,
+			}
+		} else {
+			record["embed"] = videoEmbed
+		}
+	} else if len(images) > 0 {
 		imageEmbed := mediaEmbed(images)
 		if p.Quote != nil {
 			record["embed"] = map[string]any{
@@ -268,10 +308,10 @@ func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 		}
 	}
 
-	// Link card: only when the single embed slot is free (no images, no
-	// quote). A failed thumb resize/upload degrades to a card without a
+	// Link card: only when the single embed slot is free (no images, no video,
+	// no quote). A failed thumb resize/upload degrades to a card without a
 	// thumbnail — the card must never fail the post.
-	if p.External != nil && len(images) == 0 && p.Quote == nil {
+	if p.External != nil && len(images) == 0 && videoEmbed == nil && p.Quote == nil {
 		var thumbBlob json.RawMessage
 		if len(p.External.Thumb) > 0 {
 			if out, mime, err := fitThumb(p.External.Thumb, p.External.ThumbMime); err == nil {

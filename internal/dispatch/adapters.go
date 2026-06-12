@@ -39,6 +39,24 @@ func gateVideo(plat string, imgs []Img) string {
 	return ""
 }
 
+// splitVideo returns the first video attachment (nil if none) and the
+// remaining image attachments. v1: the composer enforces video XOR images and
+// max one video, so images is empty whenever v != nil — the split is defensive.
+// Extra videos beyond the first are dropped (composer enforces max 1).
+func splitVideo(imgs []Img) (v *Img, images []Img) {
+	for i := range imgs {
+		if imgs[i].IsVideo() {
+			if v == nil {
+				v = &imgs[i]
+			}
+			// extra videos dropped — composer enforces max 1
+			continue
+		}
+		images = append(images, imgs[i])
+	}
+	return v, images
+}
+
 // Compile-time checks that the adapters satisfy the dispatcher interfaces.
 var (
 	_ NostrPoster    = NostrAdapter{}
@@ -119,7 +137,8 @@ func (a MastodonAdapter) PostText(ctx context.Context, text string, o Overrides,
 		r.Status, r.Error = "failed", reason
 		return r, fmt.Errorf("%s", reason)
 	}
-	fitted, err := fitImgs("mastodon", imgs)
+	v, imgRest := splitVideo(imgs)
+	fitted, err := fitImgs("mastodon", imgRest)
 	if err != nil {
 		r.Status, r.Error = "failed", err.Error()
 		return r, err
@@ -131,6 +150,9 @@ func (a MastodonAdapter) PostText(ctx context.Context, text string, o Overrides,
 	p := mastodon.Post{
 		Text: text, SpoilerText: spoiler,
 		Sensitive: o.Sensitive, Visibility: o.Visibility, Language: o.Language, Images: mi,
+	}
+	if v != nil {
+		p.Video = &mastodon.Video{Bytes: v.Bytes, Alt: v.Alt}
 	}
 	if replyTo != nil {
 		p.InReplyToID = replyTo.ParentID
@@ -159,8 +181,9 @@ func (a BlueskyAdapter) PostBsky(ctx context.Context, text string, o Overrides, 
 		r.Status, r.Error = "failed", reason
 		return r, fmt.Errorf("%s", reason)
 	}
+	v, rest := splitVideo(imgs)
 	var bi []bluesky.Image
-	for _, im := range imgs {
+	for _, im := range rest {
 		bi = append(bi, bluesky.Image{Bytes: im.Bytes, Mime: im.Mime, Alt: im.Alt})
 	}
 
@@ -168,6 +191,9 @@ func (a BlueskyAdapter) PostBsky(ctx context.Context, text string, o Overrides, 
 		Text: text, Langs: o.Langs, Images: bi,
 		ReplyGate:     bluesky.ParseReplyGate(o.BlueskyReply),
 		DisableQuotes: o.BlueskyDisableQuotes,
+	}
+	if v != nil {
+		bp.Video = &bluesky.Video{Bytes: v.Bytes, Alt: v.Alt}
 	}
 	if replyTo != nil {
 		bp.Reply = &bluesky.ReplyRef{
@@ -226,13 +252,17 @@ func (a ThreadsAdapter) PostThreads(ctx context.Context, text string, o Override
 		r.Status, r.Error = "failed", reason
 		return r, fmt.Errorf("%s", reason)
 	}
-	ti, err := prepThreadsImgs(ctx, imgs, a.Host)
+	vid, imgRest := splitVideo(imgs)
+	ti, err := prepThreadsImgs(ctx, imgRest, a.Host)
 	if err != nil {
 		r.Status, r.Error = "failed", err.Error()
 		return r, err
 	}
 
 	tp := threads.Post{Text: text, TopicTag: o.TopicTag, Images: ti, ReplyControl: o.ThreadsReplyControl}
+	if vid != nil {
+		tp.Video = &threads.Video{URL: vid.BlossomURL}
+	}
 	if replyTo != nil {
 		tp.ReplyToID = replyTo.ParentID
 	}
@@ -260,13 +290,17 @@ func (a BlueskyAdapter) QuoteBsky(ctx context.Context, text string, o Overrides,
 		r.Status, r.Error = "failed", reason
 		return r, fmt.Errorf("%s", reason)
 	}
+	v, rest := splitVideo(imgs)
 	var bi []bluesky.Image
-	for _, im := range imgs {
+	for _, im := range rest {
 		bi = append(bi, bluesky.Image{Bytes: im.Bytes, Mime: im.Mime, Alt: im.Alt})
 	}
 	bp := bluesky.Post{
 		Text: text, Langs: o.Langs, Images: bi, Quote: &bluesky.QuoteRef{URI: uri, CID: cid},
 		ReplyGate: bluesky.ParseReplyGate(o.BlueskyReply), DisableQuotes: o.BlueskyDisableQuotes,
+	}
+	if v != nil {
+		bp.Video = &bluesky.Video{Bytes: v.Bytes, Alt: v.Alt}
 	}
 	res, err := a.C.Post(ctx, bp)
 	if err != nil {
@@ -288,7 +322,8 @@ func (a MastodonAdapter) QuoteStatus(ctx context.Context, text, quotedID string,
 		r := TargetResult{Platform: "mastodon", Status: "failed", Error: reason}
 		return r, fmt.Errorf("%s", reason)
 	}
-	fitted, err := fitImgs("mastodon", imgs)
+	v, imgRest := splitVideo(imgs)
+	fitted, err := fitImgs("mastodon", imgRest)
 	if err != nil {
 		r := TargetResult{Platform: "mastodon", Status: "failed", Error: err.Error()}
 		return r, err
@@ -297,6 +332,7 @@ func (a MastodonAdapter) QuoteStatus(ctx context.Context, text, quotedID string,
 	for _, im := range fitted {
 		mi = append(mi, mastodon.Image{Bytes: im.Bytes, Alt: im.Alt})
 	}
+	_ = v // QuotePost doesn't yet carry video; splitVideo ensures it's not treated as image
 	res, err := a.C.QuotePost(ctx, text, quotedID, mi)
 	if err != nil {
 		return TargetResult{Platform: "mastodon"}, err

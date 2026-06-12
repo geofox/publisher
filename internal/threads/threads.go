@@ -18,11 +18,15 @@ type Image struct {
 	Alt string
 }
 
+// Video represents a single video to attach to a Threads post.
+type Video struct{ URL string }
+
 // Post describes the content of a single Threads post.
 type Post struct {
 	Text     string
 	TopicTag string
 	Images   []Image
+	Video    *Video
 	// ReplyControl restricts who can reply. Set on the published container; one
 	// of the threadsReplyControls values, otherwise omitted (Threads defaults to
 	// everyone).
@@ -46,16 +50,17 @@ type Result struct {
 }
 
 // Client is a hand-rolled Threads Graph API client.
-// BaseURL, RefreshURL, PollInterval, and PollTimeout are exported for test overrides.
+// BaseURL, RefreshURL, PollInterval, PollTimeout, and VideoPollTimeout are exported for test overrides.
 type Client struct {
-	BaseURL      string
-	RefreshURL   string
-	UserID       string
-	token        string
-	mu           sync.RWMutex
-	HTTP         *http.Client
-	PollInterval time.Duration
-	PollTimeout  time.Duration
+	BaseURL          string
+	RefreshURL       string
+	UserID           string
+	token            string
+	mu               sync.RWMutex
+	HTTP             *http.Client
+	PollInterval     time.Duration
+	PollTimeout      time.Duration
+	VideoPollTimeout time.Duration
 }
 
 // New creates a Client with production defaults.
@@ -65,19 +70,23 @@ func New(token, userID string) *Client {
 		userID = "me"
 	}
 	return &Client{
-		BaseURL:      "https://graph.threads.net/v1.0",
-		RefreshURL:   "https://graph.threads.net/refresh_access_token",
-		UserID:       userID,
-		token:        token,
-		HTTP:         &http.Client{Timeout: 30 * time.Second},
-		PollInterval: 3 * time.Second,
-		PollTimeout:  90 * time.Second,
+		BaseURL:          "https://graph.threads.net/v1.0",
+		RefreshURL:       "https://graph.threads.net/refresh_access_token",
+		UserID:           userID,
+		token:            token,
+		HTTP:             &http.Client{Timeout: 30 * time.Second},
+		PollInterval:     3 * time.Second,
+		PollTimeout:      90 * time.Second,
+		VideoPollTimeout: 6 * time.Minute,
 	}
 }
 
 // Post creates and publishes a Threads post, returning its remote ID and permalink.
 func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 	deadline := time.Now().Add(c.PollTimeout)
+	if p.Video != nil {
+		deadline = time.Now().Add(c.VideoPollTimeout)
+	}
 	creationID, err := c.createMain(ctx, p, deadline)
 	if err != nil {
 		return Result{}, err
@@ -93,8 +102,19 @@ func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 	return Result{RemoteID: mediaID, RemoteURL: link}, nil
 }
 
-// createMain builds the appropriate container(s) based on image count.
+// createMain builds the appropriate container(s) based on image/video count.
 func (c *Client) createMain(ctx context.Context, p Post, deadline time.Time) (string, error) {
+	if p.Video != nil {
+		v := url.Values{
+			"media_type": {"VIDEO"},
+			"video_url":  {p.Video.URL},
+			"text":       {p.Text},
+		}
+		c.addTopic(v, p.TopicTag)
+		c.addReplyControl(v, p.ReplyControl)
+		c.addReplyTo(v, p.ReplyToID)
+		return c.createContainer(ctx, v)
+	}
 	switch len(p.Images) {
 	case 0:
 		v := url.Values{"media_type": {"TEXT"}, "text": {p.Text}}
