@@ -494,6 +494,7 @@ export function loadDraft(input) {
       ordinal: m.ordinal, file: null,
       duration_secs: m.duration_secs || 0,
       video: /^video\//.test(m.mime || ""),
+      poster_url: m.poster_url || "",
       // derive a displayable URL from blossom_url for the thumbnail strip
       url: m.blossom_url || "",
       // restored video drafts are already transcoded — render as ready
@@ -742,6 +743,18 @@ const isHeic = (f) => /^image\/hei[cf]$/.test(f.type) || /\.hei[cf]$/i.test(f.na
 
 function fmtDuration(s) { const m = Math.floor(s / 60); return m ? m + "m" + String(s % 60).padStart(2, "0") + "s" : s + "s"; }
 
+// updateVideoProgress refreshes a video tile's progress without rebuilding the
+// whole strip; falls back to a full render on phase changes or detached nodes.
+function updateVideoProgress(img) {
+  if (img._renderedPhase === img.phase && img._fillEl?.isConnected) {
+    const pct = Math.round((img.pct || 0) * 100);
+    img._labelEl.textContent = img.phase + " " + pct + "%";
+    img._fillEl.style.width = pct + "%";
+    return;
+  }
+  renderImages();
+}
+
 // One video XOR images per post (v1); a video uploads + transcodes
 // immediately via the async job endpoint with three-phase progress:
 // uploading (XHR), transcoding and storing (1 s job poll). The quality preset
@@ -749,18 +762,20 @@ function fmtDuration(s) { const m = Math.floor(s / 60); return m ? m + "m" + Str
 // transcode and the raw original is deleted after normalization.
 function attachVideo(file) {
   if (state.images.length) { flash(state.images.some(i => i.video) ? "Only one video per post" : "Remove the images first (one video OR images per post)"); return; }
-  const preset = $("#vidpreset")?.value || "1080p";
-  const entry = { video: true, file: null, url: "", alt: "",
-                  phase: "uploading", pct: 0, _xhr: null, _jobTimer: null };
+  const entry = { video: true, _file: file, _preset: $("#vidpreset")?.value || "1080p",
+                  url: "", alt: "", phase: "uploading", pct: 0, _xhr: null, _jobTimer: null };
   state.images.push(entry);
-  const gen = imagesGen;
   renderImages();
+  startVideoUpload(entry);
+}
 
+function startVideoUpload(entry) {
+  const gen = imagesGen;
   const xhr = new XMLHttpRequest();
   entry._xhr = xhr;
-  xhr.open("POST", "/api/media/video?preset=" + encodeURIComponent(preset));
+  xhr.open("POST", "/api/media/video?preset=" + encodeURIComponent(entry._preset || "1080p"));
   xhr.upload.onprogress = e => {
-    if (e.lengthComputable) { entry.pct = e.loaded / e.total; renderImages(); }
+    if (e.lengthComputable) { entry.pct = e.loaded / e.total; updateVideoProgress(entry); }
   };
   xhr.onerror = () => failVideo(entry, gen, "upload failed");
   xhr.onload = () => {
@@ -781,6 +796,8 @@ function attachVideo(file) {
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
         if (j.state === "error") throw new Error(j.error || "transcode failed");
+        const prevPhase = entry.phase;
+        const prevPct = entry.pct;
         entry.phase = j.state === "uploading" ? "storing" : j.state;
         entry.pct = j.pct || 0;
         if (j.state === "done") {
@@ -788,9 +805,12 @@ function attachVideo(file) {
           const m = j.media;
           Object.assign(entry, { phase: "ready", pct: 1, blossom_url: m.url, sha256: m.sha256,
             mime: m.mime, dim: m.dim, size_bytes: m.size, duration_secs: m.duration_secs || 0,
-            url: m.url });
+            url: m.url, poster_url: m.poster_url || "" });
+          entry._file = null;
+          renderImages();
+        } else if (entry.phase !== prevPhase || entry.pct !== prevPct) {
+          updateVideoProgress(entry);
         }
-        renderImages();
       } catch (err) {
         clearInterval(entry._jobTimer); entry._jobTimer = null;
         failVideo(entry, gen, err.message);
@@ -798,15 +818,15 @@ function attachVideo(file) {
     }, 1000);
   };
   const fd = new FormData();
-  fd.append("file", file);
+  fd.append("file", entry._file);
   xhr.send(fd);
 }
 
 function failVideo(entry, gen, msg) {
   if (gen !== imagesGen) return;
-  flash("Video: " + msg);
-  const i = state.images.indexOf(entry);
-  if (i >= 0) { state.images.splice(i, 1); renderImages(); }
+  entry.phase = "failed"; entry.error = msg; entry.pct = 0;
+  entry._xhr = null; entry._jobTimer = null;
+  renderImages();
 }
 
 export function renderImages() {
@@ -815,16 +835,25 @@ export function renderImages() {
     if (img.video) {
       const tile = el("div", { class: "thumb vthumb" });
       if (img.phase === "ready") {
-        tile.append(el("video", { src: img.url, preload: "metadata", muted: "muted",
-            controls: "controls", playsinline: "playsinline" }),
+        const vAttrs = { src: img.url, preload: "metadata", muted: "muted", controls: "controls", playsinline: "playsinline" };
+        if (img.poster_url) vAttrs.poster = img.poster_url;
+        tile.append(el("video", vAttrs),
           el("input", { type: "text", placeholder: "alt text", value: img.alt,
             oninput: e => { img.alt = e.target.value; renderPreview(); } }),
           el("div", { class: "imgsize", text: fmtBytes(img.size_bytes) + " · " + fmtDuration(img.duration_secs) }));
+      } else if (img.phase === "failed") {
+        const fr = el("div", { class: "vprog" },
+          el("div", { class: "vprog-label vfail", text: "failed: " + (img.error || "unknown") }));
+        if (img._file) {
+          fr.append(el("button", { class: "rm", type: "button", text: "retry",
+            onclick: () => { img.phase = "uploading"; img.pct = 0; img.error = ""; renderImages(); startVideoUpload(img); } }));
+        }
+        tile.append(fr);
       } else {
-        tile.append(el("div", { class: "vprog" },
-          el("div", { class: "vprog-label", text: img.phase + " " + Math.round((img.pct || 0) * 100) + "%" }),
-          el("div", { class: "vprog-bar" },
-            el("div", { class: "vprog-fill", style: "width:" + Math.round((img.pct || 0) * 100) + "%" }))));
+        const label = el("div", { class: "vprog-label", text: img.phase + " " + Math.round((img.pct || 0) * 100) + "%" });
+        const fill = el("div", { class: "vprog-fill", style: "width:" + Math.round((img.pct || 0) * 100) + "%" });
+        img._labelEl = label; img._fillEl = fill; img._renderedPhase = img.phase;
+        tile.append(el("div", { class: "vprog" }, label, el("div", { class: "vprog-bar" }, fill)));
       }
       tile.append(el("button", { class: "rm", type: "button", text: "remove",
         onclick: () => {
@@ -885,6 +914,7 @@ export function renderImages() {
       onclick: () => { if (img._compressAbort) img._compressAbort.abort(); URL.revokeObjectURL(img.url); state.images.splice(i, 1); renderImages(); } }));
     c.append(el("div", { class: "thumb" }, ...kids));
   });
+  const vp = $("#vidpreset"); if (vp) vp.hidden = state.images.some(i => i.video);
   renderMeta(); renderPreview();
 }
 

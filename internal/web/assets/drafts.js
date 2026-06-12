@@ -175,6 +175,7 @@ export async function saveActiveDraft() {
       alt: m.alt || "", ordinal: m.ordinal, file: null,
       url: m.blossom_url || "",
       duration_secs: m.duration_secs || 0,
+      poster_url: m.poster_url || "",
       video: /^video\//.test(m.mime || ""),
       phase: /^video\//.test(m.mime || "") ? "ready" : undefined,
     }));
@@ -267,7 +268,14 @@ function maybeShowRecoveryBanner() {
   const r = document.getElementById("draft-recovery-restore");
   const d = document.getElementById("draft-recovery-discard");
   if (r) r.addEventListener("click", () => {
-    loadDraft(recovered);
+    const all = recovered.images || [];
+    const refs = all.filter(i => i.blossom_url);
+    // Reference attachments (ready videos, re-saved image refs) hydrate like a
+    // loaded draft; fresh local-File images cannot survive localStorage.
+    loadDraft({ ...recovered, media: refs });
+    if (all.length > refs.length) {
+      flash((all.length - refs.length) + " attachment(s) couldn't be restored — re-attach them");
+    }
     markDirty();
     banner.hidden = true;
   });

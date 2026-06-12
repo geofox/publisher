@@ -108,6 +108,7 @@ export function imageSpecs() {
       ordinal: idx, blossom_url: i.blossom_url, sha256: i.sha256,
       mime: i.mime, dim: i.dim, blurhash: i.blurhash, size_bytes: i.size_bytes,
       duration_secs: i.duration_secs || 0,
+      poster_url: i.poster_url || "",
       alt: i.alt,
     };
   });

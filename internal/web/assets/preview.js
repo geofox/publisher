@@ -22,7 +22,7 @@ export function mediaMax(p) {
 // your attached images, plus — on a fan-out platform — the original's media to be
 // re-hosted, capped per platform (matching dispatch.capMedia: user first).
 export function previewMedia(p) {
-  const user = state.images.map((i) => ({ url: i.url, alt: i.alt, video: !!i.video }));
+  const user = state.images.map((i) => ({ url: i.url, alt: i.alt, video: !!i.video, poster_url: i.poster_url }));
   const it = state.interaction;
   if (!it || p === it.platform) return user;
   const src = ((it.sourcePreview && it.sourcePreview.media) || []).map((m) => ({ url: m.url, alt: m.alt || "" }));
@@ -43,12 +43,16 @@ function mediaGridFrom(media) {
   const g = el("div", { class: "pv-media" });
   for (const im of media) {
     // Video: controls+playsinline are load-bearing — iOS paints no frame for
-    // a bare non-playing element (no poster is generated in v1), so without
-    // them the tile is an invisible box.
-    const mediaEl = im.video
-      ? el("video", { src: im.url, preload: "metadata", muted: "muted",
-          controls: "controls", playsinline: "playsinline" })
-      : el("img", { src: im.url, alt: im.alt || "" });
+    // a bare non-playing element (without them the tile is an invisible box).
+    // Set poster only when provided so no broken-image placeholder appears.
+    let mediaEl;
+    if (im.video) {
+      const vAttrs = { src: im.url, preload: "metadata", muted: "muted", controls: "controls", playsinline: "playsinline" };
+      if (im.poster_url) vAttrs.poster = im.poster_url;
+      mediaEl = el("video", vAttrs);
+    } else {
+      mediaEl = el("img", { src: im.url, alt: im.alt || "" });
+    }
     g.append(el("figure", {},
       mediaEl,
       el("figcaption", { class: im.alt ? "" : "muted", text: im.alt ? "alt ✓" : "no alt" })));
