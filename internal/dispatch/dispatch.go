@@ -74,11 +74,17 @@ type Overrides struct {
 }
 
 type Img struct {
-	Bytes      []byte
-	Mime       string
-	Alt        string
-	BlossomURL string
+	Bytes        []byte
+	Mime         string
+	Alt          string
+	BlossomURL   string
+	Dim          string // "WxH" of the canonical object ("" if unknown)
+	DurationSecs int64  // video only; 0 for images
 }
+
+// IsVideo reports whether this attachment is a video (drives the adapter
+// gates and the bytes-vs-URL split).
+func (im Img) IsVideo() bool { return strings.HasPrefix(im.Mime, "video/") }
 
 // Adapters should populate Status ("success"|"failed") and Error in the returned
 // TargetResult. The dispatcher defensively normalizes an empty status to "failed"

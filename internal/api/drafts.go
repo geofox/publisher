@@ -21,15 +21,16 @@ const (
 )
 
 type draftImageEntry struct {
-	Ordinal    int    `json:"ordinal"`
-	Ref        string `json:"ref,omitempty"`         // "img_0", "img_1", … — present iff newly uploaded
-	BlossomURL string `json:"blossom_url,omitempty"` // present iff already uploaded
-	SHA256     string `json:"sha256,omitempty"`
-	Mime       string `json:"mime,omitempty"`
-	Dim        string `json:"dim,omitempty"`
-	Blurhash   string `json:"blurhash,omitempty"`
-	SizeBytes  int64  `json:"size_bytes,omitempty"`
-	Alt        string `json:"alt,omitempty"`
+	Ordinal      int    `json:"ordinal"`
+	Ref          string `json:"ref,omitempty"`         // "img_0", "img_1", … — present iff newly uploaded
+	BlossomURL   string `json:"blossom_url,omitempty"` // present iff already uploaded
+	SHA256       string `json:"sha256,omitempty"`
+	Mime         string `json:"mime,omitempty"`
+	Dim          string `json:"dim,omitempty"`
+	Blurhash     string `json:"blurhash,omitempty"`
+	SizeBytes    int64  `json:"size_bytes,omitempty"`
+	Alt          string `json:"alt,omitempty"`
+	DurationSecs int64  `json:"duration_secs,omitempty"`
 }
 
 type draftSpecJSON struct {
@@ -116,13 +117,13 @@ func (a *API) buildDraftFromRequest(r *http.Request, id string) (*store.Draft, s
 			mediaRecs = append(mediaRecs, store.Media{
 				Ordinal: img.Ordinal, BlossomURL: res.URL, SHA256: res.SHA256,
 				Mime: res.Mime, Dim: res.Dim, Blurhash: res.Blurhash, SizeBytes: res.Size,
-				Alt: img.Alt,
+				Alt: img.Alt, DurationSecs: res.DurationSecs,
 			})
 		} else if img.BlossomURL != "" {
 			mediaRecs = append(mediaRecs, store.Media{
 				Ordinal: img.Ordinal, BlossomURL: img.BlossomURL, SHA256: img.SHA256,
 				Mime: img.Mime, Dim: img.Dim, Blurhash: img.Blurhash, SizeBytes: img.SizeBytes,
-				Alt: img.Alt,
+				Alt: img.Alt, DurationSecs: img.DurationSecs,
 			})
 		} else {
 			return nil, "", http.StatusBadRequest, fmt.Sprintf("image %d: neither ref nor blossom_url present", i)

@@ -17,6 +17,28 @@ import (
 	"github.com/geofox/publisher/internal/transcode"
 )
 
+// gateVideo enforces the per-platform video ceilings before any network call.
+// Returns "" when all attached videos pass (or none are videos).
+func gateVideo(plat string, imgs []Img) string {
+	for i, im := range imgs {
+		if !im.IsVideo() {
+			continue
+		}
+		info := transcode.VideoInfo{SizeBytes: int64(len(im.Bytes)), DurationSecs: im.DurationSecs}
+		if im.Bytes == nil {
+			info.SizeBytes = 0 // unknown here; assembleImages only strips bytes >110MB
+		}
+		if fail, _ := transcode.VideoGate(plat, info); fail != "" {
+			return fmt.Sprintf("video %d: %s", i, fail)
+		}
+		// Byte platforms cannot post a video whose bytes we don't hold.
+		if im.Bytes == nil && (plat == "bluesky" || plat == "mastodon") {
+			return fmt.Sprintf("video %d exceeds %s's size cap", i, plat)
+		}
+	}
+	return ""
+}
+
 // Compile-time checks that the adapters satisfy the dispatcher interfaces.
 var (
 	_ NostrPoster    = NostrAdapter{}
@@ -93,6 +115,10 @@ func (a MastodonAdapter) PostText(ctx context.Context, text string, o Overrides,
 	})
 	r.RequestJSON = string(reqB)
 
+	if reason := gateVideo("mastodon", imgs); reason != "" {
+		r.Status, r.Error = "failed", reason
+		return r, fmt.Errorf("%s", reason)
+	}
 	fitted, err := fitImgs("mastodon", imgs)
 	if err != nil {
 		r.Status, r.Error = "failed", err.Error()
@@ -122,16 +148,21 @@ func (a MastodonAdapter) PostText(ctx context.Context, text string, o Overrides,
 type BlueskyAdapter struct{ C *bluesky.Client }
 
 func (a BlueskyAdapter) PostBsky(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
-	var bi []bluesky.Image
-	for _, im := range imgs {
-		bi = append(bi, bluesky.Image{Bytes: im.Bytes, Mime: im.Mime, Alt: im.Alt})
-	}
 	r := TargetResult{Platform: "bluesky"}
 	reqB, _ := json.Marshal(map[string]any{
 		"text": text, "langs": o.Langs,
 		"bluesky_reply": o.BlueskyReply, "bluesky_disable_quotes": o.BlueskyDisableQuotes,
 	})
 	r.RequestJSON = string(reqB)
+
+	if reason := gateVideo("bluesky", imgs); reason != "" {
+		r.Status, r.Error = "failed", reason
+		return r, fmt.Errorf("%s", reason)
+	}
+	var bi []bluesky.Image
+	for _, im := range imgs {
+		bi = append(bi, bluesky.Image{Bytes: im.Bytes, Mime: im.Mime, Alt: im.Alt})
+	}
 
 	bp := bluesky.Post{
 		Text: text, Langs: o.Langs, Images: bi,
@@ -191,6 +222,10 @@ func (a ThreadsAdapter) PostThreads(ctx context.Context, text string, o Override
 	})
 	r.RequestJSON = string(reqB)
 
+	if reason := gateVideo("threads", imgs); reason != "" {
+		r.Status, r.Error = "failed", reason
+		return r, fmt.Errorf("%s", reason)
+	}
 	ti, err := prepThreadsImgs(ctx, imgs, a.Host)
 	if err != nil {
 		r.Status, r.Error = "failed", err.Error()
@@ -220,6 +255,11 @@ func (a BlueskyAdapter) RepostBsky(ctx context.Context, uri, cid string) (Target
 }
 
 func (a BlueskyAdapter) QuoteBsky(ctx context.Context, text string, o Overrides, imgs []Img, uri, cid string) (TargetResult, error) {
+	r := TargetResult{Platform: "bluesky"}
+	if reason := gateVideo("bluesky", imgs); reason != "" {
+		r.Status, r.Error = "failed", reason
+		return r, fmt.Errorf("%s", reason)
+	}
 	var bi []bluesky.Image
 	for _, im := range imgs {
 		bi = append(bi, bluesky.Image{Bytes: im.Bytes, Mime: im.Mime, Alt: im.Alt})
@@ -244,6 +284,10 @@ func (a MastodonAdapter) Reblog(ctx context.Context, id string) (TargetResult, e
 }
 
 func (a MastodonAdapter) QuoteStatus(ctx context.Context, text, quotedID string, imgs []Img) (TargetResult, error) {
+	if reason := gateVideo("mastodon", imgs); reason != "" {
+		r := TargetResult{Platform: "mastodon", Status: "failed", Error: reason}
+		return r, fmt.Errorf("%s", reason)
+	}
 	fitted, err := fitImgs("mastodon", imgs)
 	if err != nil {
 		r := TargetResult{Platform: "mastodon", Status: "failed", Error: err.Error()}
@@ -322,6 +366,10 @@ func fitImgs(plat string, imgs []Img) ([]Img, error) {
 	}
 	out := make([]Img, len(imgs))
 	for i, im := range imgs {
+		if im.IsVideo() {
+			out[i] = im
+			continue
+		}
 		out[i] = im
 		r, err := prof.Fit(im.Bytes, im.Mime)
 		if err != nil {
@@ -346,6 +394,9 @@ func fitImgs(plat string, imgs []Img) ([]Img, error) {
 func prepThreadsImgs(ctx context.Context, imgs []Img, host func(ctx context.Context, body []byte, mime string) (string, error)) ([]threads.Image, error) {
 	var ti []threads.Image
 	for i, im := range imgs {
+		if im.IsVideo() {
+			continue // videos consumed separately by the video container; not in the image list
+		}
 		url := im.BlossomURL
 		if host != nil {
 			r, err := transcode.Threads.Fit(im.Bytes, im.Mime)

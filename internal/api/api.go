@@ -808,15 +808,16 @@ func (a *API) handleVideoJob(w http.ResponseWriter, r *http.Request) {
 // Named (not anonymous) so it can be shared between the spec structs and the
 // assembleImages helper without struct-tag identity pitfalls.
 type imageSpec struct {
-	Alt        string `json:"alt"`
-	Ref        string `json:"ref"`
-	BlossomURL string `json:"blossom_url"`
-	SHA256     string `json:"sha256"`
-	Mime       string `json:"mime"`
-	Dim        string `json:"dim"`
-	Blurhash   string `json:"blurhash"`
-	SizeBytes  int64  `json:"size_bytes"`
-	Ordinal    int    `json:"ordinal"`
+	Alt          string `json:"alt"`
+	Ref          string `json:"ref"`
+	BlossomURL   string `json:"blossom_url"`
+	SHA256       string `json:"sha256"`
+	Mime         string `json:"mime"`
+	Dim          string `json:"dim"`
+	Blurhash     string `json:"blurhash"`
+	SizeBytes    int64  `json:"size_bytes"`
+	Ordinal      int    `json:"ordinal"`
+	DurationSecs int64  `json:"duration_secs"`
 }
 
 // postSpecJSON is the JSON object expected in the "spec" multipart field.
@@ -1757,16 +1758,41 @@ func (a *API) assembleImages(r *http.Request, specs []imageSpec) ([]dispatch.Img
 	var imgs []dispatch.Img
 	var recs []store.Media
 	add := func(res media.Result, alt string) {
-		imgs = append(imgs, dispatch.Img{Bytes: res.Bytes, Mime: res.Mime, Alt: alt, BlossomURL: res.URL})
+		imgs = append(imgs, dispatch.Img{Bytes: res.Bytes, Mime: res.Mime, Alt: alt, BlossomURL: res.URL,
+			Dim: res.Dim, DurationSecs: res.DurationSecs})
 		recs = append(recs, store.Media{
 			Ordinal: len(recs), BlossomURL: res.URL, SHA256: res.SHA256, Mime: res.Mime,
 			Dim: res.Dim, Blurhash: res.Blurhash, SizeBytes: res.Size, Alt: alt,
+			DurationSecs: res.DurationSecs,
 		})
 	}
 
 	fi := 0 // cursor into the uploaded files (fresh images, in spec order)
 	for _, s := range specs {
 		if s.BlossomURL != "" {
+			if strings.HasPrefix(s.Mime, "video/") {
+				// Video references are NEVER re-Processed (no canonical
+				// mutation) and bytes are fetched only when a byte-upload
+				// platform could actually use them (gates cap at ≤100 MB;
+				// FetchCap is 110 MB). Larger canonicals ride as metadata-only:
+				// URL platforms (threads, nostr) need nothing else and byte
+				// platforms gate out first. A failed best-effort fetch leaves
+				// Bytes nil — the adapter gate then fails that target loudly.
+				img := dispatch.Img{Mime: s.Mime, Alt: s.Alt, BlossomURL: s.BlossomURL,
+					Dim: s.Dim, DurationSecs: s.DurationSecs}
+				if s.SizeBytes > 0 && s.SizeBytes <= media.FetchCap {
+					if body, _, ferr := fetch(r.Context(), s.BlossomURL); ferr == nil {
+						img.Bytes = body
+					}
+				}
+				imgs = append(imgs, img)
+				recs = append(recs, store.Media{
+					Ordinal: len(recs), BlossomURL: s.BlossomURL, SHA256: s.SHA256, Mime: s.Mime,
+					Dim: s.Dim, Blurhash: s.Blurhash, SizeBytes: s.SizeBytes, Alt: s.Alt,
+					DurationSecs: s.DurationSecs,
+				})
+				continue
+			}
 			// Already-uploaded reference: re-fetch the bytes from Blossom.
 			body, mime, ferr := fetch(r.Context(), s.BlossomURL)
 			if ferr != nil {
