@@ -12,6 +12,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -44,6 +45,11 @@ type Pipeline struct {
 	NSEC       nostr.SecretKey
 	OwnerPub   nostr.PubKey
 	HTTP       *http.Client
+	// StreamHTTP carries large streaming PUTs (video canonicals): no overall
+	// Client.Timeout (a 1 GB body cannot fit a fixed budget) — cancellation
+	// comes from the caller's ctx, and the transport bounds the hang-prone
+	// phases (dial, TLS, response-header wait) individually.
+	StreamHTTP *http.Client
 	Lookup     func(sha256 string) (string, bool, error) // optional; if set, returning ok=true short-circuits the Blossom upload
 }
 
@@ -52,6 +58,11 @@ func New(blossomURL string, nsec nostr.SecretKey, pub nostr.PubKey) *Pipeline {
 		BlossomURL: strings.TrimRight(blossomURL, "/"),
 		NSEC:       nsec, OwnerPub: pub,
 		HTTP: &http.Client{Timeout: 30 * time.Second},
+		StreamHTTP: &http.Client{Transport: &http.Transport{
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 60 * time.Second,
+		}},
 	}
 }
 
@@ -143,7 +154,24 @@ func (p *Pipeline) blossomUploadStream(ctx context.Context, body io.Reader, size
 	req.Header.Set("Authorization", "Nostr "+base64.StdEncoding.EncodeToString(authJSON))
 	req.Header.Set("Content-Type", mime)
 	req.ContentLength = size
-	resp, err := p.HTTP.Do(req)
+	// net/http auto-sets GetBody for bytes/strings readers but not files; a
+	// seekable body restores stale-keep-alive retries and 307/308 redirects
+	// for the streaming path (parity with the old bytes path).
+	if req.GetBody == nil {
+		if s, ok := body.(io.Seeker); ok {
+			req.GetBody = func() (io.ReadCloser, error) {
+				if _, err := s.Seek(0, io.SeekStart); err != nil {
+					return nil, err
+				}
+				return io.NopCloser(body), nil
+			}
+		}
+	}
+	cl := p.StreamHTTP
+	if cl == nil {
+		cl = p.HTTP
+	}
+	resp, err := cl.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -169,8 +197,14 @@ func (p *Pipeline) blossomUploadStream(ctx context.Context, body io.Reader, size
 // gate (≤100 MB) can use them, so 110 MB covers the worst legitimate case.
 const FetchCap = 110 << 20
 
+// fetchCapBytes is the runtime cap used by Fetch. It matches FetchCap but is
+// an unexported variable so tests can temporarily lower it as a seam without
+// touching the public constant.
+var fetchCapBytes int64 = FetchCap
+
 // Fetch GETs the bytes at url (used to re-pull archived media from Blossom for
-// retries). Returns the body and Content-Type. Capped at FetchCap.
+// retries). Returns the body and Content-Type. Errors beyond fetchCapBytes
+// rather than silently truncating.
 func (p *Pipeline) Fetch(ctx context.Context, url string) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -184,9 +218,12 @@ func (p *Pipeline) Fetch(ctx context.Context, url string) ([]byte, string, error
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, "", fmt.Errorf("fetch %s: %d", url, resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, FetchCap))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, fetchCapBytes+1))
 	if err != nil {
 		return nil, "", err
+	}
+	if int64(len(body)) > fetchCapBytes {
+		return nil, "", fmt.Errorf("fetch %s: exceeds %d-byte cap", url, fetchCapBytes)
 	}
 	return body, resp.Header.Get("Content-Type"), nil
 }
@@ -251,6 +288,18 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	c.read += int64(n)
 	if c.total > 0 {
 		c.cb(float64(c.read) / float64(c.total))
+	}
+	return n, err
+}
+
+func (c *countingReader) Seek(offset int64, whence int) (int64, error) {
+	s, ok := c.r.(io.Seeker)
+	if !ok {
+		return 0, fmt.Errorf("countingReader: underlying reader not seekable")
+	}
+	n, err := s.Seek(offset, whence)
+	if err == nil && offset == 0 && whence == io.SeekStart {
+		c.read = 0
 	}
 	return n, err
 }

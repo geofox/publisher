@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"fiatjaf.com/nostr"
@@ -73,6 +74,29 @@ func TestFetch(t *testing.T) {
 	data, mime, err := p.Fetch(context.Background(), srv.URL+"/x.png")
 	if err != nil || string(data) != "imgbytes" || mime != "image/png" {
 		t.Errorf("fetch: data=%q mime=%q err=%v", data, mime, err)
+	}
+}
+
+func TestFetchCapEnforced(t *testing.T) {
+	const smallCap = 50
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(bytes.Repeat([]byte("x"), smallCap+10))
+	}))
+	defer srv.Close()
+
+	orig := fetchCapBytes
+	fetchCapBytes = smallCap
+	t.Cleanup(func() { fetchCapBytes = orig })
+
+	sk := nostr.Generate()
+	p := New("http://unused", sk, nostr.GetPublicKey(sk))
+	_, _, err := p.Fetch(context.Background(), srv.URL+"/big")
+	if err == nil {
+		t.Fatal("expected error when response exceeds fetchCapBytes, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error should mention 'exceeds', got: %v", err)
 	}
 }
 
@@ -150,10 +174,10 @@ func TestProcessRejectsCorruptHEIC(t *testing.T) {
 }
 
 func TestProcessFileStreamsWithProgress(t *testing.T) {
-	var received int64
+	var received atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n, _ := io.Copy(io.Discard, r.Body)
-		received = n
+		received.Store(n)
 		json.NewEncoder(w).Encode(map[string]string{"url": "https://b/streamed"})
 	}))
 	defer srv.Close()
@@ -163,11 +187,13 @@ func TestProcessFileStreamsWithProgress(t *testing.T) {
 
 	f := filepath.Join(t.TempDir(), "v.mp4")
 	payload := bytes.Repeat([]byte("x"), 1<<20) // 1 MiB
-	os.WriteFile(f, payload, 0o644)
+	if err := os.WriteFile(f, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
-	var lastPct float64
+	var lastPct atomic.Int64 // stores frac*1e9 to avoid float races
 	res, err := p.ProcessFile(context.Background(), f, "video/mp4", "1280x720", 42,
-		func(frac float64) { lastPct = frac })
+		func(frac float64) { lastPct.Store(int64(frac * 1e9)) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,11 +210,11 @@ func TestProcessFileStreamsWithProgress(t *testing.T) {
 	if res.Bytes != nil {
 		t.Fatal("ProcessFile must not retain bytes in RAM")
 	}
-	if received != int64(len(payload)) {
-		t.Fatalf("server received %d bytes", received)
+	if received.Load() != int64(len(payload)) {
+		t.Fatalf("server received %d bytes", received.Load())
 	}
-	if lastPct < 0.99 {
-		t.Fatalf("progress last=%f", lastPct)
+	if float64(lastPct.Load())/1e9 < 0.99 {
+		t.Fatalf("progress last=%f", float64(lastPct.Load())/1e9)
 	}
 	joined := strings.Join(res.Imeta, "|")
 	if !strings.Contains(joined, "m video/mp4") || !strings.Contains(joined, "dim 1280x720") {
@@ -207,7 +233,9 @@ func TestProcessFileLookupShortCircuits(t *testing.T) {
 	p.Lookup = func(sha string) (string, bool, error) { return "https://b/cached", true, nil }
 
 	f := filepath.Join(t.TempDir(), "v.mp4")
-	os.WriteFile(f, []byte("payload"), 0o644)
+	if err := os.WriteFile(f, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	res, err := p.ProcessFile(context.Background(), f, "video/mp4", "10x10", 3, nil)
 	if err != nil {
 		t.Fatal(err)
