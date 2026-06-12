@@ -1077,7 +1077,10 @@ async function doInteract() {
 // Otherwise post immediately.
 function submit() {
   if (state.images.some(i => i.video && i.phase !== "ready")) {
-    flash("Wait for the video to finish processing"); return;
+    flash(state.images.some(i => i.video && i.phase === "failed")
+      ? "The video failed — retry or remove it first"
+      : "Wait for the video to finish processing");
+    return;
   }
   if (state.interaction) {
     const it = state.interaction;

@@ -128,7 +128,10 @@ function setStatus(kind, text) {
 
 export async function saveActiveDraft() {
   if (state.images.some(i => i.video && i.phase !== "ready")) {
-    flash("Wait for the video to finish processing before saving"); return;
+    flash(state.images.some(i => i.video && i.phase === "failed")
+      ? "The video failed — retry or remove it first"
+      : "Wait for the video to finish processing before saving");
+    return;
   }
   const save = document.getElementById("draft-save");
   if (save) save.disabled = true;
