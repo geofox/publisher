@@ -233,7 +233,8 @@ func TestMediaDurationRoundtrip(t *testing.T) {
 		Targets: []Target{{Platform: "nostr", Status: "success"}},
 		Media: []Media{
 			{Ordinal: 0, BlossomURL: "https://b/x", SHA256: "aa", Mime: "video/mp4",
-				Dim: "1280x720", SizeBytes: 12345, Alt: "clip", DurationSecs: 42},
+				Dim: "1280x720", SizeBytes: 12345, Alt: "clip", DurationSecs: 42,
+				PosterURL: "https://b/poster"},
 		},
 	}
 	if err := db.SavePost(rec); err != nil {
@@ -248,6 +249,9 @@ func TestMediaDurationRoundtrip(t *testing.T) {
 	}
 	if got.Media[0].DurationSecs != 42 {
 		t.Errorf("DurationSecs: got %d, want 42", got.Media[0].DurationSecs)
+	}
+	if got.Media[0].PosterURL != "https://b/poster" {
+		t.Errorf("PosterURL: got %q, want %q", got.Media[0].PosterURL, "https://b/poster")
 	}
 }
 

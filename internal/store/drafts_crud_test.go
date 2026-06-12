@@ -62,7 +62,8 @@ func TestDraftMediaDurationRoundtrip(t *testing.T) {
 		Spec:       `{}`,
 		Media: []Media{
 			{Ordinal: 0, BlossomURL: "https://blossom/v", SHA256: "vv", Mime: "video/mp4",
-				Dim: "1920x1080", SizeBytes: 99999, Alt: "video clip", DurationSecs: 7},
+				Dim: "1920x1080", SizeBytes: 99999, Alt: "video clip", DurationSecs: 7,
+				PosterURL: "https://b/poster"},
 		},
 	}
 	if err := s.CreateDraft(d); err != nil {
@@ -77,6 +78,9 @@ func TestDraftMediaDurationRoundtrip(t *testing.T) {
 	}
 	if got.Media[0].DurationSecs != 7 {
 		t.Errorf("DurationSecs: got %d, want 7", got.Media[0].DurationSecs)
+	}
+	if got.Media[0].PosterURL != "https://b/poster" {
+		t.Errorf("PosterURL: got %q, want %q", got.Media[0].PosterURL, "https://b/poster")
 	}
 }
 

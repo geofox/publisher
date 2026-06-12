@@ -74,6 +74,7 @@ type Media struct {
 	SizeBytes    int64  `json:"size_bytes"`
 	Alt          string `json:"alt"`
 	DurationSecs int64  `json:"duration_secs,omitempty"` // video only; 0 for images
+	PosterURL    string `json:"poster_url,omitempty"`    // video poster JPEG; "" for images/legacy rows
 }
 
 type RelayState struct {
@@ -122,9 +123,9 @@ func (s *Store) SavePost(p *Post) error {
 	}
 	for _, m := range p.Media {
 		if _, err = tx.Exec(
-			`INSERT INTO media(post_id,ordinal,blossom_url,sha256,mime,dim,blurhash,size_bytes,alt,duration_secs)
-			 VALUES(?,?,?,?,?,?,?,?,?,?)`,
-			p.ID, m.Ordinal, m.BlossomURL, m.SHA256, m.Mime, m.Dim, m.Blurhash, m.SizeBytes, m.Alt, m.DurationSecs,
+			`INSERT INTO media(post_id,ordinal,blossom_url,sha256,mime,dim,blurhash,size_bytes,alt,duration_secs,poster_url)
+			 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			p.ID, m.Ordinal, m.BlossomURL, m.SHA256, m.Mime, m.Dim, m.Blurhash, m.SizeBytes, m.Alt, m.DurationSecs, m.PosterURL,
 		); err != nil {
 			return err
 		}
@@ -194,14 +195,14 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		}
 	}
 
-	mrows, err := s.sql.Query(`SELECT ordinal,blossom_url,sha256,mime,dim,blurhash,size_bytes,alt,COALESCE(duration_secs,0) FROM media WHERE post_id=? ORDER BY ordinal`, id)
+	mrows, err := s.sql.Query(`SELECT ordinal,blossom_url,sha256,mime,dim,blurhash,size_bytes,alt,COALESCE(duration_secs,0),COALESCE(poster_url,'') FROM media WHERE post_id=? ORDER BY ordinal`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer mrows.Close()
 	for mrows.Next() {
 		var m Media
-		if err := mrows.Scan(&m.Ordinal, &m.BlossomURL, &m.SHA256, &m.Mime, &m.Dim, &m.Blurhash, &m.SizeBytes, &m.Alt, &m.DurationSecs); err != nil {
+		if err := mrows.Scan(&m.Ordinal, &m.BlossomURL, &m.SHA256, &m.Mime, &m.Dim, &m.Blurhash, &m.SizeBytes, &m.Alt, &m.DurationSecs, &m.PosterURL); err != nil {
 			return nil, err
 		}
 		p.Media = append(p.Media, m)
