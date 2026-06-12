@@ -22,7 +22,7 @@ export function mediaMax(p) {
 // your attached images, plus — on a fan-out platform — the original's media to be
 // re-hosted, capped per platform (matching dispatch.capMedia: user first).
 export function previewMedia(p) {
-  const user = state.images.map((i) => ({ url: i.url, alt: i.alt }));
+  const user = state.images.map((i) => ({ url: i.url, alt: i.alt, video: !!i.video }));
   const it = state.interaction;
   if (!it || p === it.platform) return user;
   const src = ((it.sourcePreview && it.sourcePreview.media) || []).map((m) => ({ url: m.url, alt: m.alt || "" }));
@@ -42,8 +42,11 @@ function mediaGridFrom(media) {
   if (!media.length) return null;
   const g = el("div", { class: "pv-media" });
   for (const im of media) {
+    const mediaEl = im.video
+      ? el("video", { src: im.url, preload: "metadata", muted: "muted" })
+      : el("img", { src: im.url, alt: im.alt || "" });
     g.append(el("figure", {},
-      el("img", { src: im.url, alt: im.alt || "" }),
+      mediaEl,
       el("figcaption", { class: im.alt ? "" : "muted", text: im.alt ? "alt ✓" : "no alt" })));
   }
   if (media.length > 4) {
@@ -121,10 +124,15 @@ function platformSwitch(p) {
 // appendFitNotes renders the planned platform-fit conversions ("image 2
 // → JPEG (over 1.9 MB)") under a preview card. Server-planned (PlanMediaFit),
 // so the badge and the dispatch-time re-encode share one predicate.
-function appendFitNotes(host, platform, notes) {
+// media (optional) is the previewMedia list for the platform, used to label
+// video entries as "video" instead of "image N".
+function appendFitNotes(host, platform, notes, media) {
   for (const n of notes || []) {
+    const label = (media && media[n.ordinal] && media[n.ordinal].video)
+      ? "video"
+      : "image " + (n.ordinal + 1);
     host.appendChild(el("div", { class: "pv-fitnote",
-      text: `image ${n.ordinal + 1} ${n.note} for ${META[platform].label}` }));
+      text: `${label} ${n.note} for ${META[platform].label}` }));
   }
 }
 
@@ -149,9 +157,10 @@ export async function threadPreview(container, text, platform, number, isStale =
           size_bytes: img.file ? img.file.size : (img.size_bytes || 0),
           mime: img.file ? img.file.type : (img.mime || ""),
           dim: img.dim || "",
+          duration_secs: img.duration_secs || 0,
         };
       }
-      return { size_bytes: 0, mime: "", dim: "" };
+      return { size_bytes: 0, mime: "", dim: "", duration_secs: 0 };
     });
     const resp = await fetch("/api/thread-preview", {
       method: "POST",
@@ -181,7 +190,7 @@ export async function threadPreview(container, text, platform, number, isStale =
     container.innerHTML = "";
     _renderSinglePost(container, platform, { text: pv.segments[0], card: pv.card });
     // Append fit notes inside the platform card that _renderSinglePost created.
-    appendFitNotes(container.querySelector(".pv-card") || container, platform, fitNotes);
+    appendFitNotes(container.querySelector(".pv-card") || container, platform, fitNotes, pvMedia);
     return true;
   }
 
@@ -226,7 +235,7 @@ export async function threadPreview(container, text, platform, number, isStale =
   (pv.warnings || []).forEach((wmsg) => {
     wrap.appendChild(el("div", { class: "pv-warn", text: wmsg }));
   });
-  appendFitNotes(wrap, platform, fitNotes);
+  appendFitNotes(wrap, platform, fitNotes, media);
   container.appendChild(wrap);
   return true;
 }

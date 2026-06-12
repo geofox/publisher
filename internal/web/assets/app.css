@@ -282,6 +282,11 @@ textarea.master,.verify-input{}
   font:inherit;font-size:11px;cursor:pointer;padding:0;
 }
 #addimg:hover{border-color:var(--indigo);color:var(--indigo)}
+.thumb.vthumb video { width: 100%; border-radius: 6px; }
+.vprog { padding: 8px 4px; }
+.vprog-label { font-size: 0.72rem; color: var(--faint); margin-bottom: 4px; }
+.vprog-bar { height: 4px; background: var(--line); border-radius: 2px; }
+.vprog-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .3s; }
 
 /* ── Compose layout (drafts sidebar + two-column composer) ──────────────── */
 .compose-grid{display:grid;grid-template-columns:1fr;gap:0}

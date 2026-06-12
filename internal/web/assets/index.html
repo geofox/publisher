@@ -90,8 +90,13 @@
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M5 17l4.5-4 3 2.5L16 12l3 3"/></svg>
                   <span>Add</span>
                 </button>
+                <select id="vidpreset" title="video quality" class="preset">
+                  <option value="1080p" selected>1080p</option>
+                  <option value="720p">720p</option>
+                  <option value="480p">480p</option>
+                </select>
               </div>
-              <input id="imgfile" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" hidden>
+              <input id="imgfile" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" hidden>
 
               <div class="sec-head"><span class="lbl">schedule</span><span class="muted">Europe/Paris · empty = now</span></div>
               <div id="schedrow" class="sched">

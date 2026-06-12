@@ -492,8 +492,12 @@ export function loadDraft(input) {
       blossom_url: m.blossom_url, sha256: m.sha256, mime: m.mime,
       dim: m.dim, blurhash: m.blurhash, size_bytes: m.size_bytes, alt: m.alt || "",
       ordinal: m.ordinal, file: null,
+      duration_secs: m.duration_secs || 0,
+      video: /^video\//.test(m.mime || ""),
       // derive a displayable URL from blossom_url for the thumbnail strip
       url: m.blossom_url || "",
+      // restored video drafts are already transcoded — render as ready
+      phase: /^video\//.test(m.mime || "") ? "ready" : undefined,
     }));
     bumpImagesGen();
     state.activeDraftId = input.id || null;
@@ -736,9 +740,100 @@ function fmtBytes(n) {
 
 const isHeic = (f) => /^image\/hei[cf]$/.test(f.type) || /\.hei[cf]$/i.test(f.name || "");
 
+function fmtDuration(s) { const m = Math.floor(s / 60); return m ? m + "m" + String(s % 60).padStart(2, "0") + "s" : s + "s"; }
+
+// One video XOR images per post (v1); a video uploads + transcodes
+// immediately via the async job endpoint with three-phase progress:
+// uploading (XHR), transcoding and storing (1 s job poll). The quality preset
+// is chosen at attach time (#vidpreset) — re-deriving would be a minutes-long
+// transcode and the raw original is deleted after normalization.
+function attachVideo(file) {
+  if (state.images.length) { flash("Remove the images first (one video OR images per post)"); return; }
+  const preset = $("#vidpreset")?.value || "1080p";
+  const entry = { video: true, file: null, url: "", alt: "",
+                  phase: "uploading", pct: 0, _xhr: null, _jobTimer: null };
+  state.images.push(entry);
+  const gen = imagesGen;
+  renderImages();
+
+  const xhr = new XMLHttpRequest();
+  entry._xhr = xhr;
+  xhr.open("POST", "/api/media/video?preset=" + encodeURIComponent(preset));
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable) { entry.pct = e.loaded / e.total; renderImages(); }
+  };
+  xhr.onerror = () => failVideo(entry, gen, "upload failed");
+  xhr.onload = () => {
+    if (gen !== imagesGen) return;
+    if (xhr.status !== 202) {
+      let msg = "HTTP " + xhr.status;
+      try { msg = JSON.parse(xhr.responseText).error || msg; } catch { /* not json */ }
+      failVideo(entry, gen, msg);
+      return;
+    }
+    const jobId = JSON.parse(xhr.responseText).job_id;
+    entry._xhr = null;
+    entry.phase = "queued"; entry.pct = 0; renderImages();
+    entry._jobTimer = setInterval(async () => {
+      if (gen !== imagesGen) { clearInterval(entry._jobTimer); return; }
+      try {
+        const r = await fetch("/api/media/video/" + jobId, { credentials: "same-origin" });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+        if (j.state === "error") throw new Error(j.error || "transcode failed");
+        entry.phase = j.state === "uploading" ? "storing" : j.state;
+        entry.pct = j.pct || 0;
+        if (j.state === "done") {
+          clearInterval(entry._jobTimer); entry._jobTimer = null;
+          const m = j.media;
+          Object.assign(entry, { phase: "ready", pct: 1, blossom_url: m.url, sha256: m.sha256,
+            mime: m.mime, dim: m.dim, size_bytes: m.size, duration_secs: m.duration_secs || 0,
+            url: m.url });
+        }
+        renderImages();
+      } catch (err) {
+        clearInterval(entry._jobTimer); entry._jobTimer = null;
+        failVideo(entry, gen, err.message);
+      }
+    }, 1000);
+  };
+  const fd = new FormData();
+  fd.append("file", file);
+  xhr.send(fd);
+}
+
+function failVideo(entry, gen, msg) {
+  if (gen !== imagesGen) return;
+  flash("Video: " + msg);
+  const i = state.images.indexOf(entry);
+  if (i >= 0) { state.images.splice(i, 1); renderImages(); }
+}
+
 export function renderImages() {
   const c = $("#images"); c.innerHTML = "";
   state.images.forEach((img, i) => {
+    if (img.video) {
+      const tile = el("div", { class: "thumb vthumb" });
+      if (img.phase === "ready") {
+        tile.append(el("video", { src: img.url, preload: "metadata", muted: "muted" }),
+          el("input", { type: "text", placeholder: "alt text", value: img.alt,
+            oninput: e => { img.alt = e.target.value; renderPreview(); } }),
+          el("div", { class: "imgsize", text: fmtBytes(img.size_bytes) + " · " + fmtDuration(img.duration_secs) }));
+      } else {
+        tile.append(el("div", { class: "vprog" },
+          el("div", { class: "vprog-label", text: img.phase + " " + Math.round((img.pct || 0) * 100) + "%" }),
+          el("div", { class: "vprog-bar" },
+            el("div", { class: "vprog-fill", style: "width:" + Math.round((img.pct || 0) * 100) + "%" }))));
+      }
+      tile.append(el("button", { class: "rm", type: "button", text: "remove",
+        onclick: () => {
+          if (img._xhr) img._xhr.abort();           // mid-upload: cancel the transfer
+          if (img._jobTimer) clearInterval(img._jobTimer); // job continues server-side by design
+          state.images.splice(i, 1); renderImages();
+        } }));
+      c.append(tile);
+      return;
+    }
     const thumb = el("img", { src: img.url, alt: "",
       onload: e => {
         // Capture intrinsic dims once; the preview sends them as fit-planning
@@ -950,6 +1045,9 @@ async function doInteract() {
 // is over, confirm first (those targets may be cut/rejected — the rest still post).
 // Otherwise post immediately.
 function submit() {
+  if (state.images.some(i => i.video && i.phase !== "ready")) {
+    flash("Wait for the video to finish processing"); return;
+  }
   if (state.interaction) {
     const it = state.interaction;
     const cap = it.caps && it.caps[it.action];
@@ -1083,6 +1181,9 @@ export function composeInit() {
   $("#imgfile").addEventListener("change", async e => {
     const file = e.target.files[0]; if (!file) return;
     e.target.value = "";
+    const isVid = /^video\//.test(file.type) || /\.(mp4|mov|webm)$/i.test(file.name || "");
+    if (isVid) { attachVideo(file); return; }
+    if (state.images.some(i => i.video)) { flash("Remove the video first (one video OR images per post)"); return; }
     if (state.images.length >= 10) { flash("Max 10 images"); return; }
     // orig is kept so presets always re-derive from the as-attached file (no
     // generational quality stacking) and "original" is a true client-side revert.

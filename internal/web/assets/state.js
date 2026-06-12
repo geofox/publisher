@@ -107,6 +107,7 @@ export function imageSpecs() {
     return {
       ordinal: idx, blossom_url: i.blossom_url, sha256: i.sha256,
       mime: i.mime, dim: i.dim, blurhash: i.blurhash, size_bytes: i.size_bytes,
+      duration_secs: i.duration_secs || 0,
       alt: i.alt,
     };
   });
@@ -141,6 +142,8 @@ export let imagesGen = 0;
 export function clearImages() {
   for (const i of state.images) {
     if (i._compressAbort) i._compressAbort.abort();
+    if (i._xhr) i._xhr.abort();
+    if (i._jobTimer) clearInterval(i._jobTimer);
     if (i.url) URL.revokeObjectURL(i.url);
   }
   state.images = [];
