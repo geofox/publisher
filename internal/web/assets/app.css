@@ -282,7 +282,7 @@ textarea.master,.verify-input{}
   font:inherit;font-size:11px;cursor:pointer;padding:0;
 }
 #addimg:hover{border-color:var(--indigo);color:var(--indigo)}
-.thumb.vthumb video { width: 100%; border-radius: 6px; }
+.thumb.vthumb video { width: 100%; max-height: 140px; border-radius: 6px; background: #000; object-fit: contain; }
 .vprog { padding: 8px 4px; }
 .vprog-label { font-size: 0.72rem; color: var(--faint); margin-bottom: 4px; }
 .vprog-bar { height: 4px; background: var(--line); border-radius: 2px; }
@@ -335,6 +335,7 @@ textarea.master,.verify-input{}
 .pv-media{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0 6px}
 .pv-media figure{margin:0;width:72px}
 .pv-media img{width:72px;height:72px;object-fit:cover;border-radius:9px;border:.5px solid var(--line-2);display:block}
+.pv-media video{width:72px;height:72px;object-fit:cover;border-radius:9px;border:.5px solid var(--line-2);display:block;background:#000}
 .pv-media figcaption{font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:3px}
 .pv-settings{margin-top:10px;padding-top:9px;border-top:.5px solid var(--line);font-family:var(--mono);font-size:10px;color:var(--faint);letter-spacing:.02em}
 

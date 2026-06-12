@@ -42,8 +42,12 @@ function mediaGridFrom(media) {
   if (!media.length) return null;
   const g = el("div", { class: "pv-media" });
   for (const im of media) {
+    // Video: controls+playsinline are load-bearing — iOS paints no frame for
+    // a bare non-playing element (no poster is generated in v1), so without
+    // them the tile is an invisible box.
     const mediaEl = im.video
-      ? el("video", { src: im.url, preload: "metadata", muted: "muted" })
+      ? el("video", { src: im.url, preload: "metadata", muted: "muted",
+          controls: "controls", playsinline: "playsinline" })
       : el("img", { src: im.url, alt: im.alt || "" });
     g.append(el("figure", {},
       mediaEl,

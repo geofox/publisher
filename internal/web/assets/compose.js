@@ -815,7 +815,8 @@ export function renderImages() {
     if (img.video) {
       const tile = el("div", { class: "thumb vthumb" });
       if (img.phase === "ready") {
-        tile.append(el("video", { src: img.url, preload: "metadata", muted: "muted" }),
+        tile.append(el("video", { src: img.url, preload: "metadata", muted: "muted",
+            controls: "controls", playsinline: "playsinline" }),
           el("input", { type: "text", placeholder: "alt text", value: img.alt,
             oninput: e => { img.alt = e.target.value; renderPreview(); } }),
           el("div", { class: "imgsize", text: fmtBytes(img.size_bytes) + " · " + fmtDuration(img.duration_secs) }));
