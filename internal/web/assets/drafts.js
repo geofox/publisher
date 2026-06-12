@@ -2,6 +2,7 @@
 import { state, buildSpec, defaultOv, clearImages, bumpImagesGen } from "./state.js";
 import { loadDraft, markDirty, renderImages } from "./compose.js";
 import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
+import { flash } from "./common.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -126,6 +127,9 @@ function setStatus(kind, text) {
 }
 
 export async function saveActiveDraft() {
+  if (state.images.some(i => i.video && i.phase !== "ready")) {
+    flash("Wait for the video to finish processing before saving"); return;
+  }
   const save = document.getElementById("draft-save");
   if (save) save.disabled = true;
   setStatus("saving", "saving…");
@@ -162,12 +166,17 @@ export async function saveActiveDraft() {
     state.activeDraftId = saved.id;
     state.dirty = false;
     // refresh state.images to use the server-returned media (so subsequent saves don't re-upload)
+    // Shape must match compose.js loadDraft hydration so video identity, phase, and duration
+    // survive the remap — otherwise the XOR guard, video tile, and duration gates break.
     clearImages();
     state.images = (saved.media || []).map(m => ({
       blossom_url: m.blossom_url, sha256: m.sha256, mime: m.mime,
       dim: m.dim, blurhash: m.blurhash, size_bytes: m.size_bytes,
       alt: m.alt || "", ordinal: m.ordinal, file: null,
       url: m.blossom_url || "",
+      duration_secs: m.duration_secs || 0,
+      video: /^video\//.test(m.mime || ""),
+      phase: /^video\//.test(m.mime || "") ? "ready" : undefined,
     }));
     bumpImagesGen();
     // Re-render the thumbnail strip so each alt input's oninput rebinds to the

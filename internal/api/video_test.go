@@ -140,16 +140,54 @@ func TestVideoUploadQueueFull429(t *testing.T) {
 	a := &API{}
 	a.VideoJobs = videojob.NewRunner(g, vsFake{}, t.TempDir())
 	a.VideoWorkdir = t.TempDir()
+	var jobIDs []string
 	for i := 0; i < 3; i++ {
-		if rec := postVideo(t, a, []byte("v"), "1080p"); rec.Code != 202 {
+		rec := postVideo(t, a, []byte("v"), "1080p")
+		if rec.Code != 202 {
 			t.Fatalf("submit %d: %d %s", i, rec.Code, rec.Body.String())
 		}
+		var out struct {
+			JobID string `json:"job_id"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.JobID == "" {
+			t.Fatalf("submit %d: bad job response: %s", i, rec.Body.String())
+		}
+		jobIDs = append(jobIDs, out.JobID)
 	}
 	rec := postVideo(t, a, []byte("v"), "1080p")
 	if rec.Code != 429 {
 		t.Fatalf("status %d, want 429", rec.Code)
 	}
+	// Release the gate and drain all in-flight jobs to terminal state before
+	// returning, so released goroutines don't write into TempDir after cleanup.
 	close(g.release)
+	waitJobDone(t, a, jobIDs)
+}
+
+// waitJobDone polls each job until it reaches a terminal state (done or error).
+func waitJobDone(t *testing.T, a *API, jobIDs []string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for _, id := range jobIDs {
+		for {
+			rec := httptest.NewRecorder()
+			a.Routes().ServeHTTP(rec, httptest.NewRequest("GET", "/api/media/video/"+id, nil))
+			if rec.Code != 200 {
+				t.Fatalf("poll %s: status %d", id, rec.Code)
+			}
+			var j struct {
+				State string `json:"state"`
+			}
+			json.Unmarshal(rec.Body.Bytes(), &j)
+			if j.State == "done" || j.State == "error" {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("job %s never reached terminal state", id)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 }
 
 func TestVideoUploadMissingFilePart400(t *testing.T) {

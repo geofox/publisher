@@ -748,7 +748,7 @@ function fmtDuration(s) { const m = Math.floor(s / 60); return m ? m + "m" + Str
 // is chosen at attach time (#vidpreset) — re-deriving would be a minutes-long
 // transcode and the raw original is deleted after normalization.
 function attachVideo(file) {
-  if (state.images.length) { flash("Remove the images first (one video OR images per post)"); return; }
+  if (state.images.length) { flash(state.images.some(i => i.video) ? "Only one video per post" : "Remove the images first (one video OR images per post)"); return; }
   const preset = $("#vidpreset")?.value || "1080p";
   const entry = { video: true, file: null, url: "", alt: "",
                   phase: "uploading", pct: 0, _xhr: null, _jobTimer: null };

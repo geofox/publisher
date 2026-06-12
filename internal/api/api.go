@@ -246,7 +246,7 @@ func (a *API) Routes() http.Handler {
 // stored/reflected-XSS backstop (e.g. a hostile platform remote_url). Images
 // additionally allow https/blob/data for Blossom thumbnails and local previews.
 const contentSecurityPolicy = "default-src 'self'; " +
-	"img-src 'self' https: data: blob:; style-src 'self'; script-src 'self'; " +
+	"img-src 'self' https: data: blob:; media-src 'self' https:; style-src 'self'; script-src 'self'; " +
 	"font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; " +
 	"frame-ancestors 'none'; object-src 'none'"
 
