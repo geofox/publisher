@@ -52,14 +52,26 @@ func TestProcessUploadsAndBuildsImeta(t *testing.T) {
 
 func TestImetaTag(t *testing.T) {
 	// Full tag: url/mime/x always present, dim/blurhash appended when set.
-	full := ImetaTag("https://b/x", "image/png", "deadbeef", "640x480", "LEHV6")
+	full := ImetaTag("https://b/x", "image/png", "deadbeef", "640x480", "LEHV6", "")
 	if strings.Join(full, " ") != "imeta url https://b/x m image/png x deadbeef dim 640x480 blurhash LEHV6" {
 		t.Errorf("full tag wrong: %v", full)
 	}
 	// Optional fields omitted when empty (no trailing "dim "/"blurhash " entries).
-	bare := ImetaTag("https://b/y", "image/jpeg", "cafe", "", "")
+	bare := ImetaTag("https://b/y", "image/jpeg", "cafe", "", "", "")
 	if len(bare) != 4 {
 		t.Errorf("bare tag should have 4 fields, got %d: %v", len(bare), bare)
+	}
+}
+
+func TestImetaTagImageField(t *testing.T) {
+	tag := ImetaTag("https://b/v", "video/mp4", "aa", "1280x720", "", "https://b/poster")
+	joined := strings.Join(tag, "|")
+	if !strings.Contains(joined, "image https://b/poster") {
+		t.Fatalf("imeta missing image field: %v", tag)
+	}
+	plain := ImetaTag("https://b/v", "video/mp4", "aa", "1280x720", "", "")
+	if strings.Contains(strings.Join(plain, "|"), "image ") {
+		t.Fatalf("empty poster must omit image: %v", plain)
 	}
 }
 

@@ -594,7 +594,7 @@ func buildImetas(recs []store.Media) []gonostr.Tag {
 		if m.BlossomURL == "" {
 			continue
 		}
-		out = append(out, media.ImetaTag(m.BlossomURL, m.Mime, m.SHA256, m.Dim, m.Blurhash))
+		out = append(out, media.ImetaTag(m.BlossomURL, m.Mime, m.SHA256, m.Dim, m.Blurhash, m.PosterURL))
 	}
 	return out
 }

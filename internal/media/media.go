@@ -36,6 +36,7 @@ type Result struct {
 	Dim          string    `json:"dim,omitempty"`
 	Blurhash     string    `json:"blurhash,omitempty"`
 	DurationSecs int64     `json:"duration_secs,omitempty"`
+	PosterURL    string    `json:"poster_url,omitempty"` // poster JPEG URL (videos; set by the videojob)
 	Imeta        nostr.Tag `json:"imeta"`
 	Bytes        []byte    `json:"-"`
 }
@@ -98,7 +99,7 @@ func (p *Pipeline) Process(ctx context.Context, body []byte, mime string) (Resul
 			return Result{}, fmt.Errorf("media: lookup sha256: %w", err)
 		} else if ok {
 			return Result{URL: existing, SHA256: sha, Size: int64(len(body)), Mime: mime,
-				Dim: dim, Blurhash: bh, Imeta: ImetaTag(existing, mime, sha, dim, bh), Bytes: body}, nil
+				Dim: dim, Blurhash: bh, Imeta: ImetaTag(existing, mime, sha, dim, bh, ""), Bytes: body}, nil
 		}
 	}
 
@@ -107,20 +108,24 @@ func (p *Pipeline) Process(ctx context.Context, body []byte, mime string) (Resul
 		return Result{}, fmt.Errorf("blossom upload: %w", err)
 	}
 	return Result{URL: url, SHA256: sha, Size: int64(len(body)), Mime: mime,
-		Dim: dim, Blurhash: bh, Imeta: ImetaTag(url, mime, sha, dim, bh), Bytes: body}, nil
+		Dim: dim, Blurhash: bh, Imeta: ImetaTag(url, mime, sha, dim, bh, ""), Bytes: body}, nil
 }
 
 // ImetaTag assembles a NIP-92 imeta tag from media attributes. It is the single
 // authority on the tag layout so every code path that embeds media in a Nostr
 // event (the upload pipeline and the cross-post dispatcher) stays byte-identical.
-// dim and blurhash are optional and omitted when empty.
-func ImetaTag(url, mime, sha, dim, blurhash string) nostr.Tag {
+// dim, blurhash, and image are optional and omitted when empty. image is the
+// preview-image URL (NIP-92 "image" field) used for video poster frames.
+func ImetaTag(url, mime, sha, dim, blurhash, image string) nostr.Tag {
 	t := nostr.Tag{"imeta", "url " + url, "m " + mime, "x " + sha}
 	if dim != "" {
 		t = append(t, "dim "+dim)
 	}
 	if blurhash != "" {
 		t = append(t, "blurhash "+blurhash)
+	}
+	if image != "" {
+		t = append(t, "image "+image)
 	}
 	return t
 }
@@ -253,7 +258,7 @@ func (p *Pipeline) ProcessFile(ctx context.Context, path, mime, dim string, dura
 	}
 	mk := func(url string) Result {
 		return Result{URL: url, SHA256: sha, Size: st.Size(), Mime: mime, Dim: dim,
-			DurationSecs: durationSecs, Imeta: ImetaTag(url, mime, sha, dim, "")}
+			DurationSecs: durationSecs, Imeta: ImetaTag(url, mime, sha, dim, "", "")}
 	}
 	if p.Lookup != nil {
 		if existing, ok, lerr := p.Lookup(sha); lerr != nil {
