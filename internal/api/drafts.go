@@ -31,6 +31,7 @@ type draftImageEntry struct {
 	SizeBytes    int64  `json:"size_bytes,omitempty"`
 	Alt          string `json:"alt,omitempty"`
 	DurationSecs int64  `json:"duration_secs,omitempty"`
+	PosterURL    string `json:"poster_url,omitempty"`
 }
 
 type draftSpecJSON struct {
@@ -124,13 +125,13 @@ func (a *API) buildDraftFromRequest(r *http.Request, id string) (*store.Draft, s
 			mediaRecs = append(mediaRecs, store.Media{
 				Ordinal: img.Ordinal, BlossomURL: res.URL, SHA256: res.SHA256,
 				Mime: res.Mime, Dim: res.Dim, Blurhash: res.Blurhash, SizeBytes: res.Size,
-				Alt: img.Alt, DurationSecs: res.DurationSecs,
+				Alt: img.Alt, DurationSecs: res.DurationSecs, PosterURL: res.PosterURL,
 			})
 		} else if img.BlossomURL != "" {
 			mediaRecs = append(mediaRecs, store.Media{
 				Ordinal: img.Ordinal, BlossomURL: img.BlossomURL, SHA256: img.SHA256,
 				Mime: img.Mime, Dim: img.Dim, Blurhash: img.Blurhash, SizeBytes: img.SizeBytes,
-				Alt: img.Alt, DurationSecs: img.DurationSecs,
+				Alt: img.Alt, DurationSecs: img.DurationSecs, PosterURL: img.PosterURL,
 			})
 		} else {
 			return nil, "", http.StatusBadRequest, fmt.Sprintf("image %d: neither ref nor blossom_url present", i)

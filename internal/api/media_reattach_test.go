@@ -140,6 +140,7 @@ func TestAPIPostVideoReferenceOverFetchCapSkipsFetch(t *testing.T) {
 			"size_bytes":    media.FetchCap + 1,
 			"duration_secs": 120,
 			"dim":           "1920x1080",
+			"poster_url":    "https://b/p",
 		}},
 	})
 	_ = mw.WriteField("spec", string(spec))
@@ -174,6 +175,15 @@ func TestAPIPostVideoReferenceOverFetchCapSkipsFetch(t *testing.T) {
 	}
 	if img.DurationSecs != 120 {
 		t.Errorf("DurationSecs = %d, want 120", img.DurationSecs)
+	}
+	if len(cap.spec.MediaRecords) != 1 || cap.spec.MediaRecords[0].PosterURL != "https://b/p" {
+		t.Errorf("MediaRecords[0].PosterURL = %q, want %q",
+			func() string {
+				if len(cap.spec.MediaRecords) == 0 {
+					return "(no records)"
+				}
+				return cap.spec.MediaRecords[0].PosterURL
+			}(), "https://b/p")
 	}
 }
 

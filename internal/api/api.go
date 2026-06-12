@@ -818,6 +818,7 @@ type imageSpec struct {
 	SizeBytes    int64  `json:"size_bytes"`
 	Ordinal      int    `json:"ordinal"`
 	DurationSecs int64  `json:"duration_secs"`
+	PosterURL    string `json:"poster_url"`
 }
 
 // postSpecJSON is the JSON object expected in the "spec" multipart field.
@@ -1798,7 +1799,7 @@ func (a *API) assembleImages(r *http.Request, specs []imageSpec) ([]dispatch.Img
 		recs = append(recs, store.Media{
 			Ordinal: len(recs), BlossomURL: res.URL, SHA256: res.SHA256, Mime: res.Mime,
 			Dim: res.Dim, Blurhash: res.Blurhash, SizeBytes: res.Size, Alt: alt,
-			DurationSecs: res.DurationSecs,
+			DurationSecs: res.DurationSecs, PosterURL: res.PosterURL,
 		})
 	}
 
@@ -1824,7 +1825,7 @@ func (a *API) assembleImages(r *http.Request, specs []imageSpec) ([]dispatch.Img
 				recs = append(recs, store.Media{
 					Ordinal: len(recs), BlossomURL: s.BlossomURL, SHA256: s.SHA256, Mime: s.Mime,
 					Dim: s.Dim, Blurhash: s.Blurhash, SizeBytes: s.SizeBytes, Alt: s.Alt,
-					DurationSecs: s.DurationSecs,
+					DurationSecs: s.DurationSecs, PosterURL: s.PosterURL,
 				})
 				continue
 			}

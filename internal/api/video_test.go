@@ -89,6 +89,9 @@ func TestVideoUploadJobLifecycle(t *testing.T) {
 			if !bytes.Contains(j.Media, []byte("https://b/vid")) {
 				t.Fatalf("media = %s", j.Media)
 			}
+			if !bytes.Contains(j.Media, []byte(`"poster_url":"https://b/poster"`)) {
+				t.Fatalf("poster_url missing from media: %s", j.Media)
+			}
 			return
 		}
 		if j.State == "error" {
