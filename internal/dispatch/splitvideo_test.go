@@ -67,3 +67,14 @@ func TestSplitVideoTwoVideosDropsSecond(t *testing.T) {
 		t.Errorf("second video must be dropped (not in images): %+v", imgs)
 	}
 }
+
+func TestBskyVideoParsesDim(t *testing.T) {
+	v := &Img{Mime: "video/mp4", Bytes: []byte("b"), Alt: "a", Dim: "1080x1920"}
+	bv := bskyVideo(v)
+	if bv.W != 1080 || bv.H != 1920 || bv.Alt != "a" {
+		t.Fatalf("bskyVideo = %+v", bv)
+	}
+	if bv2 := bskyVideo(&Img{Mime: "video/mp4"}); bv2.W != 0 || bv2.H != 0 {
+		t.Fatalf("unknown dim must yield 0,0: %+v", bv2)
+	}
+}

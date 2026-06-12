@@ -57,6 +57,14 @@ func splitVideo(imgs []Img) (v *Img, images []Img) {
 	return v, images
 }
 
+// bskyVideo maps a video attachment to the bluesky client's shape, parsing
+// the canonical "WxH" dim into the aspectRatio hint (0,0 when unknown — the
+// client then omits aspectRatio rather than sending a bogus one).
+func bskyVideo(v *Img) *bluesky.Video {
+	w, h := transcode.ParseDim(v.Dim)
+	return &bluesky.Video{Bytes: v.Bytes, Alt: v.Alt, W: w, H: h}
+}
+
 // Compile-time checks that the adapters satisfy the dispatcher interfaces.
 var (
 	_ NostrPoster    = NostrAdapter{}
@@ -193,7 +201,7 @@ func (a BlueskyAdapter) PostBsky(ctx context.Context, text string, o Overrides, 
 		DisableQuotes: o.BlueskyDisableQuotes,
 	}
 	if v != nil {
-		bp.Video = &bluesky.Video{Bytes: v.Bytes, Alt: v.Alt}
+		bp.Video = bskyVideo(v)
 	}
 	if replyTo != nil {
 		bp.Reply = &bluesky.ReplyRef{
@@ -300,7 +308,7 @@ func (a BlueskyAdapter) QuoteBsky(ctx context.Context, text string, o Overrides,
 		ReplyGate: bluesky.ParseReplyGate(o.BlueskyReply), DisableQuotes: o.BlueskyDisableQuotes,
 	}
 	if v != nil {
-		bp.Video = &bluesky.Video{Bytes: v.Bytes, Alt: v.Alt}
+		bp.Video = bskyVideo(v)
 	}
 	res, err := a.C.Post(ctx, bp)
 	if err != nil {
