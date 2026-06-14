@@ -330,3 +330,27 @@ func TestMastodonFEP8b32WrongPurposeFails(t *testing.T) {
 		t.Errorf("missing integrity_proof fail: %+v", v.Checks)
 	}
 }
+
+func TestStripHTML(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{"<p>hello</p>", "hello"},
+		{"<a href=\"http://example.com\">hello</a>", "hello"},
+		{"1 < 2", "1 < 2"},
+		{"x < y", "x < y"},
+		{"a < b", "a < b"},
+		{"<p>1 < 2</p>", "1 < 2"},
+		{"1 < 2 and 4 > 3", "1 < 2 and 4 > 3"},
+		{"<p>1 &lt; 2</p>", "1 < 2"},
+		{"plain text", "plain text"},
+		{"<br/>hello <br />world", "hello world"},
+	}
+	for _, c := range cases {
+		got := stripHTML(c.input)
+		if got != c.expected {
+			t.Errorf("stripHTML(%q) = %q, want %q", c.input, got, c.expected)
+		}
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/repo"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	cbornode "github.com/ipfs/go-ipld-cbor"
 )
 
 // BlueskyVerifier verifies an ATProto record by fetching the signed commit + MST
@@ -195,39 +196,12 @@ func parseBlueskyRef(raw string) (authority, collection, rkey string, err error)
 // extractBskyText pulls the "text" field from a DAG-CBOR record without a full
 // schema decode. Display-only; NOT part of the cryptographic verification.
 func extractBskyText(record []byte) string {
-	i := bytes.Index(record, []byte("text"))
-	if i < 0 || i+4 >= len(record) {
+	var m map[string]any
+	if err := cbornode.DecodeInto(record, &m); err != nil {
 		return ""
 	}
-	return cborTextAfter(record[i+4:])
-}
-
-// cborTextAfter reads a CBOR text string (major type 3) at the start of b,
-// returning its UTF-8 contents or "" if b does not begin with a text string.
-func cborTextAfter(b []byte) string {
-	if len(b) == 0 {
-		return ""
+	if text, ok := m["text"].(string); ok {
+		return text
 	}
-	major := b[0] >> 5
-	if major != 3 {
-		return ""
-	}
-	n := int(b[0] & 0x1f)
-	off := 1
-	switch n {
-	case 24:
-		if len(b) < 2 {
-			return ""
-		}
-		n, off = int(b[1]), 2
-	case 25:
-		if len(b) < 3 {
-			return ""
-		}
-		n, off = int(b[1])<<8|int(b[2]), 3
-	}
-	if n < 0 || off+n > len(b) {
-		return ""
-	}
-	return string(b[off : off+n])
+	return ""
 }

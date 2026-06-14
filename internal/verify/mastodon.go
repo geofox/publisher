@@ -7,9 +7,11 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -303,19 +305,10 @@ func hostOf(raw string) string {
 	return strings.ToLower(u.Host)
 }
 
+var htmlTagRx = regexp.MustCompile(`(?i)</?[a-z][^>]*>`)
+
 // stripHTML removes tags from AP content for a plain-text excerpt.
 func stripHTML(s string) string {
-	var b strings.Builder
-	inTag := false
-	for _, r := range s {
-		switch {
-		case r == '<':
-			inTag = true
-		case r == '>':
-			inTag = false
-		case !inTag:
-			b.WriteRune(r)
-		}
-	}
-	return strings.TrimSpace(b.String())
+	s = htmlTagRx.ReplaceAllString(s, "")
+	return strings.TrimSpace(html.UnescapeString(s))
 }

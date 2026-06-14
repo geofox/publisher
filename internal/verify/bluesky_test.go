@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	cbornode "github.com/ipfs/go-ipld-cbor"
 )
 
 func TestParseBlueskyRef(t *testing.T) {
@@ -58,5 +60,44 @@ func TestBlueskyIntegration(t *testing.T) {
 	}
 	if v.Signer == nil || v.Signer.DID == "" {
 		t.Errorf("signer not populated: %+v", v.Signer)
+	}
+}
+
+func TestExtractBskyText(t *testing.T) {
+	// 1. A record with ONLY an alt description containing the word "text", but NO top-level text.
+	m1 := map[string]any{
+		"embed": map[string]any{
+			"images": []any{
+				map[string]any{
+					"alt": "this is some text description",
+				},
+			},
+		},
+	}
+	b1, err := cbornode.DumpObject(m1)
+	if err != nil {
+		t.Fatalf("failed to dump cbor: %v", err)
+	}
+	if got := extractBskyText(b1); got != "" {
+		t.Errorf("expected empty text, got %q", got)
+	}
+
+	// 2. A record with a top-level text field AND a nested alt description containing "text".
+	m2 := map[string]any{
+		"text": "hello world",
+		"embed": map[string]any{
+			"images": []any{
+				map[string]any{
+					"alt": "some text",
+				},
+			},
+		},
+	}
+	b2, err := cbornode.DumpObject(m2)
+	if err != nil {
+		t.Fatalf("failed to dump cbor: %v", err)
+	}
+	if got := extractBskyText(b2); got != "hello world" {
+		t.Errorf("expected %q, got %q", "hello world", got)
 	}
 }
