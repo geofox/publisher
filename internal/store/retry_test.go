@@ -208,3 +208,76 @@ func TestAppendTargetAttemptAndRecompute(t *testing.T) {
 		t.Errorf("request json not scrubbed: %q", rj)
 	}
 }
+
+func TestClaimTargetAndClaimRelay(t *testing.T) {
+	st := openTestStore(t)
+	p := &Post{
+		ID: "p-claim", CreatedAt: time.Now().UTC(), MasterText: "x",
+		Platforms: []string{"bluesky", "nostr"}, Source: "test", Status: "failed",
+		Targets: []Target{
+			{Platform: "bluesky", Status: "failed"},
+			{Platform: "nostr", Status: "partial"},
+		},
+	}
+	if err := st.SavePost(p); err != nil {
+		t.Fatalf("SavePost: %v", err)
+	}
+
+	got, _ := st.GetPost("p-claim")
+	bskyTarget := got.Targets[0]
+	nostrTarget := got.Targets[1]
+
+	// Seed relay for Nostr
+	if err := st.AppendTargetAttempt(nostrTarget.ID, "failed", "x", "", "", 1, "", "",
+		[]RelayState{{URL: "wss://r1", Status: "failed"}}, "{}"); err != nil {
+		t.Fatalf("seed relay: %v", err)
+	}
+
+	// 1. Test ClaimTarget
+	won, err := st.ClaimTarget(bskyTarget.ID, p.ID, []string{"failed"})
+	if err != nil {
+		t.Fatalf("ClaimTarget: %v", err)
+	}
+	if !won {
+		t.Error("ClaimTarget failed, wanted true")
+	}
+
+	// Recompute status should map post status to 'partial' (since one target is 'sending' and one is 'failed/partial')
+	got, _ = st.GetPost("p-claim")
+	if got.Targets[0].Status != "sending" {
+		t.Errorf("claimed target status = %q, want sending", got.Targets[0].Status)
+	}
+
+	// Concurrent claim on the same target must fail
+	won2, err := st.ClaimTarget(bskyTarget.ID, p.ID, []string{"failed"})
+	if err != nil {
+		t.Fatalf("ClaimTarget: %v", err)
+	}
+	if won2 {
+		t.Error("concurrent ClaimTarget succeeded, wanted false")
+	}
+
+	// 2. Test ClaimRelay
+	wonRelay, err := st.ClaimRelay(nostrTarget.ID, "wss://r1")
+	if err != nil {
+		t.Fatalf("ClaimRelay: %v", err)
+	}
+	if !wonRelay {
+		t.Error("ClaimRelay failed, wanted true")
+	}
+
+	// Recompute target status should map target status to 'sending' since one of its relays is 'sending'
+	got, _ = st.GetPost("p-claim")
+	if got.Targets[1].Status != "sending" {
+		t.Errorf("target status = %q, want sending (due to sending relay)", got.Targets[1].Status)
+	}
+
+	// Concurrent claim on the same relay must fail
+	wonRelay2, err := st.ClaimRelay(nostrTarget.ID, "wss://r1")
+	if err != nil {
+		t.Fatalf("ClaimRelay: %v", err)
+	}
+	if wonRelay2 {
+		t.Error("concurrent ClaimRelay succeeded, wanted false")
+	}
+}

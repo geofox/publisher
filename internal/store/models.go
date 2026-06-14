@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -343,7 +344,7 @@ func recomputeTargetStatus(q rowQuerier, targetID int64) error {
 		return err
 	}
 	defer rows.Close()
-	attempted, ok, seen := 0, 0, false
+	attempted, ok, sending, seen := 0, 0, 0, false
 	for rows.Next() {
 		var st string
 		if err := rows.Scan(&st); err != nil {
@@ -356,6 +357,8 @@ func recomputeTargetStatus(q rowQuerier, targetID int64) error {
 		attempted++
 		if st == "ok" {
 			ok++
+		} else if st == "sending" {
+			sending++
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -367,6 +370,8 @@ func recomputeTargetStatus(q rowQuerier, targetID int64) error {
 	// All-skipped (e.g. only an unreachable .onion) → nothing was delivered → failed.
 	status := "partial"
 	switch {
+	case sending > 0:
+		status = "sending"
 	case ok == 0:
 		status = "failed"
 	case ok == attempted:
@@ -567,6 +572,87 @@ func (s *Store) ClaimScheduled(id string) (bool, error) {
 	}
 	n, _ := res.RowsAffected()
 	return n == 1, nil
+}
+
+// ClaimTarget atomically flips a target's status from one of the allowed
+// fromStatuses to 'sending', and recomputes the post's overall status.
+// Returns true iff this call won the row (guards double-dispatch).
+func (s *Store) ClaimTarget(targetID int64, postID string, fromStatuses []string) (bool, error) {
+	if len(fromStatuses) == 0 {
+		return false, nil
+	}
+	tx, err := s.sql.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	placeholders := make([]string, len(fromStatuses))
+	args := make([]any, 0, len(fromStatuses)+2)
+	args = append(args, targetID)
+	for i, st := range fromStatuses {
+		placeholders[i] = "?"
+		args = append(args, st)
+	}
+	query := fmt.Sprintf(
+		`UPDATE post_targets SET status='sending' WHERE id=? AND status IN (%s)`,
+		strings.Join(placeholders, ","))
+
+	res, err := tx.Exec(query, args...)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return false, err
+	}
+
+	if err := recomputeStatus(tx, postID); err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ClaimRelay atomically flips a target relay's status from 'failed' to 'sending'
+// and recomputes both the target's and the post's overall status.
+// Returns true iff this call won the row.
+func (s *Store) ClaimRelay(targetID int64, relayURL string) (bool, error) {
+	tx, err := s.sql.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.Exec(
+		`UPDATE target_relays SET status='sending' WHERE target_id=? AND relay_url=? AND status='failed'`,
+		targetID, relayURL)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return false, err
+	}
+
+	if err := recomputeTargetStatus(tx, targetID); err != nil {
+		return false, err
+	}
+	var postID string
+	if err := tx.QueryRow(`SELECT post_id FROM post_targets WHERE id=?`, targetID).Scan(&postID); err != nil {
+		return false, err
+	}
+	if err := recomputeStatus(tx, postID); err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // MarkMissed marks the post and its still-scheduled targets as missed.

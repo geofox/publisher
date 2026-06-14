@@ -981,6 +981,16 @@ func (d *Dispatcher) dispatchTargets(ctx context.Context, post *store.Post, want
 		if !want(tg) {
 			continue
 		}
+		if d.Store != nil {
+			won, err := d.Store.ClaimTarget(tg.ID, post.ID, []string{tg.Status})
+			if err != nil {
+				return err
+			}
+			if !won {
+				slog.InfoContext(ctx, "target already claimed/sending, skipping", "target_id", tg.ID, "platform", tg.Platform)
+				continue
+			}
+		}
 		var ov Overrides
 		if tg.FieldsJSON != "" {
 			if err := json.Unmarshal([]byte(tg.FieldsJSON), &ov); err != nil {
@@ -1181,6 +1191,16 @@ func (d *Dispatcher) RetryRelay(ctx context.Context, postID, relayURL string) (*
 	if d.Nostr == nil {
 		return nil, errors.New("nostr not configured")
 	}
+
+	// Claim relay to prevent concurrent rebroadcasts
+	won, err := d.Store.ClaimRelay(target.ID, relayURL)
+	if err != nil {
+		return nil, err
+	}
+	if !won {
+		return nil, errors.New("relay retry already in progress")
+	}
+
 	ok, msg := d.Nostr.RebroadcastToRelay(ctx, target.SignedEventJSON, relayURL)
 	status := "failed"
 	if ok {
