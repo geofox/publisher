@@ -303,14 +303,14 @@ func (c *Client) RefreshToken(ctx context.Context, current string) (string, time
 		// A transport error (*url.Error) embeds the full request URL — which
 		// carries access_token=<token> in its query. This error is logged and
 		// sent in alerts, so scrub the token before it can escape.
-		return "", 0, fmt.Errorf("%s", strings.ReplaceAll(err.Error(), current, "REDACTED"))
+		return "", 0, fmt.Errorf("%s", scrubToken(err.Error(), current))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
 		// Threads can echo the access_token (query param) back in error bodies;
 		// this error is logged + sent in alerts, so scrub the token first.
-		msg := strings.ReplaceAll(strings.TrimSpace(string(body)), current, "REDACTED")
+		msg := scrubToken(strings.TrimSpace(string(body)), current)
 		return "", 0, fmt.Errorf("threads refresh: status %d: %s", resp.StatusCode, msg)
 	}
 	var out struct {
@@ -368,4 +368,19 @@ func (c *Client) do(ctx context.Context, method, path string, out any) error {
 		return fmt.Errorf("%s returned %d: %s", path, resp.StatusCode, string(rb))
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// scrubToken removes a secret token from str, covering both the raw value and
+// its URL-query-escaped form — a transport error (*url.Error) embeds the request
+// URL, which carries access_token=<escaped token> in its query, so the raw
+// ReplaceAll alone would miss any token containing characters like + / =.
+func scrubToken(str, token string) string {
+	if token == "" {
+		return str
+	}
+	str = strings.ReplaceAll(str, token, "REDACTED")
+	if escaped := url.QueryEscape(token); escaped != token {
+		str = strings.ReplaceAll(str, escaped, "REDACTED")
+	}
+	return str
 }
