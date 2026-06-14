@@ -126,6 +126,7 @@ func (c *Client) GetPost(ctx context.Context, postURL string) (*SourcePost, erro
 			} `json:"author"`
 			Record struct {
 				Text      string    `json:"text"`
+				Facets    []facet   `json:"facets"`
 				CreatedAt time.Time `json:"createdAt"`
 				Reply     *struct {
 					Root struct {
@@ -155,7 +156,7 @@ func (c *Client) GetPost(ctx context.Context, postURL string) (*SourcePost, erro
 		CID:               p.Cid,
 		AuthorHandle:      p.Author.Handle,
 		AuthorName:        p.Author.DisplayName,
-		Text:              p.Record.Text,
+		Text:              expandLinkFacets(p.Record.Text, p.Record.Facets),
 		CreatedAt:         p.Record.CreatedAt,
 		WebURL:            webURL(p.Author.Handle, p.URI),
 		ReplyDisabled:     p.Viewer.ReplyDisabled,
