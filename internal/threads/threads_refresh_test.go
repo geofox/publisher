@@ -50,30 +50,30 @@ func TestRefreshTokenErrorRedactsToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		// Simulate the API echoing the token back in the error body.
-		w.Write([]byte(`{"error":"invalid request: access_token=SECRET-TOKEN"}`))
+		w.Write([]byte(`{"error":"invalid request: access_token=SECRET%2BTOKEN%2FWITH%3DCHARS"}`))
 	}))
 	defer srv.Close()
-	c := New("SECRET-TOKEN", "")
+	c := New("SECRET+TOKEN/WITH=CHARS", "")
 	c.RefreshURL = srv.URL
-	_, _, err := c.RefreshToken(context.Background(), "SECRET-TOKEN")
+	_, _, err := c.RefreshToken(context.Background(), "SECRET+TOKEN/WITH=CHARS")
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if strings.Contains(err.Error(), "SECRET-TOKEN") {
+	if strings.Contains(err.Error(), "SECRET+TOKEN/WITH=CHARS") || strings.Contains(err.Error(), "SECRET%2BTOKEN%2FWITH%3DCHARS") {
 		t.Errorf("token leaked into error: %v", err)
 	}
 }
 
 func TestRefreshTokenTransportErrorRedactsToken(t *testing.T) {
-	c := New("SECRET-TOKEN", "")
+	c := New("SECRET+TOKEN/WITH=CHARS", "")
 	// Point at a closed port so HTTP.Do fails at the transport layer; the
 	// resulting *url.Error embeds the full URL (token in query).
 	c.RefreshURL = "http://127.0.0.1:1/refresh_access_token"
-	_, _, err := c.RefreshToken(context.Background(), "SECRET-TOKEN")
+	_, _, err := c.RefreshToken(context.Background(), "SECRET+TOKEN/WITH=CHARS")
 	if err == nil {
 		t.Fatal("expected transport error")
 	}
-	if strings.Contains(err.Error(), "SECRET-TOKEN") {
+	if strings.Contains(err.Error(), "SECRET+TOKEN/WITH=CHARS") || strings.Contains(err.Error(), "SECRET%2BTOKEN%2FWITH%3DCHARS") {
 		t.Errorf("token leaked into transport error: %v", err)
 	}
 }
