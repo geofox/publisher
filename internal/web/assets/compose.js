@@ -39,6 +39,34 @@ function counterClass(n, limit) {
 // preview pane still fetches the authoritative split from /api/thread-preview.
 // ---------------------------------------------------------------------------
 
+// bskyCardText strips a trailing URL for the Bluesky effective-text estimate,
+// mirroring dispatch.PlanBlueskyCard + unfurl.StripTrailing. When a trailing
+// URL will become a link card the server posts a shorter text, so the
+// client-side counter must count the stripped text — not the raw URL — or it
+// diverges from the live preview. Only strips when there are no attached images
+// (images take the embed slot, blocking the card) and we're not in interaction
+// mode (interactions never carry cards). URL-only posts are left as-is (the URL
+// stays in the text even when a card attaches, per PlanBlueskyCard).
+const _bskyURLRe = /https?:\/\/[^\s]+/g;
+function bskyCardText(text) {
+  if (state.images.length > 0 || state.interaction !== null) return text;
+  _bskyURLRe.lastIndex = 0;
+  let m, last;
+  while ((m = _bskyURLRe.exec(text)) !== null) last = m;
+  if (!last) return text;
+  const url = last[0].replace(/[.,!?);:]+$/, ""); // mirror unfurl.trimURL
+  if (text.slice(last.index + url.length).trim() !== "") return text; // not trailing
+  const stripped = text.trimEnd().slice(0, text.trimEnd().length - url.length).trimEnd();
+  return stripped.trim() === "" ? text : stripped; // URL-only post: keep as-is
+}
+
+// effectivePostedText returns the text the platform will actually post: for
+// Bluesky, a trailing card URL is stripped (server attaches it as a link card).
+function effectivePostedText(p) {
+  const t = postedText(p);
+  return p === "bluesky" ? bskyCardText(t) : t;
+}
+
 function numberingOn() { return document.getElementById("threadnum")?.checked ?? true; }
 
 // splitMarkers mirrors internal/thread.splitMarkers: break on lines that are
@@ -83,7 +111,7 @@ function splitThread(text, limit, number = true) {
 }
 
 function threadInfoFor(p) {
-  const parts = splitThread(postedText(p), META[p].limit, numberingOn());
+  const parts = splitThread(effectivePostedText(p), META[p].limit, numberingOn());
   // Media overflow forms a chain too: images beyond the platform cap spill
   // into appended image-only posts (mirrors thread.PlanMedia's totals).
   const mmax = mediaMax(p);
@@ -96,7 +124,7 @@ function threadInfoFor(p) {
 // design: under 90% → ink2 (no class), >90% → amber, over → indigo (will thread,
 // informational), no-limit → teal ∞.
 function targetCount(p) {
-  const limit = META[p].limit, n = gcount(postedText(p));
+  const limit = META[p].limit, n = gcount(effectivePostedText(p));
   if (!limit) return { text: "∞", cls: "inf", n };
   const pct = n / limit;
   return { text: `${n}/${limit}`, cls: n > limit ? "over" : pct > 0.9 ? "near" : "", n };
@@ -261,7 +289,7 @@ function openThreadSheet(p) {
   const editable = !it;
   const srcIsOverride = ov.text != null;
   const number = numberingOn();
-  const sourceText = postedText(p);
+  const sourceText = effectivePostedText(p);
 
   let segs = splitThread(sourceText, meta.limit, number);
   let editing = false;
@@ -591,7 +619,7 @@ function refreshCounts() {
     const card = $(`#cards .ocard.p-${p}`);
     if (!card) continue;
     const limit = META[p].limit;
-    const n = gcount(postedText(p)); // full posted text (reproduction on fan-out) — matches the preview
+    const n = gcount(effectivePostedText(p)); // full posted text (reproduction on fan-out) — matches the preview
     const span = card.querySelector(".cnt");
     if (span) { span.textContent = limit ? `${n}/${limit}` : "∞"; span.className = counterClass(n, limit); }
     const ta = card.querySelector("textarea");
@@ -604,7 +632,7 @@ function overrideCard(p) {
   const edited = ov.text != null;
   // textarea/snippet show your editable commentary; the count reflects the full
   // posted text (the reproduction on a fan-out platform), matching the preview.
-  const text = effectiveText(p), n = gcount(postedText(p));
+  const text = effectiveText(p), n = gcount(effectivePostedText(p));
   const card = el("div", { class: "ocard p-" + p + (edited ? " edited" : "") });
 
   // collapsed summary row (always visible, clickable to expand)
@@ -629,7 +657,7 @@ function overrideCard(p) {
   const ta = el("textarea", {
     oninput: e => {
       ov.text = e.target.value;
-      const m = gcount(postedText(p));
+      const m = gcount(effectivePostedText(p));
       cnt.textContent = meta.limit ? `${m}/${meta.limit}` : "∞";
       cnt.className = counterClass(m, meta.limit);
       card.classList.add("edited");
@@ -929,7 +957,7 @@ function overLimitPlatforms() {
   const out = [];
   for (const p of ORDER) {
     if (!state.platforms.has(p) || !META[p].limit) continue;
-    const n = gcount(postedText(p));
+    const n = gcount(effectivePostedText(p));
     if (n > META[p].limit) out.push({ label: META[p].label, over: n - META[p].limit });
   }
   return out;
