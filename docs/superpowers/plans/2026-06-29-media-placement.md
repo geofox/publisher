@@ -22,6 +22,34 @@
 
 ---
 
+## Plan Review Corrections (READ FIRST — verified against the codebase)
+
+Three reviewers checked this plan against the real repo. The **production-code line cites and struct/function names are accurate**; the **test snippets are illustrative pseudocode that must be rewritten against the real test harnesses** below. Key corrections, all confirmed:
+
+**C1 — `derivePostPart` is WRONG; thread `partOf` out of the real split instead (Task 2).** Verified empirically: `SplitWithMedia` numbers *text* posts with one total and *overflow* posts with another (e.g. text `…/8`, overflow `…/10`), so re-splitting at a guessed `limit - counterWidth(len(segs))` budget misaligns the part boundary under numbering+overflow — an image anchored to part 1 lands one post late. Do NOT re-derive; have the split that produces `segs` also emit `partOf`. See the rewritten Task 2.
+
+**C2 — `splitAtParts` must use a CONTIGUOUS index over NON-EMPTY parts** (not the raw `splitMarkers` block index `j`). `splitMarkers` keeps empty blocks; the client's `masterParts()` does `.filter(Boolean)` (contiguous). For them to agree, the server must increment the part index only for non-empty parts. Otherwise placement on drafts with an empty `---` block silently lands on the wrong post.
+
+**C3 — Real test harnesses (the plan's `newFakeDispatcher`/`newTestStore`/`newTestAPI`/`img()`/`dispatchOne`/`postedSegments` are INVENTED).** Use:
+- dispatch: construct fakes directly (`f := &fakeMastoChain{}`; `d := &Dispatcher{Mastodon: f}`), call `d.runChain(ctx, "mastodon", text, Overrides{}, make([]Img, n), nil, false, imgParts, nil)` and `d.resumeSegments(ctx, tg, Overrides{}, make([]Img, n), nil)` directly; assert on `f.calls[i].nImgs` (chain_test.go:23/236/262) or `out.Segments[i].Images`. **`fakeMasto` records nothing — use `fakeBsky` or `fakeMastoChain`, which record `nImgs`.** `Img` is a plain struct literal (no `img()` helper).
+- store: `openTestStore(t)` (not `newTestStore`); set `Post.ID` explicitly — `SavePost` does not mint one.
+- api preview: `postPreview(t, body)` with inline `a := &API{}` + `json.Unmarshal(rec.Body.Bytes(), …)` (thread_preview_test.go:12).
+- api drafts: file is **`internal/api/drafts_test.go`** (not `drafts_crud_test.go`, which is in `store/`); use `newDraftAPI(t)` + `postMultipart(t, a, path, spec, files)` + `a.Routes().ServeHTTP` (drafts_test.go:16/29).
+
+**C4 — `PlanBlueskyCard` signature change breaks 9 existing call sites** in `card_test.go` (lines 15,22,32,42,53,68,75,84,94) that pass an `int` arg 3. Change them to `[]int` (e.g. `2`→`[]int{0,0}`, `0`→`nil`). These are call-arg fixes, not assertion fixes.
+
+**C5 — Task 5 silently breaks two existing resume tests** that must be updated in the same task: `TestResumeRepostsSegmentImageSlices` (chain_test.go:344) and `TestResumeFullRetryDistributesImages` (chain_test.go:369). They expect resume to re-derive `PlanMedia(count)` from segments with nil `Images`; once resume reads `Segment.Images`, give those test fixtures explicit `Images` slices (the resolved plan) so they still assert the same distribution.
+
+**C6 — Per-post nostr imeta (Task 4) cannot index `imetas` by image index.** `buildImetas` (dispatch.go:591-598) SKIPS records with empty `BlossomURL`, so `imetas` is NOT 1:1 with `imgs`. Build an `imgs`-parallel imeta slice (nil where a record has no Blossom URL / imeta) and gather by `plan[i]`, OR keep imeta head-only for v1. Do NOT ship the index-by-`plan[i]` version against raw `imetas`.
+
+**C7 — Schedule/Fire align on `MediaRecords`, not `Images`.** `Schedule` (dispatch.go:1019) splits using `len(spec.MediaRecords)` and Fire rebuilds `imgs` from `post.Media` (dispatch.go:962-978). `ImgParts` for the scheduled path must correspond to the `MediaRecords`/`post.Media` ordering.
+
+**C8 — JS landmarks:** the image-attach entry is built at compose.js:1252 and pushed at **1268** (line 795 is the *video* path) — set the stable `id` at 1268 (and the video path). The placement chip must be `kids.push(sel)` before the `c.append(el("div",{class:"thumb"}, ...kids))` at compose.js:943 — there is **no `tile`** variable in the image branch. Adding `client_id` to the draft SELECT needs `COALESCE(client_id,'')` (drafts.go:160) and `&m.ClientID` in the Scan; the `INSERT` is the shared `insertDraftMedia` helper (drafts.go:112), covering both create and update.
+
+**C9 — Task 4 must also update `internal/api` to keep `go test ./...` green** (the `[][]int` output shape is cross-package): folded into Task 4 below (api preview `Imgs [][]int` + the two api preview test files).
+
+---
+
 ## File Structure
 
 - `internal/thread/place.go` (new) — `PlaceMedia`, `SplitPlace`, `splitAtParts`. Pure placement + part-aware split.
@@ -75,11 +103,16 @@ func TestPlaceMedia(t *testing.T) {
 		{"split across parts", []int{0, 1, 1}, []int{0, 1}, 4, [][]int{{0}, {1, 2}}},
 		// Anchored first, then unanchored fill remaining head-first.
 		{"anchored claims slot then unanchored", []int{1, 0, 0}, []int{0, 1}, 4, [][]int{{1, 2}, {0}}},
-		// Over-cap part spills forward to the next post.
-		{"over-cap spills forward", []int{0, 0, 0, 0, 0}, []int{0, 1}, 4, [][]int{{0, 1, 2, 3}, {4}}},
-		{"over-cap anchored spills forward", []int{0, 0, 0, 0, 0}, []int{0, 0, 1}, 2, [][]int{{0, 1}, {2, 3}, {4}}},
+		// Unanchored over-cap head-fills across posts (no anchors here).
+		{"unanchored head-fills past cap", []int{0, 0, 0, 0, 0}, []int{0, 0, 1}, 2, [][]int{{0, 1}, {2, 3}, {4}}},
+		// GENUINE anchored spill-forward: two images anchored to part 1 (post idx 1,
+		// cap 1) — the second can't fit its part, spills forward to post 2; the
+		// unanchored image then head-fills post 0.
+		{"anchored spills forward to later post", []int{1, 1, 0}, []int{0, 1, 2}, 1, [][]int{{2}, {0}, {1}}},
 		// Uncapped (nostr): everything assigned lands on its part's post.
 		{"uncapped per part", []int{0, 1, 1, 0}, []int{0, 1}, 0, [][]int{{0, 3}, {1, 2}}},
+		// Clamp/orphan is handled in SplitPlace (Task 2); PlaceMedia assumes
+		// pre-clamped imgParts, so no out-of-range case here.
 		{"no images", []int{}, []int{0, 1}, 4, [][]int{{}, {}}},
 	}
 	for _, c := range cases {
@@ -176,9 +209,7 @@ func PlaceMedia(imgParts []int, postPart []int, cap int) [][]int {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./internal/thread/ -run TestPlaceMedia -v`
-Expected: PASS.
-
-> Note: if `{"over-cap anchored spills forward", ...}` fails, re-derive the expected by hand from the algorithm and fix the test's `want`, not the algorithm — the algorithm is the spec. The intent: part-0 images 0,1 fill post0 (cap 2), image at index... trace carefully.
+Expected: PASS. (All table rows were hand-verified against this algorithm; if one fails, the implementation diverges from the snippet above — fix the code, not the table.)
 
 - [ ] **Step 5: Commit**
 
@@ -203,22 +234,52 @@ git commit -m "feat(thread): PlaceMedia — pure two-pass anchor-aware image pla
 - [ ] **Step 1: Write the failing test**
 
 ```go
-func TestSplitPlaceNoAnchorsMatchesSplitWithMedia(t *testing.T) {
-	// Same inputs, all-zero imgParts ⇒ identical segs and equivalent plan.
+func TestSplitPlaceNoAnchorsByteIdentical(t *testing.T) {
+	// Zero-regression: all-zero imgParts ⇒ identical segs AND identical per-post
+	// INDICES (not just counts — correction: a scrambled-index impl must fail here).
 	text := "one\n---\ntwo\n---\nthree"
-	imgParts := []int{0, 0, 0}
-	segs, plan, _ := SplitPlace(text, 500, imgParts, 4, Opts{Number: true})
-	wantSegs, wantCounts, _ := SplitWithMedia(text, 500, len(imgParts), 4, Opts{Number: true})
+	segs, plan, _ := SplitPlace(text, 500, []int{0, 0, 0}, 4, Opts{Number: true})
+	wantSegs, _, _ := SplitWithMedia(text, 500, 3, 4, Opts{Number: true})
 	if !reflect.DeepEqual(segs, wantSegs) {
 		t.Fatalf("segs=%v want %v", segs, wantSegs)
 	}
-	// Flatten [][]int counts and compare to the old []int plan.
-	gotCounts := make([]int, len(plan))
-	for i, p := range plan {
-		gotCounts[i] = len(p)
+	// 3 parts, 3 images, cap 4 ⇒ head-first fill puts all 3 on post 0 by index.
+	if !reflect.DeepEqual(plan, [][]int{{0, 1, 2}, {}, {}}) {
+		t.Fatalf("plan=%v want [[0 1 2] [] []]", plan)
 	}
-	if !reflect.DeepEqual(gotCounts, wantCounts) {
-		t.Fatalf("counts=%v want %v", gotCounts, wantCounts)
+}
+
+func TestSplitPlaceAnchorOverflowNumbered(t *testing.T) {
+	// The case derivePostPart got WRONG: numbered, two ~4-word parts at a tiny
+	// limit with heavy media overflow, image anchored to part 1. partOf must come
+	// from the real numbered split, so the anchored image lands on part 1's FIRST
+	// post, not one post late. imgParts length = nImages; only index 5 anchored.
+	imgParts := make([]int, 6)
+	imgParts[5] = 1 // image 5 → part 1
+	segs, plan, _ := SplitPlace(
+		"alpha bravo charlie delta\n---\necho foxtrot golf hotel",
+		15, imgParts, 3, Opts{Number: true})
+	// Find the first post whose part is 1 by re-deriving partOf the authoritative
+	// way and asserting image 5 is on the first post of part 1. Simplest assertion:
+	// image 5 must share a post with the text segment that begins part 1 ("echo …").
+	firstPart1 := -1
+	for i, s := range segs {
+		if strings.Contains(s, "echo") {
+			firstPart1 = i
+			break
+		}
+	}
+	if firstPart1 < 0 {
+		t.Fatalf("could not locate part-1 head in segs=%v", segs)
+	}
+	found := false
+	for _, ix := range plan[firstPart1] {
+		if ix == 5 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("image 5 not on part-1 head post %d; plan=%v segs=%v", firstPart1, plan, segs)
 	}
 }
 
@@ -254,122 +315,170 @@ func TestSplitPlaceOverflowPostsBelongToLastPart(t *testing.T) {
 Run: `go test ./internal/thread/ -run TestSplitPlace -v`
 Expected: FAIL — `undefined: SplitPlace`.
 
-- [ ] **Step 3a: Add `splitAtParts` to `thread.go`**
+- [ ] **Step 3a: Make `splitAt` part-aware (the primitive becomes `splitAtParts`)**
 
-In `internal/thread/thread.go`, add next to `splitAt` (it mirrors `splitAt` but records the originating `---` part index per emitted segment):
+In `internal/thread/thread.go`, replace `splitAt` with `splitAtParts` (which also returns, per emitted segment, the **contiguous index over NON-EMPTY parts** — per correction C2, this is what the client's `masterParts().filter(Boolean)` produces), and make `splitAt` a thin wrapper so its existing callers are unchanged:
 
 ```go
-// splitAtParts is splitAt that also returns, for each emitted segment, the
-// 0-based index of the --- part it came from. Empty parts are skipped (as in
-// splitAt), so partOf indices may be non-contiguous across the parts slice but
-// are monotonic non-decreasing.
+// splitAtParts is splitAt that also returns, for each emitted segment, the part
+// index it came from — a CONTIGUOUS counter over non-empty --- parts (empty
+// blocks are skipped and do NOT advance the index), so it matches the client's
+// masterParts() which filters empties. partOf aligns 1:1 with segs.
 func splitAtParts(text string, limit int) (segs []string, partOf []int, warns []string) {
-	for j, u := range splitMarkers(text) {
+	pi := -1
+	for _, u := range splitMarkers(text) {
 		if u == "" {
 			continue
 		}
+		pi++
 		if limit <= 0 || graphemeLen(u) <= limit {
 			segs = append(segs, u)
-			partOf = append(partOf, j)
+			partOf = append(partOf, pi)
 			continue
 		}
 		chunks, w := packParagraphs(u, limit)
 		for _, c := range chunks {
 			segs = append(segs, c)
-			partOf = append(partOf, j)
+			partOf = append(partOf, pi)
 		}
 		warns = append(warns, w...)
 	}
 	return segs, partOf, warns
 }
-```
 
-- [ ] **Step 3b: Implement `SplitPlace` in `place.go`**
-
-`SplitPlace` reuses the existing skeleton+numbering by calling `SplitWithMedia` for `segs` (so numbering/overflow are byte-identical), then derives `postPart` by re-deriving the text part boundaries at the numbered budget and extending with the last part for overflow posts.
-
-```go
-// SplitPlace splits text into the post chain exactly as SplitWithMedia does
-// (same numbering, same media-overflow post count) and then PLACES images per the
-// anchor assignment, returning attachment indices per post. The post count and
-// numbering are independent of imgParts — anchoring only permutes which post each
-// image lands on. len(segs) == len(plan) always.
-func SplitPlace(text string, limit int, imgParts []int, cap int, opts Opts) (segs []string, plan [][]int, warnings []string) {
-	nImages := len(imgParts)
-	// Skeleton + numbering: unchanged from today.
-	segs, counts, warnings := SplitWithMedia(text, limit, nImages, cap, opts)
-	// postPart: part index per post. Text posts carry their source part; the
-	// trailing media-only overflow posts (those past the text-segment count)
-	// belong to the last part.
-	postPart := derivePostPart(text, limit, len(segs), opts)
-	// Clamp anchors to a valid part index (defensive; the API also clamps).
-	maxPart := 0
-	for _, pp := range postPart {
-		if pp > maxPart {
-			maxPart = pp
-		}
-	}
-	clamped := make([]int, nImages)
-	for i, p := range imgParts {
-		if p < 0 {
-			p = 0
-		}
-		if p > maxPart {
-			p = maxPart
-		}
-		clamped[i] = p
-	}
-	plan = PlaceMedia(clamped, postPart, cap)
-	_ = counts // counts is implied by len(plan[i]); kept for clarity of intent
-	return segs, plan, warnings
+// splitAt now delegates (existing callers unchanged).
+func splitAt(text string, limit int) (segs []string, warns []string) {
+	segs, _, warns = splitAtParts(text, limit)
+	return segs, warns
 }
+```
+(Delete the old `splitAt` body — `splitAtParts` replaces it.)
 
-// derivePostPart returns the --- part index for each of the nSegs posts. It
-// re-splits at the same effective (numbered) budget used to produce the chain so
-// the text-segment boundaries line up, then assigns the last part to any trailing
-// media-only overflow posts.
-func derivePostPart(text string, limit, nSegs int, opts Opts) []int {
-	eff := limit
-	if opts.Number && limit > 0 {
-		eff = limit - counterWidth(nSegs) // worst-case counter budget for this chain
+- [ ] **Step 3b: Thread `partOf` through the real split (NOT a re-derived budget — correction C1)**
+
+`postPart` MUST come from the exact split that produces `segs`. Make `number()` part-aware, refactor `SplitWithMedia`'s body into a part-aware core `splitWithMediaPlan` (which `SplitWithMedia` then wraps), and build `SplitPlace` on it.
+
+In `thread.go`, change `number` to also return `partOf` (it calls `splitAtParts`; `appendCounters` preserves order, so `partOf` stays aligned), and fix its callers:
+```go
+func number(text string, limit, extra int) (segs []string, partOf []int, warns []string) {
+	segs, partOf, warns = splitAtParts(text, limit)
+	n := len(segs)
+	for i := 0; i < 6; i++ {
+		w := counterWidth(n + extra)
+		eff := limit - w
 		if eff < 1 {
-			eff = limit
+			return segs, partOf, warns
+		}
+		segs, partOf, warns = splitAtParts(text, eff)
+		if len(segs)+extra < 2 {
+			return splitAtParts(text, limit)
+		}
+		if len(segs) == n {
+			break
+		}
+		n = len(segs)
+	}
+	return appendCounters(segs, len(segs)+extra), partOf, warns
+}
+```
+`Split` (thread.go:88) calls `number`; update its last line: `s, _, w := number(text, limit, 0); return s, w`.
+
+In `place.go`, add the part-aware core and the two wrappers. `splitWithMediaPlan` is the existing `SplitWithMedia` body with `partOf` tracked and the appended overflow posts assigned the last part:
+```go
+// splitWithMediaPlan is SplitWithMedia plus partOf (the --- part index per post,
+// aligned 1:1 with segs). Overflow image-only posts ride the last part. This is
+// the single implementation; SplitWithMedia and SplitPlace both wrap it, so the
+// part labels can never diverge from the real numbered skeleton.
+func splitWithMediaPlan(text string, limit, nImages, cap int, opts Opts) (segs []string, partOf []int, plan []int, warnings []string) {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	// text segs + partOf, matching Split()'s output exactly:
+	segs, partOf, warnings = splitAtParts(text, limit)
+	if opts.Number && len(segs) >= 2 {
+		if limit <= 0 {
+			segs = appendCounters(segs, len(segs))
+		} else {
+			segs, partOf, warnings = number(text, limit, 0)
 		}
 	}
-	_, partOf, _ := splitAtParts(strings.ReplaceAll(text, "\r\n", "\n"), eff)
+	plan = PlanMedia(nImages, len(segs), cap)
+	if extra := len(plan) - len(segs); extra > 0 && opts.Number {
+		if limit <= 0 {
+			segs, partOf, warnings = splitAtParts(text, limit)
+			segs = appendCounters(segs, len(plan))
+		} else {
+			for i := 0; i < 4; i++ {
+				segs, partOf, warnings = number(text, limit, extra)
+				plan = PlanMedia(nImages, len(segs), cap)
+				if len(plan)-len(segs) == extra {
+					break
+				}
+				extra = len(plan) - len(segs)
+			}
+		}
+	}
 	last := 0
 	if len(partOf) > 0 {
 		last = partOf[len(partOf)-1]
 	}
-	out := make([]int, nSegs)
-	for j := 0; j < nSegs; j++ {
-		if j < len(partOf) {
-			out[j] = partOf[j]
-		} else {
-			out[j] = last // media-only overflow posts ride the last part
+	for i := len(segs); i < len(plan); i++ {
+		t := ""
+		if opts.Number {
+			t = strconv.Itoa(i+1) + "/" + strconv.Itoa(len(plan))
+		}
+		segs = append(segs, t)
+		partOf = append(partOf, last)
+	}
+	return segs, partOf, plan, warnings
+}
+
+// SplitPlace places images per the anchor assignment over today's exact
+// skeleton. Post count and numbering are independent of imgParts. len(segs)==len(plan).
+func SplitPlace(text string, limit int, imgParts []int, cap int, opts Opts) (segs []string, plan [][]int, warnings []string) {
+	var partOf []int
+	segs, partOf, _, warnings = splitWithMediaPlan(text, limit, len(imgParts), cap, opts)
+	maxPart := 0
+	for _, pp := range partOf {
+		if pp > maxPart {
+			maxPart = pp
 		}
 	}
-	return out
+	clamped := make([]int, len(imgParts))
+	for i, p := range imgParts {
+		if p < 0 {
+			p = 0
+		} else if p > maxPart {
+			p = maxPart
+		}
+		clamped[i] = p
+	}
+	plan = PlaceMedia(clamped, partOf, cap)
+	return segs, plan, warnings
 }
 ```
-
-Add `import "strings"` to `place.go` if not present.
+Then make the public `SplitWithMedia` (thread.go:110) a thin wrapper so there is one implementation:
+```go
+func SplitWithMedia(text string, limit, nImages, cap int, opts Opts) (segs []string, plan []int, warnings []string) {
+	segs, _, plan, warnings = splitWithMediaPlan(text, limit, nImages, cap, opts)
+	return segs, plan, warnings
+}
+```
+Add `import ("strconv"; "strings")` to `place.go`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/thread/ -run 'TestSplitPlace|TestPlaceMedia' -v`
-Expected: PASS. If `derivePostPart`'s `eff` budget produces a different segment boundary than `SplitWithMedia` for a numbered multi-part case, align it by reading how `number()` computes its budget (thread.go:289-312) and matching `counterWidth(len(segs))`.
+Expected: PASS, including `TestSplitPlaceAnchorOverflowNumbered` (Step 1) — the case `derivePostPart` got wrong.
 
 - [ ] **Step 5: Run the whole thread package (guard the invariant)**
 
 Run: `go test ./internal/thread/ -v`
-Expected: PASS — all existing tests still green (SplitPlace adds behavior, changes nothing existing).
+Expected: PASS — all existing `thread_test.go`/`media_test.go` tests stay green because `SplitWithMedia` now delegates to `splitWithMediaPlan` but returns identically. If any differ, `splitWithMediaPlan` does not faithfully reproduce the old body — fix it, do not change the tests.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add internal/thread/place.go internal/thread/thread.go internal/thread/place_test.go
-git commit -m "feat(thread): SplitPlace — anchor-aware [][]int plan over today's skeleton"
+git commit -m "feat(thread): SplitPlace + part-aware split (partOf from the real numbered skeleton)"
 ```
 
 ---

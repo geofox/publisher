@@ -213,10 +213,11 @@ into `dispatch.PostSpec.ImgParts`; `runChain` passes it to `SplitPlace`.
   `pv.imgs[i].map(ix => media[ix])`. With ≥2 parts the threaded preview always
   renders, so placement is always visible (the v2 single-post blind spot is out
   of scope by construction).
-- **Thread badge count**: source the per-platform post count from the existing
-  `/api/thread-preview` round-trip (preview.js:372) rather than re-estimating in
-  `threadInfoFor` (compose.js:113), so the badge cannot drift from the server —
-  the recurring counter/splitter parity-bug surface is avoided, not re-fought.
+- **Thread badge count needs no change**: because anchoring only permutes images
+  across the *fixed* skeleton (§2), the per-platform post count is independent of
+  anchors. `threadInfoFor` (compose.js:113) already estimates it correctly from
+  text + total image count, so it is left untouched — there is no new
+  client/server parity surface here.
 - **Char counting, `splitMarkers`, `bskyCardText` are untouched** — anchors are
   not in the text.
 
