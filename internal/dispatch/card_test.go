@@ -96,3 +96,16 @@ func TestPlanCardTrailingWithoutNumbering(t *testing.T) {
 		t.Fatalf("number=false must not change card planning: %+v", cp)
 	}
 }
+
+func TestPlanBlueskyCardImageOnCardPostRevertsCard(t *testing.T) {
+	card := &unfurl.Card{URI: "https://ex.com"}
+	// Single trailing-URL post with an image anchored to it ⇒ images own the embed
+	// slot ⇒ card reverts (card-wins fallback front-loads the image).
+	cp := PlanBlueskyCard("see https://ex.com", card, []int{0}, false)
+	if cp.Card != nil {
+		t.Fatalf("expected card reverted when image owns the post")
+	}
+	if len(cp.Plan) == 0 || len(cp.Plan[0]) != 1 {
+		t.Fatalf("plan=%v want image on post 0", cp.Plan)
+	}
+}
