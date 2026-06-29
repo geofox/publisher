@@ -173,6 +173,10 @@ export async function saveActiveDraft() {
     // survive the remap — otherwise the XOR guard, video tile, and duration gates break.
     clearImages();
     state.images = (saved.media || []).map(m => ({
+      // Preserve the stable id (same as loadDraft) so placement anchors keyed by
+      // img.id keep matching after a save — otherwise every image's id becomes
+      // undefined and state.anchors collapses onto a single key.
+      id: m.client_id || m.id || crypto.randomUUID(),
       blossom_url: m.blossom_url, sha256: m.sha256, mime: m.mime,
       dim: m.dim, blurhash: m.blurhash, size_bytes: m.size_bytes,
       alt: m.alt || "", ordinal: m.ordinal, file: null,

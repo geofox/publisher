@@ -946,9 +946,14 @@ export function renderImages() {
       const sel = el("select", { class: "place-chip",
         onchange: e => { state.anchors[img.id] = parseInt(e.target.value, 10); markDirty(); renderPreview(); refreshCounts(); } });
       const n = masterParts().length;
+      // Clamp to the available parts so the selected option matches what
+      // buildSpec/dispatch will use (img_parts clamps to nParts-1); otherwise a
+      // stale anchor past a reduced part count shows part 1 while dispatch posts
+      // the clamped part.
+      const cur = Math.min(state.anchors[img.id] || 0, Math.max(0, n - 1));
       for (let p = 0; p < n; p++) {
         const o = el("option", { value: String(p), text: `▸ part ${p + 1}` });
-        if ((state.anchors[img.id] || 0) === p) o.selected = true;
+        if (cur === p) o.selected = true;
         sel.append(o);
       }
       kids.push(sel);
