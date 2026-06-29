@@ -21,6 +21,7 @@ const (
 )
 
 type draftImageEntry struct {
+	ID           string `json:"id,omitempty"`
 	Ordinal      int    `json:"ordinal"`
 	Ref          string `json:"ref,omitempty"`         // "img_0", "img_1", … — present iff newly uploaded
 	BlossomURL   string `json:"blossom_url,omitempty"` // present iff already uploaded
@@ -39,6 +40,7 @@ type draftSpecJSON struct {
 	Platforms   []string          `json:"platforms"`
 	Overrides   json.RawMessage   `json:"overrides"`
 	Interaction json.RawMessage   `json:"interaction,omitempty"`
+	Anchors     json.RawMessage   `json:"anchors,omitempty"`
 	Tags        []string          `json:"tags"`
 	Images      []draftImageEntry `json:"images"`
 }
@@ -126,12 +128,14 @@ func (a *API) buildDraftFromRequest(r *http.Request, id string) (*store.Draft, s
 				Ordinal: img.Ordinal, BlossomURL: res.URL, SHA256: res.SHA256,
 				Mime: res.Mime, Dim: res.Dim, Blurhash: res.Blurhash, SizeBytes: res.Size,
 				Alt: img.Alt, DurationSecs: res.DurationSecs, PosterURL: res.PosterURL,
+				ClientID: img.ID,
 			})
 		} else if img.BlossomURL != "" {
 			mediaRecs = append(mediaRecs, store.Media{
 				Ordinal: img.Ordinal, BlossomURL: img.BlossomURL, SHA256: img.SHA256,
 				Mime: img.Mime, Dim: img.Dim, Blurhash: img.Blurhash, SizeBytes: img.SizeBytes,
 				Alt: img.Alt, DurationSecs: img.DurationSecs, PosterURL: img.PosterURL,
+				ClientID: img.ID,
 			})
 		} else {
 			return nil, "", http.StatusBadRequest, fmt.Sprintf("image %d: neither ref nor blossom_url present", i)
@@ -261,6 +265,7 @@ func (a *API) handleTranslateDraft(w http.ResponseWriter, r *http.Request) {
 		MasterText:  translated,
 		Platforms:   origSpec.Platforms,
 		Interaction: origSpec.Interaction,
+		Anchors:     origSpec.Anchors,
 		Tags:        src.Tags,
 		Overrides:   json.RawMessage("{}"),
 	}
