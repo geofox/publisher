@@ -527,7 +527,7 @@ export function loadDraft(input) {
       url: m.blossom_url || "",
       // restored video drafts are already transcoded — render as ready
       phase: /^video\//.test(m.mime || "") ? "ready" : undefined,
-      id: m.client_id || crypto.randomUUID(),
+      id: m.client_id || m.id || crypto.randomUUID(),
     }));
     bumpImagesGen();
     // Hydrate media-placement anchors from the draft spec (id-keyed map).
