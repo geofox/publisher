@@ -527,6 +527,7 @@ export function loadDraft(input) {
       url: m.blossom_url || "",
       // restored video drafts are already transcoded — render as ready
       phase: /^video\//.test(m.mime || "") ? "ready" : undefined,
+      id: m.client_id || crypto.randomUUID(),
     }));
     bumpImagesGen();
     state.activeDraftId = input.id || null;
@@ -792,6 +793,7 @@ function attachVideo(file) {
   if (state.images.length) { flash(state.images.some(i => i.video) ? "Only one video per post" : "Remove the images first (one video OR images per post)"); return; }
   const entry = { video: true, _file: file, _preset: $("#vidpreset")?.value || "1080p",
                   url: "", alt: "", phase: "uploading", pct: 0, _xhr: null, _jobTimer: null };
+  entry.id = crypto.randomUUID();
   state.images.push(entry);
   renderImages();
   startVideoUpload(entry);
@@ -1265,6 +1267,7 @@ export function composeInit() {
     if (gen !== imagesGen) return; // composer was cleared/replaced mid-convert
     if (state.images.length >= 10) { flash("Max 10 images"); return; }
     entry.url = URL.createObjectURL(entry.file);
+    entry.id = crypto.randomUUID();
     state.images.push(entry);
     renderImages();
   });
