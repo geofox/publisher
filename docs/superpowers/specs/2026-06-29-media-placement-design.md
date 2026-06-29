@@ -1,270 +1,249 @@
-# Media placement: anchor attachments to a chosen part of the thread
+# Media placement: pin attachments to a post in a threaded draft
 
 **Date:** 2026-06-29
 **Status:** approved (design), pending implementation plan
-**Decisions made with operator:**
-- Unit of control = which **post** in the thread each image rides; per-image;
-  may differ per platform.
-- Must work in **both** threading regimes (manual `---` and auto/length split).
-- Per-platform divergence is **rare** — one shared placement that maps onto every
-  platform, with the occasional single-network override.
-- **Mechanism = a structured anchor map**, not in-text markers (see "Why not
-  in-text markers" below — reversed after a three-agent design critique).
-- **Granularity = the `---` "part"**, labeled honestly. An image is pinned to a
-  part (a `---`-delimited block); placing it on a sub-post of an *auto-split*
-  part is out of scope — to place mid-auto-thread you insert a break. The UI
-  says "part 1/2/3", never "post N".
-- **Images only** in v1; the existing "one video OR images per post" rule stands.
+**Decisions made with operator (after two multi-agent design critiques):**
+- Pin each image to a chosen **post** of a thread; per-image.
+- **v1 scope = manual/threaded drafts only.** Placement is offered only when the
+  draft already has `---` parts (≥2). Parts are operator-defined and
+  platform-stable, so part ≈ post, the preview always shows segments, and there
+  is no "insert a break to place a picture" footgun. Auto-split-only and
+  single-post placement are **deferred** (that is where the unsolved UX/preview
+  problems live — see Revision history).
+- **Shared placement only.** One assignment maps onto every platform. The rare
+  per-platform case uses the existing per-platform text override; no per-platform
+  anchor delta in v1.
+- **Images only.** The "one video OR images per post" rule stands.
+
+## Revision history (why this is scoped the way it is)
+
+This spec went through two design-critique rounds (three Opus subagents each),
+which reshaped it substantially. Recording the dead ends so they are not retried:
+
+- **v1 — in-text `⟦media N⟧` markers — REJECTED.** Putting the anchor inside the
+  draft text collided with translation (DeepL mangled markers), client/server
+  char-count parity, and the Edit-split sheet.
+- **v2 — structured anchor map, "part" granularity, per-platform delta,
+  "no persistence" — REJECTED.** The "rides existing JSON blobs for free" claim
+  was false: `FieldsJSON` is written through `ov2fields`, a hand-picked field map
+  (dispatch.go:946), not a struct marshal; the shared map had no post-level home;
+  the draft path re-marshals through typed `draftSpecJSON` (drafts.go:91-146)
+  that drops unknown keys. Resume still front-loaded (it never re-splits text).
+  Ordinal keys were already unstable across save/load/recovery. And "part"
+  granularity abandoned the auto-split regime.
+- **v3 (this doc) — structured map, manual/threaded-only, shared-only,
+  stable-id, persist-the-resolved-plan.** Each cut removes a whole class of the
+  problems above.
 
 ## Background
 
 Publisher threads a draft by honoring manual `---` breaks or auto-splitting
-over-limit text per platform (`internal/thread`). Attached media is a flat,
-ordered list owned by the post as a whole; `thread.PlanMedia` (thread.go:53) is
-the only placement logic and hard-codes **front-load**: fill the head post up to
-the platform cap, spill to following posts, append image-only posts when images
-outrun text. The 10-image gallery spec (2026-06-09) explicitly deferred manual
-placement, noting "this feature builds its rails." This feature lets the
-operator decide which part of the thread each image rides on.
+over-limit text per platform (`internal/thread`). Media is a flat ordered list
+owned by the post as a whole; `thread.PlanMedia` (thread.go:53) hard-codes
+front-load. The 10-image gallery spec (2026-06-09) deferred manual placement,
+noting "this feature builds its rails." v1 builds the smallest correct version:
+in an already-threaded draft, pin each image to a part.
 
-### Why not in-text markers (the rejected first design)
+### Inherited architecture facts (verified)
 
-The first iteration encoded placement as `⟦media N⟧` marker lines inside the
-draft text. A three-agent critique killed it. The fatal pattern: putting the
-anchor *inside the counted/translated/edited text* spawns independent collisions:
-- **Translation wipes placement.** `handleTranslateDraft` (drafts.go:249) ships
-  raw `master_text` to DeepL with no tag protection; `⟦media N⟧` comes back
-  translated/reflowed → every anchor silently orphans.
-- **Char-count parity.** The client counts the marker bytes; the server strips
-  them before counting → the recurring counter/splitter parity-bug surface.
-- **Edit-split sheet corruption.** `openThreadSheet` (compose.js:294) shows the
-  marker as raw segment text; merge/break edits move or split it mid-line.
-
-A **structured anchor map** (placement as data, keyed by attachment ordinal,
-outside the prose) sidesteps all three by construction. The original "no new
-persistence" argument for markers was also illusory — resume needed special
-handling regardless (see Constraint 1). So the map's small persistence cost is
-roughly what markers secretly required anyway, without the collisions.
-
-### Constraints inherited from the architecture
-
-1. **Resume/schedule-fire re-derive the plan, and today they front-fill from a
-   bare count.** `resumeSegments` (dispatch.go:502) calls
-   `thread.PlanMedia(len(imgs), len(segs), cap)` and gathers
-   `imgs[start:start+count]` (dispatch.go:527) — pure contiguous front-fill, no
-   placement input. `Schedule`→Fire (dispatch.go:1041) has the identical gap.
-   Any placement must survive both re-derivations.
-2. **Thread shape is per platform.** Bluesky (300) may make 4 posts where
-   Mastodon (500) makes 2 and Nostr (unbounded) makes 1. **Parts (`---` count)
-   are platform-stable; post counts are not** — so the addressable unit is the
-   part, and the UI must not label it "post N".
-3. **The whole pipeline assumes contiguous head-fill.** `plan []int` is per-post
-   *counts*; dispatch slices `imgs[start:start+count]` (dispatch.go:422), the
-   prefix-sum lives at dispatch.go:408-415/503-508, the preview does the
-   identical `media.slice(...)` (preview.js:235), and `PlanBlueskyCard` tests
-   `plan[target] > 0` (card.go:67). Anchoring breaks contiguity, so the plan
-   generalizes from counts to explicit attachment indices.
+- **Resume/Fire replay persisted segments; they do not re-split.**
+  `resumeSegments` (dispatch.go:520-538) posts `segs[i].Text` verbatim and
+  recomputes media only as `PlanMedia(len(imgs), len(segs), cap)` (dispatch.go:502)
+  — a count, with no placement input. Therefore placement must be **persisted**,
+  not re-derived. `Segment`s serialize as JSON in the `segments_json` column
+  (models.go:136/480), so a new `Segment.Images []int` is additive — no SQL
+  migration.
+- **The pipeline assumes contiguous head-fill.** `plan []int` is per-post counts;
+  dispatch slices `imgs[start:start+count]` (dispatch.go:422, prefix-sum at
+  408-415), preview does `media.slice(...)` (preview.js:235), `PlanBlueskyCard`
+  tests `plan[target] > 0` (card.go:67). Anchoring breaks contiguity → the plan
+  generalizes to explicit attachment indices `[][]int`.
+- **Manual `---` parts apply to every network** (compose.js footer:398), and
+  Nostr honors them too (`splitMarkers` is length-independent). So ≥2 parts ⇒ a
+  real multi-post thread on every platform ⇒ the preview always renders segments.
 
 ## Scope
 
-- Per-image control over which **part** (`---` block) an attachment rides, in
-  both regimes; a single-block draft is one part (everything front-loads until a
-  break is added).
-- One shared placement; rare per-platform override via a lightweight per-platform
-  **anchor delta** (no text fork).
-- Zero-regression default: no anchors → posts byte-for-byte as today.
+- Pin each image to a part (`---` block) of a draft that has **≥2 parts**; default
+  (unset) = part 0 (head) = today's front-load.
+- A part with more images than its platform cap overflows into appended
+  image-only posts within that part (existing `PlanMedia` overflow, per-part).
+- Zero-regression: no anchors → byte-identical to today.
 
-Out of scope (v1): placing an image on a sub-post of an auto-split part (insert a
-break instead); video placement; placement in interaction/quote-reply mode
-(disabled, like Edit-split); reordering attachments *by* placement; drag-and-drop
-(tap to assign).
+Out of scope (v1, deferred with explicit seams): placement in single-`---`-part
+or purely auto-split drafts; per-platform anchor deltas; Bluesky card "spill";
+video placement; interaction/quote-reply placement; drag-and-drop.
 
 ## Design
 
-### 1. The anchor map (data model)
+### 1. When active, and the data model
 
-Placement is structured data keyed by **attachment ordinal** (the existing
-stable-within-post index; `Media.Ordinal`, models.go:68 / `imageSpec.Ordinal`,
-api.go:819). It is never written into `master_text`.
+Placement UI activates only when `splitMarkers(master)` yields ≥2 parts.
 
-- **Shared anchors:** `anchors: map[ordinal]partIndex` on the post spec / draft.
-  Applies to every platform. A missing entry → default part 0 (front-load).
-- **Per-platform delta (rare):** `Overrides[p].Anchors: map[ordinal]partIndex`.
-  When present for ordinal o, it replaces the shared entry for platform p only.
-  No text fork — prose stays mastered.
-
-`partIndex` is 0-based over the `---`-delimited blocks of the *effective* text
-for that platform. **Re-validation:** an entry whose `partIndex >= nParts`
-(operator deleted a `---`) clamps to the last part. An entry for an ordinal that
-no longer exists is ignored. Both deterministic.
-
-Keying by ordinal (not a stable id) means add/remove/reorder must update the map
-— but that is a small, local structured-object edit (drop key, shift keys past
-the removed ordinal), not the cross-text-body rewrite the marker design needed.
-A stable per-attachment id is a noted future refinement if reorder churn hurts.
-
-### 2. Resolution → the per-post plan (pure, internal/thread)
-
-Anchored images are no longer a contiguous head-fill, so the per-post plan
-generalizes from **counts** to **explicit attachment indices**:
+Each attachment carries a **stable `id`** (client-generated at attach time;
+added to `imageSpec`, api.go:810, and the draft image JSON). Placement is a
+shared map keyed by that id:
 
 ```
-// today:     plan []int     e.g. [2, 1, 0]        (counts per post)
-// proposed:  plan [][]int   e.g. [[0,3],[1],[]]   (attachment indices, attach order)
+anchors: map[imageID]partIndex   // 0-based over the --- parts; missing ⇒ part 0
 ```
 
-`SplitWithMedia` gains the resolved per-image part assignment as input (the
-caller resolves `Overrides[p].Anchors ?? anchors ?? 0` per image before calling)
-and returns `[][]int`. Resolution, per platform:
-1. Split text into parts by `---` (existing `splitMarkers`).
-2. Auto-subdivide each part by length (existing `splitAt`).
-3. For each part, gather the images assigned to it (in attach-ordinal order) and
-   distribute across *its own* sub-posts via the existing `PlanMedia` rule
-   (head sub-post up to cap, overflow to appended image-only posts).
-4. The **head part** additionally absorbs every image with no/clamped assignment.
+The id (not the ordinal) is the key, so add/remove/reorder needs **no map
+maintenance** — a removed image's entry is simply ignored, and an image keeps its
+id when reordered. This kills the save/load/recovery renumber bug class that
+sank v2's ordinal keys (serialize used array index, load used stored ordinal,
+recovery dropped fresh images and renumbered — all moot when the key is an id).
 
-**Canonical ordering (golden-tested, because resume depends on it):** a part's
-image set = {images assigned to it} ∪ {unassigned, for the head part only},
-sorted ascending by attach ordinal, then cap-overflowed. This makes the `[][]int`
-a deterministic function of (text, anchors, platform).
+**Re-validation:** an entry whose `partIndex >= nParts` clamps to the last part;
+an entry for a missing id is ignored. Deterministic.
 
-**Numbering fixpoint.** Total posts = Σ over parts of (text sub-posts +
-image-only overflow). The existing `number()`/`SplitWithMedia` fixpoint
-(thread.go:289, 125-132) currently drives toward a single global
-`extra = ceil(nImages/cap)`; it must be generalized to the per-part sum and
-re-proven to converge with image-only posts that can now appear **mid-chain**
-(not only as a tail). The `len(segs) == len(plan)` invariant that every caller
-relies on must be preserved. *This convergence proof and the marker-only-part /
-image-only-post representation are the riskiest implementation items and the
-plan must treat them as their own task with explicit tests, not a drop-in.*
+### 2. Resolution → the `[][]int` plan (pure, internal/thread)
+
+The caller resolves each image's part (`anchors[id] ?? 0`, clamped) and passes
+the per-image part assignment to `SplitWithMedia`, which returns `[][]int`
+(attachment indices per post). Per platform:
+
+1. Split into parts by `---` (existing `splitMarkers`).
+2. Auto-subdivide each part by length (existing `splitAt`, text-only — unchanged).
+3. For each part, gather its images (by attach order) and distribute across the
+   part's sub-posts via `PlanMedia` (head sub-post up to cap, overflow to
+   appended image-only posts **for that part**).
+4. The head part also absorbs every unassigned/clamped image.
+
+**Canonical chain ordering** (golden-tested; resume depends on it being a pure
+function of inputs): posts are emitted **part by part, in order**; within a part,
+**text sub-posts first, then its overflow image-only posts**. Within a post,
+images sort by attach order. Image-only posts are materialized in
+`SplitWithMedia` (media-aware), **not** in `splitAt` — so `splitAt`'s
+drop-empty-blocks contract is untouched.
+
+**Numbering convergence (the v2 open question, now resolved).** Total posts
+`T = Σ_part max(textSubposts_part(budget), ⌈images_part / cap⌉)`. The image floor
+`⌈images_part/cap⌉` is a **constant** (independent of the counter budget);
+`textSubposts_part` is **monotone non-decreasing** as the budget shrinks (smaller
+limit ⇒ same-or-more sub-posts). `max(monotone, const)` is monotone, and a sum of
+monotone-non-decreasing terms is monotone-non-decreasing. So `T` is monotone in
+(1/budget) and bounded above (text cannot split past one grapheme per post) ⇒ the
+existing `number()` fixpoint (thread.go:289) converges by the same argument it
+uses today, now with a per-part sum instead of a single global `extra`. The
+`len(segs) == len(plan)` invariant holds because every emitted post (text or
+image-only) gets exactly one plan entry.
 
 ### 3. Dispatch (internal/dispatch)
 
-- `runChain` (dispatch.go:417-435): replace the `starts[]` prefix-sum
-  (408-415) and `imgs[start:start+count]` slice with a gather by index list,
-  `pick(imgs, plan[i])`. The prefix-sum block becomes dead code — remove it.
-- **Nostr imeta** (dispatch.go:424, and resume 530): today `if i == 0 { segImetas
-  = imetas }` hard-attaches all imeta to the head ("nostr never splits media").
-  Under per-part placement nostr *can* have media on a non-head part, so imeta
-  must be distributed per post in step with `plan[i]` (each nostr post's imeta =
-  the imeta for the images that post carries).
-- **Resume** (`resumeSegments`, dispatch.go:471-552): stop deriving from
-  `PlanMedia(count)`. Re-resolve `[][]int` from **`tg.FinalText` + the persisted
-  anchors** (see §5) via `SplitWithMedia`, then gather by index. Remove the
-  prefix-sum (503-508); redesign the "trailing images exceed segments"
-  drop-warning (511-518) — summing `plan[len(segs):]` counts is meaningless for
-  index lists.
-- **Schedule→Fire** (dispatch.go:1009/1041): persist anchors in `FieldsJSON`
-  (§5); Fire re-resolves from `FinalText` + anchors, same as resume.
+- `runChain` (dispatch.go:417-435): replace the `starts[]` prefix-sum (408-415,
+  now dead) and `imgs[start:start+count]` slice with a gather by index list,
+  `pick(imgs, plan[i])`. **Record `Segment.Images = plan[i]`** on each segment as
+  it is planned (so resume can read it).
+- **Nostr imeta** (dispatch.go:424): today `if i==0 { segImetas = imetas }`
+  attaches all imeta to the head. A part can now hold media on a non-head post,
+  so imeta is distributed per post in step with `plan[i]`.
 
-### 4. Bluesky card (internal/dispatch/card.go)
+### 4. Resume / Schedule-Fire (internal/dispatch)
 
-Today `PlanBlueskyCard` (card.go:53-72) reverts the card entirely when its target
-segment already holds images (`plan[target] > 0`, card.go:67). Two real changes:
-- The predicate becomes `len(plan[target]) > 0` under `[][]int`.
-- When an image is *deliberately* anchored onto the card's post, the card wins
-  its embed slot and those images **spill to an appended image-only post in that
-  part** (rather than the card silently reverting). This requires
-  `PlanBlueskyCard` to insert a post and re-thread the `[][]int`/`Card.Segment`
-  index — a genuine planner change, called out as its own task.
+Resume and Fire **read the persisted `Segment.Images`** and gather by index — no
+re-split, no re-derivation, no `FinalText`/card-idempotency hazard. Remove the
+`PlanMedia(count)` call and `starts[]` prefix-sum at dispatch.go:502-508; redesign
+the "trailing images exceed segments" warning (dispatch.go:511-518) — meaningless
+for index lists — into per-segment bounds/orphan handling. `Schedule`
+(dispatch.go:1041) pre-splits and persists segments; it records `Segment.Images`
+the same way, so Fire is identical to resume.
 
-### 5. Persistence (no SQL migration)
+### 5. Bluesky link card (internal/dispatch/card.go)
 
-- **Draft:** `anchors` (and per-platform `Overrides[p].Anchors`) live in the
-  opaque `spec_json` blob (drafts.go:21) → save/load/autosave round-trip for
-  free. `handleTranslateDraft` must copy `anchors` onto the translated draft it
-  builds (drafts.go:261-279) — a field copy; markers-in-text mangling is gone.
-- **Dispatched/scheduled target:** anchors ride `Target.FieldsJSON`
-  (models.go:42) through the existing override-rehydration path (dispatch.go:985
-  unmarshals `FieldsJSON` into `Overrides`). Add `Anchors` to `dispatch.Overrides`.
-- **Resume input:** `tg.FinalText` (the per-platform final text, already
-  persisted) + `FieldsJSON` anchors → deterministic `[][]int`. No `store.Segment`
-  field added.
+The predicate becomes `len(plan[target]) > 0`. **No spill in v1:** if an image is
+anchored onto the post that would carry the card, the **card wins** and that image
+falls back to front-load, with a preview warning. (The v2 "insert a post and
+re-thread" spill is deferred — it entangles reply-pointer/`card.Segment`
+re-indexing with resume reproduction.)
 
-### 6. API (internal/api)
+### 6. Persistence (verified — no SQL migration)
 
-- `POST /api/thread-preview` (api.go:1527): request gains `anchors` (and resolves
-  per-platform deltas); `Imgs []int` → `Imgs [][]int`. Same single source of
-  truth as dispatch — preview and posting cannot diverge.
-- `handleAPIPost` / `postSpecJSON` (api.go:825): add `anchors`; thread it into
-  `dispatch.PostSpec`. `assembleImages` unchanged (ordinals already exist).
+- **Resolved plan:** `Segment.Images []int` rides the existing `segments_json`
+  JSON column (models.go:136/480) — additive.
+- **Draft:** add `anchors` and a per-image `id` to `draftSpecJSON` (drafts.go:37)
+  so they survive the API's re-marshal (the v2 trap) and round-trip via
+  `spec_json`. Update `buildSpec`/`imageSpecs` (state.js) and the recovery
+  snapshot (drafts_recovery.js) to emit both; recovery restore (drafts.js:274)
+  drops un-uploaded images — anchors keyed by id simply orphan those entries, no
+  renumber.
+- **Translation:** `handleTranslateDraft` (drafts.go:255-267) must copy `anchors`
+  + image ids onto the new draft. Shared-only means the `Overrides:"{}"` reset is
+  irrelevant. Same for the history.js translate path.
+- **Untouched:** `Media` table, `ov2fields`, `ovFor`, `FieldsJSON` — shared-only
+  placement needs none of them.
 
-### 7. Web UI (internal/web/assets)
+### 7. API (internal/api)
 
-- **Placement chip per thumbnail** (`renderImages`, compose.js:860): a
-  touch-friendly `▸ part 1`, `▸ part 2`, … picker whose options are the current
-  `---` parts. **Parts are platform-stable, so "part N" is truthful and
-  platform-neutral** (this is why the labeling works where "post N" could not).
-  Picking a part writes the shared `anchors` entry. Default = part 1, so an
-  untouched draft is unchanged. Single-part draft: the chip is active with a
-  hint "Pin to a post — needs a break" and a one-tap "Add a break" that drops a
-  `---` via the existing Edit-split machinery.
-- **Map hygiene** on add/remove/reorder: update the `anchors` object in
-  `state` (drop/shift ordinal keys). Small and local — no text rewrite.
-- **Per-platform override (rare)** lives in the per-platform split sheet
-  (`openThreadSheet`, compose.js:282), which already shows that platform's real
-  posts: an "override placement for {platform}" affordance writes
-  `Overrides[p].Anchors`. This is the only per-platform surface; the chip covers
-  the 95% shared case.
-- **Live preview is the WYSIWYG feedback** (preview.js:235):
-  `media.slice(...)` → `pv.imgs[i].map(ix => media[ix])`. Each platform's preview
-  renders images on their assigned posts, updating as chips change.
-- **Client estimator** (`threadInfoFor`, compose.js:113-120): today
-  `Math.ceil(previewMedia(p).length / mmax)` is a *global* front-load count — it
-  must be **rewritten** to the per-part sum so the live thread badge matches the
-  server. Char counting, `splitMarkers`, and `bskyCardText` are **untouched**
-  (anchors aren't in the text) — the parity surface shrinks to this one estimator.
+`POST /api/thread-preview` (api.go:1527): request gains `anchors` + image ids;
+`Imgs []int` → `Imgs [][]int`. Same planner as dispatch — preview and posting
+cannot diverge. `postSpecJSON` / `assembleImages` (api.go:825/810) carry `anchors`
+and ids into `dispatch.PostSpec`.
 
-### 8. Explicitly unchanged
+### 8. Web UI (internal/web/assets)
 
-Store schema (SQL), retrier, progress/SSE, verifier, video gate/transcoding, the
-one-video-or-images attach guard, Blossom upload, char-counting, DeepL request
-shape.
+- **Placement chip per thumbnail** (`renderImages`, compose.js:860), shown only
+  when the master has ≥2 parts: a `▸ part 1 … part n` picker writing
+  `anchors[id]`. Default part 1 ⇒ untouched drafts unchanged. Labeled "part N"
+  (honest: a part may auto-subdivide, so it is not strictly "post N").
+- **Live preview** (preview.js:235): `media.slice(...)` →
+  `pv.imgs[i].map(ix => media[ix])`. With ≥2 parts the threaded preview always
+  renders, so placement is always visible (the v2 single-post blind spot is out
+  of scope by construction).
+- **Thread badge count**: source the per-platform post count from the existing
+  `/api/thread-preview` round-trip (preview.js:372) rather than re-estimating in
+  `threadInfoFor` (compose.js:113), so the badge cannot drift from the server —
+  the recurring counter/splitter parity-bug surface is avoided, not re-fought.
+- **Char counting, `splitMarkers`, `bskyCardText` are untouched** — anchors are
+  not in the text.
+
+### 9. Explicitly unchanged
+
+SQL schema (only additive JSON fields), retrier, progress/SSE, verifier, video
+gate/transcoding, one-video-or-images guard, Blossom upload, DeepL request shape,
+`ov2fields`/`ovFor`, the `Media` table.
 
 ## Error handling
 
 | Case | Behavior |
 |---|---|
-| **Part over platform cap** (6 images on one part, Mastodon cap 4) | Fill the part's sub-posts up to cap, overflow to appended image-only posts; numbering fixpoint counts them. |
-| **Image-only part** (a `---` block with an image anchored, little/no text) | Image-only post (empty text, or bare counter when numbering on) — must be representable *mid-chain*, a new case for `SplitWithMedia` (§2). |
-| **Anchor out of range / orphan ordinal** | Clamp to last part / ignore; soft preview note, never a hard error. |
-| **Image anchored to Bluesky card's post** | Card wins; images spill to an appended image-only post in that part (§4). |
-| **Nostr (cap 0)** | Each part's images become URLs/imeta on that part's post; imeta distributed per post (§3), not all on head. |
-| **Interaction/quote-reply mode** | Placement disabled; anchors not applied; the placement chip is hidden (consistent with Edit-split being disabled there). Source images re-hosted after the operator's images (capMedia, dispatch.go:781) therefore never collide with anchors. |
+| **Part over platform cap** | Fill the part's sub-posts up to cap, overflow to appended image-only posts within that part; numbering fixpoint counts them (§2). |
+| **Anchor out of range / orphan id** | Clamp to last part / ignore; soft preview note, never a hard error. |
+| **Image anchored to Bluesky card's post** | Card wins; image front-loads; preview warning (§5). |
+| **Nostr (cap 0)** | Each part's images become URLs/imeta on that part's post; imeta per post (§3). |
+| **Draft drops below 2 parts after an edit** | Chips hide; existing `anchors` are retained but inert (clamp/ignore) until parts return. |
+| **Interaction/quote-reply mode** | Placement disabled; chip hidden (consistent with Edit-split). |
 
 ## Testing
 
-TDD throughout, matching the table-driven `thread`/`dispatch` tests:
+TDD, table-driven like the existing `thread`/`dispatch` tests:
 
-- **thread (core):** anchor resolution → `[][]int`; canonical head-part ordering
-  (assigned ∪ unassigned, by ordinal); per-part overflow; **mid-chain image-only
-  posts**; numbering fixpoint convergence with per-part sums (worst-case bound);
-  `len(segs)==len(plan)` invariant; clamp/orphan; Nostr cap-0 per-part.
-- **Determinism:** same (text, anchors, platform) → identical `[][]int` across
-  repeated calls; **resume re-derivation from `FinalText`+anchors equals the
-  original run's plan** (the bug the critique caught — explicit regression test).
-- **Regression golden test:** no anchors → plan byte-identical to today.
-- **dispatch:** per-post gather; nostr per-post imeta; `resumeSegments` and
-  Schedule→Fire reproduce placement; prefix-sum removal.
-- **card:** `len(plan[target])` predicate; card-vs-anchored-image spill.
-- **api/preview parity:** `Imgs [][]int` equals dispatch; client `threadInfoFor`
-  per-part estimate matches the server thread count.
-- **drafts:** `anchors` round-trips save/load/autosave; **translate copies
-  anchors** (no placement loss).
-- **Manual e2e on Oppy:** a 3-part thread with an image anchored to part 2 across
-  all four platforms; confirm placement, numbering, and resume after a forced
+- **thread (core):** anchor resolution → `[][]int`; canonical part-ordered chain
+  with mid-chain image-only posts; per-part overflow; head-part absorbs
+  unassigned; clamp/orphan; numbering fixpoint convergence (assert the monotone
+  bound) with `len(segs)==len(plan)`; Nostr cap-0 per-part.
+- **Determinism / regression:** same inputs → identical `[][]int`; no anchors →
+  byte-identical to today.
+- **dispatch:** per-post gather; `Segment.Images` recorded; nostr per-post imeta;
+  **resume/Fire read `Segment.Images` and reproduce the original placement**
+  (the bug both critique rounds caught — explicit test).
+- **card:** `len(plan[target])` predicate; card-wins-front-load fallback + warning.
+- **api/preview parity:** `Imgs [][]int` equals dispatch; badge count sourced from
+  the preview round-trip matches.
+- **drafts:** `anchors` + ids round-trip save/load/autosave; recovery orphans
+  dropped images without renumber; **translate copies anchors**.
+- **Manual e2e on Oppy:** a 3-part thread, image anchored to part 2, across all
+  four platforms; confirm placement, numbering, and resume after a forced
   mid-chain stop.
 
 ## Risks
 
-- **Numbering fixpoint with mid-chain image-only posts (§2)** is the highest
-  implementation risk: the convergence argument and the `len(segs)==len(plan)`
-  invariant must be re-established, not assumed. Treat as a standalone task.
-- **Bluesky card spill (§4)** is a real `PlanBlueskyCard` change; if it proves
-  costly, the v1 fallback is "card wins, anchored image on its post falls back to
-  front-load" with a preview warning.
-- **Per-part placement, not per-post** is a deliberate v1 limitation: an image on
-  a sub-post of an auto-split part requires inserting a break. Labeled honestly
-  ("part N") so the operator is never misled.
-- **Ordinal-keyed anchors** require the UI to maintain the map on
-  remove/reorder; a stable per-attachment id is the fallback if this churns.
+- **Numbering fixpoint with mid-chain image-only posts** is the highest-risk code
+  area; §2 gives the convergence argument but it must be encoded as an explicit
+  bound + tests, treated as its own task.
+- **Stable-id plumbing** spans client attach, draft JSON, and recovery; the id
+  must be generated once and never regenerated on reorder. Test the recovery
+  boundary specifically.
+- **Deferred seams:** per-platform deltas, card spill, and auto-split/single-post
+  placement are intentionally cut; the data model (id-keyed shared map, `[][]int`
+  plan) leaves clean seams to add them later without rework.
