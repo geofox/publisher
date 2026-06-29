@@ -205,8 +205,8 @@ func TestThreadPreviewFitNotes(t *testing.T) {
 	if len(bsImgs) != 1 {
 		t.Fatalf("bluesky imgs len = %v, want 1 (media[] authoritative)", bsImgs)
 	}
-	if bsImgs[0].(float64) != 1 {
-		t.Fatalf("bluesky imgs[0] = %v, want 1 (single image placed in segment 0)", bsImgs[0])
+	if got := bsImgs[0].([]any); len(got) != 1 {
+		t.Fatalf("bluesky imgs[0] = %v, want 1 index (single image placed in segment 0)", got)
 	}
 
 	// only-raise rule: images:3 + media:[1 entry] must keep the 3-image plan
@@ -221,7 +221,7 @@ func TestThreadPreviewFitNotes(t *testing.T) {
 		imgs2 := pv2["imgs"].([]any)
 		total2 := 0
 		for _, v := range imgs2 {
-			total2 += int(v.(float64))
+			total2 += len(v.([]any))
 		}
 		if total2 != 3 {
 			t.Fatalf("bluesky imgs total = %d, want 3 (count must not be shrunk by media[] with fewer entries)", total2)

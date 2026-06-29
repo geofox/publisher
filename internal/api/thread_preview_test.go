@@ -76,7 +76,7 @@ func TestThreadPreviewMediaOverflowSplits(t *testing.T) {
 			Platform string   `json:"platform"`
 			Count    int      `json:"count"`
 			Segments []string `json:"segments"`
-			Imgs     []int    `json:"imgs"`
+			Imgs     [][]int  `json:"imgs"`
 		} `json:"previews"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -84,18 +84,18 @@ func TestThreadPreviewMediaOverflowSplits(t *testing.T) {
 	}
 	byp := map[string]struct {
 		count int
-		imgs  []int
+		imgs  [][]int
 	}{}
 	for _, p := range out.Previews {
 		byp[p.Platform] = struct {
 			count int
-			imgs  []int
+			imgs  [][]int
 		}{p.Count, p.Imgs}
 	}
-	if m := byp["mastodon"]; m.count != 3 || len(m.imgs) != 3 || m.imgs[0] != 4 || m.imgs[1] != 4 || m.imgs[2] != 2 {
+	if m := byp["mastodon"]; m.count != 3 || len(m.imgs) != 3 || len(m.imgs[0]) != 4 || len(m.imgs[1]) != 4 || len(m.imgs[2]) != 2 {
 		t.Errorf("mastodon: %+v", m)
 	}
-	if b := byp["bluesky"]; b.count != 1 || len(b.imgs) != 1 || b.imgs[0] != 10 {
+	if b := byp["bluesky"]; b.count != 1 || len(b.imgs) != 1 || len(b.imgs[0]) != 10 {
 		t.Errorf("bluesky: %+v", b)
 	}
 }

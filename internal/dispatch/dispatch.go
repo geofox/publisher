@@ -160,6 +160,7 @@ type PostSpec struct {
 	Source       string
 	Overrides    map[string]Overrides // keyed by platform
 	Images       []Img
+	ImgParts     []int         // per-image part anchor, parallel to Images; nil ⇒ all front-load
 	MediaRecords []store.Media // already uploaded to Blossom, for archival
 	Number       bool          // append k/n counters to threaded segments
 }
@@ -373,15 +374,23 @@ func (d *Dispatcher) runHead(ctx context.Context, plat, text string, ov Override
 // single segment posts exactly as before, with no Segments recorded. An
 // optional head action (reply/quote via headSpec; nil = plain post) lets the
 // chain's head segment thread under or quote a source post.
-func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrides, imgs []Img, imetas []gonostr.Tag, number bool, head *headSpec) chainOutcome {
+func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrides, imgs []Img, imetas []gonostr.Tag, number bool, imgParts []int, head *headSpec) chainOutcome {
+	// imgParts must be parallel to imgs. A nil/short slice (interaction paths,
+	// or an assembleImages skip) pads with 0 (front-load); a long one truncates.
+	// SplitPlace derives nImages from len(imgParts), so it MUST equal len(imgs).
+	if len(imgParts) != len(imgs) {
+		np := make([]int, len(imgs))
+		copy(np, imgParts)
+		imgParts = np
+	}
 	var card *unfurl.Card
 	var segTexts []string
-	var plan []int
+	var plan [][]int
 	if plat == "bluesky" {
-		cp := PlanBlueskyCard(text, ov.LinkCard, len(imgs), number)
+		cp := PlanBlueskyCard(text, ov.LinkCard, imgParts, number)
 		segTexts, plan, text, card = cp.Segs, cp.Plan, cp.Text, cp.Card
 	} else {
-		segTexts, plan, _ = thread.SplitWithMedia(text, thread.LimitFor(plat), len(imgs), thread.MaxImagesFor(plat), thread.Opts{Number: number})
+		segTexts, plan, _ = thread.SplitPlace(text, thread.LimitFor(plat), imgParts, thread.MaxImagesFor(plat), thread.Opts{Number: number})
 	}
 	// Only the card's own segment carries it; re-attached per segment below.
 	ov.LinkCard = nil
@@ -403,15 +412,7 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 	// preserves the not-yet-sent tail for resume; each is updated in place as it
 	// posts.
 	for i, st := range segTexts {
-		out.Segments = append(out.Segments, store.Segment{Ordinal: i, Text: st, Status: "pending"})
-	}
-	// starts[i] is the offset of segment i's image slice (the plan is a
-	// contiguous partition of imgs, so slicing preserves operator order).
-	starts := make([]int, len(plan))
-	off := 0
-	for i, c := range plan {
-		starts[i] = off
-		off += c
+		out.Segments = append(out.Segments, store.Segment{Ordinal: i, Text: st, Status: "pending", Images: plan[i]})
 	}
 	var rootID, rootCID, parentID, parentCID string
 	for i, st := range segTexts {
@@ -419,10 +420,11 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 		if i > 0 {
 			replyTo = &ReplyRef{RootID: rootID, RootCID: rootCID, ParentID: parentID, ParentCID: parentCID}
 		}
-		segImgs := imgs[starts[i] : starts[i]+plan[i]]
+		segImgs := pick(imgs, plan[i])
 		var segImetas []gonostr.Tag
 		if i == 0 {
-			segImetas = imetas // nostr-only, and nostr (cap 0) never splits media
+			segImetas = imetas // imeta stays head-only in v1 (buildImetas skips
+			// empty-Blossom records, so it's not index-parallel to imgs)
 		}
 		segOv := ov
 		if card != nil && i == card.Segment {
@@ -436,7 +438,7 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 		}
 		out.Segments[i] = store.Segment{
 			Ordinal: i, Text: st, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID,
-			Status: r.Status, Error: r.Error,
+			Status: r.Status, Error: r.Error, Images: plan[i],
 		}
 		// live thread counter: successes so far / total planned
 		done := 0
@@ -461,6 +463,19 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 	out.Status = chainStatus(out.Segments, len(segTexts))
 	out.FinalText = text
 	out.LinkCard = card
+	return out
+}
+
+// pick returns the images at the given indices, preserving order. Out-of-range
+// indices are skipped (a Blossom skip can leave the plan referencing a dropped
+// image), so the returned slice never panics on a short imgs.
+func pick(imgs []Img, idx []int) []Img {
+	out := make([]Img, 0, len(idx))
+	for _, i := range idx {
+		if i >= 0 && i < len(imgs) {
+			out = append(out, imgs[i])
+		}
+	}
 	return out
 }
 
@@ -684,7 +699,7 @@ func (d *Dispatcher) PostWithID(ctx context.Context, id string, spec PostSpec) *
 			defer wg.Done()
 			sink := progress.SinkFrom(ctx)
 			sink.Platform(plat, progress.StatusRunning, "", "")
-			o := d.runChain(ctx, plat, text, ov, spec.Images, imetas, spec.Number, nil)
+			o := d.runChain(ctx, plat, text, ov, spec.Images, imetas, spec.Number, spec.ImgParts, nil)
 			outcomes[i] = o
 			sink.Platform(plat, mapStatus(o.Status), platformDetail(o), o.HeadRemoteURL)
 		}(i, plat, text, ov)
@@ -821,7 +836,8 @@ func (d *Dispatcher) fanoutChain(ctx context.Context, plat string, spec Interact
 	imgs := capMedia(spec.Images, spec.SourceImages, mediaMax(plat))
 	recs := capMediaRecords(spec.MediaRecords, spec.SourceMediaRecords, mediaMax(plat))
 	ov := spec.Overrides[plat]
-	return d.runChain(ctx, plat, text, ov, imgs, buildImetas(recs), spec.Number, nil)
+	// Interactions carry no per-image part anchors; nil ⇒ runChain front-loads.
+	return d.runChain(ctx, plat, text, ov, imgs, buildImetas(recs), spec.Number, nil, nil)
 }
 
 // Interact performs reply/repost/quote and records it as a store.Post carrying an
@@ -866,7 +882,7 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 		}
 		sink := progress.SinkFrom(ctx)
 		sink.Platform(spec.SourcePlatform, progress.StatusRunning, "", "")
-		o := d.runChain(ctx, spec.SourcePlatform, interactText(spec, spec.SourcePlatform), ov, spec.Images, buildImetas(spec.MediaRecords), spec.Number, head)
+		o := d.runChain(ctx, spec.SourcePlatform, interactText(spec, spec.SourcePlatform), ov, spec.Images, buildImetas(spec.MediaRecords), spec.Number, nil, head)
 		sink.Platform(spec.SourcePlatform, mapStatus(o.Status), platformDetail(o), o.HeadRemoteURL)
 		outcomes = append(outcomes, o)
 		for _, p := range spec.Fanout {
@@ -1029,16 +1045,20 @@ func (d *Dispatcher) Schedule(ctx context.Context, spec PostSpec, at time.Time) 
 	}
 	scrubLinkCards(spec.Overrides)
 	d.attachLinkCard(ctx, &spec)
+	// Pre-split uses the scheduled image count (MediaRecords); normalize the
+	// per-image part anchors to that length so SplitPlace's nImages is right.
+	imgParts := make([]int, len(spec.MediaRecords))
+	copy(imgParts, spec.ImgParts)
 	for _, plat := range platforms {
 		ov := spec.Overrides[plat]
 		text := finalText(spec, plat)
 		var segTexts []string
 		if plat == "bluesky" {
-			cp := PlanBlueskyCard(text, ov.LinkCard, len(spec.MediaRecords), spec.Number)
+			cp := PlanBlueskyCard(text, ov.LinkCard, imgParts, spec.Number)
 			text, segTexts = cp.Text, cp.Segs
 			ov.LinkCard = cp.Card // persist only as actually placed
 		} else {
-			segTexts, _, _ = thread.SplitWithMedia(text, thread.LimitFor(plat), len(spec.MediaRecords), thread.MaxImagesFor(plat), thread.Opts{Number: spec.Number})
+			segTexts, _, _ = thread.SplitPlace(text, thread.LimitFor(plat), imgParts, thread.MaxImagesFor(plat), thread.Opts{Number: spec.Number})
 		}
 		// ov2fields returns a map of JSON-safe values only, so Marshal can't fail.
 		fields, _ := json.Marshal(ov2fields(ov))

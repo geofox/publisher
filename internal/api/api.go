@@ -1524,7 +1524,7 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		Platform string             `json:"platform"`
 		Count    int                `json:"count"`
 		Segments []string           `json:"segments"`
-		Imgs     []int              `json:"imgs"`
+		Imgs     [][]int            `json:"imgs"`
 		Card     *cardJSON          `json:"card,omitempty"`
 		Warnings []string           `json:"warnings,omitempty"`
 		FitNotes []dispatch.FitNote `json:"fit_notes,omitempty"`
@@ -1550,7 +1550,9 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 					cancel()
 				}
 			}
-			cp := dispatch.PlanBlueskyCard(req.Text, card, req.Images, req.Number)
+			// img_parts input is a later feature; preview front-loads all
+			// images via an all-zero imgParts of the planned image count.
+			cp := dispatch.PlanBlueskyCard(req.Text, card, make([]int, req.Images), req.Number)
 			pv := preview{Platform: p, Count: len(cp.Segs), Segments: cp.Segs, Imgs: cp.Plan, Warnings: cp.Warnings, FitNotes: append(dispatch.PlanMediaFit(p, metas), videoNotes(p)...)}
 			if cp.Card != nil {
 				pv.Card = &cardJSON{
@@ -1561,7 +1563,7 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 			out.Previews = append(out.Previews, pv)
 			continue
 		}
-		segs, plan, warns := thread.SplitWithMedia(req.Text, thread.LimitFor(p), req.Images, thread.MaxImagesFor(p), thread.Opts{Number: req.Number})
+		segs, plan, warns := thread.SplitPlace(req.Text, thread.LimitFor(p), make([]int, req.Images), thread.MaxImagesFor(p), thread.Opts{Number: req.Number})
 		out.Previews = append(out.Previews, preview{
 			Platform: p, Count: len(segs), Segments: segs, Imgs: plan, Warnings: warns, FitNotes: append(dispatch.PlanMediaFit(p, metas), videoNotes(p)...),
 		})

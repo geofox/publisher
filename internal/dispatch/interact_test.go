@@ -221,7 +221,7 @@ func TestRunChainReplyHead(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	d := &Dispatcher{Bluesky: f}
 	head := &headSpec{reply: &ReplyRef{RootID: "at://src", RootCID: "csrc", ParentID: "at://src", ParentCID: "csrc"}}
-	out := d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb", Overrides{}, nil, nil, false, head)
+	out := d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb", Overrides{}, nil, nil, false, nil, head)
 	if out.Status != "success" || len(out.Segments) != 2 {
 		t.Fatalf("want 2-seg success, got %s %+v", out.Status, out.Segments)
 	}
@@ -236,7 +236,7 @@ func TestRunChainReplyHead(t *testing.T) {
 func TestRunChainPlainHeadUnchanged(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	d := &Dispatcher{Bluesky: f}
-	out := d.runChain(context.Background(), "bluesky", "solo", Overrides{}, nil, nil, false, nil)
+	out := d.runChain(context.Background(), "bluesky", "solo", Overrides{}, nil, nil, false, nil, nil)
 	if out.Status != "success" || len(out.Segments) != 0 {
 		t.Fatalf("plain single post changed: %s %+v", out.Status, out.Segments)
 	}
