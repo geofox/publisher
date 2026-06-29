@@ -1,6 +1,6 @@
 "use strict";
 import { el, $, gcount, wcount, flash, confirmModal, META, ORDER } from "./common.js";
-import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen } from "./state.js";
+import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen, masterParts } from "./state.js";
 import { renderPreview, mediaMax, previewMedia } from "./preview.js";
 import { resultRow, openDetail } from "./history.js";
 import { brandTile, icon, PLATFORM_META } from "./brands.js";
@@ -527,8 +527,11 @@ export function loadDraft(input) {
       url: m.blossom_url || "",
       // restored video drafts are already transcoded — render as ready
       phase: /^video\//.test(m.mime || "") ? "ready" : undefined,
+      id: m.client_id || m.id || crypto.randomUUID(),
     }));
     bumpImagesGen();
+    // Hydrate media-placement anchors from the draft spec (id-keyed map).
+    state.anchors = input.anchors || {};
     state.activeDraftId = input.id || null;
     state.dirty = false;
     const tab = document.querySelector('.tab[data-view="compose"]');
@@ -792,6 +795,7 @@ function attachVideo(file) {
   if (state.images.length) { flash(state.images.some(i => i.video) ? "Only one video per post" : "Remove the images first (one video OR images per post)"); return; }
   const entry = { video: true, _file: file, _preset: $("#vidpreset")?.value || "1080p",
                   url: "", alt: "", phase: "uploading", pct: 0, _xhr: null, _jobTimer: null };
+  entry.id = crypto.randomUUID();
   state.images.push(entry);
   renderImages();
   startVideoUpload(entry);
@@ -937,6 +941,17 @@ export function renderImages() {
       kids.push(sel);
     } else if (img.size_bytes) {
       kids.push(el("div", { class: "imgsize", text: fmtBytes(img.size_bytes) }));
+    }
+    if (masterParts().length >= 2 && !state.interaction) {
+      const sel = el("select", { class: "place-chip",
+        onchange: e => { state.anchors[img.id] = parseInt(e.target.value, 10); markDirty(); renderPreview(); refreshCounts(); } });
+      const n = masterParts().length;
+      for (let p = 0; p < n; p++) {
+        const o = el("option", { value: String(p), text: `▸ part ${p + 1}` });
+        if ((state.anchors[img.id] || 0) === p) o.selected = true;
+        sel.append(o);
+      }
+      kids.push(sel);
     }
     kids.push(el("button", { class: "rm", type: "button", text: "remove",
       onclick: () => { if (img._compressAbort) img._compressAbort.abort(); URL.revokeObjectURL(img.url); state.images.splice(i, 1); renderImages(); } }));
@@ -1237,7 +1252,7 @@ export function showResultModal(data) {
 // ---------------------------------------------------------------------------
 
 export function composeInit() {
-  $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); autoGrow(e.target); });
+  $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); renderImages(); autoGrow(e.target); });
   autoGrow($("#master")); // size correctly if a draft was already in the field at init
   $("#addimg").addEventListener("click", () => $("#imgfile").click());
   $("#imgfile").addEventListener("change", async e => {
@@ -1265,6 +1280,7 @@ export function composeInit() {
     if (gen !== imagesGen) return; // composer was cleared/replaced mid-convert
     if (state.images.length >= 10) { flash("Max 10 images"); return; }
     entry.url = URL.createObjectURL(entry.file);
+    entry.id = crypto.randomUUID();
     state.images.push(entry);
     renderImages();
   });

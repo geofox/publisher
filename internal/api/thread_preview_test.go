@@ -63,6 +63,27 @@ func TestThreadPreviewBadJSONIs400(t *testing.T) {
 	}
 }
 
+func TestThreadPreviewReturnsPlacementIndices(t *testing.T) {
+	body := `{"text":"a\n---\nb\n---\nc","platforms":["mastodon"],"images":2,"img_parts":[0,2]}`
+	rec := postPreview(t, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Previews []struct {
+			Platform string  `json:"platform"`
+			Imgs     [][]int `json:"imgs"`
+		} `json:"previews"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	imgs := resp.Previews[0].Imgs
+	if len(imgs) != 3 || len(imgs[0]) != 1 || len(imgs[1]) != 0 || len(imgs[2]) != 1 {
+		t.Fatalf("imgs=%v want [[0],[],[1]]-shaped", imgs)
+	}
+}
+
 func TestThreadPreviewMediaOverflowSplits(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{
 		"text": "hello", "platforms": []string{"mastodon", "bluesky"}, "images": 10,
@@ -76,7 +97,7 @@ func TestThreadPreviewMediaOverflowSplits(t *testing.T) {
 			Platform string   `json:"platform"`
 			Count    int      `json:"count"`
 			Segments []string `json:"segments"`
-			Imgs     []int    `json:"imgs"`
+			Imgs     [][]int  `json:"imgs"`
 		} `json:"previews"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -84,18 +105,18 @@ func TestThreadPreviewMediaOverflowSplits(t *testing.T) {
 	}
 	byp := map[string]struct {
 		count int
-		imgs  []int
+		imgs  [][]int
 	}{}
 	for _, p := range out.Previews {
 		byp[p.Platform] = struct {
 			count int
-			imgs  []int
+			imgs  [][]int
 		}{p.Count, p.Imgs}
 	}
-	if m := byp["mastodon"]; m.count != 3 || len(m.imgs) != 3 || m.imgs[0] != 4 || m.imgs[1] != 4 || m.imgs[2] != 2 {
+	if m := byp["mastodon"]; m.count != 3 || len(m.imgs) != 3 || len(m.imgs[0]) != 4 || len(m.imgs[1]) != 4 || len(m.imgs[2]) != 2 {
 		t.Errorf("mastodon: %+v", m)
 	}
-	if b := byp["bluesky"]; b.count != 1 || len(b.imgs) != 1 || b.imgs[0] != 10 {
+	if b := byp["bluesky"]; b.count != 1 || len(b.imgs) != 1 || len(b.imgs[0]) != 10 {
 		t.Errorf("bluesky: %+v", b)
 	}
 }

@@ -96,7 +96,8 @@ func Split(text string, limit int, opts Opts) (segments []string, warnings []str
 		// counter has no budget to reserve — just append it.
 		return appendCounters(segs, len(segs)), warns
 	}
-	return number(text, limit, 0)
+	s, _, w := number(text, limit, 0)
+	return s, w
 }
 
 // SplitWithMedia splits text for one platform AND assigns its images to the
@@ -108,57 +109,39 @@ func Split(text string, limit int, opts Opts) (segments []string, warnings []str
 // orchestrating entry point; dispatch and the thread-preview endpoint must
 // both use it so they cannot diverge. len(segs) == len(plan) always.
 func SplitWithMedia(text string, limit, nImages, cap int, opts Opts) (segs []string, plan []int, warnings []string) {
-	segs, warnings = Split(text, limit, opts)
-	plan = PlanMedia(nImages, len(segs), cap)
-	if extra := len(plan) - len(segs); extra > 0 && opts.Number {
-		text = strings.ReplaceAll(text, "\r\n", "\n")
-		if limit <= 0 {
-			// No length budget: segments are marker-driven and fixed, so the
-			// plan can't shift — just re-stamp counters with the chain total.
-			segs, warnings = splitAt(text, limit)
-			segs = appendCounters(segs, len(plan))
-		} else {
-			// Re-number with the extras in the totals, then re-derive the plan
-			// from the (possibly shifted) text segment count; iterate to the
-			// fixpoint. Converges in <=2 passes (the overflow total is fixed by
-			// ceil(nImages/cap)); 4 is a safety margin like number()'s own cap.
-			for i := 0; i < 4; i++ {
-				segs, warnings = number(text, limit, extra)
-				plan = PlanMedia(nImages, len(segs), cap)
-				if len(plan)-len(segs) == extra {
-					break
-				}
-				extra = len(plan) - len(segs)
-			}
-		}
-	}
-	// Image-only segments carry a bare "k/n" counter (no leading space — the
-	// counter IS the whole text), or empty text when numbering is off.
-	for i := len(segs); i < len(plan); i++ {
-		t := ""
-		if opts.Number {
-			t = strconv.Itoa(i+1) + "/" + strconv.Itoa(len(plan))
-		}
-		segs = append(segs, t)
-	}
+	segs, _, plan, warnings = splitWithMediaPlan(text, limit, nImages, cap, opts)
 	return segs, plan, warnings
 }
 
-// splitAt produces segments honouring markers and wrapping over-limit pieces to
-// `limit`. No numbering.
-func splitAt(text string, limit int) (segs []string, warns []string) {
+// splitAtParts is splitAt that also returns, for each emitted segment, the part
+// index it came from — a CONTIGUOUS counter over non-empty --- parts (empty
+// blocks are skipped and do NOT advance the index), so it matches the client's
+// masterParts() which filters empties. partOf aligns 1:1 with segs.
+func splitAtParts(text string, limit int) (segs []string, partOf []int, warns []string) {
+	pi := -1
 	for _, u := range splitMarkers(text) {
 		if u == "" {
 			continue
 		}
+		pi++
 		if limit <= 0 || graphemeLen(u) <= limit {
 			segs = append(segs, u)
+			partOf = append(partOf, pi)
 			continue
 		}
 		chunks, w := packParagraphs(u, limit)
-		segs = append(segs, chunks...)
+		for _, c := range chunks {
+			segs = append(segs, c)
+			partOf = append(partOf, pi)
+		}
 		warns = append(warns, w...)
 	}
+	return segs, partOf, warns
+}
+
+// splitAt now delegates (existing callers unchanged).
+func splitAt(text string, limit int) (segs []string, warns []string) {
+	segs, _, warns = splitAtParts(text, limit)
 	return segs, warns
 }
 
@@ -286,29 +269,29 @@ func graphemeLen(s string) int { return uniseg.GraphemeClusterCount(s) }
 // count. n stabilizes once it stops crossing a digit boundary (9→10, 99→100,
 // 999→1000) — at most three transitions, each costing one iteration, so the loop
 // converges in ≤4 passes; the cap of 6 is a safety margin.
-func number(text string, limit, extra int) ([]string, []string) {
-	segs, warns := splitAt(text, limit)
+func number(text string, limit, extra int) (segs []string, partOf []int, warns []string) {
+	segs, partOf, warns = splitAtParts(text, limit)
 	n := len(segs)
 	for i := 0; i < 6; i++ {
 		w := counterWidth(n + extra)
 		eff := limit - w
 		if eff < 1 {
-			return segs, warns // pathological tiny limit: skip numbering
+			return segs, partOf, warns // pathological tiny limit: skip numbering
 		}
-		segs, warns = splitAt(text, eff)
+		segs, partOf, warns = splitAtParts(text, eff)
 		// Defensive: with extra==0, Split only calls number when the full-budget
 		// split already yields >=2 segments, and reducing the budget can only add
 		// segments — guard rather than emit a "1/1" lone post. With extras the
 		// chain has >=2 posts even for a single text segment.
 		if len(segs)+extra < 2 {
-			return splitAt(text, limit)
+			return splitAtParts(text, limit)
 		}
 		if len(segs) == n {
 			break
 		}
 		n = len(segs)
 	}
-	return appendCounters(segs, len(segs)+extra), warns
+	return appendCounters(segs, len(segs)+extra), partOf, warns
 }
 
 // appendCounters appends a " k/total" suffix to each segment in a chain.

@@ -831,6 +831,7 @@ type postSpecJSON struct {
 	ScheduledAt  string                        `json:"scheduled_at"`
 	Number       bool                          `json:"number"`
 	DraftID      string                        `json:"draft_id,omitempty"` // NEW: consume on success
+	ImgParts     []int                         `json:"img_parts"`
 }
 
 func (a *API) handleAPIPost(w http.ResponseWriter, r *http.Request) {
@@ -878,7 +879,7 @@ func (a *API) handleAPIPost(w http.ResponseWriter, r *http.Request) {
 	spec := dispatch.PostSpec{
 		MasterText: sj.MasterText, Platforms: sj.Platforms, DelaySeconds: sj.DelaySeconds,
 		Source: "web", Overrides: sj.Overrides, Images: imgs, MediaRecords: mediaRecs,
-		Number: sj.Number,
+		Number: sj.Number, ImgParts: sj.ImgParts,
 	}
 	if sj.ScheduledAt != "" {
 		at, err := time.Parse(time.RFC3339, sj.ScheduledAt)
@@ -1446,6 +1447,7 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		Platforms   []string `json:"platforms"`
 		Number      bool     `json:"number"`
 		Images      int      `json:"images"`
+		ImgParts    []int    `json:"img_parts"`
 		Interaction bool     `json:"interaction"`
 		// Media carries per-image metadata so previews can badge planned
 		// platform-fit conversions. Optional: an older cached bundle sends
@@ -1491,6 +1493,23 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		// larger count so the SPLIT PLAN stays right and only badges go missing.
 		req.Images = len(metas)
 	}
+	// Normalize img_parts to exactly req.Images entries (pad missing with 0 =
+	// front-load, drop negatives). req.Images is capped at maxImagesPerPost above,
+	// but the metas bump re-assigns it from user input — so build into a
+	// constant-capacity slice with an explicitly bounded loop, keeping the
+	// allocation size independent of any user-provided value.
+	n := req.Images
+	if n > maxImagesPerPost {
+		n = maxImagesPerPost
+	}
+	imgParts := make([]int, 0, maxImagesPerPost)
+	for i := 0; i < n; i++ {
+		v := 0
+		if i < len(req.ImgParts) && req.ImgParts[i] > 0 {
+			v = req.ImgParts[i]
+		}
+		imgParts = append(imgParts, v)
+	}
 	// videoNotes maps video metas through the same VideoGate dispatch uses —
 	// ✗ marks a hard per-target failure, ⚠ an advisory. Image metas are
 	// handled by PlanMediaFit (which skips videos); ordinals stay aligned
@@ -1524,7 +1543,7 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		Platform string             `json:"platform"`
 		Count    int                `json:"count"`
 		Segments []string           `json:"segments"`
-		Imgs     []int              `json:"imgs"`
+		Imgs     [][]int            `json:"imgs"`
 		Card     *cardJSON          `json:"card,omitempty"`
 		Warnings []string           `json:"warnings,omitempty"`
 		FitNotes []dispatch.FitNote `json:"fit_notes,omitempty"`
@@ -1550,7 +1569,7 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 					cancel()
 				}
 			}
-			cp := dispatch.PlanBlueskyCard(req.Text, card, req.Images, req.Number)
+			cp := dispatch.PlanBlueskyCard(req.Text, card, imgParts, req.Number)
 			pv := preview{Platform: p, Count: len(cp.Segs), Segments: cp.Segs, Imgs: cp.Plan, Warnings: cp.Warnings, FitNotes: append(dispatch.PlanMediaFit(p, metas), videoNotes(p)...)}
 			if cp.Card != nil {
 				pv.Card = &cardJSON{
@@ -1561,7 +1580,7 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 			out.Previews = append(out.Previews, pv)
 			continue
 		}
-		segs, plan, warns := thread.SplitWithMedia(req.Text, thread.LimitFor(p), req.Images, thread.MaxImagesFor(p), thread.Opts{Number: req.Number})
+		segs, plan, warns := thread.SplitPlace(req.Text, thread.LimitFor(p), imgParts, thread.MaxImagesFor(p), thread.Opts{Number: req.Number})
 		out.Previews = append(out.Previews, preview{
 			Platform: p, Count: len(segs), Segments: segs, Imgs: plan, Warnings: warns, FitNotes: append(dispatch.PlanMediaFit(p, metas), videoNotes(p)...),
 		})

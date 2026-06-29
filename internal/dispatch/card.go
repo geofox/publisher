@@ -10,7 +10,7 @@ import (
 // CardPlan is a bluesky chain layout with an optional link-card placement.
 type CardPlan struct {
 	Segs     []string
-	Plan     []int
+	Plan     [][]int
 	Warnings []string
 	// Text is the effective draft: the trailing card URL is stripped when the
 	// card attaches there; the input text unchanged otherwise.
@@ -29,10 +29,10 @@ type CardPlan struct {
 // disappear from a post that can't carry the card. Shared by runChain,
 // Schedule and the thread-preview endpoint so preview and dispatch cannot
 // diverge.
-func PlanBlueskyCard(text string, card *unfurl.Card, nImages int, number bool) CardPlan {
+func PlanBlueskyCard(text string, card *unfurl.Card, imgParts []int, number bool) CardPlan {
 	limit, imgCap := thread.LimitFor("bluesky"), thread.MaxImagesFor("bluesky")
 	plain := func() CardPlan {
-		segs, plan, warns := thread.SplitWithMedia(text, limit, nImages, imgCap, thread.Opts{Number: number})
+		segs, plan, warns := thread.SplitPlace(text, limit, imgParts, imgCap, thread.Opts{Number: number})
 		return CardPlan{Segs: segs, Plan: plan, Warnings: warns, Text: text}
 	}
 	if card == nil {
@@ -50,7 +50,7 @@ func PlanBlueskyCard(text string, card *unfurl.Card, nImages int, number bool) C
 			eff, trailing = text, false
 		}
 	}
-	segs, plan, warns := thread.SplitWithMedia(eff, limit, nImages, imgCap, thread.Opts{Number: number})
+	segs, plan, warns := thread.SplitPlace(eff, limit, imgParts, imgCap, thread.Opts{Number: number})
 	target := -1
 	if trailing {
 		target = len(segs) - 1
@@ -63,8 +63,8 @@ func PlanBlueskyCard(text string, card *unfurl.Card, nImages int, number bool) C
 		}
 	}
 	// target == -1 means the URL got hard-split across segments — no card.
-	// plan[target] > 0 means images own that segment's embed slot — revert.
-	if target < 0 || plan[target] > 0 {
+	// len(plan[target]) > 0 means images own that segment's embed slot — revert.
+	if target < 0 || len(plan[target]) > 0 {
 		return plain()
 	}
 	c := *card

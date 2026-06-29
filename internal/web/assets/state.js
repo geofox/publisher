@@ -32,8 +32,20 @@ export const state = {
   // Drafts integration
   activeDraftId: null, // id of the draft currently loaded into Compose, or null
   dirty: false,        // true when in-memory spec differs from last saved state
+  anchors: {},         // image id → 0-based part index (keyed by stable image id)
 };
 ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
+
+export function masterParts() {
+  // mirrors internal/thread.splitMarkers — split on lines that are solely "---"
+  const blocks = []; let cur = [];
+  for (const ln of state.master.replace(/\r\n/g, "\n").split("\n")) {
+    if (ln.trim() === "---") { blocks.push(cur.join("\n").trim()); cur = []; }
+    else cur.push(ln);
+  }
+  blocks.push(cur.join("\n").trim());
+  return blocks.filter(Boolean);
+}
 
 export function effectiveText(p) { return state.ov[p].text != null ? state.ov[p].text : state.master; }
 
@@ -102,7 +114,7 @@ function ovFor(p) {
 export function imageSpecs() {
   return state.images.filter(i => !(i.video && i.phase !== "ready")).map((i, idx) => {
     if (i.file) {
-      return { ordinal: idx, ref: "img_" + idx, alt: i.alt };
+      return { ordinal: idx, ref: "img_" + idx, alt: i.alt, id: i.id };
     }
     return {
       ordinal: idx, blossom_url: i.blossom_url, sha256: i.sha256,
@@ -110,6 +122,7 @@ export function imageSpecs() {
       duration_secs: i.duration_secs || 0,
       poster_url: i.poster_url || "",
       alt: i.alt,
+      id: i.id,
     };
   });
 }
@@ -117,13 +130,19 @@ export function imageSpecs() {
 export function buildSpec() {
   const overrides = {};
   for (const p of state.platforms) overrides[p] = ovFor(p);
-  const images = imageSpecs();
+  const nParts = masterParts().length;
+  const imgs = imageSpecs();
+  const img_parts = state.images
+    .filter(i => !(i.video && i.phase !== "ready"))
+    .map(i => Math.min(state.anchors[i.id] || 0, Math.max(0, nParts - 1)));
   const spec = {
     master_text: state.master,
     platforms: [...state.platforms],
     delay_seconds: 0,
     overrides,
-    images,
+    images: imgs,
+    img_parts,
+    anchors: state.anchors,   // for draft persistence (id-keyed); ignored by /api/post
     // mirror the preview's numbering toggle so the posted thread matches what was shown
     number: document.getElementById("threadnum")?.checked ?? true,
   };

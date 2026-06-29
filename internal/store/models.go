@@ -75,6 +75,7 @@ type Media struct {
 	Alt          string `json:"alt"`
 	DurationSecs int64  `json:"duration_secs,omitempty"` // video only; 0 for images
 	PosterURL    string `json:"poster_url,omitempty"`    // video poster JPEG; "" for images/legacy rows
+	ClientID     string `json:"client_id,omitempty"`     // stable per-attachment id; drafts only (anchor key)
 }
 
 type RelayState struct {
@@ -96,6 +97,7 @@ type Segment struct {
 	CID       string `json:"cid,omitempty"` // bluesky only
 	Status    string `json:"status"`        // success | failed | pending
 	Error     string `json:"error,omitempty"`
+	Images    []int  `json:"images,omitempty"` // attachment indices this post carries (placement plan)
 }
 
 func (s *Store) SavePost(p *Post) error {

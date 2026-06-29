@@ -191,3 +191,105 @@ func TestTranslateDraftHandler(t *testing.T) {
 		t.Errorf("tags not copied: %v", got.Tags)
 	}
 }
+
+func TestDraftRoundTripsAnchorsAndClientID(t *testing.T) {
+	a := newDraftAPI(t)
+	spec := map[string]any{
+		"master_text": "a\n---\nb",
+		"platforms":   []string{"bluesky"},
+		"overrides":   map[string]any{},
+		"tags":        []string{},
+		"anchors":     map[string]any{"img-x": 1},
+		"images": []any{
+			map[string]any{
+				"id":          "img-x",
+				"blossom_url": "https://b/1",
+				"sha256":      "s",
+			},
+		},
+	}
+	rec := postMultipart(t, a, "/api/drafts", spec, nil)
+	if rec.Code != 200 {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	var created store.Draft
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+
+	// load it back
+	req := httptest.NewRequest(http.MethodGet, "/api/drafts/"+created.ID, nil)
+	rec2 := httptest.NewRecorder()
+	a.Routes().ServeHTTP(rec2, req)
+	if rec2.Code != 200 {
+		t.Fatalf("get: %d %s", rec2.Code, rec2.Body.String())
+	}
+	var got store.Draft
+	_ = json.Unmarshal(rec2.Body.Bytes(), &got)
+
+	// assert client_id on the media row
+	if len(got.Media) == 0 {
+		t.Fatalf("no media rows")
+	}
+	if got.Media[0].ClientID != "img-x" {
+		t.Fatalf("client_id=%q, want img-x", got.Media[0].ClientID)
+	}
+
+	// assert anchors in spec_json
+	var stored struct {
+		Anchors map[string]int `json:"anchors"`
+	}
+	if err := json.Unmarshal([]byte(got.Spec), &stored); err != nil {
+		t.Fatalf("decode spec: %v", err)
+	}
+	if stored.Anchors["img-x"] != 1 {
+		t.Fatalf("anchors=%v, want img-x→1", stored.Anchors)
+	}
+}
+
+func TestTranslateDraftPreservesAnchors(t *testing.T) {
+	a := newDraftAPI(t)
+	a.Translator = &fakeTranslator{out: "[de] hello", src: "en"}
+
+	spec := map[string]any{
+		"master_text": "hello",
+		"platforms":   []string{"bluesky"},
+		"overrides":   map[string]any{},
+		"tags":        []string{"essay"},
+		"anchors":     map[string]any{"img-x": 2},
+		"images": []any{
+			map[string]any{
+				"id":          "img-x",
+				"blossom_url": "https://b/1",
+				"sha256":      "s",
+			},
+		},
+	}
+	rec := postMultipart(t, a, "/api/drafts", spec, nil)
+	if rec.Code != 200 {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	var created store.Draft
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+
+	// call translate
+	body := bytes.NewBufferString(`{"target":"de"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/drafts/"+created.ID+"/translate", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	a.Routes().ServeHTTP(rec2, req)
+	if rec2.Code != 200 {
+		t.Fatalf("translate: %d %s", rec2.Code, rec2.Body.String())
+	}
+	var got store.Draft
+	_ = json.Unmarshal(rec2.Body.Bytes(), &got)
+
+	// assert the new draft's spec_json still carries anchors
+	var stored struct {
+		Anchors map[string]int `json:"anchors"`
+	}
+	if err := json.Unmarshal([]byte(got.Spec), &stored); err != nil {
+		t.Fatalf("decode spec: %v", err)
+	}
+	if stored.Anchors["img-x"] != 2 {
+		t.Fatalf("anchors=%v, want img-x→2 in translated draft", stored.Anchors)
+	}
+}
