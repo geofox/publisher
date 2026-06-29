@@ -2,6 +2,7 @@ package thread
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -42,5 +43,80 @@ func TestPlaceMedia(t *testing.T) {
 		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: PlaceMedia(%v,%v,%d)=%v want %v", c.name, c.imgParts, c.postPart, c.cap, got, c.want)
 		}
+	}
+}
+
+func TestSplitPlaceNoAnchorsByteIdentical(t *testing.T) {
+	// Zero-regression: all-zero imgParts ⇒ identical segs AND identical per-post
+	// INDICES (not just counts — correction: a scrambled-index impl must fail here).
+	text := "one\n---\ntwo\n---\nthree"
+	segs, plan, _ := SplitPlace(text, 500, []int{0, 0, 0}, 4, Opts{Number: true})
+	wantSegs, _, _ := SplitWithMedia(text, 500, 3, 4, Opts{Number: true})
+	if !reflect.DeepEqual(segs, wantSegs) {
+		t.Fatalf("segs=%v want %v", segs, wantSegs)
+	}
+	// 3 parts, 3 images, cap 4 ⇒ head-first fill puts all 3 on post 0 by index.
+	if !reflect.DeepEqual(plan, [][]int{{0, 1, 2}, {}, {}}) {
+		t.Fatalf("plan=%v want [[0 1 2] [] []]", plan)
+	}
+}
+
+func TestSplitPlaceAnchorOverflowNumbered(t *testing.T) {
+	// The case derivePostPart got WRONG: numbered, two ~4-word parts at a tiny
+	// limit with heavy media overflow, image anchored to part 1. partOf must come
+	// from the real numbered split, so the anchored image lands on part 1's FIRST
+	// post, not one post late. imgParts length = nImages; only index 5 anchored.
+	imgParts := make([]int, 6)
+	imgParts[5] = 1 // image 5 → part 1
+	segs, plan, _ := SplitPlace(
+		"alpha bravo charlie delta\n---\necho foxtrot golf hotel",
+		15, imgParts, 3, Opts{Number: true})
+	// Find the first post whose part is 1 by re-deriving partOf the authoritative
+	// way and asserting image 5 is on the first post of part 1. Simplest assertion:
+	// image 5 must share a post with the text segment that begins part 1 ("echo …").
+	firstPart1 := -1
+	for i, s := range segs {
+		if strings.Contains(s, "echo") {
+			firstPart1 = i
+			break
+		}
+	}
+	if firstPart1 < 0 {
+		t.Fatalf("could not locate part-1 head in segs=%v", segs)
+	}
+	found := false
+	for _, ix := range plan[firstPart1] {
+		if ix == 5 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("image 5 not on part-1 head post %d; plan=%v segs=%v", firstPart1, plan, segs)
+	}
+}
+
+func TestSplitPlaceAnchorsToPart(t *testing.T) {
+	// 3 parts, image 0 unanchored, image 1 pinned to part 2 (post index 2).
+	text := "a\n---\nb\n---\nc"
+	segs, plan, _ := SplitPlace(text, 500, []int{0, 2}, 10, Opts{})
+	if len(segs) != 3 {
+		t.Fatalf("segs=%v", segs)
+	}
+	want := [][]int{{0}, {}, {1}}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("plan=%v want %v", plan, want)
+	}
+}
+
+func TestSplitPlaceOverflowPostsBelongToLastPart(t *testing.T) {
+	// 1 part is out of scope for placement, but SplitPlace must still handle the
+	// overflow skeleton: "x" + 10 images cap 4 ⇒ posts [4,4,2]; all unanchored.
+	segs, plan, _ := SplitPlace("x", 500, make([]int, 10), 4, Opts{})
+	if len(segs) != 3 || len(plan) != 3 {
+		t.Fatalf("segs=%v plan=%v", segs, plan)
+	}
+	gotCounts := []int{len(plan[0]), len(plan[1]), len(plan[2])}
+	if !reflect.DeepEqual(gotCounts, []int{4, 4, 2}) {
+		t.Fatalf("counts=%v want [4 4 2]", gotCounts)
 	}
 }

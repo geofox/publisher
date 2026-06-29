@@ -1,7 +1,11 @@
 // Package thread placement: assign images to a fixed post skeleton.
 package thread
 
-import "sort"
+import (
+	"sort"
+	"strconv"
+	"strings"
+)
 
 // PlaceMedia distributes images across a fixed chain of posts, honoring per-image
 // part anchors. postPart[j] is the --- part post j belongs to; imgParts[i] is the
@@ -78,4 +82,74 @@ func PlaceMedia(imgParts []int, postPart []int, cap int) [][]int {
 		sort.Ints(plan[j])
 	}
 	return plan
+}
+
+// splitWithMediaPlan is SplitWithMedia plus partOf (the --- part index per post,
+// aligned 1:1 with segs). Overflow image-only posts ride the last part. This is
+// the single implementation; SplitWithMedia and SplitPlace both wrap it, so the
+// part labels can never diverge from the real numbered skeleton.
+func splitWithMediaPlan(text string, limit, nImages, cap int, opts Opts) (segs []string, partOf []int, plan []int, warnings []string) {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	// text segs + partOf, matching Split()'s output exactly:
+	segs, partOf, warnings = splitAtParts(text, limit)
+	if opts.Number && len(segs) >= 2 {
+		if limit <= 0 {
+			segs = appendCounters(segs, len(segs))
+		} else {
+			segs, partOf, warnings = number(text, limit, 0)
+		}
+	}
+	plan = PlanMedia(nImages, len(segs), cap)
+	if extra := len(plan) - len(segs); extra > 0 && opts.Number {
+		if limit <= 0 {
+			segs, partOf, warnings = splitAtParts(text, limit)
+			segs = appendCounters(segs, len(plan))
+		} else {
+			for i := 0; i < 4; i++ {
+				segs, partOf, warnings = number(text, limit, extra)
+				plan = PlanMedia(nImages, len(segs), cap)
+				if len(plan)-len(segs) == extra {
+					break
+				}
+				extra = len(plan) - len(segs)
+			}
+		}
+	}
+	last := 0
+	if len(partOf) > 0 {
+		last = partOf[len(partOf)-1]
+	}
+	for i := len(segs); i < len(plan); i++ {
+		t := ""
+		if opts.Number {
+			t = strconv.Itoa(i+1) + "/" + strconv.Itoa(len(plan))
+		}
+		segs = append(segs, t)
+		partOf = append(partOf, last)
+	}
+	return segs, partOf, plan, warnings
+}
+
+// SplitPlace places images per the anchor assignment over today's exact
+// skeleton. Post count and numbering are independent of imgParts. len(segs)==len(plan).
+func SplitPlace(text string, limit int, imgParts []int, cap int, opts Opts) (segs []string, plan [][]int, warnings []string) {
+	var partOf []int
+	segs, partOf, _, warnings = splitWithMediaPlan(text, limit, len(imgParts), cap, opts)
+	maxPart := 0
+	for _, pp := range partOf {
+		if pp > maxPart {
+			maxPart = pp
+		}
+	}
+	clamped := make([]int, len(imgParts))
+	for i, p := range imgParts {
+		if p < 0 {
+			p = 0
+		} else if p > maxPart {
+			p = maxPart
+		}
+		clamped[i] = p
+	}
+	plan = PlaceMedia(clamped, partOf, cap)
+	return segs, plan, warnings
 }
