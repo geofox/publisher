@@ -99,42 +99,54 @@ an entry for a missing id is ignored. Deterministic.
 
 ### 2. Resolution → the `[][]int` plan (pure, internal/thread)
 
-The caller resolves each image's part (`anchors[id] ?? 0`, clamped) and passes
-the per-image part assignment to `SplitWithMedia`, which returns `[][]int`
-(attachment indices per post). Per platform:
+**Key simplification: anchoring never changes the post count or numbering.** The
+post skeleton (how many posts, their text, their `k/n` counters, the tail
+image-only overflow posts) is computed by the **existing, unchanged**
+`SplitWithMedia` text+count logic. Anchoring only **permutes which images land on
+which of those fixed posts.** This is what makes the feature small: the
+counter-budget fixpoint (thread.go:289) is *not touched*, and there is no new
+mid-chain-image-only-post concept — overflow is still a tail, exactly as today.
 
-1. Split into parts by `---` (existing `splitMarkers`).
-2. Auto-subdivide each part by length (existing `splitAt`, text-only — unchanged).
-3. For each part, gather its images (by attach order) and distribute across the
-   part's sub-posts via `PlanMedia` (head sub-post up to cap, overflow to
-   appended image-only posts **for that part**).
-4. The head part also absorbs every unassigned/clamped image.
+A new pure helper computes the placement over the fixed skeleton:
 
-**Canonical chain ordering** (golden-tested; resume depends on it being a pure
-function of inputs): posts are emitted **part by part, in order**; within a part,
-**text sub-posts first, then its overflow image-only posts**. Within a post,
-images sort by attach order. Image-only posts are materialized in
-`SplitWithMedia` (media-aware), **not** in `splitAt` — so `splitAt`'s
-drop-empty-blocks contract is untouched.
+```
+// postPart[j] = the 0-based --- part index that post j belongs to (tail
+//   overflow posts belong to the last part). Derived from splitMarkers + the
+//   per-part sub-post counts; same inputs Split already has.
+// imgParts[i] = the 0-based part index image i is pinned to (caller resolves
+//   anchors[id] ?? 0, clamped to nParts-1).
+// PlaceMedia returns, per post, the attachment indices it carries.
+func PlaceMedia(imgParts []int, postPart []int, cap int) [][]int
+```
 
-**Numbering convergence (the v2 open question, now resolved).** Total posts
-`T = Σ_part max(textSubposts_part(budget), ⌈images_part / cap⌉)`. The image floor
-`⌈images_part/cap⌉` is a **constant** (independent of the counter budget);
-`textSubposts_part` is **monotone non-decreasing** as the budget shrinks (smaller
-limit ⇒ same-or-more sub-posts). `max(monotone, const)` is monotone, and a sum of
-monotone-non-decreasing terms is monotone-non-decreasing. So `T` is monotone in
-(1/budget) and bounded above (text cannot split past one grapheme per post) ⇒ the
-existing `number()` fixpoint (thread.go:289) converges by the same argument it
-uses today, now with a per-part sum instead of a single global `extra`. The
-`len(segs) == len(plan)` invariant holds because every emitted post (text or
-image-only) gets exactly one plan entry.
+Placement is two deterministic passes over the fixed posts (each post holds up to
+`cap`):
+1. **Anchored images** (those whose `imgParts[i]` was set by an anchor), in attach
+   order: place each on the first post of its part with free capacity; if its
+   part's posts are all full, **spill forward** to the next post with capacity
+   (the over-capacity edge — warned, §error handling).
+2. **Unanchored images**, in attach order: place each on the first post globally
+   (head-first) with free capacity.
+
+Within a post, indices are sorted ascending by attach order. **With no anchors,
+pass 1 is empty and pass 2 is exactly today's head-first contiguous fill** ⇒ the
+`[][]int` flattens to today's `[]int` counts — byte-identical (the regression
+golden test). `len(segs) == len(plan)` holds because `postPart` has one entry per
+skeleton post and `PlaceMedia` returns one slice per post.
+
+**Single orchestrator.** A new `SplitPlace(text, limit, imgParts, cap, opts)
+(segs []string, plan [][]int, warnings []string)` is the one entry point dispatch,
+the preview endpoint, and `PlanBlueskyCard` all call (replacing today's
+`SplitWithMedia`), so they cannot diverge. Internally it runs the existing
+skeleton/numbering logic to get `segs` and `postPart`, then `PlaceMedia`.
 
 ### 3. Dispatch (internal/dispatch)
 
-- `runChain` (dispatch.go:417-435): replace the `starts[]` prefix-sum (408-415,
-  now dead) and `imgs[start:start+count]` slice with a gather by index list,
-  `pick(imgs, plan[i])`. **Record `Segment.Images = plan[i]`** on each segment as
-  it is planned (so resume can read it).
+- `runChain` (dispatch.go:384, 417-435): call `SplitPlace` (passing the resolved
+  `imgParts`); replace the `starts[]` prefix-sum (408-415, now dead) and
+  `imgs[start:start+count]` slice with a gather by index list, `pick(imgs, plan[i])`.
+  **Record `Segment.Images = plan[i]`** on each segment as it is planned (so
+  resume can read it).
 - **Nostr imeta** (dispatch.go:424): today `if i==0 { segImetas = imetas }`
   attaches all imeta to the head. A part can now hold media on a non-head post,
   so imeta is distributed per post in step with `plan[i]`.
@@ -207,7 +219,7 @@ gate/transcoding, one-video-or-images guard, Blossom upload, DeepL request shape
 
 | Case | Behavior |
 |---|---|
-| **Part over platform cap** | Fill the part's sub-posts up to cap, overflow to appended image-only posts within that part; numbering fixpoint counts them (§2). |
+| **Part over platform cap** (more images anchored to a part than its posts hold) | The excess **spills forward** to the next post(s) with capacity (post count unchanged — it is today's skeleton); a preview warning notes the anchor could not be fully honored. |
 | **Anchor out of range / orphan id** | Clamp to last part / ignore; soft preview note, never a hard error. |
 | **Image anchored to Bluesky card's post** | Card wins; image front-loads; preview warning (§5). |
 | **Nostr (cap 0)** | Each part's images become URLs/imeta on that part's post; imeta per post (§3). |
@@ -218,10 +230,11 @@ gate/transcoding, one-video-or-images guard, Blossom upload, DeepL request shape
 
 TDD, table-driven like the existing `thread`/`dispatch` tests:
 
-- **thread (core):** anchor resolution → `[][]int`; canonical part-ordered chain
-  with mid-chain image-only posts; per-part overflow; head-part absorbs
-  unassigned; clamp/orphan; numbering fixpoint convergence (assert the monotone
-  bound) with `len(segs)==len(plan)`; Nostr cap-0 per-part.
+- **thread (core):** `PlaceMedia` two-pass placement (anchored→its part,
+  unanchored→head-first); spill-forward when a part is over cap; within-post
+  ordinal ordering; clamp/orphan; `postPart` derivation incl. tail overflow
+  posts; Nostr cap-0; **post count/numbering identical to today regardless of
+  anchors** (anchoring permutes, never adds posts).
 - **Determinism / regression:** same inputs → identical `[][]int`; no anchors →
   byte-identical to today.
 - **dispatch:** per-post gather; `Segment.Images` recorded; nostr per-post imeta;
@@ -238,9 +251,11 @@ TDD, table-driven like the existing `thread`/`dispatch` tests:
 
 ## Risks
 
-- **Numbering fixpoint with mid-chain image-only posts** is the highest-risk code
-  area; §2 gives the convergence argument but it must be encoded as an explicit
-  bound + tests, treated as its own task.
+- **`PlaceMedia` / `postPart` correctness** is the core risk, but it is bounded:
+  numbering and post count are *unchanged* from today (anchoring only permutes
+  images across the fixed skeleton), so the dangerous counter-budget fixpoint is
+  never touched. The regression golden test (no anchors ⇒ identical `[]int`)
+  guards the boundary.
 - **Stable-id plumbing** spans client attach, draft JSON, and recovery; the id
   must be generated once and never regenerated on reorder. Test the recovery
   boundary specifically.
