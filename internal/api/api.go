@@ -1493,6 +1493,12 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		// larger count so the SPLIT PLAN stays right and only badges go missing.
 		req.Images = len(metas)
 	}
+	// Re-assert the per-request image cap after the metas bump above re-assigned
+	// req.Images: keeps the allocation below provably bounded (req.Images flows
+	// from user input, and the bump can raise it) — defends the allocation size.
+	if req.Images > maxImagesPerPost {
+		req.Images = maxImagesPerPost
+	}
 	// Normalize img_parts to exactly req.Images entries: pad missing entries
 	// with 0 (front-load) and clamp negatives to 0.
 	imgParts := make([]int, req.Images)
