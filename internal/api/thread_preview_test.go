@@ -63,6 +63,27 @@ func TestThreadPreviewBadJSONIs400(t *testing.T) {
 	}
 }
 
+func TestThreadPreviewReturnsPlacementIndices(t *testing.T) {
+	body := `{"text":"a\n---\nb\n---\nc","platforms":["mastodon"],"images":2,"img_parts":[0,2]}`
+	rec := postPreview(t, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Previews []struct {
+			Platform string  `json:"platform"`
+			Imgs     [][]int `json:"imgs"`
+		} `json:"previews"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	imgs := resp.Previews[0].Imgs
+	if len(imgs) != 3 || len(imgs[0]) != 1 || len(imgs[1]) != 0 || len(imgs[2]) != 1 {
+		t.Fatalf("imgs=%v want [[0],[],[1]]-shaped", imgs)
+	}
+}
+
 func TestThreadPreviewMediaOverflowSplits(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{
 		"text": "hello", "platforms": []string{"mastodon", "bluesky"}, "images": 10,
