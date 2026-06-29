@@ -1493,19 +1493,22 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		// larger count so the SPLIT PLAN stays right and only badges go missing.
 		req.Images = len(metas)
 	}
-	// Re-assert the per-request image cap after the metas bump above re-assigned
-	// req.Images: keeps the allocation below provably bounded (req.Images flows
-	// from user input, and the bump can raise it) — defends the allocation size.
-	if req.Images > maxImagesPerPost {
-		req.Images = maxImagesPerPost
+	// Normalize img_parts to exactly req.Images entries (pad missing with 0 =
+	// front-load, drop negatives). req.Images is capped at maxImagesPerPost above,
+	// but the metas bump re-assigns it from user input — so build into a
+	// constant-capacity slice with an explicitly bounded loop, keeping the
+	// allocation size independent of any user-provided value.
+	n := req.Images
+	if n > maxImagesPerPost {
+		n = maxImagesPerPost
 	}
-	// Normalize img_parts to exactly req.Images entries: pad missing entries
-	// with 0 (front-load) and clamp negatives to 0.
-	imgParts := make([]int, req.Images)
-	for i := 0; i < len(req.ImgParts) && i < req.Images; i++ {
-		if req.ImgParts[i] > 0 {
-			imgParts[i] = req.ImgParts[i]
+	imgParts := make([]int, 0, maxImagesPerPost)
+	for i := 0; i < n; i++ {
+		v := 0
+		if i < len(req.ImgParts) && req.ImgParts[i] > 0 {
+			v = req.ImgParts[i]
 		}
+		imgParts = append(imgParts, v)
 	}
 	// videoNotes maps video metas through the same VideoGate dispatch uses —
 	// ✗ marks a hard per-target failure, ⚠ an advisory. Image metas are
