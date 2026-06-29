@@ -157,23 +157,30 @@ export async function threadPreview(container, text, platform, number, isStale =
     // from interaction previews only have {url,alt} — send zeros for those;
     // the server uses the array to raise image-count only, never to split wrong.
     const pvMedia = previewMedia(platform);
-    // Build a filtered image list that mirrors buildSpec's filter (exclude
-    // non-ready videos) so images: count and img_parts always have equal length.
-    const readyImages = state.images.filter(i => !(i.video && i.phase !== "ready"));
+    const userCount = state.images.length;
+    const media = pvMedia.map((_, idx) => {
+      if (idx < userCount) {
+        const img = state.images[idx];
+        return {
+          size_bytes: img.file ? img.file.size : (img.size_bytes || 0),
+          mime: img.file ? img.file.type : (img.mime || ""),
+          dim: img.dim || "",
+          duration_secs: img.duration_secs || 0,
+        };
+      }
+      return { size_bytes: 0, mime: "", dim: "", duration_secs: 0 };
+    });
     const nParts = masterParts().length;
-    const img_parts = readyImages.map(i => Math.min(state.anchors[i.id] || 0, Math.max(0, nParts - 1)));
-    const media = readyImages.map((img) => ({
-      size_bytes: img.file ? img.file.size : (img.size_bytes || 0),
-      mime: img.file ? img.file.type : (img.mime || ""),
-      dim: img.dim || "",
-      duration_secs: img.duration_secs || 0,
-    }));
+    const img_parts = pvMedia.map((_, k) => {
+      const img = state.images[k];
+      return img ? Math.min(state.anchors[img.id] || 0, Math.max(0, nParts - 1)) : 0;
+    });
     const resp = await fetch("/api/thread-preview", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         text, platforms: [platform], number,
-        images: readyImages.length,
+        images: pvMedia.length,
         media,
         img_parts,
         interaction: !!state.interaction,
