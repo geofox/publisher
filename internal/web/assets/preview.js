@@ -216,10 +216,15 @@ export async function threadPreview(container, text, platform, number, isStale =
     el("span", { class: "grow" }),
     threadBadgeStatic(pv.count),
   ));
-  // Per-segment media slices from the server's plan (pv.imgs); fall back to
-  // the old head-only rule if the field is missing (stale cached bundle).
+  // Per-segment media from the server's plan (pv.imgs).
+  // New shape: pv.imgs is [][]int — each entry is a list of attachment indices.
+  // Stale-bundle fallback: if entries are numbers (old count-slice shape), use
+  // the old head-only rule instead.
   const media = previewMedia(platform);
-  const counts = Array.isArray(pv.imgs) ? pv.imgs : null;
+  const imgsIsNew = Array.isArray(pv.imgs) && (pv.imgs.length === 0 || Array.isArray(pv.imgs[0]));
+  const imgsIsOld = Array.isArray(pv.imgs) && pv.imgs.length > 0 && typeof pv.imgs[0] === "number";
+  // Old shape bookkeeping (counts per segment).
+  const counts = imgsIsOld ? pv.imgs : null;
   const starts = [];
   let moff = 0;
   if (counts) for (const c of counts) { starts.push(moff); moff += c; }
@@ -232,7 +237,13 @@ export async function threadPreview(container, text, platform, number, isStale =
       el("div", { class: "pv-seg-n", style: "margin-top:4px", text: `${i + 1}/${pv.count}` }),
       el("div", { class: "pv-seg-count" + (limit && segLen > limit ? " over" : ""), text: limit ? `${segLen}/${limit}` : `${segLen} chars` }),
     );
-    const segMedia = counts ? media.slice(starts[i], starts[i] + (counts[i] || 0)) : (i === 0 ? media : []);
+    let segMedia;
+    if (imgsIsNew) {
+      const idxs = Array.isArray(pv.imgs[i]) ? pv.imgs[i] : [];
+      segMedia = idxs.map(ix => media[ix]).filter(Boolean);
+    } else {
+      segMedia = counts ? media.slice(starts[i], starts[i] + (counts[i] || 0)) : (i === 0 ? media : []);
+    }
     if (segMedia.length) {
       const g = mediaGridFrom(segMedia);
       if (g) main.append(g);

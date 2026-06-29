@@ -1,6 +1,6 @@
 "use strict";
 import { el, $, gcount, wcount, flash, confirmModal, META, ORDER } from "./common.js";
-import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen } from "./state.js";
+import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen, masterParts } from "./state.js";
 import { renderPreview, mediaMax, previewMedia } from "./preview.js";
 import { resultRow, openDetail } from "./history.js";
 import { brandTile, icon, PLATFORM_META } from "./brands.js";
@@ -940,6 +940,17 @@ export function renderImages() {
     } else if (img.size_bytes) {
       kids.push(el("div", { class: "imgsize", text: fmtBytes(img.size_bytes) }));
     }
+    if (masterParts().length >= 2 && !state.interaction) {
+      const sel = el("select", { class: "place-chip",
+        onchange: e => { state.anchors[img.id] = parseInt(e.target.value, 10); markDirty(); renderPreview(); refreshCounts(); } });
+      const n = masterParts().length;
+      for (let p = 0; p < n; p++) {
+        const o = el("option", { value: String(p), text: `▸ part ${p + 1}` });
+        if ((state.anchors[img.id] || 0) === p) o.selected = true;
+        sel.append(o);
+      }
+      kids.push(sel);
+    }
     kids.push(el("button", { class: "rm", type: "button", text: "remove",
       onclick: () => { if (img._compressAbort) img._compressAbort.abort(); URL.revokeObjectURL(img.url); state.images.splice(i, 1); renderImages(); } }));
     c.append(el("div", { class: "thumb" }, ...kids));
@@ -1239,7 +1250,7 @@ export function showResultModal(data) {
 // ---------------------------------------------------------------------------
 
 export function composeInit() {
-  $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); autoGrow(e.target); });
+  $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); renderImages(); autoGrow(e.target); });
   autoGrow($("#master")); // size correctly if a draft was already in the field at init
   $("#addimg").addEventListener("click", () => $("#imgfile").click());
   $("#imgfile").addEventListener("change", async e => {
