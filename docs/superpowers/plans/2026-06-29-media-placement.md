@@ -48,6 +48,16 @@ Three reviewers checked this plan against the real repo. The **production-code l
 
 **C9 — Task 4 must also update `internal/api` to keep `go test ./...` green** (the `[][]int` output shape is cross-package): folded into Task 4 below (api preview `Imgs [][]int` + the two api preview test files).
 
+### Round-2 corrections (second review pass)
+
+**C10 — `runChain` normalizes `imgParts` to `len(imgs)` (CRITICAL fix, in Task 4 Step 3c).** `SplitPlace` derives `nImages` from `len(imgParts)`. The interaction paths (`fanoutChain` dispatch.go:824, reply/quote :869) pass real images but `nil` imgParts (`InteractSpec` has no `ImgParts` field) — without normalization, `nImages=0` ⇒ **every interaction with media drops it silently.** The Step-3c normalize (`nil`/short → zero-padded to `len(imgs)`) fixes this and also length-guards the API skip path (C11). NOTE: the original Step 3b mislabeled dispatch.go:824 as `dispatchTargets`; it is `fanoutChain` (`dispatchTargets` has no `runChain` call).
+
+**C11 — `assembleImages` can drop+renumber images, so `img_parts` may misalign (Task 7).** `assembleImages` (api.go:1741+) skips unreachable Blossom refs / fileless uploads and renumbers densely, so `len(imgs) < len(sj.Images)`. The client builds `img_parts` parallel to `sj.Images`. C10's length-normalize prevents a crash/length-mismatch, but if a *middle* image is dropped the surviving anchors shift by one (wrong image placed). Full fix: `assembleImages` returns the kept-spec-index list and `handleAPIPost` compacts `sj.ImgParts` in lockstep. This is a rare error-path edge (a Blossom re-fetch must fail AND anchors must sit past the dropped image); acceptable as a documented v1 limitation if the compaction is deferred, but the length-normalize (C10) is mandatory.
+
+**C12 — Test bodies are illustrative; the real harnesses are in C3.** Tasks 4/5/7/8 Step-1 snippets still show invented helpers for readability. Per C3, before writing each: dispatch → `fakeMastoChain{}`+`d.runChain(...)`/`d.resumeSegments(...)` asserting `f.calls[i].nImgs`; api preview → `postPreview(t, body)`; api drafts → `internal/api/drafts_test.go` with `newDraftAPI`+`postMultipart`. Do not copy the snippet harness names verbatim.
+
+**C13 — Spec-required tests still to ADD (none exist yet):** (1) anchor clamp/orphan (out-of-range `imgParts` in `SplitPlace`); (2) `masterParts()` ↔ server non-empty-part-index parity incl. an empty `---` block (the C2 risk — highest value); (3) translate-copies-anchors via `handleTranslateDraft` (drafts.go:225), not just create/load; (4) recovery-orphan is browser-only (no JS runner) — acceptable, no Go guard. Add (1)-(3) as real test steps in Tasks 2, 8, and a small thread/JS-parity fixture.
+
 ---
 
 ## File Structure
@@ -109,6 +119,10 @@ func TestPlaceMedia(t *testing.T) {
 		// cap 1) — the second can't fit its part, spills forward to post 2; the
 		// unanchored image then head-fills post 0.
 		{"anchored spills forward to later post", []int{1, 1, 0}, []int{0, 1, 2}, 1, [][]int{{2}, {0}, {1}}},
+		// Anchored over-cap with NO forward room: 5 images all pinned to part 1
+		// (post idx 1, cap 4). Post 1 holds 4; the 5th spills BACKWARD to post 0
+		// ("any post with room" pass) — never over-cap. (Caught the over-cap bug.)
+		{"anchored over-cap spills backward, cap held", []int{1, 1, 1, 1, 1}, []int{0, 1}, 4, [][]int{{4}, {0, 1, 2, 3}}},
 		// Uncapped (nostr): everything assigned lands on its part's post.
 		{"uncapped per part", []int{0, 1, 1, 0}, []int{0, 1}, 0, [][]int{{0, 3}, {1, 2}}},
 		// Clamp/orphan is handled in SplitPlace (Task 2); PlaceMedia assumes
@@ -179,7 +193,16 @@ func PlaceMedia(imgParts []int, postPart []int, cap int) [][]int {
 				return
 			}
 		}
-		plan[len(plan)-1] = append(plan[len(plan)-1], img) // last resort
+		// Anchored part and everything after it is full: spill to ANY post with
+		// room (backward). The skeleton is sized by PlanMedia(nImages,…) so total
+		// room >= nImages — this pass always succeeds, holding the per-post cap.
+		for j := 0; j < len(postPart); j++ {
+			if room(j) {
+				plan[j] = append(plan[j], img)
+				return
+			}
+		}
+		plan[len(plan)-1] = append(plan[len(plan)-1], img) // unreachable when total room >= nImages
 	}
 
 	// Pass 1: anchored (non-zero part) images, in attach order.
@@ -230,6 +253,8 @@ git commit -m "feat(thread): PlaceMedia — pure two-pass anchor-aware image pla
 **Interfaces:**
 - Consumes: `PlaceMedia` (Task 1), existing `splitMarkers`, `splitAt`, `number`, `Opts`.
 - Produces: `func SplitPlace(text string, limit int, imgParts []int, cap int, opts Opts) (segs []string, plan [][]int, warnings []string)`. `len(segs) == len(plan)` always. With `imgParts` all zeros it yields the same `segs` as `SplitWithMedia` and a `plan` that flattens to the same counts.
+
+> **Add `"strings"` to `place_test.go`'s import block** — `TestSplitPlaceAnchorOverflowNumbered` below uses `strings.Contains` (Task 1's import block was only `reflect`, `testing`).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -504,7 +529,7 @@ import (
 )
 
 func TestSegmentImagesRoundTrip(t *testing.T) {
-	s := newTestStore(t) // use the same helper other store tests use
+	s := openTestStore(t) // real helper (store/drafts_crud_test.go:9)
 	p := &Post{
 		MasterText: "a\n---\nb", Platforms: []string{"bluesky"}, Status: "partial",
 		Targets: []Target{{
@@ -531,7 +556,7 @@ func TestSegmentImagesRoundTrip(t *testing.T) {
 }
 
 func TestDraftMediaClientIDRoundTrip(t *testing.T) {
-	s := newTestStore(t)
+	s := openTestStore(t)
 	d := &Draft{
 		ID: "d1", Title: "t", MasterText: "x", Spec: `{"master_text":"x"}`,
 		Media: []Media{{Ordinal: 0, BlossomURL: "https://b/1", ClientID: "img-abc"}},
@@ -710,11 +735,22 @@ func PlanBlueskyCard(text string, card *unfurl.Card, imgParts []int, number bool
 - `PostSpec` (line 156): add `ImgParts []int`.
 - `runChain` signature (line 376): add `imgParts []int` after `number bool`.
 - The Bluesky branch (line 381): `cp := PlanBlueskyCard(text, ov.LinkCard, imgParts, number)` — `cp.Plan` is now `[][]int`.
-- Update the three `runChain` call sites (lines 687, 824, 869) to pass `spec.ImgParts` (line 687/869) or the appropriate slice. For the non-PostSpec caller at 824 (resume/retry entry `dispatchTargets`), pass `nil` for now — Task 5 wires resume.
+- Update the three `runChain` call sites: **687** (`runFanout`/PostSpec) passes `spec.ImgParts`; **824** (`fanoutChain` — NOT `dispatchTargets`) and **869** (reply/quote) are the **interaction paths**: pass `nil`. `runChain` normalizes `nil`→all-zero of length `len(imgs)` (Step 3c), so interactions keep today's front-load and **do not drop media** (critical: without the normalize, `SplitPlace` would see `nImages=0` and attach zero images — `InteractSpec` has no `ImgParts` field).
+- **`Schedule` also calls `PlanBlueskyCard`** (dispatch.go:1037) — its signature changed, so update that call too (pass an `imgParts` built from `spec.ImgParts`/`len(spec.MediaRecords)`). This is the third and last prod caller (the others: dispatch.go:381, api.go:1553). Missing it breaks `go build ./internal/dispatch`.
 
 - [ ] **Step 3c: Use `SplitPlace` in `runChain` and record `Segment.Images`**
 
-Replace the non-bluesky split at dispatch.go:384:
+**First, normalize `imgParts` to `len(imgs)`** at the top of `runChain` (this is the F1 fix and also guards length mismatches from the API/`assembleImages` skip path — `SplitPlace` derives `nImages` from `len(imgParts)`, so it MUST equal `len(imgs)`):
+```go
+	// imgParts must be parallel to imgs. A nil/short slice (interaction paths,
+	// or an assembleImages skip) pads with 0 (front-load); a long one truncates.
+	if len(imgParts) != len(imgs) {
+		np := make([]int, len(imgs))
+		copy(np, imgParts)
+		imgParts = np
+	}
+```
+Pass the normalized `imgParts` to BOTH branches (Bluesky `PlanBlueskyCard` in Step 3b and the non-Bluesky split). Replace the non-bluesky split at dispatch.go:384:
 ```go
 	} else {
 		segTexts, plan, _ = thread.SplitPlace(text, thread.LimitFor(plat), imgParts, thread.MaxImagesFor(plat), thread.Opts{Number: number})
@@ -732,7 +768,7 @@ Replace the prefix-sum + slice (lines 408-422) with an index gather and record t
 		segImgs := pick(imgs, plan[i])
 		var segImetas []gonostr.Tag
 		if i == 0 {
-			segImetas = imetas // see Step 3c for per-post nostr imeta
+			segImetas = imetas // imeta stays head-only in v1 (see Step 3d)
 		}
 		...
 		out.Segments[i] = store.Segment{
@@ -763,18 +799,9 @@ func pick(imgs []Img, idx []int) []Img {
 }
 ```
 
-- [ ] **Step 3d: Per-post nostr imeta**
+- [ ] **Step 3d: nostr imeta stays head-only in v1 (deferred)**
 
-`imetas []gonostr.Tag` is parallel to `imgs` (one imeta tag per image). Replace the head-only attach (dispatch.go:424) so each post gets the imeta for the images it carries:
-```go
-		var segImetas []gonostr.Tag
-		for _, ix := range plan[i] {
-			if ix < len(imetas) {
-				segImetas = append(segImetas, imetas[ix])
-			}
-		}
-```
-Verify `imetas` is index-aligned with `imgs` at the call site (`buildImetas(recs)`); if it is not 1:1, fall back to head-only and note it. (Check `buildImetas`.)
+**Do NOT distribute imeta per-post in v1.** Keep the existing `if i == 0 { segImetas = imetas }` (dispatch.go:424) unchanged. Rationale: `buildImetas` (dispatch.go:591) skips records with empty `BlossomURL`, so `imetas` is NOT index-parallel to `imgs` — gathering by `plan[i]` would mis-attach (correction C6). Per-post images still post correctly on nostr (via `pick`); only the imeta *metadata hints* stay on the head event. Per-part nostr imeta is a documented deferral (needs `buildImetas` to emit an `imgs`-aligned slice with nil placeholders) — out of scope for v1. No code change in this step; it exists to record the decision.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -837,23 +864,35 @@ Expected: FAIL — resume currently front-fills via `PlanMedia`, so post 2 gets 
 
 - [ ] **Step 3: Replace count-based re-derivation with persisted reads**
 
-In `resumeSegments` (dispatch.go:496-527): delete the `thread.PlanMedia(...)` call (502), the `starts[]` prefix-sum (503-508), and the "trailing images exceed segments" warning block (511-518). Replace the per-segment image slice (527) with:
+In `resumeSegments` (dispatch.go:496-527): replace the count-based re-derivation, BUT keep a **back-compat fallback** for segments persisted before this feature (their `Images` is nil and they were never sent — e.g. a post `Schedule`d pre-deploy). If NO segment carries `Images`, fall back to the old `PlanMedia` plan so legacy/scheduled posts don't fire media-less (F4):
+```go
+	// Back-compat: segments saved before media-placement have nil Images. Only
+	// re-derive the front-fill plan when the persisted placement is entirely absent.
+	legacy := true
+	for i := range segs {
+		if segs[i].Images != nil {
+			legacy = false
+			break
+		}
+	}
+	var legacyPlan []int
+	if legacy {
+		legacyPlan = thread.PlanMedia(len(imgs), len(segs), thread.MaxImagesFor(tg.Platform))
+	}
+```
+Then delete the unconditional `starts[]` prefix-sum (503-508) and the "trailing images exceed segments" warning block (511-518), and gather per segment:
 ```go
 		var segImgs []Img
-		if i < len(segs) {
+		if legacy {
+			// old contiguous slice from legacyPlan
+			if i < len(legacyPlan) {
+				segImgs = imgs[legacyStart(legacyPlan, i):legacyStart(legacyPlan, i)+legacyPlan[i]]
+			}
+		} else if i < len(segs) {
 			segImgs = pick(imgs, segs[i].Images)
 		}
 ```
-And per-post nostr imeta (dispatch.go:530), mirroring Task 4 Step 3c:
-```go
-		var segImetas []gonostr.Tag
-		for _, ix := range segs[i].Images {
-			if ix < len(imetas) {
-				segImetas = append(segImetas, imetas[ix])
-			}
-		}
-```
-Keep writing `Images: segs[i].Images` back when re-recording the segment (preserve the persisted plan).
+(where `legacyStart` is the prefix-sum you removed, applied only on the legacy path). Keep imeta head-only (`if i == 0` — Task 4 Step 3d). Keep writing `Images: segs[i].Images` back when re-recording the segment (preserves the persisted plan; legacy segments stay nil, which is fine).
 
 For `Schedule` (dispatch.go:1041-1048): it pre-splits with `SplitWithMedia`. Change it to `thread.SplitPlace(text, ..., spec.ImgParts, ...)` and persist `Segment.Images = plan[i]` on each pre-split segment so Fire (which goes through `resumeSegments`/`runPlatform`) reads them.
 
@@ -865,7 +904,7 @@ Expected: PASS.
 - [ ] **Step 5: Run the dispatch package**
 
 Run: `go test ./internal/dispatch/ -v`
-Expected: PASS — existing resume tests green (segments saved by Task 4 carry `Images`; legacy segments with nil `Images` gather nothing, matching "no media" — verify an all-text legacy resume test still passes; if a legacy test relied on count-based re-fill, update it to set `Segment.Images` since that is now the source of truth).
+Expected: PASS. The two existing resume tests that pass nil-`Images` segments — `TestResumeRepostsSegmentImageSlices` (chain_test.go:344) and `TestResumeFullRetryDistributesImages` (chain_test.go:369) — stay green **without edits** because they hit the legacy fallback above (`PlanMedia` → `[4,4,2]`), exactly their current expectation. New placement is asserted by `TestResumeReadsPersistedPlacement` (Step 1), which sets explicit `Segment.Images`.
 
 - [ ] **Step 6: Commit**
 
@@ -1147,7 +1186,7 @@ Keep the stale-bundle fallback: if `pv.imgs` entries are numbers (old shape), fa
       if ((state.anchors[img.id] || 0) === p) o.selected = true;
       sel.append(o);
     }
-    tile.append(sel); // append to the thumbnail tile container used in this function
+    kids.push(sel); // the image branch builds a `kids` array, then c.append(el("div",{class:"thumb"}, ...kids)) at compose.js:943 — there is NO `tile` var here (that's the video branch). Push the chip BEFORE that append.
   }
 ```
 Import `masterParts` from `state.js`. When `masterParts().length < 2` or in interaction mode, render no chip (placement inactive).
@@ -1232,6 +1271,6 @@ git log --oneline feat/media-placement   # review the task commits
 
 ## Self-Review notes (for the implementer)
 
-- **Zero-regression** is guarded by `TestSplitPlaceNoAnchorsMatchesSplitWithMedia` (Task 2) and the full suite (Task 12). If any existing test changes output, stop — anchoring must not change the no-anchor path.
-- **`derivePostPart` budget alignment** (Task 2) is the subtlest part: its re-split must reproduce `SplitWithMedia`'s segment boundaries for numbered multi-part chains. If a test shows a mismatch, the fix is to match `number()`'s effective budget exactly, never to change `SplitWithMedia`.
-- **Legacy data**: targets/segments saved before this change have `Images == nil`; resume treats that as "no media on this segment," which matches their pre-feature reality (those posts were created by the old front-fill and already sent). New posts always record `Images`.
+- **Zero-regression** is guarded by `TestSplitPlaceNoAnchorsByteIdentical` (Task 2) and the full suite (Task 12). If any existing test changes output, stop — anchoring must not change the no-anchor path. (Validated during planning: `splitWithMediaPlan` reproduced `SplitWithMedia` byte-for-byte — segs, plan, and warnings — across 576 input configs.)
+- **`partOf` correctness** (Task 2) is the subtlest part. It MUST come from the same numbered split that produced `segs` (`splitWithMediaPlan`), never from a re-derived/guessed budget — the rejected `derivePostPart` did the latter and was proven to misplace anchors under numbering+overflow. If part boundaries look wrong, fix `splitWithMediaPlan`'s `partOf` tracking, never `SplitWithMedia`'s output.
+- **Legacy data (F4)**: targets/segments saved before this change have `Images == nil`. `resumeSegments` (Task 5 Step 3) detects the all-nil case and falls back to `PlanMedia` front-fill — this is REQUIRED, because a post `Schedule`d before deploy has nil-`Images` segments that were *never sent*, and treating nil as "no media" would fire them media-less. New posts always record `Images`.
