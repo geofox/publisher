@@ -530,6 +530,8 @@ export function loadDraft(input) {
       id: m.client_id || crypto.randomUUID(),
     }));
     bumpImagesGen();
+    // Hydrate media-placement anchors from the draft spec (id-keyed map).
+    state.anchors = input.anchors || {};
     state.activeDraftId = input.id || null;
     state.dirty = false;
     const tab = document.querySelector('.tab[data-view="compose"]');
