@@ -80,9 +80,9 @@ video placement; interaction/quote-reply placement; drag-and-drop.
 
 Placement UI activates only when `splitMarkers(master)` yields ≥2 parts.
 
-Each attachment carries a **stable `id`** (client-generated at attach time;
-added to `imageSpec`, api.go:810, and the draft image JSON). Placement is a
-shared map keyed by that id:
+Each attachment carries a **stable client `id`** (generated at attach time, held
+on `state.images[i].id`, persisted to `draft_media.client_id`). The shared
+placement map is keyed by that id:
 
 ```
 anchors: map[imageID]partIndex   // 0-based over the --- parts; missing ⇒ part 0
@@ -93,6 +93,9 @@ maintenance** — a removed image's entry is simply ignored, and an image keeps 
 id when reordered. This kills the save/load/recovery renumber bug class that
 sank v2's ordinal keys (serialize used array index, load used stored ordinal,
 recovery dropped fresh images and renumbered — all moot when the key is an id).
+At post/preview time the client flattens `anchors` against the current order into
+a positional `img_parts []int` for the wire (§6), so the id never leaves the
+client/draft layer.
 
 **Re-validation:** an entry whose `partIndex >= nParts` clamps to the last part;
 an entry for a missing id is ignored. Deterministic.
@@ -173,24 +176,32 @@ re-indexing with resume reproduction.)
 
 - **Resolved plan:** `Segment.Images []int` rides the existing `segments_json`
   JSON column (models.go:136/480) — additive.
-- **Draft:** add `anchors` and a per-image `id` to `draftSpecJSON` (drafts.go:37)
-  so they survive the API's re-marshal (the v2 trap) and round-trip via
-  `spec_json`. Update `buildSpec`/`imageSpecs` (state.js) and the recovery
-  snapshot (drafts_recovery.js) to emit both; recovery restore (drafts.js:274)
-  drops un-uploaded images — anchors keyed by id simply orphan those entries, no
-  renumber.
-- **Translation:** `handleTranslateDraft` (drafts.go:255-267) must copy `anchors`
-  + image ids onto the new draft. Shared-only means the `Overrides:"{}"` reset is
-  irrelevant. Same for the history.js translate path.
-- **Untouched:** `Media` table, `ov2fields`, `ovFor`, `FieldsJSON` — shared-only
-  placement needs none of them.
+- **Draft anchors:** add `anchors map[imageID]partIndex` to `draftSpecJSON`
+  (drafts.go:37) so it survives the API's re-marshal (the v2 trap) and round-trips
+  via `spec_json`. The stable image `id` rides a new `draft_media.client_id`
+  column (added with the existing `addColumnIfMissing` idiom, store.go — the same
+  way `duration_secs`/`poster_url` were added; the posts `media` table is **not**
+  touched, because dispatched posts use positional `img_parts`, not ids). On draft
+  load the client receives `client_id` per media row and re-keys its anchors, so
+  reorder/remove/recovery never renumber — a dropped image's anchor simply
+  orphans (recovery restore drops un-uploaded images, drafts.js:274).
+- **Wire format:** the client resolves id-keyed anchors against the current image
+  order into a positional `img_parts []int` (length = nImages, value = part
+  index, default 0) and sends that to `/api/post` and `/api/thread-preview`. The
+  server never handles image ids — only `img_parts`. Keeps dispatch id-free.
+- **Translation:** `handleTranslateDraft` (drafts.go:255-267) copies
+  `origSpec.Anchors` into the new draft's spec (media rows are copied verbatim,
+  so the `client_id`s — and thus the anchor keys — still match). Shared-only means
+  the `Overrides:"{}"` reset is irrelevant. Same for the history.js translate path.
+- **Untouched:** posts `media` table, `ov2fields`, `ovFor`, `FieldsJSON` —
+  shared-only placement needs none of them.
 
 ### 7. API (internal/api)
 
-`POST /api/thread-preview` (api.go:1527): request gains `anchors` + image ids;
-`Imgs []int` → `Imgs [][]int`. Same planner as dispatch — preview and posting
-cannot diverge. `postSpecJSON` / `assembleImages` (api.go:825/810) carry `anchors`
-and ids into `dispatch.PostSpec`.
+`POST /api/thread-preview` (api.go:1527): request gains `img_parts []int`;
+`Imgs []int` → `Imgs [][]int`. Same `SplitPlace` planner as dispatch — preview and
+posting cannot diverge. `postSpecJSON` (api.go:825) gains `img_parts`, threaded
+into `dispatch.PostSpec.ImgParts`; `runChain` passes it to `SplitPlace`.
 
 ### 8. Web UI (internal/web/assets)
 
@@ -211,9 +222,11 @@ and ids into `dispatch.PostSpec`.
 
 ### 9. Explicitly unchanged
 
-SQL schema (only additive JSON fields), retrier, progress/SSE, verifier, video
-gate/transcoding, one-video-or-images guard, Blossom upload, DeepL request shape,
-`ov2fields`/`ovFor`, the `Media` table.
+Retrier, progress/SSE, verifier, video gate/transcoding, one-video-or-images
+guard, Blossom upload, DeepL request shape, `ov2fields`/`ovFor`, the posts
+`media` table. The only schema change is one additive `draft_media.client_id`
+column via the existing `addColumnIfMissing` idiom; `Segment.Images` and draft
+`anchors` ride existing JSON columns (`segments_json`, `spec_json`).
 
 ## Error handling
 
