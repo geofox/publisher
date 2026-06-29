@@ -74,6 +74,9 @@ func (s *Store) migrate() error {
 	if err := s.addColumnIfMissing("draft_media", "poster_url", "TEXT"); err != nil {
 		return err
 	}
+	if err := s.addColumnIfMissing("draft_media", "client_id", "TEXT"); err != nil {
+		return err
+	}
 	return nil
 }
 
