@@ -466,6 +466,16 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 	return out
 }
 
+// legacyStart returns the start offset of segment i in a flat image slice
+// described by the contiguous legacy plan (prefix-sum of plan[0..i-1]).
+func legacyStart(plan []int, i int) int {
+	offset := 0
+	for j := 0; j < i && j < len(plan); j++ {
+		offset += plan[j]
+	}
+	return offset
+}
+
 // pick returns the images at the given indices, preserving order. Out-of-range
 // indices are skipped (a Blossom skip can leave the plan referencing a dropped
 // image), so the returned slice never panics on a short imgs.
@@ -508,28 +518,18 @@ func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Ove
 		parentID, parentCID = segs[start-1].RemoteID, segs[start-1].CID
 	}
 
-	// Re-derive the media plan deterministically (same inputs as runChain).
-	// Per-segment media assignments are not persisted (the plan is recomputed
-	// from counts), so if a Blossom re-fetch skipped an image the surviving
-	// images re-index and later segments can shift content by one position.
-	// That's the accepted trade-off for a schema-free resume; skips are rare
-	// and best-effort by design.
-	plan := thread.PlanMedia(len(imgs), len(segs), thread.MaxImagesFor(tg.Platform))
-	starts := make([]int, len(plan))
-	offset := 0
-	for i, c := range plan {
-		starts[i] = offset
-		offset += c
-	}
-	// More images than the recorded segments can carry (legacy or hand-edited
-	// data): plan entries beyond len(segs) would never post — say so.
-	if len(plan) > len(segs) {
-		dropped := 0
-		for _, c := range plan[len(segs):] {
-			dropped += c
+	// Back-compat: segments saved before media-placement have nil Images. Only
+	// re-derive the front-fill plan when the persisted placement is entirely absent.
+	legacy := true
+	for i := range segs {
+		if segs[i].Images != nil {
+			legacy = false
+			break
 		}
-		slog.WarnContext(ctx, "resume: trailing images exceed recorded segments, dropped",
-			"platform", tg.Platform, "images", len(imgs), "dropped", dropped)
+	}
+	var legacyPlan []int
+	if legacy {
+		legacyPlan = thread.PlanMedia(len(imgs), len(segs), thread.MaxImagesFor(tg.Platform))
 	}
 
 	for i := start; i < len(segs); i++ {
@@ -538,8 +538,12 @@ func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Ove
 			replyTo = &ReplyRef{RootID: rootID, RootCID: rootCID, ParentID: parentID, ParentCID: parentCID}
 		}
 		var segImgs []Img
-		if i < len(plan) {
-			segImgs = imgs[starts[i] : starts[i]+plan[i]]
+		if legacy {
+			if i < len(legacyPlan) {
+				segImgs = imgs[legacyStart(legacyPlan, i) : legacyStart(legacyPlan, i)+legacyPlan[i]]
+			}
+		} else {
+			segImgs = pick(imgs, segs[i].Images)
 		}
 		var segImetas []gonostr.Tag
 		if i == 0 {
@@ -550,7 +554,7 @@ func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Ove
 			segOv.LinkCard = card
 		}
 		r := d.runPlatform(ctx, tg.Platform, segs[i].Text, segOv, segImgs, segImetas, replyTo)
-		segs[i] = store.Segment{Ordinal: i, Text: segs[i].Text, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID, Status: r.Status, Error: r.Error}
+		segs[i] = store.Segment{Ordinal: i, Text: segs[i].Text, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID, Status: r.Status, Error: r.Error, Images: segs[i].Images}
 		if i == 0 {
 			rootID, rootCID = r.RemoteID, r.CID
 			out.Relays, out.SignedEventJSON, out.LatencyMS = r.Relays, r.SignedEventJSON, r.LatencyMS
@@ -1053,12 +1057,13 @@ func (d *Dispatcher) Schedule(ctx context.Context, spec PostSpec, at time.Time) 
 		ov := spec.Overrides[plat]
 		text := finalText(spec, plat)
 		var segTexts []string
+		var segPlan [][]int
 		if plat == "bluesky" {
 			cp := PlanBlueskyCard(text, ov.LinkCard, imgParts, spec.Number)
-			text, segTexts = cp.Text, cp.Segs
+			text, segTexts, segPlan = cp.Text, cp.Segs, cp.Plan
 			ov.LinkCard = cp.Card // persist only as actually placed
 		} else {
-			segTexts, _, _ = thread.SplitPlace(text, thread.LimitFor(plat), imgParts, thread.MaxImagesFor(plat), thread.Opts{Number: spec.Number})
+			segTexts, segPlan, _ = thread.SplitPlace(text, thread.LimitFor(plat), imgParts, thread.MaxImagesFor(plat), thread.Opts{Number: spec.Number})
 		}
 		// ov2fields returns a map of JSON-safe values only, so Marshal can't fail.
 		fields, _ := json.Marshal(ov2fields(ov))
@@ -1069,9 +1074,15 @@ func (d *Dispatcher) Schedule(ctx context.Context, spec PostSpec, at time.Time) 
 		// over-limit post fires as a reply-chain (the fire path threads any target
 		// with >1 segment) instead of one over-limit post the platform rejects.
 		// Media overflow counts too: 10 images on Mastodon is a 3-post chain.
+		// Record Segment.Images from the placement plan so Fire (resumeSegments)
+		// reads the persisted placement rather than re-deriving a front-fill.
 		if len(segTexts) > 1 {
 			for i, st := range segTexts {
-				tg.Segments = append(tg.Segments, store.Segment{Ordinal: i, Text: st, Status: "pending"})
+				var imgs []int
+				if i < len(segPlan) {
+					imgs = segPlan[i]
+				}
+				tg.Segments = append(tg.Segments, store.Segment{Ordinal: i, Text: st, Status: "pending", Images: imgs})
 			}
 		}
 		rec.Targets = append(rec.Targets, tg)
