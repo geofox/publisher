@@ -57,12 +57,12 @@ type PublishInput struct {
 
 // PublishResult summarises the event that was broadcast.
 type PublishResult struct {
-	EventID     string
-	Nevent      string // NIP-19 nevent (id + relay hints + author) for viewer links
-	SignedEvent string // marshaled signed event, for per-relay rebroadcast
-	Kind        int
-	POW         int
-	MinedMS     int64
+	EventID       string
+	Nevent        string // NIP-19 nevent (id + relay hints + author) for viewer links
+	SignedEvent   string // marshaled signed event, for per-relay rebroadcast
+	Kind          int
+	POW           int
+	MinedMS       int64
 	Relays        []RelayResult
 	PendingRelays []string // secondary relays deferred to async fan-out (fan-out mode only)
 }
@@ -78,8 +78,8 @@ type Config struct {
 	POWTimeout           time.Duration
 	RelayCacheTTL        time.Duration
 	PublishTimeout       time.Duration
-	PrimaryFanout bool     // when true, publish synchronously to PrimaryRelays only
-	PrimaryRelays []string // the primary relay set (e.g. the owner's own relay)
+	PrimaryFanout        bool     // when true, publish synchronously to PrimaryRelays only
+	PrimaryRelays        []string // the primary relay set (e.g. the owner's own relay)
 }
 
 // publishPool is the subset of *gonostr.Pool that Publisher needs; an

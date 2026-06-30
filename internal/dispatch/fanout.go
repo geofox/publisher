@@ -30,7 +30,7 @@ func NewFanout(d *Dispatcher, enabled bool, maxAttempts int, base, max, tick tim
 // Start ticks until ctx is done. No-op when disabled.
 func (f *Fanout) Start(ctx context.Context) {
 	if !f.enabled {
-		slog.Info("nostr fan-out worker disabled (NOSTR_PRIMARY_FANOUT=false)")
+		slog.InfoContext(ctx, "nostr fan-out worker disabled (NOSTR_PRIMARY_FANOUT=false)")
 		return
 	}
 	t := time.NewTicker(f.tick)

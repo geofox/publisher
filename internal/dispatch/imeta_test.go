@@ -70,9 +70,7 @@ func (p *perSegNostr) Quote(context.Context, string, string, string, string, []g
 	return TargetResult{}, nil
 }
 
-// NOTE: `itoa` already exists in internal/dispatch/chain_test.go:46
-// (`func itoa(n int) string { return strconv.Itoa(n) }`) — DO NOT redefine it
-// (duplicate symbol = package won't compile). Reuse it.
+// itoa is defined in chain_test.go — do not redefine.
 
 func TestResumeSegmentsNostrPlacesImetasPerSegment(t *testing.T) {
 	cn := &perSegNostr{}

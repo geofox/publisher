@@ -136,9 +136,7 @@ func TestOIDCConfig(t *testing.T) {
 }
 
 func TestPrimaryFanoutDefaults(t *testing.T) {
-	// config_test.go has NO withRequiredEnv/loadWithRequiredBase helper. Match the
-	// existing pattern (TestAutoRetryDefaults): set the required env inline using
-	// the file's valid tNSEC/tPUB constants (Load() rejects a key mismatch), then Load.
+	// Load() requires a valid keypair; tNSEC/tPUB are a matching pair.
 	t.Setenv("NSEC_HEX", tNSEC)
 	t.Setenv("OWNER_PUBKEY", tPUB)
 	t.Setenv("BLOSSOM_URL", "https://b.example.com")

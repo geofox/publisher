@@ -81,7 +81,7 @@ func TestAPIPostTooManyImages(t *testing.T) {
 	rec := httptest.NewRecorder()
 	a.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("11 images: code = %d, want 400", rec.Code)
+		t.Errorf("41 images: code = %d, want 400", rec.Code)
 	}
 }
 

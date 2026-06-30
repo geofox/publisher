@@ -191,9 +191,10 @@ type Dispatcher struct {
 }
 
 // enqueueFanout records async relay deliveries for a freshly-published Nostr
-// event (no-op without a store, an empty event, or no pending relays).
-func (d *Dispatcher) enqueueFanout(ctx context.Context, postID, signedEventJSON string, relays []string) {
-	if d.Store == nil || signedEventJSON == "" || len(relays) == 0 {
+// event (no-op without a store, an empty event, no pending relays, or a
+// failed primary publish — a failed delivery must not fan out).
+func (d *Dispatcher) enqueueFanout(ctx context.Context, postID, status, signedEventJSON string, relays []string) {
+	if d.Store == nil || status == "failed" || signedEventJSON == "" || len(relays) == 0 {
 		return
 	}
 	if err := d.Store.EnqueueFanout(postID, signedEventJSON, relays); err != nil {
@@ -412,7 +413,7 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 			headOv.LinkCard = card
 		}
 		r := d.runHead(ctx, plat, text, headOv, imgs, imetas, head)
-		d.enqueueFanout(ctx, postID, r.SignedEventJSON, r.PendingRelays)
+		d.enqueueFanout(ctx, postID, r.Status, r.SignedEventJSON, r.PendingRelays)
 		return chainOutcome{
 			Platform: plat, Status: r.Status, Error: r.Error, FinalText: text, LinkCard: card,
 			HeadRemoteID: r.RemoteID, HeadRemoteURL: r.RemoteURL, LatencyMS: r.LatencyMS,
@@ -452,7 +453,7 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 			Ordinal: i, Text: st, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID,
 			Status: r.Status, Error: r.Error, Images: plan[i],
 		}
-		d.enqueueFanout(ctx, postID, r.SignedEventJSON, r.PendingRelays)
+		d.enqueueFanout(ctx, postID, r.Status, r.SignedEventJSON, r.PendingRelays)
 		// live thread counter: successes so far / total planned
 		done := 0
 		for _, sg := range out.Segments {
@@ -572,7 +573,7 @@ func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Ove
 		}
 		r := d.runPlatform(ctx, tg.Platform, segs[i].Text, segOv, segImgs, segImetas, replyTo)
 		segs[i] = store.Segment{Ordinal: i, Text: segs[i].Text, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID, Status: r.Status, Error: r.Error, Images: segs[i].Images}
-		d.enqueueFanout(ctx, postID, r.SignedEventJSON, r.PendingRelays)
+		d.enqueueFanout(ctx, postID, r.Status, r.SignedEventJSON, r.PendingRelays)
 		if i == 0 {
 			rootID, rootCID = r.RemoteID, r.CID
 			out.Relays, out.SignedEventJSON, out.LatencyMS = r.Relays, r.SignedEventJSON, r.LatencyMS
@@ -902,7 +903,7 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 		sink := progress.SinkFrom(ctx)
 		sink.Platform(spec.SourcePlatform, progress.StatusRunning, "", "")
 		r := d.runAction(ctx, actionRepost, spec.SourcePlatform, "", spec.Overrides[spec.SourcePlatform], nil, nil, spec.Ref)
-		d.enqueueFanout(ctx, rec.ID, r.SignedEventJSON, r.PendingRelays)
+		d.enqueueFanout(ctx, rec.ID, r.Status, r.SignedEventJSON, r.PendingRelays)
 		o := chainOutcome{
 			Platform: r.Platform, Status: r.Status, Error: r.Error,
 			HeadRemoteID: r.RemoteID, HeadRemoteURL: r.RemoteURL, LatencyMS: r.LatencyMS,
@@ -1061,7 +1062,7 @@ func (d *Dispatcher) dispatchTargets(ctx context.Context, post *store.Post, want
 			continue
 		}
 		r := d.runPlatform(ctx, tg.Platform, tg.FinalText, ov, imgs, imetas, nil)
-		d.enqueueFanout(ctx, post.ID, r.SignedEventJSON, r.PendingRelays)
+		d.enqueueFanout(ctx, post.ID, r.Status, r.SignedEventJSON, r.PendingRelays)
 		if err := d.Store.AppendTargetAttempt(tg.ID, r.Status, r.Error, r.RemoteID, r.RemoteURL, r.LatencyMS, r.RequestJSON, r.ResponseJSON, r.Relays, r.SignedEventJSON); err != nil {
 			return err
 		}
