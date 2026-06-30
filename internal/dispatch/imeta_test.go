@@ -74,6 +74,41 @@ func (p *perSegNostr) Quote(context.Context, string, string, string, string, []g
 // (`func itoa(n int) string { return strconv.Itoa(n) }`) — DO NOT redefine it
 // (duplicate symbol = package won't compile). Reuse it.
 
+func TestResumeSegmentsNostrPlacesImetasPerSegment(t *testing.T) {
+	cn := &perSegNostr{}
+	d := &Dispatcher{Nostr: cn}
+	imgs := []Img{{BlossomURL: "https://b/x"}, {BlossomURL: "https://b/y"}}
+	imetas := buildImetas([]store.Media{{BlossomURL: "https://b/x", SHA256: "aa"}, {BlossomURL: "https://b/y", SHA256: "bb"}})
+	tg := store.Target{Platform: "nostr", Segments: []store.Segment{
+		{Ordinal: 0, Text: "a", Status: "pending", Images: []int{0}},
+		{Ordinal: 1, Text: "b", Status: "pending", Images: []int{1}},
+	}}
+	o := d.resumeSegments(context.Background(), tg, Overrides{}, imgs, imetas)
+	if cn.calls != 2 {
+		t.Fatalf("expected 2 posts, got %d", cn.calls)
+	}
+	if len(cn.perSeg[0]) != 1 || len(cn.perSeg[1]) != 1 {
+		t.Fatalf("resume imetas per segment = [%d,%d], want [1,1]", len(cn.perSeg[0]), len(cn.perSeg[1]))
+	}
+	_ = o
+}
+
+func TestResumeSegmentsNostrLegacyHeadOnly(t *testing.T) {
+	cn := &perSegNostr{}
+	d := &Dispatcher{Nostr: cn}
+	imgs := []Img{{BlossomURL: "https://b/x"}, {BlossomURL: "https://b/y"}}
+	imetas := buildImetas([]store.Media{{BlossomURL: "https://b/x", SHA256: "aa"}, {BlossomURL: "https://b/y", SHA256: "bb"}})
+	// Legacy: segments saved before placement → nil Images.
+	tg := store.Target{Platform: "nostr", Segments: []store.Segment{
+		{Ordinal: 0, Text: "a", Status: "pending"},
+		{Ordinal: 1, Text: "b", Status: "pending"},
+	}}
+	d.resumeSegments(context.Background(), tg, Overrides{}, imgs, imetas)
+	if len(cn.perSeg[0]) != 2 || len(cn.perSeg[1]) != 0 {
+		t.Fatalf("legacy imetas = [%d,%d], want [2,0] (head-only, no regression)", len(cn.perSeg[0]), len(cn.perSeg[1]))
+	}
+}
+
 func TestRunChainNostrPlacesImetasPerSegment(t *testing.T) {
 	cn := &perSegNostr{}
 	d := &Dispatcher{Nostr: cn}

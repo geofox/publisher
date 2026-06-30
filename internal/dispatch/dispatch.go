@@ -545,8 +545,12 @@ func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Ove
 			segImgs = pick(imgs, segs[i].Images)
 		}
 		var segImetas []gonostr.Tag
-		if i == 0 {
-			segImetas = imetas // nostr-only; nostr never splits media
+		if legacy {
+			if i == 0 {
+				segImetas = imetas // pre-placement threads kept all media on the head
+			}
+		} else {
+			segImetas = pickImetas(imetas, segs[i].Images)
 		}
 		segOv := ov
 		if card != nil && i == card.Segment {
