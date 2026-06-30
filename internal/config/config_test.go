@@ -135,6 +135,28 @@ func TestOIDCConfig(t *testing.T) {
 	}
 }
 
+func TestPrimaryFanoutDefaults(t *testing.T) {
+	// config_test.go has NO withRequiredEnv/loadWithRequiredBase helper. Match the
+	// existing pattern (TestAutoRetryDefaults): set the required env inline using
+	// the file's valid tNSEC/tPUB constants (Load() rejects a key mismatch), then Load.
+	t.Setenv("NSEC_HEX", tNSEC)
+	t.Setenv("OWNER_PUBKEY", tPUB)
+	t.Setenv("BLOSSOM_URL", "https://b.example.com")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.NostrPrimaryFanout {
+		t.Errorf("NostrPrimaryFanout should default false")
+	}
+	if len(c.PrimaryRelays) != 1 || c.PrimaryRelays[0] != c.NIP65BootstrapRelay {
+		t.Errorf("PrimaryRelays default = %v, want [%s]", c.PrimaryRelays, c.NIP65BootstrapRelay)
+	}
+	if c.FanoutTick != 5*time.Second {
+		t.Errorf("FanoutTick=%v, want 5s", c.FanoutTick)
+	}
+}
+
 func TestFeedEnvVars(t *testing.T) {
 	if got := getEnv("PUBLIC_FEED_TOKEN", ""); got != "" {
 		t.Errorf("default PUBLIC_FEED_TOKEN = %q, want empty", got)

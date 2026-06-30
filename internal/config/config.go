@@ -74,6 +74,11 @@ type Config struct {
 	AutoRetryMaxDelay    time.Duration
 	RetrierTick          time.Duration
 
+	// Primary fan-out settings (Fix 2).
+	NostrPrimaryFanout bool
+	PrimaryRelays      []string
+	FanoutTick         time.Duration
+
 	// Video pipeline. Enabled only when FFmpegPath points at an existing binary.
 	// VideoWorkdir overrides the default tempdir location for upload staging and
 	// transcode outputs (never bare os.TempDir(): the runner's startup sweep
@@ -158,6 +163,14 @@ func Load() (Config, error) {
 	}
 	if c.RetrierTick, err = time.ParseDuration(getEnv("RETRIER_TICK", "60s")); err != nil {
 		return c, fmt.Errorf("RETRIER_TICK: %w", err)
+	}
+	c.NostrPrimaryFanout = getBool("NOSTR_PRIMARY_FANOUT", false)
+	c.PrimaryRelays = splitCSV(getEnv("PRIMARY_RELAYS", c.NIP65BootstrapRelay))
+	if len(c.PrimaryRelays) == 0 {
+		c.PrimaryRelays = []string{c.NIP65BootstrapRelay}
+	}
+	if c.FanoutTick, err = time.ParseDuration(getEnv("FANOUT_TICK", "5s")); err != nil {
+		return c, fmt.Errorf("FANOUT_TICK: %w", err)
 	}
 	if c.VerifyHTTPTimeout, err = time.ParseDuration(getEnv("VERIFY_HTTP_TIMEOUT", "10s")); err != nil {
 		return c, fmt.Errorf("VERIFY_HTTP_TIMEOUT: %w", err)

@@ -70,6 +70,8 @@ func main() {
 		POWTimeout:           cfg.POWTimeout,
 		RelayCacheTTL:        cfg.RelayCacheTTL,
 		PublishTimeout:       cfg.PublishTimeout,
+		PrimaryFanout:        cfg.NostrPrimaryFanout,
+		PrimaryRelays:        cfg.PrimaryRelays,
 	})
 	mp := media.New(cfg.BlossomURL, cfg.NSEC, cfg.OwnerPubkey)
 
@@ -210,6 +212,10 @@ func main() {
 	go dispatch.NewRetrier(d, notifier,
 		cfg.AutoRetryEnabled, cfg.AutoRetryMaxAttempts,
 		cfg.AutoRetryBaseDelay, cfg.AutoRetryMaxDelay, cfg.RetrierTick,
+	).Start(context.Background())
+	go dispatch.NewFanout(d, cfg.NostrPrimaryFanout,
+		cfg.AutoRetryMaxAttempts, cfg.AutoRetryBaseDelay, cfg.AutoRetryMaxDelay,
+		cfg.FanoutTick,
 	).Start(context.Background())
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
