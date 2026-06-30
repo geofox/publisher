@@ -604,16 +604,31 @@ func newID() string {
 // ID before launching a detached dispatch goroutine.
 func NewID() string { return newID() }
 
-// buildImetas rebuilds NIP-92 imeta tags (one per attached image) from the
-// archived media records, so a Nostr cross-post embeds the same media the
-// upload pipeline produced. Records without a Blossom URL are skipped.
+// buildImetas builds NIP-92 imeta tags index-parallel to the media records: one
+// entry per record, in order, with an empty Tag placeholder for any record
+// without a Blossom URL. Keeping the slice index-aligned with imgs lets the
+// per-segment placement plan select each post's imetas by image index. Empty
+// placeholders are inert downstream (Publish skips len-0 tags).
 func buildImetas(recs []store.Media) []gonostr.Tag {
-	var out []gonostr.Tag
-	for _, m := range recs {
+	out := make([]gonostr.Tag, len(recs))
+	for i, m := range recs {
 		if m.BlossomURL == "" {
-			continue
+			continue // leaves an empty Tag placeholder, preserving index alignment
 		}
-		out = append(out, media.ImetaTag(m.BlossomURL, m.Mime, m.SHA256, m.Dim, m.Blurhash, m.PosterURL))
+		out[i] = media.ImetaTag(m.BlossomURL, m.Mime, m.SHA256, m.Dim, m.Blurhash, m.PosterURL)
+	}
+	return out
+}
+
+// pickImetas returns the imetas at the given image indices, preserving order and
+// skipping out-of-range indices and empty placeholders. Mirrors pick(imgs, idx)
+// so a Nostr segment carries exactly its planned images' imeta tags.
+func pickImetas(imetas []gonostr.Tag, idx []int) []gonostr.Tag {
+	out := make([]gonostr.Tag, 0, len(idx))
+	for _, i := range idx {
+		if i >= 0 && i < len(imetas) && len(imetas[i]) > 0 {
+			out = append(out, imetas[i])
+		}
 	}
 	return out
 }
