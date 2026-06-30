@@ -224,4 +224,15 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   last_used_at TIMESTAMP,
   revoked_at   TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS nostr_fanout (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id           TEXT,
+  signed_event_json TEXT NOT NULL,
+  relay_url         TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'pending',
+  retry_count       INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at   TIMESTAMP NOT NULL,
+  created_at        TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_nostr_fanout_due ON nostr_fanout(status, next_attempt_at);
 `
