@@ -91,3 +91,33 @@ func TestReplyTagsCarriesAuthorOnDistinctParent(t *testing.T) {
 		t.Fatalf("want 2 e-tags for distinct root/parent, got %d", count)
 	}
 }
+
+func TestSelectPrimary(t *testing.T) {
+	resolved := []string{"wss://relay.geoffrey.one", "wss://nos.lol", "wss://relay.damus.io", "wss://x.onion"}
+	primary := []string{"wss://relay.geoffrey.one"}
+	attempt, pending := selectPrimary(resolved, primary)
+	if len(attempt) != 1 || attempt[0] != "wss://relay.geoffrey.one" {
+		t.Fatalf("attempt=%v, want [relay.geoffrey.one]", attempt)
+	}
+	// pending = other clearnet relays; the .onion is excluded entirely.
+	want := map[string]bool{"wss://nos.lol": true, "wss://relay.damus.io": true}
+	if len(pending) != 2 {
+		t.Fatalf("pending=%v, want 2 clearnet relays", pending)
+	}
+	for _, p := range pending {
+		if !want[p] {
+			t.Errorf("unexpected pending relay %q", p)
+		}
+	}
+}
+
+func TestSelectPrimaryFallsBackToFirstClearnet(t *testing.T) {
+	resolved := []string{"wss://x.onion", "wss://nos.lol", "wss://relay.damus.io"}
+	attempt, pending := selectPrimary(resolved, []string{"wss://not-present"})
+	if len(attempt) != 1 || attempt[0] != "wss://nos.lol" {
+		t.Fatalf("attempt=%v, want [nos.lol] (first clearnet fallback)", attempt)
+	}
+	if len(pending) != 1 || pending[0] != "wss://relay.damus.io" {
+		t.Fatalf("pending=%v, want [relay.damus.io]", pending)
+	}
+}

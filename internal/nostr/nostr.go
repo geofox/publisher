@@ -57,13 +57,14 @@ type PublishInput struct {
 
 // PublishResult summarises the event that was broadcast.
 type PublishResult struct {
-	EventID     string
-	Nevent      string // NIP-19 nevent (id + relay hints + author) for viewer links
-	SignedEvent string // marshaled signed event, for per-relay rebroadcast
-	Kind        int
-	POW         int
-	MinedMS     int64
-	Relays      []RelayResult
+	EventID       string
+	Nevent        string // NIP-19 nevent (id + relay hints + author) for viewer links
+	SignedEvent   string // marshaled signed event, for per-relay rebroadcast
+	Kind          int
+	POW           int
+	MinedMS       int64
+	Relays        []RelayResult
+	PendingRelays []string // secondary relays deferred to async fan-out (fan-out mode only)
 }
 
 // Config holds all tunables for a Publisher instance.
@@ -77,6 +78,8 @@ type Config struct {
 	POWTimeout           time.Duration
 	RelayCacheTTL        time.Duration
 	PublishTimeout       time.Duration
+	PrimaryFanout        bool     // when true, publish synchronously to PrimaryRelays only
+	PrimaryRelays        []string // the primary relay set (e.g. the owner's own relay)
 }
 
 // publishPool is the subset of *gonostr.Pool that Publisher needs; an
@@ -181,14 +184,20 @@ func (p *Publisher) Publish(ctx context.Context, in PublishInput) (PublishResult
 	}
 	relays = dedup(append(relays, p.cfg.NIP65BootstrapRelay))
 
-	// Partition: clearnet relays are dialed; overlay relays (.onion/.i2p) are
-	// recorded as skipped (no Tor/I2P egress) and excluded from the tally.
+	var pending []string
 	var attempted, skipped []string
-	for _, u := range relays {
-		if IsOverlayRelay(u) {
-			skipped = append(skipped, u)
-		} else {
-			attempted = append(attempted, u)
+	if p.cfg.PrimaryFanout {
+		attempted, pending = selectPrimary(relays, p.cfg.PrimaryRelays)
+		// overlay relays already excluded by selectPrimary; record none as skipped
+	} else {
+		// Partition: clearnet relays are dialed; overlay relays (.onion/.i2p) are
+		// recorded as skipped (no Tor/I2P egress) and excluded from the tally.
+		for _, u := range relays {
+			if IsOverlayRelay(u) {
+				skipped = append(skipped, u)
+			} else {
+				attempted = append(attempted, u)
+			}
 		}
 	}
 
@@ -213,13 +222,14 @@ func (p *Publisher) Publish(ctx context.Context, in PublishInput) (PublishResult
 
 	signed, _ := json.Marshal(event) // event is signed above; Event is JSON-safe
 	return PublishResult{
-		EventID:     event.ID.Hex(),
-		Nevent:      nip19.EncodeNevent(event.ID, hints, p.cfg.OwnerPubkey),
-		SignedEvent: string(signed),
-		Kind:        kind,
-		POW:         pow,
-		MinedMS:     minedMS,
-		Relays:      results,
+		EventID:       event.ID.Hex(),
+		Nevent:        nip19.EncodeNevent(event.ID, hints, p.cfg.OwnerPubkey),
+		SignedEvent:   string(signed),
+		Kind:          kind,
+		POW:           pow,
+		MinedMS:       minedMS,
+		Relays:        results,
+		PendingRelays: pending,
 	}, nil
 }
 
@@ -380,6 +390,31 @@ func IsOverlayRelay(raw string) bool {
 	}
 	h := strings.ToLower(u.Hostname())
 	return strings.HasSuffix(h, ".onion") || strings.HasSuffix(h, ".i2p")
+}
+
+// selectPrimary partitions resolved write relays for primary-fanout mode. attempt
+// is the clearnet subset that appears in primary; if none match, it falls back to
+// the first clearnet resolved relay. pending is every other clearnet relay. Overlay
+// relays (.onion/.i2p) are excluded from both (no egress to dial or rebroadcast).
+func selectPrimary(resolved, primary []string) (attempt, pending []string) {
+	isPrimary := make(map[string]bool, len(primary))
+	for _, p := range primary {
+		isPrimary[strings.TrimRight(p, "/")] = true
+	}
+	for _, u := range resolved {
+		if IsOverlayRelay(u) {
+			continue
+		}
+		if isPrimary[strings.TrimRight(u, "/")] {
+			attempt = append(attempt, u)
+		} else {
+			pending = append(pending, u)
+		}
+	}
+	if len(attempt) == 0 && len(pending) > 0 {
+		attempt, pending = pending[:1], pending[1:] // fall back to the first clearnet relay
+	}
+	return attempt, pending
 }
 
 // dedup returns urls with empty strings and duplicates removed. Trailing

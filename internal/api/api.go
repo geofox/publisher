@@ -58,14 +58,16 @@ import (
 const (
 	maxPublishRequestBytes int64 = 256 << 10 // 256 KB
 	maxUploadRequestBytes  int64 = 64 << 20  // 64 MB
-	maxPostRequestBytes    int64 = 128 << 20 // 128 MB (spec + up to 10 phone-sized images)
+	maxPostRequestBytes    int64 = 256 << 20 // 256 MB (spec + up to 40 phone-sized images)
 	maxVerifyRequestBytes  int64 = 512 << 10 // 512 KB (pasted event JSON or a URL)
 	maxThreadPreviewBytes  int64 = 256 << 10 // 256 KB (draft text for split preview)
 )
 
-// maxImagesPerPost is the composer-wide image cap, matching Bluesky's gallery
-// soft limit. Per-platform overflow (Mastodon's 4) splits into the reply chain.
-const maxImagesPerPost = 10
+// maxImagesPerRequest is the whole-request image cap across a thread. Per-post
+// platform caps (Bluesky 10 / Mastodon 4 / Threads 10 / Nostr ∞) are enforced
+// separately by thread.MaxImagesFor; this only bounds the total a single
+// publish/preview request may carry.
+const maxImagesPerRequest = 40
 
 // maxVideoUploadBytes caps the async video endpoint (spec: 1 GB, streamed to
 // disk — never RAM). The +1 MiB slack covers multipart framing.
@@ -1476,16 +1478,16 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 	if req.Images < 0 {
 		req.Images = 0
 	}
-	if req.Images > maxImagesPerPost {
-		req.Images = maxImagesPerPost
+	if req.Images > maxImagesPerRequest {
+		req.Images = maxImagesPerRequest
 	}
 	var metas []transcode.Meta
 	for _, m := range req.Media {
 		iw, ih := transcode.ParseDim(m.Dim)
 		metas = append(metas, transcode.Meta{SizeBytes: m.SizeBytes, Mime: m.Mime, W: iw, H: ih})
 	}
-	if len(metas) > maxImagesPerPost {
-		metas = metas[:maxImagesPerPost]
+	if len(metas) > maxImagesPerRequest {
+		metas = metas[:maxImagesPerRequest]
 	}
 	if len(metas) > 0 && len(metas) > req.Images {
 		// media[] is authoritative when it covers more images than the count;
@@ -1494,15 +1496,15 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		req.Images = len(metas)
 	}
 	// Normalize img_parts to exactly req.Images entries (pad missing with 0 =
-	// front-load, drop negatives). req.Images is capped at maxImagesPerPost above,
+	// front-load, drop negatives). req.Images is capped at maxImagesPerRequest above,
 	// but the metas bump re-assigns it from user input — so build into a
 	// constant-capacity slice with an explicitly bounded loop, keeping the
 	// allocation size independent of any user-provided value.
 	n := req.Images
-	if n > maxImagesPerPost {
-		n = maxImagesPerPost
+	if n > maxImagesPerRequest {
+		n = maxImagesPerRequest
 	}
-	imgParts := make([]int, 0, maxImagesPerPost)
+	imgParts := make([]int, 0, maxImagesPerRequest)
 	for i := 0; i < n; i++ {
 		v := 0
 		if i < len(req.ImgParts) && req.ImgParts[i] > 0 {
@@ -1773,8 +1775,8 @@ func (a *API) assembleImages(r *http.Request, specs []imageSpec) ([]dispatch.Img
 			blossomRefs++
 		}
 	}
-	if len(files)+blossomRefs > maxImagesPerPost || len(specs) > maxImagesPerPost {
-		return nil, nil, fmt.Errorf("max %d images", maxImagesPerPost)
+	if len(files)+blossomRefs > maxImagesPerRequest || len(specs) > maxImagesPerRequest {
+		return nil, nil, fmt.Errorf("max %d images", maxImagesPerRequest)
 	}
 	fetch := a.fetchMedia
 	if fetch == nil {

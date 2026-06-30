@@ -17,7 +17,7 @@ func TestRunChainPlacesAnchoredImage(t *testing.T) {
 	f := &fakeMastoChain{}
 	d := &Dispatcher{Mastodon: f}
 	out := d.runChain(context.Background(), "mastodon", "a\n---\nb\n---\nc",
-		Overrides{}, make([]Img, 2), nil, false, []int{0, 2}, nil)
+		Overrides{}, make([]Img, 2), nil, false, []int{0, 2}, nil, "t")
 
 	if out.Status != "success" {
 		t.Fatalf("status=%s err=%s", out.Status, out.Error)
@@ -60,7 +60,7 @@ func TestResumeReadsPersistedPlacement(t *testing.T) {
 		},
 	}
 	imgs := []Img{{BlossomURL: "https://b/0"}, {BlossomURL: "https://b/1"}}
-	out := d.resumeSegments(context.Background(), tg, Overrides{}, imgs, nil)
+	out := d.resumeSegments(context.Background(), tg, Overrides{}, imgs, nil, "t")
 	if out.Status != "success" {
 		t.Fatalf("status=%s err=%s", out.Status, out.Error)
 	}

@@ -62,7 +62,7 @@ func TestRunChainThreadsSegments(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	d := &Dispatcher{Bluesky: f}
 	text := "aaa\n---\nbbb\n---\nccc" // 3 segments via --- markers (deterministic)
-	out := d.runChain(context.Background(), "bluesky", text, Overrides{}, nil, nil, false, nil, nil)
+	out := d.runChain(context.Background(), "bluesky", text, Overrides{}, nil, nil, false, nil, nil, "t")
 
 	if out.Status != "success" {
 		t.Fatalf("status=%s segs=%+v", out.Status, out.Segments)
@@ -90,7 +90,7 @@ func TestRunChainThreadsSegments(t *testing.T) {
 func TestRunChainStopsOnFailure(t *testing.T) {
 	f := &fakeBsky{failAt: 1} // segment 0 ok, segment 1 fails
 	d := &Dispatcher{Bluesky: f}
-	out := d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb\n---\nccc", Overrides{}, nil, nil, false, nil, nil)
+	out := d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb\n---\nccc", Overrides{}, nil, nil, false, nil, nil, "t")
 	if out.Status != "partial" {
 		t.Fatalf("status=%s", out.Status)
 	}
@@ -118,7 +118,7 @@ func TestResumeSkipsLiveSegments(t *testing.T) {
 		},
 	}
 	f := &fakeBsky{failAt: -1}
-	out := (&Dispatcher{Bluesky: f}).resumeSegments(context.Background(), tg, Overrides{}, nil, nil)
+	out := (&Dispatcher{Bluesky: f}).resumeSegments(context.Background(), tg, Overrides{}, nil, nil, "t")
 
 	if len(f.calls) != 1 { // ONLY seg2 reposts; the live partial seg1 is left alone (no duplicate)
 		t.Fatalf("expected 1 repost, got %d: %+v", len(f.calls), f.calls)
@@ -149,7 +149,7 @@ func TestResumePostsPendingTail(t *testing.T) {
 		},
 	}
 	f := &fakeBsky{failAt: -1}
-	out := (&Dispatcher{Bluesky: f}).resumeSegments(context.Background(), tg, Overrides{}, nil, nil)
+	out := (&Dispatcher{Bluesky: f}).resumeSegments(context.Background(), tg, Overrides{}, nil, nil, "t")
 	if len(f.calls) != 2 {
 		t.Fatalf("expected 2 reposts (failed + pending tail), got %d", len(f.calls))
 	}
@@ -164,7 +164,7 @@ func TestResumePostsPendingTail(t *testing.T) {
 func TestRunChainSingleSegmentNoChain(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	d := &Dispatcher{Bluesky: f}
-	out := d.runChain(context.Background(), "bluesky", "short", Overrides{}, nil, nil, false, nil, nil)
+	out := d.runChain(context.Background(), "bluesky", "short", Overrides{}, nil, nil, false, nil, nil, "t")
 	if len(out.Segments) != 0 {
 		t.Fatalf("single post must have no Segments: %+v", out.Segments)
 	}
@@ -182,7 +182,7 @@ func TestRunChainImagesUnderCapStayOnHead(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	d := &Dispatcher{Bluesky: f}
 	imgs := []Img{{BlossomURL: "https://b/x"}}
-	d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb", Overrides{}, imgs, nil, false, nil, nil)
+	d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb", Overrides{}, imgs, nil, false, nil, nil, "t")
 	if f.calls[0].nImgs != 1 {
 		t.Errorf("head should carry images: %d", f.calls[0].nImgs)
 	}
@@ -204,7 +204,7 @@ func TestResumeSegmentsContinuesFromFailure(t *testing.T) {
 	}
 	f := &fakeBsky{failAt: -1}
 	d := &Dispatcher{Bluesky: f}
-	out := d.resumeSegments(context.Background(), tg, Overrides{}, nil, nil)
+	out := d.resumeSegments(context.Background(), tg, Overrides{}, nil, nil, "t")
 
 	if out.Status != "success" {
 		t.Fatalf("status=%s segs=%+v", out.Status, out.Segments)
@@ -251,7 +251,7 @@ func (f *fakeMastoChain) QuoteStatus(context.Context, string, string, []Img) (Ta
 func TestRunChainSplitsImagesOverMastodonCap(t *testing.T) {
 	f := &fakeMastoChain{}
 	d := &Dispatcher{Mastodon: f}
-	out := d.runChain(context.Background(), "mastodon", "hello", Overrides{}, make([]Img, 10), nil, false, nil, nil)
+	out := d.runChain(context.Background(), "mastodon", "hello", Overrides{}, make([]Img, 10), nil, false, nil, nil, "t")
 	if out.Status != "success" {
 		t.Fatalf("status=%s err=%s", out.Status, out.Error)
 	}
@@ -277,7 +277,7 @@ func TestRunChainSplitsImagesOverMastodonCap(t *testing.T) {
 func TestRunChainBlueskyTenImagesSinglePost(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	d := &Dispatcher{Bluesky: f}
-	out := d.runChain(context.Background(), "bluesky", "hello", Overrides{}, make([]Img, 10), nil, false, nil, nil)
+	out := d.runChain(context.Background(), "bluesky", "hello", Overrides{}, make([]Img, 10), nil, false, nil, nil, "t")
 	if out.Status != "success" || len(f.calls) != 1 || f.calls[0].nImgs != 10 {
 		t.Fatalf("want single post with 10 images: %+v (status=%s)", f.calls, out.Status)
 	}
@@ -289,7 +289,7 @@ func TestRunChainBlueskyTenImagesSinglePost(t *testing.T) {
 func TestRunChainSpreadsImagesAcrossTextSegments(t *testing.T) {
 	f := &fakeMastoChain{}
 	d := &Dispatcher{Mastodon: f}
-	out := d.runChain(context.Background(), "mastodon", "one\n---\ntwo\n---\nthree", Overrides{}, make([]Img, 10), nil, false, nil, nil)
+	out := d.runChain(context.Background(), "mastodon", "one\n---\ntwo\n---\nthree", Overrides{}, make([]Img, 10), nil, false, nil, nil, "t")
 	if out.Status != "success" || len(f.calls) != 3 {
 		t.Fatalf("calls=%d status=%s", len(f.calls), out.Status)
 	}
@@ -352,7 +352,7 @@ func TestResumeRepostsSegmentImageSlices(t *testing.T) {
 			{Ordinal: 2, Text: "", Status: "pending"},
 		},
 	}
-	out := d.resumeSegments(context.Background(), tg, Overrides{}, make([]Img, 10), nil)
+	out := d.resumeSegments(context.Background(), tg, Overrides{}, make([]Img, 10), nil, "t")
 	if out.Status != "success" {
 		t.Fatalf("status=%s err=%s", out.Status, out.Error)
 	}
@@ -379,7 +379,7 @@ func TestResumeFullRetryDistributesImages(t *testing.T) {
 			{Ordinal: 2, Text: "", Status: "pending"},
 		},
 	}
-	out := d.resumeSegments(context.Background(), tg, Overrides{}, make([]Img, 10), nil)
+	out := d.resumeSegments(context.Background(), tg, Overrides{}, make([]Img, 10), nil, "t")
 	if out.Status != "success" || len(f.calls) != 3 {
 		t.Fatalf("status=%s calls=%d", out.Status, len(f.calls))
 	}

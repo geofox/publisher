@@ -31,26 +31,32 @@ func multipartWithImages(t *testing.T, n int) *http.Request {
 	return req
 }
 
+func TestMaxImagesPerRequestConstant(t *testing.T) {
+	if maxImagesPerRequest != 40 {
+		t.Fatalf("maxImagesPerRequest=%d, want 40", maxImagesPerRequest)
+	}
+}
+
 func TestAssembleImagesRejectsEleven(t *testing.T) {
 	a := &API{}
-	if _, _, err := a.assembleImages(multipartWithImages(t, 11), nil); err == nil || !strings.Contains(err.Error(), "max 10 images") {
-		t.Fatalf("11 files must hit the cap, got %v", err)
+	if _, _, err := a.assembleImages(multipartWithImages(t, 41), nil); err == nil || !strings.Contains(err.Error(), "max 40 images") {
+		t.Fatalf("41 files must hit the cap, got %v", err)
 	}
-	if _, _, err := a.assembleImages(multipartWithImages(t, 0), make([]imageSpec, 11)); err == nil || !strings.Contains(err.Error(), "max 10 images") {
-		t.Fatalf("11 specs must hit the cap, got %v", err)
+	if _, _, err := a.assembleImages(multipartWithImages(t, 0), make([]imageSpec, 41)); err == nil || !strings.Contains(err.Error(), "max 40 images") {
+		t.Fatalf("41 specs must hit the cap, got %v", err)
 	}
 }
 
 func TestAssembleImagesRejectsCombinedOverflow(t *testing.T) {
-	// 6 fresh files + 6 Blossom references = 12 assembled images: Blossom-ref
+	// 21 fresh files + 21 Blossom references = 42 assembled images: Blossom-ref
 	// specs don't consume files, and leftover files are processed by the
 	// defensive trailing loop — the cap must bound the combined total.
 	a := &API{}
-	specs := make([]imageSpec, 6)
+	specs := make([]imageSpec, 21)
 	for i := range specs {
 		specs[i].BlossomURL = "https://blossom.example/" + strconv.Itoa(i)
 	}
-	if _, _, err := a.assembleImages(multipartWithImages(t, 6), specs); err == nil || !strings.Contains(err.Error(), "max 10 images") {
-		t.Fatalf("6 files + 6 blossom refs must hit the cap, got %v", err)
+	if _, _, err := a.assembleImages(multipartWithImages(t, 21), specs); err == nil || !strings.Contains(err.Error(), "max 40 images") {
+		t.Fatalf("21 files + 21 blossom refs must hit the cap, got %v", err)
 	}
 }

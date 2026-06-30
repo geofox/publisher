@@ -108,6 +108,7 @@ func nostrResult(res pubnostr.PublishResult, err error) (TargetResult, error) {
 	r.ResponseJSON = string(respB)
 	r.RemoteID = res.EventID
 	r.SignedEventJSON = res.SignedEvent
+	r.PendingRelays = res.PendingRelays
 	if res.Nevent != "" {
 		r.RemoteURL = "https://njump.me/" + res.Nevent
 	}
