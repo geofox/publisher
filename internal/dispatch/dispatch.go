@@ -421,11 +421,10 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 			replyTo = &ReplyRef{RootID: rootID, RootCID: rootCID, ParentID: parentID, ParentCID: parentCID}
 		}
 		segImgs := pick(imgs, plan[i])
-		var segImetas []gonostr.Tag
-		if i == 0 {
-			segImetas = imetas // imeta stays head-only in v1 (buildImetas skips
-			// empty-Blossom records, so it's not index-parallel to imgs)
-		}
+		// Nostr's image is its imeta (the URL is appended to event content), so
+		// each segment carries exactly its planned images' imetas — mirroring
+		// segImgs for native-attachment platforms.
+		segImetas := pickImetas(imetas, plan[i])
 		segOv := ov
 		if card != nil && i == card.Segment {
 			segOv.LinkCard = card
