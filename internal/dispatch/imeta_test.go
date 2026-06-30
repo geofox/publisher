@@ -83,7 +83,7 @@ func TestResumeSegmentsNostrPlacesImetasPerSegment(t *testing.T) {
 		{Ordinal: 0, Text: "a", Status: "pending", Images: []int{0}},
 		{Ordinal: 1, Text: "b", Status: "pending", Images: []int{1}},
 	}}
-	o := d.resumeSegments(context.Background(), tg, Overrides{}, imgs, imetas)
+	o := d.resumeSegments(context.Background(), tg, Overrides{}, imgs, imetas, "t")
 	if cn.calls != 2 {
 		t.Fatalf("expected 2 posts, got %d", cn.calls)
 	}
@@ -103,7 +103,7 @@ func TestResumeSegmentsNostrLegacyHeadOnly(t *testing.T) {
 		{Ordinal: 0, Text: "a", Status: "pending"},
 		{Ordinal: 1, Text: "b", Status: "pending"},
 	}}
-	d.resumeSegments(context.Background(), tg, Overrides{}, imgs, imetas)
+	d.resumeSegments(context.Background(), tg, Overrides{}, imgs, imetas, "t")
 	if len(cn.perSeg[0]) != 2 || len(cn.perSeg[1]) != 0 {
 		t.Fatalf("legacy imetas = [%d,%d], want [2,0] (head-only, no regression)", len(cn.perSeg[0]), len(cn.perSeg[1]))
 	}
@@ -116,7 +116,7 @@ func TestRunChainNostrPlacesImetasPerSegment(t *testing.T) {
 	recs := []store.Media{{BlossomURL: "https://b/x", Mime: "image/png", SHA256: "aa"}, {BlossomURL: "https://b/y", Mime: "image/jpeg", SHA256: "bb"}}
 	imetas := buildImetas(recs)
 	// 2-part thread; image 0 → head (part 0), image 1 → part 1 (second post).
-	o := d.runChain(context.Background(), "nostr", "a\n---\nb", Overrides{}, imgs, imetas, false, []int{0, 1}, nil)
+	o := d.runChain(context.Background(), "nostr", "a\n---\nb", Overrides{}, imgs, imetas, false, []int{0, 1}, nil, "t")
 	if o.Status != "success" {
 		t.Fatalf("status=%s", o.Status)
 	}

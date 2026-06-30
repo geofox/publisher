@@ -112,7 +112,7 @@ func TestRunChainEmitsThreadCounter(t *testing.T) {
 	sink := &capturingSink{}
 	ctx := progress.WithSink(context.Background(), sink)
 	// "aaa\n---\nbbb\n---\nccc" splits into 3 segments via the --- markers.
-	out := d.runChain(ctx, "bluesky", "aaa\n---\nbbb\n---\nccc", Overrides{}, nil, nil, false, nil, nil)
+	out := d.runChain(ctx, "bluesky", "aaa\n---\nbbb\n---\nccc", Overrides{}, nil, nil, false, nil, nil, "t")
 	if out.Status != "success" {
 		t.Fatalf("chain status = %q", out.Status)
 	}

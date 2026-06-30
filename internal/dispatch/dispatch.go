@@ -35,6 +35,7 @@ type TargetResult struct {
 	ResponseJSON    string
 	Relays          []store.RelayState
 	SignedEventJSON string
+	PendingRelays   []string // nostr fan-out: secondary relays to rebroadcast to async
 }
 
 // ReplyRef threads one segment onto the previous in a chain. RootID/RootCID
@@ -187,6 +188,17 @@ type Dispatcher struct {
 	Unfurler Unfurler     // may be nil; attachLinkCard guards it
 	Notify   PostNotifier // may be nil; notify() guards it
 	Alerter  Notifier     // may be nil; alertFailure guards it
+}
+
+// enqueueFanout records async relay deliveries for a freshly-published Nostr
+// event (no-op without a store, an empty event, or no pending relays).
+func (d *Dispatcher) enqueueFanout(ctx context.Context, postID, signedEventJSON string, relays []string) {
+	if d.Store == nil || signedEventJSON == "" || len(relays) == 0 {
+		return
+	}
+	if err := d.Store.EnqueueFanout(postID, signedEventJSON, relays); err != nil {
+		slog.WarnContext(ctx, "enqueue fan-out failed", "post_id", postID, "err", err)
+	}
 }
 
 // notify fires the PostNotifier when configured. Safe with a nil notifier or
@@ -374,7 +386,7 @@ func (d *Dispatcher) runHead(ctx context.Context, plat, text string, ov Override
 // single segment posts exactly as before, with no Segments recorded. An
 // optional head action (reply/quote via headSpec; nil = plain post) lets the
 // chain's head segment thread under or quote a source post.
-func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrides, imgs []Img, imetas []gonostr.Tag, number bool, imgParts []int, head *headSpec) chainOutcome {
+func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrides, imgs []Img, imetas []gonostr.Tag, number bool, imgParts []int, head *headSpec, postID string) chainOutcome {
 	// imgParts must be parallel to imgs. A nil/short slice (interaction paths,
 	// or an assembleImages skip) pads with 0 (front-load); a long one truncates.
 	// SplitPlace derives nImages from len(imgParts), so it MUST equal len(imgs).
@@ -400,6 +412,7 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 			headOv.LinkCard = card
 		}
 		r := d.runHead(ctx, plat, text, headOv, imgs, imetas, head)
+		d.enqueueFanout(ctx, postID, r.SignedEventJSON, r.PendingRelays)
 		return chainOutcome{
 			Platform: plat, Status: r.Status, Error: r.Error, FinalText: text, LinkCard: card,
 			HeadRemoteID: r.RemoteID, HeadRemoteURL: r.RemoteURL, LatencyMS: r.LatencyMS,
@@ -439,6 +452,7 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 			Ordinal: i, Text: st, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID,
 			Status: r.Status, Error: r.Error, Images: plan[i],
 		}
+		d.enqueueFanout(ctx, postID, r.SignedEventJSON, r.PendingRelays)
 		// live thread counter: successes so far / total planned
 		done := 0
 		for _, sg := range out.Segments {
@@ -492,7 +506,7 @@ func pick(imgs []Img, idx []int) []Img {
 // segment, threading from the last successful one (root stays segment 0). If the
 // head (segment 0) isn't success, the whole chain is re-posted from scratch.
 // No store writes — returns the updated outcome.
-func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag) chainOutcome {
+func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag, postID string) chainOutcome {
 	segs := append([]store.Segment(nil), tg.Segments...)
 	card := ov.LinkCard
 	ov.LinkCard = nil
@@ -558,6 +572,7 @@ func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Ove
 		}
 		r := d.runPlatform(ctx, tg.Platform, segs[i].Text, segOv, segImgs, segImetas, replyTo)
 		segs[i] = store.Segment{Ordinal: i, Text: segs[i].Text, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID, Status: r.Status, Error: r.Error, Images: segs[i].Images}
+		d.enqueueFanout(ctx, postID, r.SignedEventJSON, r.PendingRelays)
 		if i == 0 {
 			rootID, rootCID = r.RemoteID, r.CID
 			out.Relays, out.SignedEventJSON, out.LatencyMS = r.Relays, r.SignedEventJSON, r.LatencyMS
@@ -574,8 +589,8 @@ func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Ove
 }
 
 // resumeChain resumes a partial threaded target and persists the result.
-func (d *Dispatcher) resumeChain(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag) error {
-	out := d.resumeSegments(ctx, tg, ov, imgs, imetas)
+func (d *Dispatcher) resumeChain(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag, postID string) error {
+	out := d.resumeSegments(ctx, tg, ov, imgs, imetas, postID)
 	return d.Store.UpdateTargetSegments(tg.ID, out.Segments, out.Status, out.HeadRemoteID, out.HeadRemoteURL, out.LatencyMS, out.Error)
 }
 
@@ -721,7 +736,7 @@ func (d *Dispatcher) PostWithID(ctx context.Context, id string, spec PostSpec) *
 			defer wg.Done()
 			sink := progress.SinkFrom(ctx)
 			sink.Platform(plat, progress.StatusRunning, "", "")
-			o := d.runChain(ctx, plat, text, ov, spec.Images, imetas, spec.Number, spec.ImgParts, nil)
+			o := d.runChain(ctx, plat, text, ov, spec.Images, imetas, spec.Number, spec.ImgParts, nil, rec.ID)
 			outcomes[i] = o
 			sink.Platform(plat, mapStatus(o.Status), platformDetail(o), o.HeadRemoteURL)
 		}(i, plat, text, ov)
@@ -853,13 +868,13 @@ func interactText(spec InteractSpec, plat string) string {
 	return spec.Text
 }
 
-func (d *Dispatcher) fanoutChain(ctx context.Context, plat string, spec InteractSpec) chainOutcome {
+func (d *Dispatcher) fanoutChain(ctx context.Context, plat string, spec InteractSpec, postID string) chainOutcome {
 	text := assembleReproduction(interactText(spec, plat), spec.SourcePreview, spec.SourceURL)
 	imgs := capMedia(spec.Images, spec.SourceImages, mediaMax(plat))
 	recs := capMediaRecords(spec.MediaRecords, spec.SourceMediaRecords, mediaMax(plat))
 	ov := spec.Overrides[plat]
 	// Interactions carry no per-image part anchors; nil ⇒ runChain front-loads.
-	return d.runChain(ctx, plat, text, ov, imgs, buildImetas(recs), spec.Number, nil, nil)
+	return d.runChain(ctx, plat, text, ov, imgs, buildImetas(recs), spec.Number, nil, nil, postID)
 }
 
 // Interact performs reply/repost/quote and records it as a store.Post carrying an
@@ -887,6 +902,7 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 		sink := progress.SinkFrom(ctx)
 		sink.Platform(spec.SourcePlatform, progress.StatusRunning, "", "")
 		r := d.runAction(ctx, actionRepost, spec.SourcePlatform, "", spec.Overrides[spec.SourcePlatform], nil, nil, spec.Ref)
+		d.enqueueFanout(ctx, rec.ID, r.SignedEventJSON, r.PendingRelays)
 		o := chainOutcome{
 			Platform: r.Platform, Status: r.Status, Error: r.Error,
 			HeadRemoteID: r.RemoteID, HeadRemoteURL: r.RemoteURL, LatencyMS: r.LatencyMS,
@@ -904,7 +920,7 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 		}
 		sink := progress.SinkFrom(ctx)
 		sink.Platform(spec.SourcePlatform, progress.StatusRunning, "", "")
-		o := d.runChain(ctx, spec.SourcePlatform, interactText(spec, spec.SourcePlatform), ov, spec.Images, buildImetas(spec.MediaRecords), spec.Number, nil, head)
+		o := d.runChain(ctx, spec.SourcePlatform, interactText(spec, spec.SourcePlatform), ov, spec.Images, buildImetas(spec.MediaRecords), spec.Number, nil, head, rec.ID)
 		sink.Platform(spec.SourcePlatform, mapStatus(o.Status), platformDetail(o), o.HeadRemoteURL)
 		outcomes = append(outcomes, o)
 		for _, p := range spec.Fanout {
@@ -912,7 +928,7 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 				continue
 			}
 			sink.Platform(p, progress.StatusRunning, "", "")
-			fo := d.fanoutChain(ctx, p, spec)
+			fo := d.fanoutChain(ctx, p, spec, rec.ID)
 			sink.Platform(p, mapStatus(fo.Status), platformDetail(fo), fo.HeadRemoteURL)
 			outcomes = append(outcomes, fo)
 		}
@@ -1039,12 +1055,13 @@ func (d *Dispatcher) dispatchTargets(ctx context.Context, post *store.Post, want
 			}
 		}
 		if len(tg.Segments) > 1 { // threaded target → resume the chain
-			if err := d.resumeChain(ctx, tg, ov, imgs, imetas); err != nil {
+			if err := d.resumeChain(ctx, tg, ov, imgs, imetas, post.ID); err != nil {
 				return err
 			}
 			continue
 		}
 		r := d.runPlatform(ctx, tg.Platform, tg.FinalText, ov, imgs, imetas, nil)
+		d.enqueueFanout(ctx, post.ID, r.SignedEventJSON, r.PendingRelays)
 		if err := d.Store.AppendTargetAttempt(tg.ID, r.Status, r.Error, r.RemoteID, r.RemoteURL, r.LatencyMS, r.RequestJSON, r.ResponseJSON, r.Relays, r.SignedEventJSON); err != nil {
 			return err
 		}
