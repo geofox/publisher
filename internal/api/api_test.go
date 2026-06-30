@@ -71,7 +71,7 @@ func TestAPIPostTooManyImages(t *testing.T) {
 	mw := multipart.NewWriter(&buf)
 	spec, _ := json.Marshal(map[string]any{"master_text": "hi", "platforms": []string{"nostr"}})
 	_ = mw.WriteField("spec", string(spec))
-	for i := 0; i < 11; i++ {
+	for i := 0; i < 41; i++ {
 		fw, _ := mw.CreateFormFile("image", "x.png")
 		_, _ = fw.Write([]byte("img"))
 	}
