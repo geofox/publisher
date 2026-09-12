@@ -14,7 +14,7 @@ require (
 	github.com/mr-tron/base58 v1.3.0
 	github.com/prometheus/client_golang v1.17.0
 	github.com/rivo/uniseg v0.4.7
-	golang.org/x/image v0.40.0
+	golang.org/x/image v0.41.0
 	golang.org/x/net v0.55.0
 	golang.org/x/oauth2 v0.36.0
 	modernc.org/sqlite v1.50.1
