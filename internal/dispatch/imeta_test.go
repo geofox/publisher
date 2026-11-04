@@ -27,6 +27,21 @@ func TestBuildImetasIndexParallel(t *testing.T) {
 	}
 }
 
+func TestBuildImetasCarriesAlt(t *testing.T) {
+	got := buildImetas([]store.Media{
+		{BlossomURL: "https://b/x", Mime: "image/png", SHA256: "aa", Alt: "A blue\n  gradient "},
+		{BlossomURL: "https://b/y", Mime: "image/png", SHA256: "bb"},
+	})
+	if last := got[0][len(got[0])-1]; last != "alt A blue gradient" {
+		t.Errorf("imeta with alt ends in %q, want %q", last, "alt A blue gradient")
+	}
+	for _, f := range got[1] {
+		if strings.HasPrefix(f, "alt") {
+			t.Errorf("imeta without alt text has an alt field: %v", got[1])
+		}
+	}
+}
+
 func TestPickImetasSelectsAndDropsEmpties(t *testing.T) {
 	recs := []store.Media{
 		{BlossomURL: "https://b/x", Mime: "image/png", SHA256: "aa"},

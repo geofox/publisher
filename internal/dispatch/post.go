@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +27,13 @@ func buildImetas(recs []store.Media) []gonostr.Tag {
 		if m.BlossomURL == "" {
 			continue // leaves an empty Tag placeholder, preserving index alignment
 		}
-		out[i] = media.ImetaTag(m.BlossomURL, m.Mime, m.SHA256, m.Dim, m.Blurhash, m.PosterURL)
+		tag := media.ImetaTag(m.BlossomURL, m.Mime, m.SHA256, m.Dim, m.Blurhash, m.PosterURL)
+		// NIP-92 "alt": the same accessibility text the other platforms get.
+		// imeta entries are single-line "key value" strings, so fold newlines.
+		if alt := strings.Join(strings.Fields(m.Alt), " "); alt != "" {
+			tag = append(tag, "alt "+alt)
+		}
+		out[i] = tag
 	}
 	return out
 }

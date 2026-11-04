@@ -352,9 +352,9 @@ All five items are implemented as specified above. What the work turned up:
   media row layout, two spacers, the video progress bar's initial width);
   and the submit button reading "Schedule" after a successful schedule while
   the cleared form would post immediately.
-- **Nostr images carry no alt text**: `media.ImetaTag` never writes NIP-92
-  `alt`. Pinned by a `test.fail()` e2e test; not fixed here (behaviour change
-  to published events, belongs with the Destination work or its own PR).
+- **Nostr images carried no alt text**: `buildImetas` never wrote NIP-92
+  `alt`. Fixed in this PR (alt from the media record, newlines folded); the
+  e2e test that first pinned it with `test.fail()` now passes normally.
 - **Over-limit warning vs. auto-threading**: posting text longer than a
   platform's limit shows "over-limit targets may be cut or rejected — Post
   anyway?", yet the server auto-threads it correctly. The warning predates

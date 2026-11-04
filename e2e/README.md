@@ -40,9 +40,6 @@ reused; in CI it is always started fresh.
 
 ## Known gaps
 
-- `Nostr images carry their alt text in the imeta tag` is marked
-  `test.fail()`: `media.ImetaTag` never writes NIP-92 `alt`. Remove the
-  marker when that is fixed.
 - Re-attaching media from a saved draft isn't covered: the server re-fetches
   draft media over HTTPS only (SSRF guard), and the fake Blossom is plain HTTP.
 - Video (needs ffmpeg) and the Interact/Verify flows (need live resolvers)

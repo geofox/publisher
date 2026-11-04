@@ -158,12 +158,8 @@ test("a failed platform can be retried from History", async ({ page, fakes }) =>
   expect(masto[0].text).toBe(`Partial failure ${m}`);
 });
 
-// Known gap, pinned so it can't be forgotten: media.ImetaTag never writes the
-// NIP-92 "alt" field, so Nostr images go out without their alt text while the
-// other three platforms get it. When that is fixed this test starts passing,
-// Playwright reports it as an unexpected pass, and test.fail() should go.
+// Nostr gets the alt text in its NIP-92 imeta tag, like the other platforms.
 test("Nostr images carry their alt text in the imeta tag", async ({ page, fakes }) => {
-  test.fail(true, "media.ImetaTag drops alt text for Nostr (found by this suite)");
   const m = marker("nostr-alt");
   await openApp(page);
   await page.locator("#master").fill(`Alt on nostr ${m}`);
