@@ -263,6 +263,8 @@ textarea.master,.verify-input{}
 
 /* ── Media thumbnails ───────────────────────────────────────────────────── */
 .images{display:flex;gap:9px;flex-wrap:wrap;align-items:flex-start}
+/* thumbnails flow in the .images row next to the Add button */
+#images{display:contents}
 .thumb{width:96px}
 .thumb img{width:96px;height:96px;object-fit:cover;border-radius:12px;border:.5px solid var(--line-2);display:block}
 .thumb input{
@@ -760,3 +762,8 @@ textarea.master,.verify-input{}
 .user-chip{display:flex;align-items:center;gap:8px;margin-left:auto}
 .user-chip-name{font-size:13px;font-weight:500;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
 .user-signout{padding:5px 11px;font-size:12px}
+
+/* Layout helpers that used to be inline style attributes (blocked by the CSP's
+   style-src 'self'). */
+.flex-spacer{flex:1}
+#drafts-toggle{margin-bottom:8px}
