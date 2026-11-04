@@ -781,6 +781,16 @@ deploying it.
   (§6.2).
 - Draft edits in two tabs silently overwrite each other (§6.1).
 
+**Fixed already, with the spec:** retrying a failed reply, quote or repost
+re-posted its text as a plain post, because the retry path
+(`dispatchTargets`) called `runPlatform` with no reply or quote reference.
+A reply went out as a top-level post, a quote lost its quote, and a repost
+became an empty status, and the Retrier did this on its own. Reproduced
+with a test, then fixed in its own commit: `Interaction` now stores the
+source's native ref, a retry repeats the action (including the head of a
+threaded reply), and a post recorded before the fix fails the retry with
+a clear message instead of posting the wrong thing.
+
 ## Appendix B: future destinations checked against the contract
 
 | Destination | Shape | What it uses |
