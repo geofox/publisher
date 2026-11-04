@@ -4,7 +4,11 @@
 # go-nostr v0.52.3 requires Go >= 1.24.1
 # golang.org/x/image v0.40.0 requires Go >= 1.25.0
 # bluesky-social/indigo (atproto SDK) requires Go >= 1.26
-FROM golang:1.26-alpine AS build
+#
+# Multi-arch (linux/amd64, linux/arm64): the build stage always runs on the
+# builder's own platform and cross-compiles for the target (pure Go,
+# CGO_ENABLED=0), so no QEMU is needed for the Go build.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 
 WORKDIR /src
 
@@ -27,7 +31,9 @@ ARG COMMIT=none
 # container dies with "exec /publisher: no such file or directory" (v1.8.0).
 # HEIC decoding stays fully functional via the WASM path (which the code forces
 # at runtime anyway with heic.ForceWasmMode).
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build \
       -trimpath \
       -tags nodynamic \
@@ -39,17 +45,39 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 # uploads + transcode outputs land there — the overlay layer is disk-backed).
 RUN mkdir -p /newtmp && chmod 1777 /newtmp
 
-# ---- linkage guard ----
+# ---- static ffmpeg/ffprobe for the target platform ----
+# Pinned by the multi-arch INDEX digest of mwader/static-ffmpeg:7.1.1 (amd64 +
+# arm64), so each target platform resolves its own binaries while the pin
+# stays immutable. (The previous pin, sha256:6769881c…, was the amd64 child
+# manifest of this same index.)
+FROM --platform=$TARGETPLATFORM mwader/static-ffmpeg:7.1.1@sha256:11a44711684c0b9f754c047dcd64235b8b52deab251bd0e0a86f22faa160749c AS ffmpeg
+
+# ---- linkage + architecture guard ----
 # A dynamically linked binary in FROM scratch dies at exec with a misleading
 # "no such file or directory" (the missing file is the ELF interpreter) — it
 # crash-looped v1.8.0 in production. Fail the BUILD instead, for every binary
-# that ships: a dynamic loader path embedded in the file means dynamic linkage.
+# that ships: a dynamic loader path embedded in the file means dynamic linkage
+# (the pattern also matches the aarch64 loaders).
+#
+# Each binary's ELF e_machine (2 bytes at offset 18, little-endian) must also
+# match the target: a wrong-arch ffmpeg would otherwise only fail at the first
+# video upload. 3e00 = x86-64 (62), b700 = AArch64 (183).
 FROM build AS check
-COPY --from=mwader/static-ffmpeg:7.1.1@sha256:6769881cc02c80d33e387750a8e144d162adfab2775e934dd97899261dda3a0c /ffmpeg /ffprobe /check/
+ARG TARGETARCH
+COPY --from=ffmpeg /ffmpeg /ffprobe /check/
 RUN cp /publisher /check/publisher && \
+    case "$TARGETARCH" in \
+      amd64) want=3e00 ;; \
+      arm64) want=b700 ;; \
+      *) echo "FATAL: unsupported TARGETARCH $TARGETARCH" >&2; exit 1 ;; \
+    esac && \
     for b in /check/publisher /check/ffmpeg /check/ffprobe; do \
       if grep -qaE 'ld-(linux|musl)' "$b"; then \
         echo "FATAL: $b is dynamically linked — scratch cannot exec it" >&2; exit 1; \
+      fi; \
+      got=$(od -An -tx1 -j18 -N2 "$b" | tr -d ' \n'); \
+      if [ "$got" != "$want" ]; then \
+        echo "FATAL: $b is ELF machine $got, want $want for $TARGETARCH" >&2; exit 1; \
       fi; \
     done && touch /check/ok
 

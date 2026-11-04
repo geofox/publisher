@@ -412,6 +412,10 @@ infrastructure and should be overridden.
 
 ### Run with Docker
 
+The image is published for `linux/amd64` and `linux/arm64` (Raspberry Pi 4/5
+on a 64-bit OS, Ampere/Graviton servers, Apple-silicon hosts); Docker pulls the
+right one automatically.
+
 ```bash
 mkdir -p ./data
 docker run -d --name publisher \
@@ -486,6 +490,9 @@ Or build the container image:
 
 ```bash
 docker build -t publisher:dev .
+# or both architectures at once (needs a buildx builder with the containerd
+# image store or a docker-container driver; no QEMU required):
+docker buildx build --platform linux/amd64,linux/arm64 -t publisher:dev .
 ```
 
 ### Security
