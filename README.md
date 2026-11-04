@@ -422,6 +422,21 @@ services:
       retries: 3
 ```
 
+### Database upgrades and backups
+
+The SQLite schema is versioned. On start, publisher applies any pending
+migrations (recorded in the `schema_migrations` table), each in its own
+transaction. Before upgrading an existing database it writes a consistent
+copy next to it, named after the version it is about to apply — for example
+`/data/publisher.db.pre-v2.bak`. To roll back an upgrade, stop the container,
+replace `publisher.db` with that file (and delete `publisher.db-wal` /
+`publisher.db-shm`), and run the previous image.
+
+An older image refuses to start on a database that a newer image has already
+migrated (`database schema is newer than this build supports`), instead of
+writing data the newer schema doesn't expect. Run the newer image again, or
+restore the backup.
+
 ### Build from source
 
 Requires Go (version per `go.mod`):
