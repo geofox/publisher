@@ -7,6 +7,7 @@ import (
 
 	"github.com/geofox/publisher/internal/auth"
 	"github.com/geofox/publisher/internal/dispatch"
+	"github.com/geofox/publisher/internal/health"
 	"github.com/geofox/publisher/internal/identity"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
@@ -158,6 +159,9 @@ type API struct {
 	// Must be separate from bare os.TempDir() because the runner's startup
 	// sweep removes everything in the workdir.
 	VideoWorkdir string
+
+	// Ready runs the /readyz checks. nil → /readyz always reports ok (tests).
+	Ready *health.Checker
 }
 
 // New creates a new API with the given publisher and media pipeline.
@@ -170,6 +174,7 @@ func New(np *pubnostr.Publisher, mp *media.Pipeline) *API {
 func (a *API) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", a.handleHealthz)
+	mux.HandleFunc("GET /readyz", a.handleReadyz)
 	mux.Handle("GET /metrics", metrics.Handler())
 	mux.HandleFunc("/publish", a.handlePublish)
 	mux.HandleFunc("/upload-media", a.handleUploadMedia)

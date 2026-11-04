@@ -278,13 +278,49 @@ override in the banner.
 
 ### `GET /healthz`
 
-Returns `200 OK` with body `ok` if the process is up. Used by the Docker
-healthcheck; does not probe Blossom or relays.
+Liveness: returns `200 OK` with body `ok` if the process is up. Probes
+nothing.
+
+### `GET /readyz`
+
+Readiness: can this instance accept and persist work right now?
+
+```json
+{
+  "status": "ok",
+  "checks": {
+    "database":      {"status": "ok", "critical": true,  "duration_ms": 1},
+    "data_disk":     {"status": "ok", "critical": false, "duration_ms": 0},
+    "video_workdir": {"status": "ok", "critical": false, "duration_ms": 0}
+  }
+}
+```
+
+| Check | Critical | Fails when |
+|---|---|---|
+| `database` | yes | SQLite doesn't answer, or its schema version isn't the one this build expects |
+| `data_disk` | no | less than 256 MiB free on the database's filesystem |
+| `video_workdir` | no | (video enabled only) the work directory isn't writable |
+
+`status` is `ok`, `degraded` (a non-critical check failed; still `200`), or
+`unavailable` (a critical check failed; `503`). Failed checks carry a short
+`error` class (`timeout`, `unreachable`, `schema mismatch`, `low space`, …);
+details are logged once when a check starts failing and when it recovers.
+
+Add `?external=1` to also check upstream reachability — `blossom`,
+`nostr_relay` (NIP-11), and `bluesky` / `mastodon` / `threads` when
+configured. These never make the instance unavailable, are cached for 30 s,
+and send no credentials (reachability only, not token validity).
+
+`/healthz` and `/readyz` are open even when OIDC is enabled.
 
 ### CLI healthcheck mode
 
 Invoked as `/publisher -healthcheck` inside the container — issues a GET to
-`localhost:$PORT/healthz` and exits 0/1. Wire into compose:
+`localhost:$PORT/readyz` (local checks only) and exits 0 when ready (`200`,
+including `degraded`), 1 otherwise. The image declares it as its default
+`HEALTHCHECK`, so `docker ps` shows health out of the box. To tune it in
+compose:
 
 ```yaml
 healthcheck:
@@ -475,7 +511,7 @@ Keycloak, or any spec-compliant issuer). When enabled:
 - The machine endpoints `/publish` and `/upload-media` require
   `Authorization: Bearer <api-token>`. Tokens are created and revoked in the
   UI under **Access tokens**.
-- `/healthz`, `/metrics`, and the token-gated `GET /api/public/feed` remain
+- `/healthz`, `/readyz`, `/metrics`, and the token-gated `GET /api/public/feed` remain
   open (no session required). `/metrics` is intentionally unauthenticated so
   a Prometheus scraper can reach it without a session; restrict it at the
   network or proxy layer if that is a concern in your deployment.

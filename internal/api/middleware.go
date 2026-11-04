@@ -101,7 +101,7 @@ func (a *API) withGates(next http.Handler) http.Handler {
 		// would otherwise satisfy the "/auth/" prefix and dodge the session gate.
 		p := path.Clean(r.URL.Path)
 		switch {
-		case p == "/healthz" || p == "/metrics" ||
+		case p == "/healthz" || p == "/readyz" || p == "/metrics" ||
 			strings.HasPrefix(p, "/auth/") ||
 			p == "/api/public/feed":
 			next.ServeHTTP(w, r) // always-open / separately-gated

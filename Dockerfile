@@ -74,4 +74,9 @@ ENV FFMPEG_PATH=/usr/local/bin/ffmpeg
 ENV FFPROBE_PATH=/usr/local/bin/ffprobe
 EXPOSE 8080
 
+# Readiness via /readyz (database + disk; never upstreams). Compose/k8s probes
+# can override this; `docker ps` shows health without any extra config.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD ["/publisher", "-healthcheck"]
+
 ENTRYPOINT ["/publisher"]
