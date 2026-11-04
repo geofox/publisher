@@ -1,0 +1,215 @@
+package store
+
+import (
+	"context"
+	"fmt"
+)
+
+// migrations is the ordered, append-only list of schema steps. Open applies
+// every entry newer than the database's recorded version, each in its own
+// transaction, after writing a <db>.pre-v<N>.bak copy of an existing database.
+//
+// Rules:
+//   - Never edit, renumber or reorder a released migration. Add a new one with
+//     the next version.
+//   - Versions are dense from 1; names are unique, short and snake_case.
+//   - Prefer additive changes. Drops, renames and type changes use SQLite's
+//     table-rebuild recipe (https://sqlite.org/lang_altertable.html#otheralter)
+//     with noForeignKeys: true.
+//   - Data backfills are Go up funcs, in the same migration as their DDL.
+//   - After adding one, run `go test ./internal/store -run TestSchemaGolden
+//     -update` and commit the golden diff with it.
+var migrations = []migration{
+	{version: 1, name: "baseline", up: migrateBaseline},
+}
+
+// migrateBaseline is the schema as it stood when versioned migrations were
+// introduced. Databases created before then are at any point of the column
+// history below, so — in this migration only — each column is added only if
+// missing. Every later migration is plain run-once DDL.
+func migrateBaseline(ctx context.Context, tx execer) error {
+	if _, err := tx.ExecContext(ctx, baselineSchema); err != nil {
+		return err
+	}
+	for _, c := range baselineColumns {
+		if err := addLegacyColumn(ctx, tx, c.table, c.column, c.typ); err != nil {
+			return fmt.Errorf("add %s.%s: %w", c.table, c.column, err)
+		}
+	}
+	return nil
+}
+
+// baselineColumns are the columns added to baselineSchema's tables over time,
+// in the order they were introduced.
+var baselineColumns = []struct{ table, column, typ string }{
+	{"post_targets", "signed_event_json", "TEXT"},
+	{"posts", "scheduled_at", "TIMESTAMP"},
+	{"post_targets", "segments_json", "TEXT"},
+	{"posts", "hidden", "INTEGER NOT NULL DEFAULT 0"},
+	{"posts", "interaction_json", "TEXT"},
+	{"post_targets", "gave_up_at", "TIMESTAMP"},
+	{"target_relays", "gave_up_at", "TIMESTAMP"},
+	{"target_relays", "retry_count", "INTEGER NOT NULL DEFAULT 0"},
+	{"media", "duration_secs", "INTEGER"},
+	{"draft_media", "duration_secs", "INTEGER"},
+	{"media", "poster_url", "TEXT"},
+	{"draft_media", "poster_url", "TEXT"},
+	{"draft_media", "client_id", "TEXT"},
+}
+
+// addLegacyColumn adds a column unless it already exists (SQLite has no ADD
+// COLUMN IF NOT EXISTS). Only the baseline migration may use it.
+func addLegacyColumn(ctx context.Context, tx execer, table, column, typ string) error {
+	rows, err := tx.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return rows.Err() // already present
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_ = rows.Close()
+	_, err = tx.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+column+" "+typ)
+	return err
+}
+
+const baselineSchema = `
+CREATE TABLE IF NOT EXISTS posts (
+  id            TEXT PRIMARY KEY,
+  created_at    TIMESTAMP NOT NULL,
+  master_text   TEXT,
+  platforms     TEXT NOT NULL,
+  delay_seconds INTEGER NOT NULL DEFAULT 0,
+  source        TEXT NOT NULL,
+  status        TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS post_targets (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id         TEXT NOT NULL REFERENCES posts(id),
+  platform        TEXT NOT NULL,
+  final_text      TEXT,
+  fields_json     TEXT,
+  status          TEXT NOT NULL,
+  remote_id       TEXT,
+  remote_url      TEXT,
+  latency_ms      INTEGER,
+  attempt_count   INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at TIMESTAMP,
+  UNIQUE(post_id, platform)
+);
+CREATE TABLE IF NOT EXISTS target_attempts (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_id     INTEGER NOT NULL REFERENCES post_targets(id),
+  attempt_no    INTEGER NOT NULL,
+  status        TEXT NOT NULL,
+  error         TEXT,
+  latency_ms    INTEGER,
+  remote_id     TEXT,
+  request_json  TEXT,
+  response_json TEXT,
+  attempted_at  TIMESTAMP NOT NULL
+);
+CREATE TABLE IF NOT EXISTS media (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id     TEXT NOT NULL REFERENCES posts(id),
+  ordinal     INTEGER NOT NULL,
+  blossom_url TEXT NOT NULL,
+  sha256      TEXT NOT NULL,
+  mime        TEXT,
+  dim         TEXT,
+  blurhash    TEXT,
+  size_bytes  INTEGER,
+  alt         TEXT
+);
+CREATE TABLE IF NOT EXISTS target_relays (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_id    INTEGER NOT NULL REFERENCES post_targets(id),
+  relay_url    TEXT NOT NULL,
+  status       TEXT NOT NULL,
+  message      TEXT,
+  attempted_at TIMESTAMP NOT NULL,
+  UNIQUE(target_id, relay_url)
+);
+CREATE TABLE IF NOT EXISTS sync_relays (
+  url      TEXT PRIMARY KEY,
+  added_at TIMESTAMP NOT NULL
+);
+CREATE TABLE IF NOT EXISTS threads_token (
+  id           INTEGER PRIMARY KEY CHECK (id = 1),
+  token        TEXT NOT NULL,
+  expires_at   TIMESTAMP NOT NULL,
+  seed_hash    TEXT NOT NULL,
+  refreshed_at TIMESTAMP NOT NULL
+);
+CREATE TABLE IF NOT EXISTS drafts (
+  id          TEXT PRIMARY KEY,
+  created_at  TIMESTAMP NOT NULL,
+  updated_at  TIMESTAMP NOT NULL,
+  title       TEXT NOT NULL DEFAULT '',
+  master_text TEXT NOT NULL DEFAULT '',
+  tags_json   TEXT NOT NULL DEFAULT '[]',
+  spec_json   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS draft_media (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  draft_id    TEXT NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+  ordinal     INTEGER NOT NULL,
+  blossom_url TEXT NOT NULL,
+  sha256      TEXT NOT NULL,
+  mime        TEXT,
+  dim         TEXT,
+  blurhash    TEXT,
+  size_bytes  INTEGER,
+  alt         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_targets_post ON post_targets(post_id);
+CREATE INDEX IF NOT EXISTS idx_target_relays_target ON target_relays(target_id);
+CREATE INDEX IF NOT EXISTS idx_drafts_updated_at ON drafts(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_draft_media_draft_id ON draft_media(draft_id);
+CREATE TABLE IF NOT EXISTS users (
+  id           TEXT PRIMARY KEY,
+  subject      TEXT NOT NULL UNIQUE,
+  email        TEXT,
+  name         TEXT,
+  created_at   TIMESTAMP NOT NULL,
+  last_seen_at TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id),
+  created_at TIMESTAMP NOT NULL,
+  expires_at TIMESTAMP NOT NULL
+);
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  token_hash   TEXT NOT NULL UNIQUE,
+  created_at   TIMESTAMP NOT NULL,
+  last_used_at TIMESTAMP,
+  revoked_at   TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS nostr_fanout (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id           TEXT,
+  signed_event_json TEXT NOT NULL,
+  relay_url         TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'pending',
+  retry_count       INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at   TIMESTAMP NOT NULL,
+  created_at        TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_nostr_fanout_due ON nostr_fanout(status, next_attempt_at);
+`

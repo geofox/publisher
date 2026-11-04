@@ -278,13 +278,49 @@ override in the banner.
 
 ### `GET /healthz`
 
-Returns `200 OK` with body `ok` if the process is up. Used by the Docker
-healthcheck; does not probe Blossom or relays.
+Liveness: returns `200 OK` with body `ok` if the process is up. Probes
+nothing.
+
+### `GET /readyz`
+
+Readiness: can this instance accept and persist work right now?
+
+```json
+{
+  "status": "ok",
+  "checks": {
+    "database":      {"status": "ok", "critical": true,  "duration_ms": 1},
+    "data_disk":     {"status": "ok", "critical": false, "duration_ms": 0},
+    "video_workdir": {"status": "ok", "critical": false, "duration_ms": 0}
+  }
+}
+```
+
+| Check | Critical | Fails when |
+|---|---|---|
+| `database` | yes | SQLite doesn't answer, or its schema version isn't the one this build expects |
+| `data_disk` | no | less than 256 MiB free on the database's filesystem |
+| `video_workdir` | no | (video enabled only) the work directory isn't writable |
+
+`status` is `ok`, `degraded` (a non-critical check failed; still `200`), or
+`unavailable` (a critical check failed; `503`). Failed checks carry a short
+`error` class (`timeout`, `unreachable`, `schema mismatch`, `low space`, …);
+details are logged once when a check starts failing and when it recovers.
+
+Add `?external=1` to also check upstream reachability — `blossom`,
+`nostr_relay` (NIP-11), and `bluesky` / `mastodon` / `threads` when
+configured. These never make the instance unavailable, are cached for 30 s,
+and send no credentials (reachability only, not token validity).
+
+`/healthz` and `/readyz` are open even when OIDC is enabled.
 
 ### CLI healthcheck mode
 
 Invoked as `/publisher -healthcheck` inside the container — issues a GET to
-`localhost:$PORT/healthz` and exits 0/1. Wire into compose:
+`localhost:$PORT/readyz` (local checks only) and exits 0 when ready (`200`,
+including `degraded`), 1 otherwise. The image declares it as its default
+`HEALTHCHECK`, so `docker ps` shows health out of the box. To tune it in
+compose:
 
 ```yaml
 healthcheck:
@@ -376,6 +412,10 @@ infrastructure and should be overridden.
 
 ### Run with Docker
 
+The image is published for `linux/amd64` and `linux/arm64` (Raspberry Pi 4/5
+on a 64-bit OS, Ampere/Graviton servers, Apple-silicon hosts); Docker pulls the
+right one automatically.
+
 ```bash
 mkdir -p ./data
 docker run -d --name publisher \
@@ -422,6 +462,21 @@ services:
       retries: 3
 ```
 
+### Database upgrades and backups
+
+The SQLite schema is versioned. On start, publisher applies any pending
+migrations (recorded in the `schema_migrations` table), each in its own
+transaction. Before upgrading an existing database it writes a consistent
+copy next to it, named after the version it is about to apply — for example
+`/data/publisher.db.pre-v2.bak`. To roll back an upgrade, stop the container,
+replace `publisher.db` with that file (and delete `publisher.db-wal` /
+`publisher.db-shm`), and run the previous image.
+
+An older image refuses to start on a database that a newer image has already
+migrated (`database schema is newer than this build supports`), instead of
+writing data the newer schema doesn't expect. Run the newer image again, or
+restore the backup.
+
 ### Build from source
 
 Requires Go (version per `go.mod`):
@@ -435,6 +490,9 @@ Or build the container image:
 
 ```bash
 docker build -t publisher:dev .
+# or both architectures at once (needs a buildx builder with the containerd
+# image store or a docker-container driver; no QEMU required):
+docker buildx build --platform linux/amd64,linux/arm64 -t publisher:dev .
 ```
 
 ### Security
@@ -460,7 +518,7 @@ Keycloak, or any spec-compliant issuer). When enabled:
 - The machine endpoints `/publish` and `/upload-media` require
   `Authorization: Bearer <api-token>`. Tokens are created and revoked in the
   UI under **Access tokens**.
-- `/healthz`, `/metrics`, and the token-gated `GET /api/public/feed` remain
+- `/healthz`, `/readyz`, `/metrics`, and the token-gated `GET /api/public/feed` remain
   open (no session required). `/metrics` is intentionally unauthenticated so
   a Prometheus scraper can reach it without a session; restrict it at the
   network or proxy layer if that is a concern in your deployment.

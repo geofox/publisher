@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/geofox/publisher/internal/config"
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/feed"
+	"github.com/geofox/publisher/internal/health"
 	"github.com/geofox/publisher/internal/identity"
 	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/mastodon"
@@ -168,6 +170,7 @@ func main() {
 		Mastodon: resolve.MastodonAdapter{C: mc},
 		Nostr:    resolve.NostrAdapter{P: np},
 	}
+	a.Ready = readinessChecks(cfg, st, a.VideoWorkdir)
 	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
 	d.Alerter = notifier
 	if cfg.OIDCEnabled() {
@@ -237,13 +240,44 @@ func main() {
 	}
 }
 
+// readinessChecks builds the /readyz checks. Local checks run on every probe;
+// upstream checks only on /readyz?external=1, cached, and never critical. No
+// probe sends credentials.
+func readinessChecks(cfg config.Config, st *store.Store, videoWorkdir string) *health.Checker {
+	dataDir := filepath.Dir(cfg.DBPath)
+	c := &health.Checker{Local: []health.Check{
+		health.Database(st, store.LatestSchemaVersion()),
+		health.DiskSpace("data_disk", dataDir, health.MinFreeBytes),
+	}}
+	if videoWorkdir != "" {
+		c.Local = append(c.Local, health.WritableDir("video_workdir", videoWorkdir))
+	}
+	hc := &http.Client{Timeout: 5 * time.Second}
+	c.External = append(c.External,
+		health.HTTPReachable("blossom", hc, http.MethodHead, cfg.BlossomURL, nil),
+		health.NostrRelay("nostr_relay", hc, cfg.NIP65BootstrapRelay),
+	)
+	if cfg.BlueskyAppPassword != "" && cfg.BlueskyPDSURL != "" {
+		c.External = append(c.External, health.HTTPReachable("bluesky", hc, http.MethodGet, cfg.BlueskyPDSURL+"/xrpc/_health", nil))
+	}
+	if cfg.MastodonToken != "" && cfg.MastodonBaseURL != "" {
+		c.External = append(c.External, health.HTTPReachable("mastodon", hc, http.MethodGet, cfg.MastodonBaseURL+"/api/v1/instance", nil))
+	}
+	if cfg.ThreadsToken != "" {
+		c.External = append(c.External, health.HTTPReachable("threads", hc, http.MethodGet, "https://graph.threads.net/", nil))
+	}
+	return c
+}
+
+// runHealthcheck is the container healthcheck: it asks /readyz (local checks
+// only) and exits 0 when the instance is ready (200, including "degraded").
 func runHealthcheck() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = config.DefaultPort
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://127.0.0.1:" + port + "/healthz")
+	resp, err := client.Get("http://127.0.0.1:" + port + "/readyz")
 	if err != nil {
 		os.Exit(1)
 	}

@@ -1087,7 +1087,12 @@ async function doPost() {
     import("./drafts.js").then(m => m.loadDraftList && m.loadDraftList());
   } catch (e) {
     flash("Error: " + e.message);
-  } finally { btn.disabled = false; btn.textContent = isScheduled ? "Schedule" : "Post"; }
+  } finally {
+    // Label from the field as it is now, not as it was: a successful schedule
+    // clears #schedat, and a stale "Schedule" label would sit on a button that
+    // now posts immediately.
+    btn.disabled = false; btn.textContent = $("#schedat").value ? "Schedule" : "Post";
+  }
 }
 
 async function doInteract() {

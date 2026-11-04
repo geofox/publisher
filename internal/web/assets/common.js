@@ -26,6 +26,9 @@ export function el(tag, attrs = {}, ...kids) {
     if (k === "class") n.className = v;
     else if (k === "text") n.textContent = v;
     else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    // Inline style attributes are blocked by the CSP (style-src 'self'); the
+    // CSSOM is not, so styles go through n.style instead of setAttribute.
+    else if (k === "style") n.style.cssText = v;
     else if ((k === "href" || k === "src" || k === "poster") && v !== false && v != null) n.setAttribute(k, safeURL(v));
     else if (v !== false && v != null) n.setAttribute(k, v);
   }

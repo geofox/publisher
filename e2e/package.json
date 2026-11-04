@@ -1,0 +1,12 @@
+{
+  "name": "publisher-e2e",
+  "private": true,
+  "description": "Playwright end-to-end suite for the Publisher web app (see README.md)",
+  "scripts": {
+    "test": "playwright test",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}
