@@ -8,7 +8,7 @@ require (
 	github.com/buckket/go-blurhash v1.1.0
 	github.com/coreos/go-oidc/v3 v3.18.0
 	github.com/gen2brain/heic v0.4.9
-	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/gowebpki/jcs v1.0.1
 	github.com/mattn/go-mastodon v0.0.11
 	github.com/mr-tron/base58 v1.3.0
