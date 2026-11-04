@@ -292,15 +292,15 @@ migrations), **real** `dispatch.Dispatcher` and the embedded web assets, with
 fakes only at the network edge:
 
 - fake platform posters (Nostr, Mastodon, Bluesky, Threads) that record calls
-  and return deterministic remote ids/URLs; a post whose text contains
-  `#fail-<platform>` fails on that platform, so failure and retry paths are
-  testable;
+  and return deterministic remote ids/URLs; `POST /__e2e/down?platform=X`
+  makes one fail until `/__e2e/up`, so failure and retry paths are testable
+  (a switch rather than magic text, because Retry re-sends the same text);
 - an in-process fake Blossom server for media uploads;
 - no relays, no DNS, no internet.
 
-Playwright's `webServer` builds and starts the harness on a random port. The
-harness exposes `/__e2e/calls` (what each fake platform received) so tests can
-assert on what *would* have been sent, not just on what the UI shows.
+Playwright's `webServer` starts the harness on `127.0.0.1:4173`. The harness
+exposes `/__e2e/calls` (what each fake platform received) so tests can assert
+on what *would* have been sent, not just on what the UI shows.
 
 ### First scenarios
 
@@ -316,7 +316,8 @@ assert on what *would* have been sent, not just on what the UI shows.
    failure removed from the fake → success.
 7. Drafts: save, reload page, open from sidebar, content restored; delete.
 8. Schedule a post in the future → shows as scheduled in History → cancel.
-9. Mobile viewport (Pixel 7) smoke of compose + history.
+9. Mobile viewport (Pixel 7): tests tagged `@mobile` (boot, publish +
+   History) also run there.
 
 Chromium only at first (the PWA targets mobile Safari too; WebKit can be added
 once the suite is stable). CI uploads the HTML report and traces on failure.
@@ -338,6 +339,29 @@ commit. Order: spec/plan → migrations → file split → `/readyz` → arm64 �
 e2e. First start on an existing install applies v1 and writes
 `publisher.db.pre-v1.bak` next to the database. Nothing else changes for
 users apart from `/readyz` and the new image architectures.
+
+## As built (2026-11-04)
+
+All five items are implemented as specified above. What the work turned up:
+
+- **The old ffmpeg pin was amd64-only**, so a naive arm64 build would have
+  shipped x86-64 ffmpeg. The new ELF-machine guard fails such a build
+  (verified by building arm64 against the old pin).
+- **The e2e suite found three real UI bugs on its first run**, fixed in their
+  own commit: inline `style` attributes silently blocked by the CSP (the
+  media row layout, two spacers, the video progress bar's initial width);
+  and the submit button reading "Schedule" after a successful schedule while
+  the cleared form would post immediately.
+- **Nostr images carry no alt text**: `media.ImetaTag` never writes NIP-92
+  `alt`. Pinned by a `test.fail()` e2e test; not fixed here (behaviour change
+  to published events, belongs with the Destination work or its own PR).
+- **Over-limit warning vs. auto-threading**: posting text longer than a
+  platform's limit shows "over-limit targets may be cut or rejected — Post
+  anyway?", yet the server auto-threads it correctly. The warning predates
+  auto-threading; it belongs to the step-3 thread editor work.
+- **Concurrent first start**: two processes migrating the same file could
+  collide on the backup file; caught by a stress test and fixed (temp file +
+  rename, discarded if another process migrated meanwhile).
 
 ## Follow-ups found while doing this
 
