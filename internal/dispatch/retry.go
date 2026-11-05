@@ -13,6 +13,13 @@ import (
 // updates that endpoint's status. Only destinations that deliver to several
 // endpoints (destination.Redeliverer) have endpoint rows.
 func (d *Dispatcher) RetryRelay(ctx context.Context, postID, relayURL string) (*store.Post, error) {
+	return d.RetryTargetRelay(ctx, postID, 0, relayURL)
+}
+
+// RetryTargetRelay is RetryRelay for one target of the post (0: the first
+// target with that endpoint), for posts with several Nostr accounts on the
+// same relay.
+func (d *Dispatcher) RetryTargetRelay(ctx context.Context, postID string, targetID int64, relayURL string) (*store.Post, error) {
 	if d.Store == nil {
 		return nil, errors.New("retry requires a store")
 	}
@@ -23,6 +30,9 @@ func (d *Dispatcher) RetryRelay(ctx context.Context, postID, relayURL string) (*
 	var target *store.Target
 	var relay *store.RelayState
 	for i := range post.Targets {
+		if targetID != 0 && post.Targets[i].ID != targetID {
+			continue
+		}
 		for j := range post.Targets[i].Relays {
 			if post.Targets[i].Relays[j].URL == relayURL {
 				target, relay = &post.Targets[i], &post.Targets[i].Relays[j]

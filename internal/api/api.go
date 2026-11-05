@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/geofox/publisher/internal/destination"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/geofox/publisher/internal/auth"
@@ -175,6 +176,8 @@ type API struct {
 	// streams (they would otherwise hold the shutdown until its deadline).
 	// nil: streams end only when their client leaves.
 	Stopping <-chan struct{}
+
+	streams atomic.Int64 // open event streams
 }
 
 // New creates a new API with the given publisher and media pipeline.

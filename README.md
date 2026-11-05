@@ -53,7 +53,9 @@ app moves over and the old routes go once `/v1` covers them.
   `sending`, `published`, `partial`, `failed`, `unknown` or `canceled`.
 - **Events** are kept 7 days. Each has an `id`; reconnect with
   `Last-Event-ID` (browsers do it for you) or `?after=` to resume where
-  you left off. `GET /v1/events` starts from now unless you pass one.
+  you left off. `GET /v1/events` starts from now unless you pass one. A
+  post's stream ends after `post.completed`; close your EventSource then
+  (one that reconnects gets 204, which stops it).
 
 - **Auth:** the browser session, or `Authorization: Bearer <token>`. Tokens
   carry scopes (`posts:read`, `posts:write`, `media:write`, `drafts:read`,

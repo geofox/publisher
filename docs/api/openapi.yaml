@@ -488,7 +488,7 @@ paths:
       description: |
         Needs `posts:write`. Stops what the post still has to send: all of
         a scheduled post, or the rest of a thread (the item being sent at
-        that moment finishes). Failed items waiting for an automatic retry
+        that moment finishes, and is not retried if it fails). Failed items waiting for an automatic retry
         are canceled too; items whose outcome is `unknown` keep that status,
         since they may be live, but are no longer retried. Targets left
         `failed` or `partial` get `gave_up_at`, and a `:retry` still sends
@@ -523,9 +523,11 @@ paths:
       tags: [posts]
       summary: Send a post's failed items again
       description: |
-        Needs `posts:write`. Without a body, retries every target that
-        failed, was missed, or is a thread that stopped part way. `targets`
-        narrows that; `deliveries` retries single failed Nostr relays.
+        Needs `posts:write`. Without a body (an empty one counts), retries
+        every target that failed, was missed or canceled, or is a thread
+        that stopped part way; items a cancel stopped are sent too.
+        `targets` narrows that; `deliveries` retries single failed Nostr
+        relays, each named once.
         Answers 202 at once: the engine sends within seconds, and the
         post's event stream reports the outcome. With nothing to retry: 409.
       security:
@@ -572,10 +574,14 @@ paths:
       summary: A post's events, as server-sent events
       description: |
         Needs `posts:read`. Replays the post's events from the start (or
-        after `Last-Event-ID` / `after`), then streams new ones, and ends
-        once the post has nothing left to send. Each message has `id`,
-        `event` (the type) and `data` (an Event as JSON). Events are kept
-        7 days.
+        after `Last-Event-ID` / `after`; the header wins), then streams
+        new ones, and ends after `post.completed`, once the post has
+        nothing left to send (automatic retries included). Close an
+        EventSource on `post.completed`; one that reconnects anyway gets
+        204, which stops it. Each message has `id`, `event` (the type) and
+        `data` (an Event as JSON). A stream also ends after an hour or when
+        the server stops: reconnect with `Last-Event-ID`. Events are kept
+        7 days. Too many open streams: 503 with `Retry-After`.
       security:
         - bearer: ["posts:read"]
         - session: []
@@ -585,6 +591,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/EventStream"
+        "204":
+          description: The post has settled and the client has every event.
         "400":
           $ref: "#/components/responses/BadParameter"
         "401":
@@ -603,8 +611,11 @@ paths:
       description: |
         Needs `posts:read`. Streams events from now on (or after
         `Last-Event-ID` / `after`, for a client catching up) until the
-        client disconnects; a `: ping` comment every 15 seconds keeps idle
-        connections open. Events are kept 7 days.
+        client disconnects (the header wins over `after`); a `: ping`
+        comment every 15 seconds keeps idle connections open. A stream
+        ends after an hour or when the server stops: reconnect with
+        `Last-Event-ID`. Events are kept 7 days. Too many open streams:
+        503 with `Retry-After`.
       security:
         - bearer: ["posts:read"]
         - session: []

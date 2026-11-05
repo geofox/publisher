@@ -43,7 +43,8 @@ CREATE TABLE events (
 );
 CREATE INDEX idx_events_owner ON events(owner_id, id);
 CREATE INDEX idx_events_post ON events(post_id, id);
-CREATE INDEX idx_events_created ON events(created_at);`)
+CREATE INDEX idx_events_created ON events(created_at);
+ALTER TABLE posts ADD COLUMN canceled_at TIMESTAMP;`)
 	return err
 }
 

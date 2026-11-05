@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/geofox/publisher/internal/store"
@@ -18,9 +19,11 @@ import (
 // until the client leaves.
 
 const (
-	sseHeartbeat = 15 * time.Second
-	ssePoll      = time.Second
-	sseBatch     = 200
+	sseHeartbeat  = 15 * time.Second
+	ssePoll       = time.Second
+	sseBatch      = 200
+	sseMaxLife    = time.Hour // then the client reconnects with Last-Event-ID
+	sseMaxStreams = 64        // open streams per process
 )
 
 // v1EventBody is an event's data line.
@@ -61,23 +64,27 @@ func v1Event(e store.Event) v1EventBody {
 	return b
 }
 
-// lastEventID reads where a client resumes: Last-Event-ID, or ?after=.
+// lastEventID reads where a client resumes: Last-Event-ID, or ?after=
+// (the header wins; both are checked).
 func lastEventID(w http.ResponseWriter, r *http.Request) (int64, bool, bool) {
-	s := r.Header.Get("Last-Event-ID")
-	name := "Last-Event-ID"
-	if s == "" {
-		s, name = r.URL.Query().Get("after"), "after"
+	var n int64
+	var given bool
+	for _, src := range []struct{ name, value string }{
+		{"after", r.URL.Query().Get("after")},
+		{"Last-Event-ID", r.Header.Get("Last-Event-ID")},
+	} {
+		if src.value == "" {
+			continue
+		}
+		v, err := strconv.ParseInt(src.value, 10, 64)
+		if err != nil || v < 0 {
+			problem(w, r, http.StatusBadRequest, codeInvalidParameter, src.name+" is an event id",
+				fieldError{Parameter: src.name, Code: "invalid", Detail: "a whole number from a previous event's id"})
+			return 0, false, false
+		}
+		n, given = v, true
 	}
-	if s == "" {
-		return 0, false, true
-	}
-	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || n < 0 {
-		problem(w, r, http.StatusBadRequest, codeInvalidParameter, name+" is an event id",
-			fieldError{Parameter: name, Code: "invalid", Detail: "a whole number from a previous event's id"})
-		return 0, false, false
-	}
-	return n, true, true
+	return n, given, true
 }
 
 func (a *API) v1PostEvents(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +96,18 @@ func (a *API) v1PostEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.streamEvents(w, r, store.EventFilter{OwnerID: p.OwnerID, PostID: p.ID, After: after}, true)
+	f := store.EventFilter{OwnerID: p.OwnerID, PostID: p.ID, After: after, Limit: 1}
+	// Settled with nothing new: 204, which tells an EventSource to stop
+	// reconnecting.
+	_, settled, err := a.Store.PostState(r.Context(), p.ID)
+	if err == nil && settled {
+		evs, err := a.Store.EventsSince(r.Context(), f)
+		if err == nil && len(evs) == 0 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
+	a.streamEvents(w, r, f, true)
 }
 
 func (a *API) v1Events(w http.ResponseWriter, r *http.Request) {
@@ -115,13 +133,25 @@ func (a *API) v1Events(w http.ResponseWriter, r *http.Request) {
 }
 
 // streamEvents writes events matching f as they are logged. untilSettled
-// ends the stream once the post is settled and its events are sent.
+// ends the stream once the post is settled and its events are sent. A
+// stream also ends after sseMaxLife or when the server stops; the client
+// resumes with Last-Event-ID.
 func (a *API) streamEvents(w http.ResponseWriter, r *http.Request, f store.EventFilter, untilSettled bool) {
+	if n := a.streams.Add(1); n > sseMaxStreams {
+		a.streams.Add(-1)
+		w.Header().Set("Retry-After", "30")
+		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "too many event streams are open")
+		return
+	}
+	defer a.streams.Add(-1)
 	rc := http.NewResponseController(w)
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return // a HEAD response has no body to stream
+	}
 	// The server's write timeout is for ordinary requests; a stream pushes
 	// it forward on every write.
 	extend := func() { _ = rc.SetWriteDeadline(time.Now().Add(sseHeartbeat + 30*time.Second)) }
@@ -133,19 +163,22 @@ func (a *API) streamEvents(w http.ResponseWriter, r *http.Request, f store.Event
 	defer heartbeat.Stop()
 	poll := time.NewTicker(ssePoll)
 	defer poll.Stop()
+	life := time.NewTimer(sseMaxLife)
+	defer life.Stop()
 	ctx := r.Context()
 	f.Limit = sseBatch
+	lastPost := "" // the type of the last post.* event sent
 	for {
 		changed := a.Store.EventsChanged() // before reading, so no write slips between
-		// The post's status is read before its events: a settled status was
+		// The post's state is read before its events: a settled state was
 		// committed with its events, so they are all in the read below.
 		settled := false
 		if untilSettled {
-			st, err := a.Store.PostStatus(ctx, f.PostID)
+			_, done, err := a.Store.PostState(ctx, f.PostID)
 			if err != nil {
 				return // gone (an old-style cancel deletes it)
 			}
-			settled = store.PostSettled(st)
+			settled = done
 		}
 		events, err := a.Store.EventsSince(ctx, f)
 		if err != nil {
@@ -161,12 +194,17 @@ func (a *API) streamEvents(w http.ResponseWriter, r *http.Request, f store.Event
 				return
 			}
 			f.After = e.ID
+			if strings.HasPrefix(e.Type, "post.") {
+				lastPost = e.Type
+			}
 		}
 		if len(events) > 0 {
 			_ = rc.Flush()
 		}
-		if settled && len(events) < sseBatch {
-			return // everything up to the post settling is sent
+		// Settled, everything sent, and the last word was that it settled
+		// (not a retry that started after the state was read).
+		if settled && len(events) < sseBatch && (lastPost == store.EventPostCompleted || lastPost == "") {
+			return
 		}
 		if len(events) == sseBatch {
 			continue // more waiting
@@ -175,7 +213,9 @@ func (a *API) streamEvents(w http.ResponseWriter, r *http.Request, f store.Event
 		case <-ctx.Done():
 			return
 		case <-a.Stopping:
-			return // the client reconnects with Last-Event-ID
+			return
+		case <-life.C:
+			return
 		case <-changed:
 		case <-poll.C:
 		case <-heartbeat.C:

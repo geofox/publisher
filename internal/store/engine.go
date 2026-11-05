@@ -76,7 +76,7 @@ func (s *Store) ClaimItem(ctx context.Context, now time.Time, f ClaimFilter) (*C
 		    JOIN posts p ON p.id = pt.post_id
 		   WHERE ti.status IN ('planned', 'failed', 'unknown')
 		     AND ti.next_attempt_at IS NOT NULL AND ti.next_attempt_at <= ?
-		     AND pt.gave_up_at IS NULL
+		     AND pt.gave_up_at IS NULL AND p.canceled_at IS NULL
 		     AND p.status NOT IN ('cancelling', 'missed')
 		     AND (? = 0 OR pt.id = ?)
 		     AND p.id NOT IN (SELECT value FROM json_each(?))
@@ -184,8 +184,18 @@ func (s *Store) RecordItemResult(ctx context.Context, r ItemResult) (Outcome, er
 	if len(r.Ref) > 0 {
 		ref = string(r.Ref)
 	}
+	before, err := readPostState(ctx, tx, r.PostID)
+	if err != nil {
+		return out, err
+	}
+	// A canceled post retries nothing on its own: an item in flight at the
+	// cancel ends with its outcome, and its target is given up.
+	var canceled bool
+	if err := tx.QueryRowContext(ctx, `SELECT canceled_at IS NOT NULL FROM posts WHERE id = ?`, r.PostID).Scan(&canceled); err != nil {
+		return out, err
+	}
 	var next any
-	if r.NextAttemptAt != nil {
+	if r.NextAttemptAt != nil && !canceled {
 		next = r.NextAttemptAt.UTC()
 	}
 	live := r.Status == ItemPublished || r.Status == ItemPartial
@@ -233,7 +243,7 @@ func (s *Store) RecordItemResult(ctx context.Context, r ItemResult) (Outcome, er
 		  attempt_count = (SELECT MAX(attempt_count) FROM target_items WHERE target_id = ?),
 		  gave_up_at = CASE WHEN ? THEN COALESCE(gave_up_at, ?) ELSE gave_up_at END
 		WHERE id = ?`,
-		out.TargetStatus, nullStr(r.ErrorClass), latency, at, r.TargetID, r.GiveUp, at, r.TargetID); err != nil {
+		out.TargetStatus, nullStr(r.ErrorClass), latency, at, r.TargetID, r.GiveUp || (canceled && !live), at, r.TargetID); err != nil {
 		return out, err
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT status FROM posts WHERE id = ?`, r.PostID).Scan(&out.PostBefore); err != nil {
@@ -245,7 +255,9 @@ func (s *Store) RecordItemResult(ctx context.Context, r ItemResult) (Outcome, er
 	if err := tx.QueryRowContext(ctx, `SELECT status FROM posts WHERE id = ?`, r.PostID).Scan(&out.PostAfter); err != nil {
 		return out, err
 	}
-	if err := emitItemResult(ctx, tx, r, out, at); err != nil {
+	// Events are dated now: a result recorded late (startup recovery) is
+	// still news to a stream.
+	if err := emitItemResult(ctx, tx, r, before, time.Now().UTC()); err != nil {
 		return out, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -257,7 +269,7 @@ func (s *Store) RecordItemResult(ctx context.Context, r ItemResult) (Outcome, er
 
 // emitItemResult logs what RecordItemResult changed: the item, its
 // endpoints, and the post when its status moved.
-func emitItemResult(ctx context.Context, tx *sql.Tx, r ItemResult, out Outcome, at time.Time) error {
+func emitItemResult(ctx context.Context, tx *sql.Tx, r ItemResult, before postState, at time.Time) error {
 	var account, url string
 	if err := tx.QueryRowContext(ctx, `SELECT pt.account_id, COALESCE(ti.remote_url, '') FROM target_items ti
 		JOIN post_targets pt ON pt.id = ti.target_id WHERE ti.id = ?`, r.ItemID).Scan(&account, &url); err != nil {
@@ -281,10 +293,7 @@ func emitItemResult(ctx context.Context, tx *sql.Tx, r ItemResult, out Outcome, 
 			return err
 		}
 	}
-	if out.PostBefore != out.PostAfter {
-		return emitPostStatus(ctx, tx, r.PostID, at)
-	}
-	return nil
+	return emitPostChange(ctx, tx, r.PostID, before, at)
 }
 
 func boolInt(b bool) int {
@@ -323,8 +332,11 @@ func targetStatusOf(items []string) string {
 	if !slices.ContainsFunc(items, func(st string) bool { return st != ItemCanceled }) {
 		return "canceled"
 	}
+	if slices.Contains(items, ItemSending) {
+		return "sending" // an item in flight decides nothing yet
+	}
 	switch items[0] {
-	case ItemPlanned, ItemSending:
+	case ItemPlanned:
 		return "sending"
 	case ItemPublished, ItemPartial:
 	default:
@@ -368,10 +380,17 @@ func (s *Store) MarkDue(ctx context.Context, postID string, targetIDs []int64, n
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	before, err := readPostState(ctx, tx, postID)
+	if err != nil {
+		return 0, err
+	}
 	due := 0
 	for _, id := range targetIDs {
-		res, err := tx.ExecContext(ctx, `UPDATE target_items SET next_attempt_at = ?
-			WHERE target_id = ? AND status IN ('planned', 'failed', 'unknown')
+		// Canceled items go back to planned: a retry by hand sends what a
+		// cancel stopped.
+		res, err := tx.ExecContext(ctx, `UPDATE target_items
+			SET next_attempt_at = ?, status = CASE WHEN status = 'canceled' THEN 'planned' ELSE status END
+			WHERE target_id = ? AND status IN ('planned', 'failed', 'unknown', 'canceled')
 			  AND target_id IN (SELECT id FROM post_targets WHERE post_id = ?)`, now, id, postID)
 		if err != nil {
 			return 0, err
@@ -385,10 +404,10 @@ func (s *Store) MarkDue(ctx context.Context, postID string, targetIDs []int64, n
 		}
 	}
 	if due > 0 {
-		if _, err := tx.ExecContext(ctx, `UPDATE posts SET status = 'sending' WHERE id = ?`, postID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE posts SET status = 'sending', canceled_at = NULL WHERE id = ?`, postID); err != nil {
 			return 0, err
 		}
-		if err := emit(ctx, tx, postID, EventPostUpdated, EventData{Status: "sending"}, now); err != nil {
+		if err := emitPostChange(ctx, tx, postID, before, now); err != nil {
 			return 0, err
 		}
 	}
@@ -445,17 +464,39 @@ func (s *Store) ResetUnstarted(ctx context.Context) (int, error) {
 	defer func() { _ = tx.Rollback() }()
 	untouched := `NOT EXISTS (SELECT 1 FROM post_targets pt JOIN target_items ti ON ti.target_id = pt.id
 		WHERE pt.post_id = posts.id AND (ti.attempt_count > 0 OR ti.status <> 'planned'))`
-	if _, err := tx.ExecContext(ctx, `UPDATE post_targets SET status = 'scheduled'
-		WHERE post_id IN (SELECT id FROM posts WHERE status = 'sending' AND scheduled_at IS NOT NULL AND `+untouched+`)`); err != nil {
-		return 0, err
-	}
-	res, err := tx.ExecContext(ctx, `UPDATE posts SET status = 'scheduled'
-		WHERE status = 'sending' AND scheduled_at IS NOT NULL AND `+untouched)
+	rows, err := tx.QueryContext(ctx, `UPDATE posts SET status = 'scheduled'
+		WHERE status = 'sending' AND scheduled_at IS NOT NULL AND `+untouched+` RETURNING id`)
 	if err != nil {
 		return 0, err
 	}
-	n, _ := res.RowsAffected()
-	return int(n), tx.Commit()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	now := time.Now().UTC()
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, `UPDATE post_targets SET status = 'scheduled' WHERE post_id = ?`, id); err != nil {
+			return 0, err
+		}
+		if err := emit(ctx, tx, id, EventPostUpdated, EventData{Status: "scheduled"}, now); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	if len(ids) > 0 {
+		s.ev.fire()
+	}
+	return len(ids), nil
 }
 
 // MissedPost is a scheduled post marked missed.
@@ -505,6 +546,13 @@ func (s *Store) markMissed(ctx context.Context, id string) (bool, error) {
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	before, err := readPostState(ctx, tx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
 	// Guarded on 'scheduled': a post claimed since the query isn't missed.
 	res, err := tx.ExecContext(ctx, `UPDATE posts SET status = 'missed' WHERE id = ? AND status = 'scheduled'`, id)
 	if err != nil {
@@ -520,7 +568,7 @@ func (s *Store) markMissed(ctx context.Context, id string) (bool, error) {
 		WHERE status = 'planned' AND target_id IN (SELECT id FROM post_targets WHERE post_id = ?)`, id); err != nil {
 		return false, err
 	}
-	if err := emitPostStatus(ctx, tx, id, time.Now()); err != nil {
+	if err := emitPostChange(ctx, tx, id, before, time.Now()); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -622,8 +670,8 @@ func (s *Store) CancelPost(ctx context.Context, postID string, now time.Time) er
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM posts WHERE id = ?`, postID).Scan(&exists); err != nil {
+	before, err := readPostState(ctx, tx, postID)
+	if err != nil {
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `UPDATE target_items SET status = 'canceled', next_attempt_at = NULL
@@ -685,15 +733,20 @@ func (s *Store) CancelPost(ctx context.Context, postID string, now time.Time) er
 			return err
 		}
 	}
-	// What is left failed or partial is not the retrier's to send.
+	// What is left failed or partial is not the retrier's to send, and an
+	// item in flight won't be retried either (RecordItemResult reads
+	// canceled_at). A retry by hand clears both.
 	if _, err := tx.ExecContext(ctx, `UPDATE post_targets SET gave_up_at = ?
 		WHERE post_id = ? AND gave_up_at IS NULL AND status IN ('failed', 'partial')`, now, postID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE posts SET canceled_at = ? WHERE id = ?`, now, postID); err != nil {
 		return err
 	}
 	if err := recomputeStatus(tx, postID); err != nil {
 		return err
 	}
-	if err := emitPostStatus(ctx, tx, postID, now); err != nil {
+	if err := emitPostChange(ctx, tx, postID, before, now); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

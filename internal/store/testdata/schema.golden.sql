@@ -182,7 +182,7 @@ CREATE TABLE posts (
   delay_seconds INTEGER NOT NULL DEFAULT 0,
   source        TEXT NOT NULL,
   status        TEXT NOT NULL
-, scheduled_at TIMESTAMP, hidden INTEGER NOT NULL DEFAULT 0, interaction_json TEXT, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id));
+, scheduled_at TIMESTAMP, hidden INTEGER NOT NULL DEFAULT 0, interaction_json TEXT, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id), canceled_at TIMESTAMP);
 
 -- table schema_migrations
 CREATE TABLE schema_migrations (

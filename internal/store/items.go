@@ -195,7 +195,7 @@ func upsertDeliveries(ctx context.Context, x itemExec, itemID int64, relays []Re
 			VALUES (?, ?, ?, ?, ?)
 			ON CONFLICT (item_id, endpoint) DO UPDATE SET status = excluded.status, message = excluded.message,
 			  attempted_at = excluded.attempted_at`,
-			itemID, rl.URL, rl.Status, rl.Message, at); err != nil {
+			itemID, rl.URL, rl.Status, Scrub(rl.Message), at); err != nil {
 			return err
 		}
 	}

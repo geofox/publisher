@@ -90,32 +90,68 @@ type execQuerier interface {
 }
 
 // emit writes an event for postID in the caller's transaction, owned by
-// the post's owner. Call s.ev.fire() after the commit.
+// the post's owner. The post must exist (a missing one fails the insert, so
+// no event can land on the wrong owner). Call s.ev.fire() after the commit.
 func emit(ctx context.Context, tx execQuerier, postID, typ string, d EventData, at time.Time) error {
 	b, _ := json.Marshal(d)
 	_, err := tx.ExecContext(ctx, `INSERT INTO events (owner_id, post_id, type, data, created_at)
-		VALUES ((SELECT COALESCE((SELECT owner_id FROM posts WHERE id = ?), ?)), ?, ?, ?, ?)`,
-		postID, DefaultOwner, postID, typ, string(b), at.UTC())
+		VALUES ((SELECT owner_id FROM posts WHERE id = ?), ?, ?, ?, ?)`,
+		postID, postID, typ, string(b), at.UTC())
 	return err
 }
 
-// emitPostStatus records the post's status as a post.updated event, and a
-// post.completed one when nothing is left to send.
-func emitPostStatus(ctx context.Context, tx *sql.Tx, postID string, at time.Time) error {
-	var status string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM posts WHERE id = ?`, postID).Scan(&status); err != nil {
+type ctxQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// postState is a post's status and whether it is settled: nothing left to
+// send, an automatic retry included.
+type postState struct {
+	Status  string
+	Settled bool
+}
+
+// retryPendingExpr is true for a post (aliased p) with an item the engine
+// will still try on its own.
+const retryPendingExpr = `EXISTS (SELECT 1 FROM target_items ti JOIN post_targets pt ON pt.id = ti.target_id
+	WHERE pt.post_id = p.id AND pt.gave_up_at IS NULL AND ti.next_attempt_at IS NOT NULL
+	  AND ti.status IN ('planned', 'failed', 'unknown'))`
+
+func readPostState(ctx context.Context, q ctxQuerier, postID string) (postState, error) {
+	var st postState
+	var pending bool
+	err := q.QueryRowContext(ctx, `SELECT p.status, `+retryPendingExpr+` FROM posts p WHERE p.id = ?`, postID).
+		Scan(&st.Status, &pending)
+	st.Settled = err == nil && PostSettled(st.Status) && !pending
+	return st, err
+}
+
+// emitPostChange logs how a post moved from before: post.updated when its
+// status changed, post.completed when it has just settled.
+func emitPostChange(ctx context.Context, tx *sql.Tx, postID string, before postState, at time.Time) error {
+	now, err := readPostState(ctx, tx, postID)
+	if err != nil {
 		return err
 	}
-	if err := emit(ctx, tx, postID, EventPostUpdated, EventData{Status: status}, at); err != nil {
-		return err
+	if now.Status != before.Status {
+		if err := emit(ctx, tx, postID, EventPostUpdated, EventData{Status: now.Status}, at); err != nil {
+			return err
+		}
 	}
-	if PostSettled(status) {
-		return emit(ctx, tx, postID, EventPostCompleted, EventData{Status: status}, at)
+	if now.Settled && (!before.Settled || now.Status != before.Status) {
+		return emit(ctx, tx, postID, EventPostCompleted, EventData{Status: now.Status}, at)
 	}
 	return nil
 }
 
-// PostSettled reports whether a post status has nothing left to send.
+// PostState reports a post's status and whether it is settled.
+func (s *Store) PostState(ctx context.Context, id string) (status string, settled bool, err error) {
+	st, err := readPostState(ctx, s.sql, id)
+	return st.Status, st.Settled, err
+}
+
+// PostSettled reports whether a post status has nothing left to send
+// (ignoring automatic retries; see PostState).
 func PostSettled(status string) bool {
 	switch status {
 	case "sending", "scheduled", "cancelling", "pending":

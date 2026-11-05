@@ -236,7 +236,9 @@ func (s *Store) SavePost(p *Post) error {
 	if err := emit(ctx, tx, p.ID, EventPostCreated, EventData{Status: p.Status, ScheduledAt: p.ScheduledAt}, now); err != nil {
 		return err
 	}
-	if PostSettled(p.Status) {
+	if st, err := readPostState(ctx, tx, p.ID); err != nil {
+		return err
+	} else if st.Settled {
 		// Recorded already finished (an interaction answered inline).
 		if err := emit(ctx, tx, p.ID, EventPostCompleted, EventData{Status: p.Status}, now); err != nil {
 			return err
@@ -361,7 +363,7 @@ func recomputeStatus(q rowQuerier, postID string) error {
 		return err
 	}
 	defer rows.Close()
-	total, succ, fail, open, canc := 0, 0, 0, 0, 0
+	total, succ, fail, open, canc, missed := 0, 0, 0, 0, 0, 0
 	for rows.Next() {
 		var st string
 		if err := rows.Scan(&st); err != nil {
@@ -377,6 +379,8 @@ func recomputeStatus(q rowQuerier, postID string) error {
 			open++ // still to be sent
 		case "canceled":
 			canc++
+		case "missed":
+			missed++
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -388,7 +392,9 @@ func recomputeStatus(q rowQuerier, postID string) error {
 		status = "sending"
 	case total > 0 && canc == total:
 		status = "canceled"
-	case total == 0 || (succ == 0 && fail > 0 && fail+canc == total):
+	case total > 0 && missed == total:
+		status = "missed"
+	case total == 0 || (succ == 0 && fail > 0 && fail+canc+missed == total):
 		status = "failed"
 	case succ == total:
 		status = "success"
@@ -470,35 +476,33 @@ func (s *Store) UpdateRelayStatus(targetID int64, relayURL, status, message stri
 		    SET status=?, message=?, attempted_at=?, retry_count = retry_count + 1,
 		        gave_up_at = CASE WHEN ?='ok' THEN NULL ELSE gave_up_at END
 		  WHERE endpoint=? AND item_id=(SELECT id FROM target_items WHERE target_id=? AND ordinal=0)`,
-		status, message, time.Now().UTC(), status, relayURL, targetID,
+		status, Scrub(message), time.Now().UTC(), status, relayURL, targetID,
 	); err != nil {
 		return err
 	}
 	if err := recomputeTargetStatus(tx, targetID); err != nil {
 		return err
 	}
-	var postID, account, platform, before string
-	if err := tx.QueryRow(`SELECT pt.post_id, pt.account_id, pt.platform, p.status FROM post_targets pt
-		JOIN posts p ON p.id = pt.post_id WHERE pt.id=?`, targetID).Scan(&postID, &account, &platform, &before); err != nil {
+	ctx, now := context.Background(), time.Now()
+	var postID, account, platform string
+	if err := tx.QueryRow(`SELECT pt.post_id, pt.account_id, pt.platform FROM post_targets pt WHERE pt.id=?`, targetID).
+		Scan(&postID, &account, &platform); err != nil {
+		return err
+	}
+	before, err := readPostState(ctx, tx, postID)
+	if err != nil {
 		return err
 	}
 	if err := recomputeStatus(tx, postID); err != nil {
 		return err
 	}
-	ctx, now := context.Background(), time.Now()
 	zero := 0
 	if err := emit(ctx, tx, postID, EventDelivery, EventData{TargetID: targetID, AccountID: account, Platform: platform,
 		Ordinal: &zero, Status: status, Endpoint: relayURL, Error: Scrub(message)}, now); err != nil {
 		return err
 	}
-	var after string
-	if err := tx.QueryRow(`SELECT status FROM posts WHERE id=?`, postID).Scan(&after); err != nil {
+	if err := emitPostChange(ctx, tx, postID, before, now); err != nil {
 		return err
-	}
-	if after != before {
-		if err := emitPostStatus(ctx, tx, postID, now); err != nil {
-			return err
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err

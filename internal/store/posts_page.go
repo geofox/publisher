@@ -118,28 +118,37 @@ func (s *Store) ListPostsPage(ctx context.Context, q PostQuery) ([]Post, error) 
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	for i := range out {
-		trows, err := s.sql.QueryContext(ctx, `SELECT id, account_id, platform, status, COALESCE(error_class, ''), gave_up_at
-			FROM post_targets WHERE post_id = ? ORDER BY id`, out[i].ID)
-		if err != nil {
+	if len(out) == 0 {
+		return out, nil
+	}
+	// The page's targets in one query.
+	idx := make(map[string]int, len(out))
+	ids := make([]any, len(out))
+	for i, p := range out {
+		idx[p.ID], ids[i] = i, p.ID
+	}
+	trows, err := s.sql.QueryContext(ctx, `SELECT post_id, id, account_id, platform, status, COALESCE(error_class, ''), gave_up_at
+		FROM post_targets WHERE post_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+`) ORDER BY id`, ids...)
+	if err != nil {
+		return nil, err
+	}
+	defer trows.Close()
+	for trows.Next() {
+		var postID string
+		var t Target
+		var gu sql.NullTime
+		if err := trows.Scan(&postID, &t.ID, &t.AccountID, &t.Platform, &t.Status, &t.ErrorClass, &gu); err != nil {
 			return nil, err
 		}
-		for trows.Next() {
-			var t Target
-			var gu sql.NullTime
-			if err := trows.Scan(&t.ID, &t.AccountID, &t.Platform, &t.Status, &t.ErrorClass, &gu); err != nil {
-				trows.Close()
-				return nil, err
-			}
-			if gu.Valid {
-				g := gu.Time.UTC()
-				t.GaveUpAt = &g
-			}
-			out[i].Targets = append(out[i].Targets, t)
+		if gu.Valid {
+			g := gu.Time.UTC()
+			t.GaveUpAt = &g
 		}
-		if err := trows.Close(); err != nil {
-			return nil, err
-		}
+		i := idx[postID]
+		out[i].Targets = append(out[i].Targets, t)
+	}
+	if err := trows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

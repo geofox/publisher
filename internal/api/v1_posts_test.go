@@ -193,8 +193,8 @@ func TestV1PostsNeedingAttention(t *testing.T) {
 	wantStatus(t, r, 200)
 	r.json(&got)
 	tg := got.Targets[0]
-	if got.Status != "needs_attention" || tg.Status != "failed" || tg.GaveUpAt == nil || len(tg.Items) != 1 ||
-		tg.Items[0].Status != "failed" || tg.Items[0].ErrorClass != "permanent" || len(tg.Attempts) != 1 {
+	if got.Status != "needs_attention" || tg.Status != "failed" || tg.GaveUpAt == nil || len((*tg.Items)) != 1 ||
+		(*tg.Items)[0].Status != "failed" || (*tg.Items)[0].ErrorClass != "permanent" || len((*tg.Attempts)) != 1 {
 		t.Fatalf("post = %+v", got)
 	}
 }
@@ -211,8 +211,8 @@ func TestV1GetPost(t *testing.T) {
 	if got.ID != "pst_a" || got.Status != "published" || got.Hidden || tg.Type != "bluesky" || tg.Status != "published" {
 		t.Fatalf("post = %+v", got)
 	}
-	if len(tg.Items) != 1 || tg.Items[0].Status != "published" || tg.Items[0].URL != "https://example.com/a" ||
-		tg.Items[0].PublishedAt == nil || len(tg.Attempts) != 1 || tg.Attempts[0].Status != "published" {
+	if len((*tg.Items)) != 1 || (*tg.Items)[0].Status != "published" || (*tg.Items)[0].URL != "https://example.com/a" ||
+		(*tg.Items)[0].PublishedAt == nil || len((*tg.Attempts)) != 1 || (*tg.Attempts)[0].Status != "published" {
 		t.Fatalf("target = %+v", tg)
 	}
 
@@ -250,7 +250,7 @@ func TestV1PatchPost(t *testing.T) {
 	wantStatus(t, r, 200)
 	r.json(&got)
 	if got.ScheduledAt == nil || *got.ScheduledAt != "2099-01-01T08:00:00Z" || got.Status != "scheduled" ||
-		got.Targets[0].Items[0].NextAttemptAt == nil || *got.Targets[0].Items[0].NextAttemptAt != "2099-01-01T08:00:00Z" {
+		(*got.Targets[0].Items)[0].NextAttemptAt == nil || *(*got.Targets[0].Items)[0].NextAttemptAt != "2099-01-01T08:00:00Z" {
 		t.Fatalf("rescheduled = %+v", got)
 	}
 
@@ -295,7 +295,7 @@ func TestV1CancelPost(t *testing.T) {
 	r := e.do(req{method: "POST", path: "/v1/posts/pst_s:cancel"})
 	wantStatus(t, r, 200)
 	r.json(&got)
-	if got.Status != "canceled" || got.Targets[0].Status != "canceled" || got.Targets[0].Items[0].Status != "canceled" {
+	if got.Status != "canceled" || got.Targets[0].Status != "canceled" || (*got.Targets[0].Items)[0].Status != "canceled" {
 		t.Fatalf("canceled = %+v", got)
 	}
 	// It stays in the history, unlike the old /cancel.
@@ -335,7 +335,7 @@ func TestV1RetryPost(t *testing.T) {
 	}
 	r.json(&got)
 	if got.Status != "publishing" || got.Targets[0].Status != "failed" || got.Targets[1].Status != "publishing" ||
-		got.Targets[1].Items[0].NextAttemptAt == nil {
+		(*got.Targets[1].Items)[0].NextAttemptAt == nil {
 		t.Fatalf("retried = %+v", got)
 	}
 	// Without a body, every retryable target.
@@ -545,5 +545,179 @@ func TestV1EventsEndOnShutdown(t *testing.T) {
 	wantStatus(t, e.do(req{method: "GET", path: "/v1/events", ctx: stop}), 200)
 	if time.Since(start) > 4*time.Second {
 		t.Fatal("the stream outlived the server")
+	}
+}
+
+// ─── review regressions ─────────────────────────────────────────────────
+
+// A refused patch changes nothing.
+func TestV1PatchIsAllOrNothing(t *testing.T) {
+	e := newV1Env(t, true)
+	s := e.seedScheduled("s", time.Now().Add(time.Hour), "bluesky")
+	wantProblem(t, e.do(req{method: "PATCH", path: "/v1/posts/pst_s", body: `{"schedule":{"at":"2099-01-01T09:00:00Z"},"hidden":true}`}),
+		409, codeInvalidState)
+	got, _ := e.st.GetPost("s")
+	if !got.ScheduledAt.Equal(*s.ScheduledAt) {
+		t.Fatalf("scheduled_at moved to %v by a refused patch", got.ScheduledAt)
+	}
+	for _, c := range []struct{ body, pointer string }{
+		{`{"schedule":null}`, "/schedule"},
+		{`{"hidden":null}`, "/hidden"},
+		{`{"schedule":{}}`, "/schedule/at"},
+	} {
+		p := wantProblem(t, e.do(req{method: "PATCH", path: "/v1/posts/pst_s", body: c.body, badRequest: true}), 422, codeValidation)
+		if p.Errors[0].Pointer != c.pointer {
+			t.Errorf("%s: errors = %+v", c.body, p.Errors)
+		}
+	}
+	wantProblem(t, e.do(req{method: "PATCH", path: "/v1/posts/pst_s", body: `{"schedule":"soon"}`, badRequest: true}), 400, codeInvalidJSON)
+}
+
+// A single post's targets always carry items and attempts, [] when none.
+func TestV1PostShowsEmptyItemsAndAttempts(t *testing.T) {
+	e := newV1Env(t, true)
+	e.seedScheduled("s", time.Now().Add(time.Hour), "bluesky")
+	r := e.do(req{method: "GET", path: "/v1/posts/pst_s"})
+	if !strings.Contains(r.Body.String(), `"attempts":[]`) || !strings.Contains(r.Body.String(), `"items":[`) {
+		t.Fatalf("body = %s", r.Body.String())
+	}
+}
+
+func TestV1RetryEdgeCases(t *testing.T) {
+	e := newV1Env(t, true)
+	e.seedPost("f", "failed", "bluesky")
+	// An empty body with a JSON Content-Type is no body.
+	r := e.do(req{method: "POST", path: "/v1/posts/pst_f:retry", header: map[string]string{"Content-Type": "application/json"}})
+	wantStatus(t, r, 202)
+
+	// A canceled thread can be sent by hand.
+	ctx := context.Background()
+	now := time.Now().UTC()
+	p := &store.Post{ID: "t", CreatedAt: now, Platforms: []string{"bluesky"}, Source: "test", Status: "sending",
+		Targets: []store.Target{{Platform: "bluesky", Status: "sending"}}}
+	for i := 0; i < 2; i++ {
+		p.Targets[0].Items = append(p.Targets[0].Items, store.Item{Ordinal: i, Text: "x", Status: store.ItemPlanned,
+			IdemKey: store.ItemKey("t", "bluesky", i), NextAttemptAt: &now})
+	}
+	if err := e.st.SavePost(p); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := e.st.ClaimItem(ctx, now, store.ClaimFilter{})
+	if _, err := e.st.RecordItemResult(ctx, store.ItemResult{Claim: *c, Status: store.ItemPublished}); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, e.do(req{method: "POST", path: "/v1/posts/pst_t:cancel"}), 200)
+	var got v1PostBody
+	r = e.do(req{method: "POST", path: "/v1/posts/pst_t:retry"})
+	wantStatus(t, r, 202)
+	r.json(&got)
+	if items := *got.Targets[0].Items; items[1].Status != "planned" || items[1].NextAttemptAt == nil {
+		t.Fatalf("items = %+v", items)
+	}
+}
+
+// relayDispatch records which target's delivery is retried.
+type relayDispatch struct {
+	fakeDispatcher
+	mu    chan struct{}
+	calls []string
+}
+
+func (d *relayDispatch) RetryTargetRelay(_ context.Context, postID string, target int64, relay string) (*store.Post, error) {
+	d.calls = append(d.calls, targetID(target)+" "+relay)
+	d.mu <- struct{}{}
+	return nil, nil
+}
+
+func TestV1RetryDeliveries(t *testing.T) {
+	e := newV1Env(t, true)
+	d := &relayDispatch{mu: make(chan struct{}, 10)}
+	e.api.Dispatch = d
+	if err := e.st.SavePost(&store.Post{
+		ID: "n", CreatedAt: time.Now().UTC(), Platforms: []string{"nostr"}, Source: "web", Status: "partial",
+		Targets: []store.Target{{Platform: "nostr", Status: "partial", FinalText: "hi",
+			Relays: []store.RelayState{{URL: "wss://a", Status: "ok"}, {URL: "wss://b", Status: "failed"}}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n, _ := e.st.GetPost("n")
+	tg := targetID(n.Targets[0].ID)
+	one := `{"target":"` + tg + `","endpoint":"wss://b"}`
+	p := wantProblem(t, e.do(req{method: "POST", path: "/v1/posts/pst_n:retry", body: `{"deliveries":[` + one + `,` + one + `]}`, badRequest: true}),
+		422, codeValidation)
+	if p.Errors[0].Pointer != "/deliveries/1" || p.Errors[0].Code != "duplicate" {
+		t.Fatalf("errors = %+v", p.Errors)
+	}
+	wantStatus(t, e.do(req{method: "POST", path: "/v1/posts/pst_n:retry", body: `{"deliveries":[` + one + `]}`}), 202)
+	select {
+	case <-d.mu:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the delivery was not retried")
+	}
+	if len(d.calls) != 1 || d.calls[0] != tg+" wss://b" {
+		t.Fatalf("calls = %v", d.calls)
+	}
+}
+
+func TestV1PostListEdgeCases(t *testing.T) {
+	e := newV1Env(t, true)
+	base := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	e.seedPostAt("a", "success", base, "bluesky")
+	e.seedPostAt("b", "failed", base.Add(2*time.Hour), "bluesky")
+	var l postList
+	r := e.do(req{method: "GET", path: "/v1/posts?status=published&status=failed"})
+	wantStatus(t, r, 200)
+	r.json(&l)
+	if ids := strings.Join(listIDs(l), ","); ids != "pst_b,pst_a" {
+		t.Fatalf("repeated status = %s", ids)
+	}
+	// An unencoded + in an offset arrives as a space.
+	r = e.do(req{method: "GET", path: "/v1/posts?since=2026-11-01T14:00:00+01:00", badRequest: true})
+	wantStatus(t, r, 200)
+	r.json(&l)
+	if ids := strings.Join(listIDs(l), ","); ids != "pst_b" {
+		t.Fatalf("since with + = %s", ids)
+	}
+}
+
+func TestV1AllowLeavesOutActionMethods(t *testing.T) {
+	e := newV1Env(t, true)
+	r := e.do(req{method: "DELETE", path: "/v1/posts/pst_a", undocumented: true})
+	wantProblem(t, r, 405, codeMethodNotAllowed)
+	if allow := r.Header().Get("Allow"); allow != "GET, HEAD, PATCH" {
+		t.Fatalf("Allow = %q", allow)
+	}
+}
+
+func TestV1StreamsHeadAndLimits(t *testing.T) {
+	e := newV1Env(t, true)
+	e.seedPost("a", "success", "bluesky")
+	start := time.Now()
+	for _, path := range []string{"/v1/events", "/v1/posts/pst_a/events?after=0"} {
+		r := e.do(req{method: "HEAD", path: path, undocumented: true})
+		wantStatus(t, r, 200)
+		if r.Body.Len() != 0 {
+			t.Errorf("HEAD %s body = %q", path, r.Body.String())
+		}
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("HEAD held the connection")
+	}
+
+	// A settled post's stream, resumed after its last event, is a 204.
+	r := e.do(req{method: "GET", path: "/v1/posts/pst_a/events"})
+	_, evs := parseSSE(t, r.Body.String())
+	r = e.do(req{method: "GET", path: "/v1/posts/pst_a/events", header: map[string]string{"Last-Event-ID": evs[len(evs)-1].ID}})
+	wantStatus(t, r, 204)
+
+	// Both resume points are checked.
+	wantProblem(t, e.do(req{method: "GET", path: "/v1/events?after=x", header: map[string]string{"Last-Event-ID": "1"}, badRequest: true}),
+		400, codeInvalidParameter)
+
+	e.api.streams.Store(sseMaxStreams)
+	r = e.do(req{method: "GET", path: "/v1/events"})
+	wantProblem(t, r, 503, codeUnavailable)
+	if r.Header().Get("Retry-After") == "" {
+		t.Error("no Retry-After")
 	}
 }

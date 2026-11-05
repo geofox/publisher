@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -39,7 +42,7 @@ func parseTargetID(s string) (int64, bool) {
 // v1PostStatuses maps each /v1 post status to the store statuses it covers.
 var v1PostStatuses = map[string][]string{
 	"scheduled":       {"scheduled"},
-	"publishing":      {"sending"},
+	"publishing":      {"sending", "pending"},
 	"published":       {"success"},
 	"partial":         {"partial"},
 	"failed":          {"failed"},
@@ -131,14 +134,16 @@ type v1AttemptBody struct {
 }
 
 type v1TargetBody struct {
-	ID         string          `json:"id"`
-	Account    string          `json:"account"`
-	Type       string          `json:"type"`
-	Status     string          `json:"status"`
-	ErrorClass string          `json:"error_class,omitempty"`
-	GaveUpAt   *string         `json:"gave_up_at"`
-	Items      []v1ItemBody    `json:"items,omitempty"`
-	Attempts   []v1AttemptBody `json:"attempts,omitempty"`
+	ID         string  `json:"id"`
+	Account    string  `json:"account"`
+	Type       string  `json:"type"`
+	Status     string  `json:"status"`
+	ErrorClass string  `json:"error_class,omitempty"`
+	GaveUpAt   *string `json:"gave_up_at"`
+	// Items and Attempts are in a single post's view only (always set
+	// there, [] when empty), not in lists.
+	Items    *[]v1ItemBody    `json:"items,omitempty"`
+	Attempts *[]v1AttemptBody `json:"attempts,omitempty"`
 }
 
 type v1PostBody struct {
@@ -183,7 +188,7 @@ func v1Post(p store.Post, full bool) v1PostBody {
 			ErrorClass: t.ErrorClass, GaveUpAt: rfc3339ptr(t.GaveUpAt),
 		}
 		if full {
-			tb.Items, tb.Attempts = []v1ItemBody{}, []v1AttemptBody{}
+			items, attempts := []v1ItemBody{}, []v1AttemptBody{}
 			for _, it := range t.Items {
 				ib := v1ItemBody{
 					Ordinal: it.Ordinal, Status: it.Status, Text: it.Text, Media: it.Media, URL: it.RemoteURL,
@@ -203,14 +208,15 @@ func v1Post(p store.Post, full bool) v1PostBody {
 						AttemptedAt: rfc3339p(d.AttemptedAt), GaveUpAt: rfc3339ptr(d.GaveUpAt),
 					})
 				}
-				tb.Items = append(tb.Items, ib)
+				items = append(items, ib)
 			}
 			for _, at := range t.Attempts {
-				tb.Attempts = append(tb.Attempts, v1AttemptBody{
+				attempts = append(attempts, v1AttemptBody{
 					Number: at.AttemptNo, Status: v1Status(at.Status), Error: at.Error, ErrorClass: at.ErrorClass,
 					LatencyMS: at.LatencyMS, AttemptedAt: rfc3339(at.AttemptedAt),
 				})
 			}
+			tb.Items, tb.Attempts = &items, &attempts
 		}
 		b.Targets = append(b.Targets, tb)
 	}
@@ -269,8 +275,8 @@ func (a *API) v1ListPosts(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, http.StatusBadRequest, codeInvalidParameter, detail,
 			fieldError{Parameter: name, Code: "invalid", Detail: detail})
 	}
-	if s := vals.Get("status"); s != "" {
-		for _, st := range strings.Split(s, ",") {
+	if ss := vals["status"]; len(ss) > 0 {
+		for _, st := range strings.Split(strings.Join(ss, ","), ",") {
 			mapped, known := v1PostStatuses[st]
 			if !known {
 				badParam("status", "status is a comma-separated list of "+strings.Join(v1PostStatusNames, ", "))
@@ -295,9 +301,10 @@ func (a *API) v1ListPosts(w http.ResponseWriter, r *http.Request) {
 		dst  *time.Time
 	}{{"since", &q.Since}, {"until", &q.Until}} {
 		if s := vals.Get(tp.name); s != "" {
-			t, err := time.Parse(time.RFC3339, strings.ToUpper(s))
+			// An offset's unencoded + arrives as a space.
+			t, err := time.Parse(time.RFC3339, strings.ToUpper(strings.ReplaceAll(s, " ", "+")))
 			if err != nil {
-				badParam(tp.name, tp.name+" is an RFC 3339 time, such as 2026-11-01T00:00:00Z")
+				badParam(tp.name, tp.name+" is an RFC 3339 time, such as 2026-11-01T00:00:00Z (encode + as %2B)")
 				return
 			}
 			*tp.dst = t
@@ -355,33 +362,64 @@ func (a *API) v1GetPost(w http.ResponseWriter, r *http.Request) {
 // ─── PATCH /v1/posts/{id} ────────────────────────────────────────────────
 
 type v1PatchPostReq struct {
-	Schedule *struct {
-		At string `json:"at"`
-	} `json:"schedule"`
-	Hidden *bool `json:"hidden"`
+	Schedule json.RawMessage `json:"schedule"`
+	Hidden   json.RawMessage `json:"hidden"`
 }
 
 // v1PatchPost reschedules a scheduled post, or hides or shows one. A JSON
-// merge patch (RFC 7396) of the fields it names.
+// merge patch (RFC 7396) of the fields it names. Every check runs before
+// any change, so a refused patch changes nothing.
 func (a *API) v1PatchPost(w http.ResponseWriter, r *http.Request) {
 	var req v1PatchPostReq
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	var at time.Time
+	var hidden *bool
 	var errs []fieldError
+	isNull := func(m json.RawMessage) bool { return string(bytes.TrimSpace(m)) == "null" }
+	wrongType := func(field string) {
+		problem(w, r, http.StatusBadRequest, codeInvalidJSON, field+" has the wrong type")
+	}
 	if req.Schedule == nil && req.Hidden == nil {
 		errs = append(errs, fieldError{Pointer: "", Code: "empty", Detail: "change schedule.at or hidden"})
 	}
 	if req.Schedule != nil {
-		t, err := time.Parse(time.RFC3339, strings.ToUpper(req.Schedule.At))
+		var sch struct {
+			At *string `json:"at"`
+		}
+		if !isNull(req.Schedule) && json.Unmarshal(req.Schedule, &sch) != nil {
+			wrongType("schedule")
+			return
+		}
 		switch {
-		case err != nil:
+		case isNull(req.Schedule):
+			errs = append(errs, fieldError{Pointer: "/schedule", Code: "null_not_allowed",
+				Detail: "a scheduled post can't be unscheduled; cancel it, or set schedule.at"})
+		case sch.At == nil:
 			errs = append(errs, fieldError{Pointer: "/schedule/at", Code: "invalid_time", Detail: "an RFC 3339 time, such as 2027-01-01T09:00:00Z"})
-		case !t.After(time.Now()):
-			errs = append(errs, fieldError{Pointer: "/schedule/at", Code: "in_past", Detail: "the new time must be in the future"})
 		default:
-			at = t
+			t, err := time.Parse(time.RFC3339, strings.ToUpper(*sch.At))
+			switch {
+			case err != nil:
+				errs = append(errs, fieldError{Pointer: "/schedule/at", Code: "invalid_time", Detail: "an RFC 3339 time, such as 2027-01-01T09:00:00Z"})
+			case !t.After(time.Now()):
+				errs = append(errs, fieldError{Pointer: "/schedule/at", Code: "in_past", Detail: "the new time must be in the future"})
+			default:
+				at = t
+			}
+		}
+	}
+	if req.Hidden != nil {
+		var h bool
+		switch {
+		case isNull(req.Hidden):
+			errs = append(errs, fieldError{Pointer: "/hidden", Code: "null_not_allowed", Detail: "true or false"})
+		case json.Unmarshal(req.Hidden, &h) != nil:
+			wrongType("hidden")
+			return
+		default:
+			hidden = &h
 		}
 	}
 	if len(errs) > 0 {
@@ -392,10 +430,18 @@ func (a *API) v1PatchPost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if req.Schedule != nil && p.Status != "scheduled" {
+		problem(w, r, http.StatusConflict, codeInvalidState, "only a scheduled post can be rescheduled; this one is "+v1PostStatus(*p))
+		return
+	}
+	if hidden != nil && *hidden && !store.PostSettled(p.Status) {
+		problem(w, r, http.StatusConflict, codeInvalidState, "a post still to be sent can't be hidden; cancel it first")
+		return
+	}
 	if req.Schedule != nil {
 		if err := a.Store.RescheduleScheduled(p.ID, at); err != nil {
 			if errors.Is(err, store.ErrNotPending) {
-				problem(w, r, http.StatusConflict, codeInvalidState, "only a scheduled post can be rescheduled; this one is "+v1PostStatus(*p))
+				problem(w, r, http.StatusConflict, codeInvalidState, "only a scheduled post can be rescheduled; it has just started")
 				return
 			}
 			slog.ErrorContext(r.Context(), "v1: reschedule", "err", err)
@@ -403,8 +449,8 @@ func (a *API) v1PatchPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.Hidden != nil {
-		if err := a.Store.SetPostHidden(p.ID, *req.Hidden); err != nil {
+	if hidden != nil {
+		if err := a.Store.SetPostHidden(p.ID, *hidden); err != nil {
 			if errors.Is(err, store.ErrNotHideable) {
 				problem(w, r, http.StatusConflict, codeInvalidState, "a post still to be sent can't be hidden; cancel it first")
 				return
@@ -460,6 +506,12 @@ func (a *API) v1CancelPost(w http.ResponseWriter, r *http.Request) {
 	a.reloadPost(w, r, p.ID, http.StatusOK)
 }
 
+// targetRelayRetrier retries one target's delivery (dispatch.Dispatcher
+// has it; the old routes' fakes need not).
+type targetRelayRetrier interface {
+	RetryTargetRelay(ctx context.Context, postID string, targetID int64, relay string) (*store.Post, error)
+}
+
 type v1RetryReq struct {
 	Targets    []string `json:"targets"`
 	Deliveries []struct {
@@ -474,7 +526,16 @@ type v1RetryReq struct {
 // /v1/posts/{id}/events reports it.
 func (a *API) v1RetryPost(w http.ResponseWriter, r *http.Request) {
 	var req v1RetryReq
-	if r.ContentLength != 0 || r.Header.Get("Content-Type") != "" {
+	// The body is optional: an empty one is no body, whatever the headers
+	// say (many clients send Content-Type on every POST).
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err != nil {
+		problem(w, r, http.StatusRequestEntityTooLarge, codeTooLarge, "the body is over 64 KiB")
+		return
+	}
+	if len(bytes.TrimSpace(body)) > 0 {
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
 		if !decodeJSON(w, r, &req) {
 			return
 		}
@@ -493,6 +554,10 @@ func (a *API) v1RetryPost(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseTargetID(s)
 		if _, mine := byID[id]; !ok || !mine {
 			errs = append(errs, fieldError{Pointer: "/targets/" + strconv.Itoa(i), Code: "unknown_target", Detail: "not a target of this post"})
+			continue
+		}
+		if slices.Contains(want, id) {
+			errs = append(errs, fieldError{Pointer: "/targets/" + strconv.Itoa(i), Code: "duplicate", Detail: "named twice"})
 			continue
 		}
 		want = append(want, id)
@@ -515,6 +580,12 @@ func (a *API) v1RetryPost(w http.ResponseWriter, r *http.Request) {
 				Detail: "not a failed delivery of that target"})
 			continue
 		}
+		// Each failed delivery once: a request can't queue more retries
+		// than the post has failures.
+		if slices.ContainsFunc(relays, func(rr relayRetry) bool { return rr.target.ID == t.ID && rr.endpoint == d.Endpoint }) {
+			errs = append(errs, fieldError{Pointer: "/deliveries/" + strconv.Itoa(i), Code: "duplicate", Detail: "named twice"})
+			continue
+		}
 		relays = append(relays, relayRetry{t, d.Endpoint})
 	}
 	if len(errs) > 0 {
@@ -528,7 +599,8 @@ func (a *API) v1RetryPost(w http.ResponseWriter, r *http.Request) {
 	var ids []int64
 	if len(req.Deliveries) == 0 || len(req.Targets) > 0 {
 		for _, t := range p.Targets {
-			retryable := t.Status == "failed" || t.Status == "missed" || (t.Status == "partial" && len(t.Items) > 1)
+			retryable := t.Status == "failed" || t.Status == "missed" || t.Status == "canceled" ||
+				(t.Status == "partial" && len(t.Items) > 1)
 			if retryable && (len(want) == 0 || slices.Contains(want, t.ID)) {
 				ids = append(ids, t.ID)
 			}
@@ -548,11 +620,30 @@ func (a *API) v1RetryPost(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, http.StatusConflict, codeInvalidState, "nothing of this post can be retried")
 		return
 	}
-	if len(relays) > 0 && a.Dispatch != nil {
-		ctx := context.WithoutCancel(r.Context())
+	if len(relays) > 0 {
+		// The retries outlive the request but not the server.
+		ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
 		go func() {
+			defer cancel()
+			select {
+			case <-a.Stopping:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		go func() {
+			defer cancel()
 			for _, rr := range relays {
-				if _, err := a.Dispatch.RetryRelay(ctx, p.ID, rr.endpoint); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				var err error
+				if tr, ok := a.Dispatch.(targetRelayRetrier); ok {
+					_, err = tr.RetryTargetRelay(ctx, p.ID, rr.target.ID, rr.endpoint)
+				} else {
+					_, err = a.Dispatch.RetryRelay(ctx, p.ID, rr.endpoint)
+				}
+				if err != nil {
 					slog.WarnContext(ctx, "v1: relay retry", "post_id", p.ID, "relay", rr.endpoint, "err", err)
 				}
 			}

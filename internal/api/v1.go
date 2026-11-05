@@ -115,7 +115,9 @@ func (a *API) mountV1(mux *http.ServeMux) {
 		if _, seen := allow[rt.Path]; !seen {
 			paths = append(paths, rt.Path)
 		}
-		allow[rt.Path] = append(allow[rt.Path], rt.Method)
+		if len(rt.Actions) == 0 { // POST to {id}:action, not to {id}
+			allow[rt.Path] = append(allow[rt.Path], rt.Method)
+		}
 		if rt.Method == http.MethodGet {
 			allow[rt.Path] = append(allow[rt.Path], http.MethodHead)
 		}

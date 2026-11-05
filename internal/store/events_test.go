@@ -468,3 +468,221 @@ func TestEventsForRelayRetry(t *testing.T) {
 		t.Fatalf("post = %+v", ev[1].Data)
 	}
 }
+
+// ─── review regressions ─────────────────────────────────────────────────
+
+// An item in flight at a cancel isn't retried when it fails, on its own
+// thread or on another target of the post.
+func TestCancelSticksForAnItemInFlight(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		n         int
+		platforms []string
+	}{{"thread", 2, []string{"bluesky"}}, {"two targets", 1, []string{"bluesky", "mastodon"}}} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openEngineStore(t)
+			ctx := context.Background()
+			now := time.Now().UTC()
+			plannedPost(t, s, "p", now, tc.n, tc.platforms...)
+			c := claim(t, s, now, ClaimFilter{})
+			if err := s.CancelPost(ctx, "p", now); err != nil {
+				t.Fatal(err)
+			}
+			retry := now.Add(time.Minute)
+			out, err := s.RecordItemResult(ctx, ItemResult{Claim: *c, Status: ItemFailed, ErrorClass: "transient", NextAttemptAt: &retry})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.GaveUp {
+				t.Fatal("a cancel reported as an engine give-up (it would alert)")
+			}
+			if c := claim(t, s, now.Add(time.Hour), ClaimFilter{}); c != nil {
+				t.Fatalf("a canceled post's item was claimed again: %+v", c)
+			}
+			_, settled, _ := s.PostState(ctx, "p")
+			if !settled {
+				t.Fatal("canceled post not settled")
+			}
+			ev := postEvents(t, s, "p", 0)
+			if ev[len(ev)-1].Type != EventPostCompleted {
+				t.Fatalf("events = %v", eventTypes(ev))
+			}
+		})
+	}
+}
+
+// Canceling a thread while a later item is in flight leaves it sending
+// until that item ends.
+func TestCancelMidThreadWithALaterItemInFlight(t *testing.T) {
+	s := openEngineStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	plannedPost(t, s, "p", now, 3, "bluesky")
+	record(t, s, claim(t, s, now, ClaimFilter{}), ItemPublished)
+	c := claim(t, s, now, ClaimFilter{})
+	after := lastID(postEvents(t, s, "p", 0))
+	if err := s.CancelPost(ctx, "p", now); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := s.GetPost("p")
+	if p.Status != "sending" || p.Targets[0].Status != "sending" {
+		t.Fatalf("post %s target %s, want sending", p.Status, p.Targets[0].Status)
+	}
+	if err := s.SetPostHidden("p", true); !errors.Is(err, ErrNotHideable) {
+		t.Fatalf("hid a post still sending: %v", err)
+	}
+	wantTypes(t, postEvents(t, s, "p", after), EventItemCanceled)
+	record(t, s, c, ItemPublished)
+	ev := postEvents(t, s, "p", after)
+	wantTypes(t, ev, EventItemCanceled, EventItemPublished, EventPostUpdated, EventPostCompleted)
+	if ev[2].Data.Status != "partial" {
+		t.Fatalf("settled as %s", ev[2].Data.Status)
+	}
+}
+
+// A failure the engine will retry doesn't complete the post; the retry's
+// outcome does, once.
+func TestEventsCompleteOnlyWhenNothingIsLeft(t *testing.T) {
+	s := openEngineStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	plannedPost(t, s, "p", now, 1, "bluesky")
+	c := claim(t, s, now, ClaimFilter{})
+	retry := now.Add(time.Minute)
+	if _, err := s.RecordItemResult(ctx, ItemResult{Claim: *c, Status: ItemFailed, ErrorClass: "transient", NextAttemptAt: &retry}); err != nil {
+		t.Fatal(err)
+	}
+	if _, settled, _ := s.PostState(ctx, "p"); settled {
+		t.Fatal("a post with a retry due is settled")
+	}
+	record(t, s, claim(t, s, retry, ClaimFilter{}), ItemPublished)
+	wantTypes(t, postEvents(t, s, "p", 0), EventPostCreated, EventItemSending, EventItemFailed, EventPostUpdated,
+		EventPostUpdated, EventItemSending, EventItemPublished, EventPostUpdated, EventPostCompleted)
+}
+
+// Canceling a failed post whose unknown item was still retrying completes
+// it once, without repeating its status.
+func TestCancelOfARetryingFailureCompletesOnce(t *testing.T) {
+	s := openEngineStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	plannedPost(t, s, "p", now, 1, "bluesky")
+	c := claim(t, s, now, ClaimFilter{})
+	retry := now.Add(time.Minute)
+	if _, err := s.RecordItemResult(ctx, ItemResult{Claim: *c, Status: ItemUnknown, NextAttemptAt: &retry}); err != nil {
+		t.Fatal(err)
+	}
+	after := lastID(postEvents(t, s, "p", 0))
+	if err := s.CancelPost(ctx, "p", now); err != nil {
+		t.Fatal(err)
+	}
+	wantTypes(t, postEvents(t, s, "p", after), EventPostCompleted)
+}
+
+func TestMarkDueAfterCancelSendsTheRest(t *testing.T) {
+	s := openEngineStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	p := plannedPost(t, s, "p", now, 3, "bluesky")
+	record(t, s, claim(t, s, now, ClaimFilter{}), ItemPublished)
+	if err := s.CancelPost(ctx, "p", now); err != nil {
+		t.Fatal(err)
+	}
+	after := lastID(postEvents(t, s, "p", 0))
+	if n, err := s.MarkDue(ctx, "p", []int64{p.Targets[0].ID}, now); err != nil || n != 1 {
+		t.Fatalf("MarkDue = %d, %v", n, err)
+	}
+	wantTypes(t, postEvents(t, s, "p", after), EventPostUpdated)
+	for i := 1; i <= 2; i++ {
+		c := claim(t, s, now, ClaimFilter{})
+		if c == nil || c.Ordinal != i {
+			t.Fatalf("claim %d = %+v", i, c)
+		}
+		record(t, s, c, ItemPublished)
+	}
+	if st, _ := s.PostStatus(ctx, "p"); st != "success" {
+		t.Fatalf("status = %s", st)
+	}
+	// Marking an already sending post due again says nothing new.
+	q := plannedPost(t, s, "q", now.Add(time.Hour), 1, "bluesky")
+	after = lastID(postEvents(t, s, "q", 0))
+	if _, err := s.MarkDue(ctx, "q", []int64{q.Targets[0].ID}, now); err != nil {
+		t.Fatal(err)
+	}
+	wantTypes(t, postEvents(t, s, "q", after))
+}
+
+func TestResetUnstartedLogsTheSchedule(t *testing.T) {
+	s := openEngineStore(t)
+	ctx := context.Background()
+	at := time.Now().Add(-time.Minute).UTC()
+	scheduledPost(t, s, "p", at, 1, "bluesky")
+	c := claim(t, s, time.Now(), ClaimFilter{})
+	if c == nil {
+		t.Fatal("no claim")
+	}
+	// A stop before the send: the item goes back to planned.
+	if _, err := s.sql.Exec(`UPDATE target_items SET status = 'planned'`); err != nil {
+		t.Fatal(err)
+	}
+	after := lastID(postEvents(t, s, "p", 0))
+	if n, err := s.ResetUnstarted(ctx); err != nil || n != 1 {
+		t.Fatalf("ResetUnstarted = %d, %v", n, err)
+	}
+	ev := postEvents(t, s, "p", after)
+	wantTypes(t, ev, EventPostUpdated)
+	if ev[0].Data.Status != "scheduled" {
+		t.Fatalf("status = %s", ev[0].Data.Status)
+	}
+}
+
+// A missed post retried on one target that fails again is failed: nothing
+// went out.
+func TestMissedThenFailedIsFailed(t *testing.T) {
+	s := openEngineStore(t)
+	ctx := context.Background()
+	at := time.Now().Add(-time.Hour).UTC()
+	p := scheduledPost(t, s, "p", at, 1, "bluesky", "mastodon")
+	if _, err := s.MarkOverdueMissed(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkDue(ctx, "p", []int64{p.Targets[0].ID}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c := claim(t, s, time.Now(), ClaimFilter{})
+	if _, err := s.RecordItemResult(ctx, ItemResult{Claim: *c, Status: ItemFailed, ErrorClass: "permanent", GiveUp: true}); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := s.PostStatus(ctx, "p"); st != "failed" {
+		t.Fatalf("status = %s, want failed", st)
+	}
+}
+
+func TestDeliveryMessagesAreScrubbed(t *testing.T) {
+	s := openEngineStore(t)
+	secret := "bad Bearer abc.def.ghi"
+	if err := s.SavePost(&Post{
+		ID: "p", CreatedAt: time.Now().UTC(), Platforms: []string{"nostr"}, Source: "web", Status: "partial",
+		Targets: []Target{{Platform: "nostr", Status: "partial", FinalText: "hi",
+			Relays: []RelayState{{URL: "wss://a", Status: "ok"}, {URL: "wss://b", Status: "failed", Message: secret}}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := s.GetPost("p")
+	if err := s.UpdateRelayStatus(p.Targets[0].ID, "wss://a", "failed", secret); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = s.GetPost("p")
+	for _, d := range p.Targets[0].Items[0].Deliveries {
+		if d.Message != Scrub(secret) || d.Message == secret {
+			t.Fatalf("delivery message = %q", d.Message)
+		}
+	}
+}
+
+func TestEmitNeedsThePost(t *testing.T) {
+	s := openEngineStore(t)
+	if err := emit(context.Background(), s.sql, "nope", EventPostUpdated, EventData{}, time.Now()); err == nil {
+		t.Fatal("an event was logged for a missing post (it would go to the default owner)")
+	}
+}

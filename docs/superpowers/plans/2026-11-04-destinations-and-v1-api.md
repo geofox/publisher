@@ -374,6 +374,15 @@ as they move.
 > - **Test harness**: libopenapi-validator's radix tree takes
 >   `/v1/posts/pst_1:cancel` for `/v1/posts/{id}`; the tests give it a
 >   lookup that finds nothing so its template regexes match instead.
+> - **Review fixes**: a cancel sticks (`posts.canceled_at`: an item in
+>   flight isn't retried, a retry by hand clears it and revives canceled
+>   items); "settled" means no automatic retry is due either, so
+>   `post.completed` is sent once, when nothing is left; PATCH checks
+>   everything before changing anything; delivery retries are deduped,
+>   aimed at the named target and stopped on shutdown; delivery messages
+>   are scrubbed; streams are capped (64 open, 1 h each), HEAD returns at
+>   once, and a settled post's stream answers 204 to a client that has
+>   everything (EventSource then stops).
 
 ## Task 3.1: Foundations
 
