@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/transcode"
@@ -63,6 +64,7 @@ var (
 	_ destination.Account    = (*Account)(nil)
 	_ destination.Reposter   = (*Account)(nil)
 	_ destination.Identifier = (*Account)(nil)
+	_ destination.Locator    = (*Account)(nil)
 )
 
 // Manifest implements destination.Account.
@@ -200,4 +202,27 @@ func classify(err error) error {
 // they will fail the same way on every retry.
 func isLocalValidation(err error) bool {
 	return errors.Is(err, errTooLong) || errors.Is(err, transcode.ErrUnfittable)
+}
+
+// Locate implements destination.Locator: a bsky.app URL of one of the
+// account's own posts, as the reference a thread's next item replies to.
+func (a *Account) Locate(ctx context.Context, postURL string) (destination.ItemRef, error) {
+	if _, _, err := parsePostURL(postURL); err != nil {
+		return destination.ItemRef{}, destination.Invalid(err)
+	}
+	sp, err := a.C.GetPost(ctx, postURL)
+	if err != nil {
+		return destination.ItemRef{}, classify(err)
+	}
+	if sp.NotFoundOrBlocked || sp.CID == "" {
+		return destination.ItemRef{}, destination.ErrPostNotFound
+	}
+	s, err := a.C.readSession(ctx)
+	if err != nil {
+		return destination.ItemRef{}, classify(err)
+	}
+	if !strings.HasPrefix(sp.URI, "at://"+s.Did+"/") {
+		return destination.ItemRef{}, destination.ErrNotOwnPost
+	}
+	return destination.ItemRef{ID: sp.URI, URL: sp.WebURL, Data: RefData(sp.CID)}, nil
 }

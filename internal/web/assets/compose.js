@@ -2,7 +2,8 @@
 import { el, $, gcount, wcount, flash, confirmModal, META, ORDER } from "./common.js";
 import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen, masterParts } from "./state.js";
 import { renderPreview, mediaMax, previewMedia } from "./preview.js";
-import { resultRow, openDetail } from "./history.js";
+import { openDetail } from "./history.js";
+import { resultRow } from "./results.js";
 import { brandTile, icon, PLATFORM_META } from "./brands.js";
 
 // autoGrow sizes a textarea to its content (up to its CSS max-height, then it
@@ -230,7 +231,7 @@ function shortId(s, head = 10, tail = 5) {
 function isOpaqueId(s) { return /^(npub1|nprofile1)/i.test(s) || /^[0-9a-f]{32,}$/i.test(s); }
 
 // applyIdentity swaps the placeholder author + per-platform handles for the
-// operator's real profile (from GET /api/identity). Called once after boot;
+// operator's real profile (from the accounts, GET /v1/accounts). Called once after boot;
 // failures leave the placeholders untouched.
 export function applyIdentity(id) {
   if (!id) return;
@@ -255,6 +256,12 @@ export function applyIdentity(id) {
     }
   }
   renderChips(); // re-render target rows so the real handles show
+}
+
+// rerenderComposer redraws every composer view, after something they all
+// read changed (the accounts' limits arrived).
+export function rerenderComposer() {
+  renderChips(); renderCards(); renderMeta(); renderPreview();
 }
 
 // renderThreadNotice shows the calm informational banner above POST TO whenever

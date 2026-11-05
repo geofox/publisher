@@ -91,6 +91,49 @@ export async function api(path, opts = {}) {
   return data;
 }
 
+// v1 calls the /v1 API: a JSON body in (when given), JSON out, same-origin
+// credentials. A failure throws an Error whose message is the problem's
+// detail, or its field errors' details when it lists some; the Error carries
+// .status, .code and .problem (RFC 9457) for callers that branch on them.
+export async function v1(path, { method = "GET", body, headers = {}, signal } = {}) {
+  const opts = { method, credentials: "same-origin", headers: { ...headers }, signal };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, opts);
+  const data = r.status === 204 ? null : await r.json().catch(() => null);
+  if (!r.ok) throw problemError(r.status, data);
+  return data;
+}
+
+// problemError turns a /v1 problem body into an Error.
+export function problemError(status, p) {
+  const fe = p && Array.isArray(p.errors) ? p.errors : [];
+  const msg = fe.length
+    ? fe.map(e => e.detail || e.code).join("; ")
+    : (p && (p.detail || p.title)) || ("HTTP " + status);
+  const err = new Error(msg);
+  err.status = status;
+  err.code = (p && p.code) || "";
+  err.problem = p;
+  return err;
+}
+
+// v1All reads every page of a /v1 list (bounded, so a server bug can't
+// loop forever).
+export async function v1All(path) {
+  let out = [], cursor = "";
+  for (let i = 0; i < 50; i++) {
+    const sep = path.includes("?") ? "&" : "?";
+    const page = await v1(path + (cursor ? sep + "cursor=" + encodeURIComponent(cursor) : ""));
+    out = out.concat((page && page.data) || []);
+    if (!page || !page.next_cursor) break;
+    cursor = page.next_cursor;
+  }
+  return out;
+}
+
 // confirmModal shows a small yes/no dialog. onConfirm is async and returns true
 // to dismiss (false keeps it open, e.g. on failure).
 export function confirmModal({ title, body, confirmText, onConfirm }) {

@@ -1,7 +1,8 @@
 "use strict";
 import { $, META, ORDER } from "./common.js";
 import { state, defaultOv } from "./state.js";
-import { composeInit, applyIdentity } from "./compose.js";
+import { composeInit, applyIdentity, rerenderComposer } from "./compose.js";
+import { loadAccounts, accountFor, identityFromAccounts, loadInstance } from "./accounts.js";
 import { historyInit, loadHistory } from "./history.js";
 import { toolsInit, loadTools } from "./tools.js";
 import { verifyInit } from "./verify.js";
@@ -10,15 +11,13 @@ import { installRecoveryAutosave } from "./drafts_recovery.js";
 import { installDraftsSidebar, populateTranslateMenu } from "./drafts.js";
 import { tokensInit, tokensShow, loadUserChip } from "./tokens.js";
 
-// loadConfig fetches operator preferences and destination limits. It rebuilds
-// the per-platform overrides so the Bluesky/Mastodon language fields default
-// to the operator's first configured language. Failures fall back to the "en"
-// default already in defaultOv and the built-in limits.
+// loadConfig reads the instance (GET /v1/instance): the operator's languages
+// (the Bluesky/Mastodon language fields default to the first) and the
+// languages DeepL can translate into. A failure keeps the "en" default and
+// hides translation.
 async function loadConfig() {
   try {
-    const r = await fetch("/api/config", { credentials: "same-origin" });
-    if (!r.ok) return;
-    const data = await r.json();
+    const data = await loadInstance();
     if (Array.isArray(data.user_languages) && data.user_languages.length) {
       state.userLanguages = data.user_languages;
       ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
@@ -26,36 +25,26 @@ async function loadConfig() {
     if (Array.isArray(data.translate_targets)) {
       state.translateTargets = data.translate_targets;
     }
-    applyDestinations(data.destinations);
   } catch (_) { /* keep the "en" defaults; translate button stays hidden */ }
 }
 
-// applyDestinations takes each destination's name and text limit from the
-// server, so the composer counts against what dispatch splits by (a Mastodon
-// instance announces its own limit). Unknown or missing entries keep the
-// built-in META values.
-function applyDestinations(dests) {
-  if (!dests || typeof dests !== "object") return;
+// applyAccounts takes each type's name and text limit from its account, so
+// the composer counts against what the server splits by (a Mastodon instance
+// announces its own limit), and swaps the placeholder author for the
+// accounts' profiles. Types with no account keep the built-in META values.
+function applyAccounts() {
   for (const p of ORDER) {
-    const d = dests[p];
-    if (!d || !META[p]) continue;
-    if (typeof d.name === "string" && d.name) META[p].label = d.name;
-    const max = d.capabilities && d.capabilities.text && d.capabilities.text.max_length;
+    const a = accountFor(p);
+    if (!a || !META[p]) continue;
+    if (typeof a.label === "string" && a.label) META[p].label = a.label;
+    const max = a.capabilities && a.capabilities.text && a.capabilities.text.max_length;
     if (Number.isInteger(max) && max >= 0) META[p].limit = max;
   }
+  if (!composed) return; // composeInit draws with them
+  applyIdentity(identityFromAccounts(ORDER));
+  rerenderComposer();
 }
-
-// loadIdentity fetches the operator's real cross-platform profile and applies it
-// to the composer (avatar, name, per-platform handles). Fire-and-forget after
-// boot: the live profile calls can take a few seconds, and any failure simply
-// leaves the built-in placeholders in place.
-async function loadIdentity() {
-  try {
-    const r = await fetch("/api/identity", { credentials: "same-origin" });
-    if (!r.ok) return;
-    applyIdentity(await r.json());
-  } catch (_) { /* keep placeholders */ }
-}
+let composed = false;
 
 // ---------------------------------------------------------------------------
 // Tab routing
@@ -75,8 +64,14 @@ function switchTab(view) {
 
 async function init() {
   await loadConfig();
+  // The accounts carry the effective limits and live profiles; profiles can
+  // take a few seconds on a cold cache. Wait briefly so the composer starts
+  // with the right limits; if they are slower, it takes them on arrival.
+  const accounts = loadAccounts().then(applyAccounts).catch(() => { /* keep built-ins and placeholders */ });
+  await Promise.race([accounts, new Promise(r => setTimeout(r, 1500))]);
   composeInit();
-  loadIdentity(); // fire-and-forget: swap placeholders for the real profile when it resolves
+  composed = true;
+  accounts.then(applyAccounts); // now with the profiles, drawn into the composer
   historyInit();
   toolsInit();
   verifyInit();
@@ -88,7 +83,7 @@ async function init() {
   // loadUserChip();
   installRecoveryAutosave();
   installDraftsSidebar();
-  populateTranslateMenu(); // re-populate after /api/config resolves (idempotent)
+  populateTranslateMenu(); // re-populate after the instance resolves (idempotent)
   document.querySelectorAll(".tab").forEach(b =>
     b.addEventListener("click", () => switchTab(b.dataset.view)));
 }

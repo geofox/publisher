@@ -176,8 +176,17 @@
 
       <div class="sec-head"><span class="lbl">new token</span></div>
       <form id="tokens-new-form" class="tok-form">
-        <input id="tok-name-input" type="text" placeholder="token name (e.g. n8n, home-server)" autocomplete="off" required>
+        <input id="tok-name-input" type="text" placeholder="token name (e.g. n8n, home-server)" autocomplete="off" required maxlength="100">
+        <select id="tok-expiry" aria-label="Expires">
+          <option value="">never expires</option>
+          <option value="30">expires in 30 days</option>
+          <option value="90">expires in 90 days</option>
+          <option value="365">expires in a year</option>
+        </select>
         <button id="tok-create-btn" class="primary sm" type="submit">Create</button>
+        <fieldset id="tok-scopes" class="tok-scopes">
+          <legend>what it may do</legend>
+        </fieldset>
       </form>
     </section><!-- /#tokens -->
 

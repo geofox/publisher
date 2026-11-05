@@ -21,6 +21,7 @@ package destination
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
 
 // ContractVersion is the version of this contract. Manifests record the
@@ -72,6 +73,21 @@ type Reposter interface {
 type Redeliverer interface {
 	Redeliver(ctx context.Context, ref ItemRef, endpoint string) Delivery
 }
+
+// Locator is implemented by destinations that can find one of the
+// account's own published posts by its URL. When an item's outcome is
+// unknown and the owner finds it was posted, the core looks it up so a
+// thread can go on under it (the next item needs the post's reference,
+// not just its URL). Locate returns ErrPostNotFound when there is no post
+// at the URL, and ErrNotOwnPost when the post is another account's.
+type Locator interface {
+	Locate(ctx context.Context, url string) (ItemRef, error)
+}
+
+var (
+	ErrPostNotFound = errors.New("destination: no post at that URL")
+	ErrNotOwnPost   = errors.New("destination: that post is another account's")
+)
 
 // Preparer is implemented by destinations whose items can be built before
 // they are sent, so every attempt sends the same thing (Nostr: the signed

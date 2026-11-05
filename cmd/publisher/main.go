@@ -143,6 +143,7 @@ func main() {
 	a.Store = st
 	a.Dispatch = d
 	a.Caps = d.Caps
+	a.Locator = d
 	a.Unfurl = uf
 	a.UserLanguages = cfg.UserLanguages
 	a.PublicFeedToken = cfg.PublicFeedToken

@@ -29,7 +29,7 @@ test("publishes one post to all four platforms and lists it in History @mobile",
   await expect(item).toBeVisible();
   await item.click();
   const detail = page.locator("#hdetail");
-  await expect(detail.locator(".lbl", { hasText: "result · success" })).toBeVisible();
+  await expect(detail.locator(".lbl", { hasText: "result · published" })).toBeVisible();
   for (const p of PLATFORMS) {
     await expect(detail.locator(".res .bdg", { hasText: p })).toBeVisible();
   }
@@ -150,9 +150,11 @@ test("a failed platform can be retried from History", async ({ page, fakes }) =>
   await expect(row.locator(".bad")).toContainText("e2e: mastodon is down");
 
   await fakes.up("mastodon");
+  // The retry answers at once; the detail follows the post's events until
+  // the engine has sent it.
   await row.getByRole("button", { name: "Retry" }).click();
-  await expect(page.getByText("mastodon: retry succeeded ✓")).toBeVisible();
-  await expect(detail.locator(".lbl", { hasText: "result · success" })).toBeVisible();
+  await expect(page.getByText("Mastodon: retrying")).toBeVisible();
+  await expect(detail.locator(".lbl", { hasText: "result · published" })).toBeVisible();
   const masto = (await fakes.calls()).filter(c => c.platform === "mastodon");
   expect(masto).toHaveLength(1);
   expect(masto[0].text).toBe(`Partial failure ${m}`);

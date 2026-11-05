@@ -98,6 +98,13 @@ type UnfurlService interface {
 	Unfurl(ctx context.Context, url string) (*unfurl.Card, error)
 }
 
+// ItemLocator finds an account's own posts by URL; implemented by
+// dispatch.Dispatcher.
+type ItemLocator interface {
+	CanLocate(name string) bool
+	Locate(ctx context.Context, name, url string) (destination.ItemRef, error)
+}
+
 // API holds the dependencies for the HTTP handlers.
 type API struct {
 	np        *pubnostr.Publisher
@@ -110,6 +117,9 @@ type API struct {
 	// relaySyncMu lets one /v1 relay scan or sync run at a time.
 	relaySyncMu sync.Mutex
 	Resolve     Resolver // set by cmd/publisher; resolves pasted post URLs/ids
+	// Locator looks up an account's own posts when the owner resolves an
+	// unknown outcome by hand. nil: URLs are kept as given.
+	Locator ItemLocator
 
 	// UserLanguages is the operator's spoken-languages list (ISO 639-1 codes);
 	// exposed via GET /api/config so the frontend can default the Bluesky and

@@ -42,6 +42,7 @@ every route, request and response against it. So far it has:
 | `PATCH /v1/posts/{id}` | `posts:write` | reschedule (`schedule.at`), hide or show (`hidden`) |
 | `POST /v1/posts/{id}:cancel` | `posts:write` | stop what a post still has to send; it stays in the history |
 | `POST /v1/posts/{id}:retry` | `posts:write` | send failed items again, optionally only some `targets` or Nostr `deliveries` |
+| `POST /v1/posts/{id}:resolve` | `posts:write` | say whether an item whose outcome is `unknown` went out; with the post's URL a thread goes on under it |
 | `GET /v1/posts/{id}/events` | `posts:read` | a post's progress as server-sent events, from its first event until it settles |
 | `GET /v1/events` | `posts:read` | every post's events as they happen |
 | `POST /v1/media` | `media:write` | upload an image (stored at once) or a video (processed in the background) |

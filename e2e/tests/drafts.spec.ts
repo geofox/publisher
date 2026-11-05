@@ -51,9 +51,23 @@ test("schedules a post for later and cancels it from History", async ({ page, fa
   await expect(item.locator(".sched-when")).toContainText("scheduled");
   await item.click();
   await page.locator("#hdetail").getByRole("button", { name: "cancel" }).click();
-  await expect(page.getByText("cancelled")).toBeVisible();
+  await expect(page.getByText("canceled", { exact: true })).toBeVisible();
   await expect(page.locator(".hitem", { hasText: m })).toHaveCount(0);
 
   // Nothing was ever sent.
   expect(await fakes.calls()).toEqual([]);
+
+  // The canceled post stays in the archive and can still be sent by hand;
+  // the detail follows it to the result, although its event stream starts
+  // with the old "completed" of the cancel.
+  await page.locator('#hseg button[data-status="all"]').click();
+  await page.locator(".hitem", { hasText: m }).click();
+  const detail = page.locator("#hdetail");
+  await expect(detail.locator(".lbl", { hasText: "result · canceled" })).toBeVisible();
+  const row = detail.locator(".res", { has: page.locator(".bdg", { hasText: "mastodon" }) });
+  await row.getByRole("button", { name: "Retry" }).click();
+  await expect(detail.locator(".res .bdg", { hasText: "Mastodon ✓" })).toBeVisible();
+  await expect(page.locator(".hitem", { hasText: m }).locator(".pill.s", { hasText: "Mastodon" })).toBeVisible();
+  const sent = await fakes.calls();
+  expect(sent.map(c => c.platform)).toEqual(["mastodon"]);
 });

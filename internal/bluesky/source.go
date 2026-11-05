@@ -104,7 +104,7 @@ func (c *Client) GetPost(ctx context.Context, postURL string) (_ *SourcePost, er
 		return nil, err
 	}
 	defer func() {
-		if err != nil {
+		if sessionRefused(err) {
 			c.dropReadSession()
 		}
 	}()

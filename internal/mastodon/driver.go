@@ -75,6 +75,7 @@ var (
 	_ destination.Account    = (*Account)(nil)
 	_ destination.Reposter   = (*Account)(nil)
 	_ destination.Identifier = (*Account)(nil)
+	_ destination.Locator    = (*Account)(nil)
 )
 
 // NewAccount wraps a client.
@@ -249,4 +250,28 @@ func classify(err error) error {
 		return &destination.Error{Class: destination.ClassForStatus(ae.StatusCode), Err: err}
 	}
 	return destination.Classify(err)
+}
+
+// Locate implements destination.Locator: the URL of one of the account's
+// own statuses (on this instance or as federated elsewhere), as the
+// reference a thread's next item replies to.
+func (a *Account) Locate(ctx context.Context, postURL string) (destination.ItemRef, error) {
+	st, err := a.C.ResolveStatus(ctx, postURL)
+	if err != nil {
+		if errors.Is(err, ErrStatusNotFound) {
+			return destination.ItemRef{}, destination.ErrPostNotFound
+		}
+		if errors.Is(err, ErrSearchScope) {
+			return destination.ItemRef{}, &destination.Error{Class: destination.ClassAuth, Err: err}
+		}
+		return destination.ItemRef{}, classify(err)
+	}
+	me, err := a.C.OwnAccountID(ctx)
+	if err != nil {
+		return destination.ItemRef{}, classify(err)
+	}
+	if st.AuthorID != me {
+		return destination.ItemRef{}, destination.ErrNotOwnPost
+	}
+	return destination.ItemRef{ID: st.LocalID, URL: st.WebURL}, nil
 }

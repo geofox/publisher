@@ -626,6 +626,8 @@ textarea.master,.verify-input{}
 
 /* ── Threaded post history ───────────────────────────────────────────────── */
 .seg-chain{display:flex;flex-direction:column;gap:4px;margin-top:6px}
+/* An item whose outcome is unknown: the owner says whether it went out. */
+.resolve{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:2px 0 6px 22px;font-size:13px}
 .seg-row{display:flex;align-items:baseline;gap:6px;font-size:13.5px}
 .seg-n{font-family:var(--mono);color:var(--faint);font-variant-numeric:tabular-nums}
 .seg-text{color:var(--ink);white-space:pre-wrap;min-width:0}
@@ -744,6 +746,11 @@ textarea.master,.verify-input{}
 .tok-name{font-weight:600;font-size:14px;color:var(--ink)}
 .tok-badge{flex-shrink:0}
 .tok-form{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin:4px 0 12px}
+.tok-form select{font:inherit;font-size:13px;padding:7px 9px;border:.5px solid var(--line-2);border-radius:10px;background:var(--card);color:var(--ink)}
+.tok-scopes{flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px 14px;border:0;padding:0;margin:2px 0 0;font-size:13px}
+.tok-scopes legend{font-size:12px;color:var(--faint);padding:0;margin-bottom:4px}
+.tok-scopes label{display:inline-flex;gap:5px;align-items:center;color:var(--ink-2)}
+.tok-scopes-list{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
 .tok-form input[type=text]{
   flex:1;min-width:160px;font:inherit;font-size:14px;padding:9px 12px;color:var(--ink);
   background:var(--card);border:.5px solid var(--line-2);border-radius:10px;

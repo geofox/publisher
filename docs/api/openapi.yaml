@@ -1023,6 +1023,64 @@ paths:
           $ref: "#/components/responses/InvalidState"
         default:
           $ref: "#/components/responses/Problem"
+  /v1/posts/{id}:resolve:
+    parameters:
+      - $ref: "#/components/parameters/PostID"
+    post:
+      operationId: resolveItem
+      tags: [posts]
+      summary: Say whether an item whose outcome is unknown went out
+      description: |
+        Needs `posts:write`. An item is `unknown` when a send was in flight
+        as the server stopped and the network can't be trusted to drop a
+        repeat (Bluesky and Threads always; Mastodon once its idempotency
+        key has expired, after an hour): it may be live. Check the account,
+        then say what you found.
+
+        `not_published`: the item is sent again now, then the rest of its
+        thread. `published`: the item is recorded as live. With its `url`,
+        the server looks the post up (Bluesky, Mastodon) to check it is the
+        account's own and to get the reference the next item replies to,
+        and the rest of the thread is sent under it; the `url` is required
+        then. Where posts can't be looked up (Threads), the URL is kept as
+        given, and the rest of the thread is canceled: nothing can reply to
+        the post (the target ends `partial`; a `:retry` fails those parts as
+        `invalid` rather than post them detached). An item that isn't
+        `unknown`: 409.
+      security:
+        - bearer: ["posts:write"]
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveItemRequest"
+      responses:
+        "200":
+          description: The post, with the item resolved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Post"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "502":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
   /v1/posts/{id}:retry:
     parameters:
       - $ref: "#/components/parameters/PostID"
@@ -2362,6 +2420,27 @@ components:
                 pattern: "^tgt_"
               endpoint:
                 type: string
+    ResolveItemRequest:
+      type: object
+      additionalProperties: false
+      required: [target, ordinal, outcome]
+      properties:
+        target:
+          type: string
+          pattern: "^tgt_"
+          description: The item's target.
+        ordinal:
+          type: integer
+          minimum: 0
+          maximum: 99
+          description: The item's place in its target, from 0.
+        outcome:
+          type: string
+          enum: [published, not_published]
+        url:
+          type: string
+          maxLength: 2048
+          description: The live post's URL; only with `published`.
     Event:
       type: object
       description: |

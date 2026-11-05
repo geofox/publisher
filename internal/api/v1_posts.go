@@ -9,11 +9,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -471,7 +473,7 @@ func (a *API) v1PostAction(w http.ResponseWriter, r *http.Request) {
 	id, action, found := strings.Cut(r.PathValue("id"), ":")
 	if !found {
 		w.Header().Set("Allow", "GET, HEAD, PATCH")
-		problem(w, r, http.StatusMethodNotAllowed, codeMethodNotAllowed, "POST is not allowed here; use GET, HEAD, PATCH, or POST to :cancel or :retry")
+		problem(w, r, http.StatusMethodNotAllowed, codeMethodNotAllowed, "POST is not allowed here; use GET, HEAD, PATCH, or POST to :cancel, :retry or :resolve")
 		return
 	}
 	r.SetPathValue("id", id)
@@ -480,8 +482,10 @@ func (a *API) v1PostAction(w http.ResponseWriter, r *http.Request) {
 		a.v1CancelPost(w, r)
 	case "retry":
 		a.v1RetryPost(w, r)
+	case "resolve":
+		a.v1ResolveItem(w, r)
 	default:
-		problem(w, r, http.StatusNotFound, codeNotFound, "no such action :"+action+"; posts take :cancel and :retry")
+		problem(w, r, http.StatusNotFound, codeNotFound, "no such action :"+action+"; posts take :cancel, :retry and :resolve")
 	}
 }
 
@@ -651,4 +655,140 @@ func (a *API) v1RetryPost(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Location", "/v1/posts/"+postID(p.ID))
 	a.reloadPost(w, r, p.ID, http.StatusAccepted)
+}
+
+// ─── POST /v1/posts/{id}:resolve ─────────────────────────────────────────
+
+type v1ResolveReq struct {
+	Target  string  `json:"target"`
+	Ordinal *int    `json:"ordinal"`
+	Outcome string  `json:"outcome"`
+	URL     *string `json:"url"`
+}
+
+// v1ResolveItem records the owner's word on an item whose outcome is
+// unknown: "published" (they found it; its URL lets a thread go on under
+// it) or "not_published" (it is sent again).
+func (a *API) v1ResolveItem(w http.ResponseWriter, r *http.Request) {
+	var req v1ResolveReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	var errs []fieldError
+	add := func(ptr, code, detail string) {
+		errs = append(errs, fieldError{Pointer: ptr, Code: code, Detail: detail})
+	}
+	tid, ok := parseTargetID(req.Target)
+	if !ok {
+		add("/target", "invalid", "a target id of this post (tgt_…)")
+	}
+	switch {
+	case req.Ordinal == nil:
+		add("/ordinal", "required", "the item's ordinal in its target, from 0")
+	case *req.Ordinal < 0 || *req.Ordinal >= maxThreadParts:
+		add("/ordinal", "invalid", "the item's ordinal in its target, from 0")
+	}
+	if req.Outcome != "published" && req.Outcome != "not_published" {
+		add("/outcome", "invalid", "published or not_published")
+	}
+	link := ""
+	if req.URL != nil {
+		link = strings.TrimSpace(*req.URL)
+		switch {
+		case req.Outcome == "not_published":
+			add("/url", "not_allowed", "only a published item has a URL")
+		case len(link) > maxSourceURL:
+			add("/url", "too_long", "at most 2048 characters")
+		case !isHTTPSURL(link):
+			add("/url", "invalid", "the post's https URL")
+		}
+	}
+	if len(errs) > 0 {
+		invalid(w, r, errs)
+		return
+	}
+	p, ok := a.v1OwnPost(w, r)
+	if !ok {
+		return
+	}
+	ti := slices.IndexFunc(p.Targets, func(t store.Target) bool { return t.ID == tid })
+	if ti < 0 {
+		invalid(w, r, []fieldError{{Pointer: "/target", Code: "unknown_target", Detail: "not a target of this post"}})
+		return
+	}
+	t := p.Targets[ti]
+	ii := slices.IndexFunc(t.Items, func(it store.Item) bool { return it.Ordinal == *req.Ordinal })
+	if ii < 0 {
+		invalid(w, r, []fieldError{{Pointer: "/ordinal", Code: "unknown_item", Detail: "the target has no item at this ordinal"}})
+		return
+	}
+	if t.Items[ii].Status != store.ItemUnknown {
+		problem(w, r, http.StatusConflict, codeInvalidState, "only an item whose outcome is unknown can be resolved; this one is "+t.Items[ii].Status)
+		return
+	}
+	res := store.Resolution{PostID: p.ID, TargetID: t.ID, Ordinal: *req.Ordinal, Published: req.Outcome == "published",
+		RemoteURL: link, Continue: req.Outcome == "not_published"}
+	rest := slices.ContainsFunc(t.Items, func(it store.Item) bool {
+		return it.Ordinal > *req.Ordinal && (it.Status == store.ItemPlanned || it.Status == store.ItemFailed)
+	})
+	if res.Published && a.Locator != nil && a.Locator.CanLocate(t.Platform) {
+		switch {
+		case link != "":
+			lctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			ref, err := a.Locator.Locate(lctx, t.Platform, link)
+			cancel()
+			switch {
+			case errors.Is(err, destination.ErrPostNotFound):
+				invalid(w, r, []fieldError{{Pointer: "/url", Code: "not_found", Detail: "no post at that URL, or it isn't visible to the account"}})
+				return
+			case errors.Is(err, destination.ErrNotOwnPost):
+				invalid(w, r, []fieldError{{Pointer: "/url", Code: "not_own", Detail: "that post is another account's"}})
+				return
+			case err != nil:
+				slog.InfoContext(r.Context(), "v1: locate", "post_id", p.ID, "err", store.Scrub(err.Error()))
+				e := destination.Classify(err)
+				if e != nil && e.Class == destination.ClassAuth {
+					invalid(w, r, []fieldError{{Pointer: "/url", Code: "not_permitted",
+						Detail: "the account can't look posts up: check its credentials and scopes (Mastodon needs read:search)"}})
+					return
+				}
+				if e != nil && (e.Class == destination.ClassInvalid || e.Class == destination.ClassRejected) {
+					invalid(w, r, []fieldError{{Pointer: "/url", Code: "invalid", Detail: "not a URL of a post on this account's network"}})
+					return
+				}
+				problem(w, r, http.StatusBadGateway, codeUpstream, "the post's network couldn't be reached to look it up; try again")
+				return
+			case ref.ID != "" && slices.ContainsFunc(t.Items, func(x store.Item) bool { return x.RemoteID == ref.ID }):
+				invalid(w, r, []fieldError{{Pointer: "/url", Code: "duplicate", Detail: "that is another part of this thread"}})
+				return
+			default:
+				res.RemoteID, res.Ref, res.Continue = ref.ID, ref.Data, ref.ID != ""
+				if ref.URL != "" {
+					res.RemoteURL = ref.URL
+				}
+			}
+		case rest:
+			invalid(w, r, []fieldError{{Pointer: "/url", Code: "required",
+				Detail: "give the post's URL, so the rest of the thread can go on under it"}})
+			return
+		}
+	}
+	if err := a.Store.ResolveItem(r.Context(), res); err != nil {
+		if errors.Is(err, store.ErrNotUnknown) {
+			problem(w, r, http.StatusConflict, codeInvalidState, "only an item whose outcome is unknown can be resolved; it has just changed")
+			return
+		}
+		slog.ErrorContext(r.Context(), "v1: resolve item", "err", err)
+		problem(w, r, http.StatusInternalServerError, codeInternal, "recording the outcome failed")
+		return
+	}
+	a.reloadPost(w, r, p.ID, http.StatusOK)
+}
+
+// isHTTPSURL reports whether s is an absolute https URL with a host and no
+// user info. Where posts can't be looked up the URL is stored as given and
+// shown as the post's link (also in the public feed), so plain http is out.
+func isHTTPSURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil
 }

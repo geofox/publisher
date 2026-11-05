@@ -544,6 +544,59 @@ as they move.
 
 # PR 4 — Web app on `/v1`, old routes removed
 
+> **As built, split.** PR 4 is four PRs, each leaving the app working:
+> 4a (everything around the composer), 4b (the composer), 4c (drafts and
+> their conversion), 4d (old routes removed, README migration guide, new
+> e2e scenarios).
+>
+> **4a.** Boot reads `/v1/instance` (languages, translate targets) and then,
+> without waiting, `/v1/accounts` (labels, effective limits, profiles; the
+> first call can take seconds while profiles are fetched). History, the
+> detail pane, translate, verify, relay sync and tokens are on `/v1`.
+> - **`:resolve` is new.** `POST /v1/posts/{id}:resolve`
+>   `{target, ordinal, outcome: published|not_published, url?}` answers
+>   an `unknown` item. `not_published` sends it again, then the rest of
+>   the thread. `published` with a URL looks the post up through a new
+>   optional driver interface, `destination.Locator` (Bluesky: getPosts,
+>   checked against the session DID; Mastodon: search + verify_credentials
+>   id), so the next item can reply to it; the URL is required then.
+>   Threads can't look posts up: the URL is kept and what follows stays
+>   unsent (`partial`) for a `:retry`. `store.ResolveItem` does it in one
+>   transaction with events.
+> - **History.** Filters map onto `/v1` statuses (`failed` includes
+>   `needs_attention`; the attention badge counts `needs_attention`, which is
+>   narrower than the old failed+partial count). Each target shows its
+>   items (thread parts), error classes in plain words, relay deliveries
+>   with a retry each, and "It was posted / It wasn't" for an unknown item.
+>   `:retry` and `:resolve` answer at once; the pane follows the post's
+>   event stream until `post.completed` (the stream is closed then, or
+>   EventSource would reconnect forever). A publishing post gets "stop
+>   sending" (`:cancel`); a canceled post stays in the list as `canceled`.
+> - **Dropped:** the detail's raw request/response ("verbose") view: `/v1`
+>   attempts carry no traces. Error text and class are shown instead.
+> - **Tokens** get scopes (posts:write + media:write checked by default, as
+>   old tokens had) and an expiry; rows show scopes and expired status.
+> - The composer's result modal still reads the `/api/post` shape
+>   (`results.js`) until 4b.
+> - **Review fixes (4a).** `not_published` resets the item's attempt count,
+>   so the engine's duplicate guard (Mastodon past its key hour) doesn't
+>   turn it back into `unknown`. `published` without a reference cancels
+>   the rest of the thread, and the engine refuses to send a thread part
+>   whose root or parent has no remote id (fails `invalid`) instead of
+>   posting it detached. A located post that is another part of the same
+>   thread is refused (`duplicate`); a token that can't look posts up is
+>   `not_permitted`, not a 502. Resolve URLs must be https without user
+>   info. Bluesky lookups keep their session unless it was refused (bad
+>   URLs no longer cost a sign-in each). The History pane follows a post by
+>   re-reading it (stream events wake it, a 2 s poll backs it up) until it
+>   stops publishing, or until a retried relay's row changes: the per-post
+>   stream replays from the start, so an old `post.completed` can't end the
+>   wait. Stale detail loads are dropped. Boot waits up to 1.5 s for the
+>   accounts so the composer starts with the effective limits.
+> - **Deferred:** a `:retry` of an `unknown` item on a key destination past
+>   its window is released as `unknown` again by the duplicate guard (use
+>   `:resolve`); the History hides Retry while an item is unknown.
+
 ## Task 4.1: Composer and history on `/v1`
 
 - [ ] Destinations/accounts/capabilities from `/v1`; option panels from
