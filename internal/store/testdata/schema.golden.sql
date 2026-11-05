@@ -4,6 +4,9 @@ CREATE INDEX idx_draft_media_draft_id ON draft_media(draft_id);
 -- index idx_drafts_updated_at
 CREATE INDEX idx_drafts_updated_at ON drafts(updated_at DESC);
 
+-- index idx_idempotency_keys_expires
+CREATE INDEX idx_idempotency_keys_expires ON idempotency_keys(expires_at);
+
 -- index idx_item_deliveries_item
 CREATE INDEX idx_item_deliveries_item ON item_deliveries(item_id);
 
@@ -46,7 +49,7 @@ CREATE TABLE api_tokens (
   created_at   TIMESTAMP NOT NULL,
   last_used_at TIMESTAMP,
   revoked_at   TIMESTAMP
-, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id));
+, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id), scopes TEXT NOT NULL DEFAULT 'posts:write media:write', expires_at TIMESTAMP);
 
 -- table draft_media
 CREATE TABLE draft_media (
@@ -72,6 +75,22 @@ CREATE TABLE drafts (
   tags_json   TEXT NOT NULL DEFAULT '[]',
   spec_json   TEXT NOT NULL
 , owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id));
+
+-- table idempotency_keys
+CREATE TABLE idempotency_keys (
+  principal        TEXT NOT NULL,
+  key              TEXT NOT NULL,
+  method           TEXT NOT NULL,
+  path             TEXT NOT NULL,
+  fingerprint      TEXT NOT NULL,
+  state            TEXT NOT NULL,
+  response_status  INTEGER,
+  response_headers TEXT,
+  response_body    BLOB,
+  created_at       TIMESTAMP NOT NULL,
+  expires_at       TIMESTAMP NOT NULL,
+  PRIMARY KEY (principal, key)
+);
 
 -- table item_deliveries
 CREATE TABLE item_deliveries (

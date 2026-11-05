@@ -103,8 +103,9 @@ func (a *API) withGates(next http.Handler) http.Handler {
 		switch {
 		case p == "/healthz" || p == "/readyz" || p == "/metrics" ||
 			strings.HasPrefix(p, "/auth/") ||
-			p == "/api/public/feed":
-			next.ServeHTTP(w, r) // always-open / separately-gated
+			p == "/api/public/feed" ||
+			p == "/v1" || strings.HasPrefix(p, "/v1/"):
+			next.ServeHTTP(w, r) // always-open / separately-gated (/v1 authenticates per route)
 		case p == "/publish" || p == "/upload-media":
 			token.ServeHTTP(w, r) // machine endpoints
 		default:

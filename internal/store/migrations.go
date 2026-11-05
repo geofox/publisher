@@ -24,6 +24,32 @@ var migrations = []migration{
 	{version: 2, name: "error_class", up: migrateErrorClass},
 	{version: 3, name: "owners_accounts", up: migrateOwnersAccounts, noForeignKeys: true},
 	{version: 4, name: "target_items", up: migrateTargetItems, noForeignKeys: true},
+	{version: 5, name: "token_scopes_idempotency", up: migrateTokenScopesIdempotency},
+}
+
+// migrateTokenScopesIdempotency (v5) gives API tokens scopes and an optional
+// expiry, and adds the store behind the /v1 Idempotency-Key header. Existing
+// tokens keep what /publish and /upload-media let them do.
+func migrateTokenScopesIdempotency(ctx context.Context, tx execer) error {
+	_, err := tx.ExecContext(ctx, `
+ALTER TABLE api_tokens ADD COLUMN scopes TEXT NOT NULL DEFAULT 'posts:write media:write';
+ALTER TABLE api_tokens ADD COLUMN expires_at TIMESTAMP;
+CREATE TABLE idempotency_keys (
+  principal        TEXT NOT NULL,
+  key              TEXT NOT NULL,
+  method           TEXT NOT NULL,
+  path             TEXT NOT NULL,
+  fingerprint      TEXT NOT NULL,
+  state            TEXT NOT NULL,
+  response_status  INTEGER,
+  response_headers TEXT,
+  response_body    BLOB,
+  created_at       TIMESTAMP NOT NULL,
+  expires_at       TIMESTAMP NOT NULL,
+  PRIMARY KEY (principal, key)
+);
+CREATE INDEX idx_idempotency_keys_expires ON idempotency_keys(expires_at);`)
+	return err
 }
 
 // migrateErrorClass records each failure's destination.ErrorClass, so the

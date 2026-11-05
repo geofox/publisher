@@ -20,6 +20,44 @@ since grown into a standalone multi-platform publisher with its own web UI.
 
 ## HTTP API
 
+### The `/v1` API (being built)
+
+`/v1` is the API that replaces the routes below. It is described by an
+OpenAPI 3.1 document, served at `GET /v1/openapi.json` (no sign-in needed)
+and kept in [`docs/api/openapi.yaml`](docs/api/openapi.yaml); a test checks
+every route, request and response against it. So far it has:
+
+| Route | Scope | |
+|---|---|---|
+| `GET /v1/instance` | any | version, features, languages, limits |
+| `GET /v1/destinations` | `accounts:read` | destination types and their manifests |
+| `GET /v1/accounts`, `GET /v1/accounts/{id}` | `accounts:read` | accounts with profile and capabilities |
+| `GET /v1/me` | any | who is calling, with which scopes |
+| `GET/POST /v1/tokens`, `GET/DELETE /v1/tokens/{id}` | `admin` | API tokens with scopes and expiry |
+
+Posts, media and events come next, then drafts and the tools; the web app
+moves over and the old routes go once `/v1` covers them.
+
+- **Auth:** the browser session, or `Authorization: Bearer <token>`. Tokens
+  carry scopes (`posts:read`, `posts:write`, `media:write`, `drafts:read`,
+  `drafts:write`, `accounts:read`, `admin`, which includes all) and an
+  optional expiry. Tokens made before scopes keep `posts:write media:write`,
+  which is what `/publish` and `/upload-media` let them do.
+- **Errors** are RFC 9457 problem details with a stable `code`; the
+  [error catalogue](docs/api/errors.md) lists them.
+- **Lists** page with `?limit=` (1 to 200) and `?cursor=`; the answer is
+  `{"data": [...], "next_cursor": ...}`.
+- **Creates** honor `Idempotency-Key` (the IETF draft): a retry with the
+  same key and body gets the first answer back instead of doing the work
+  twice. Keys are kept 24 hours. (Token creation is the exception: its
+  answer holds the secret, which is never stored.)
+
+```sh
+curl -s -X POST https://publisher.example/v1/tokens \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"n8n","scopes":["posts:write","media:write"],"expires_at":"2027-11-05T00:00:00Z"}'
+```
+
 ### `POST /publish`
 
 ```json
@@ -539,8 +577,10 @@ The service holds your `NSEC` and signs events on request. **Do not expose
 it directly to the internet.**
 
 **OIDC disabled (default — `OIDC_ISSUER` unset):** the embedded web UI and
-all `/api/*`, `/publish`, and `/upload-media` endpoints are **not**
-authenticated by the service itself. Put it behind an authenticating reverse
+all `/api/*`, `/v1/*`, `/publish`, and `/upload-media` endpoints are **not**
+authenticated by the service itself: every request the proxy lets through
+can do everything, token management included. (A bearer token, when one is
+sent, is still checked.) Put it behind an authenticating reverse
 proxy (Authelia, oauth2-proxy, Basic Auth) or keep it on a private network /
 VPN. The `docker run` and compose examples above bind port 8080 to
 `127.0.0.1` (localhost only), so nothing is exposed until you deliberately
@@ -556,6 +596,9 @@ Keycloak, or any spec-compliant issuer). When enabled:
 - The machine endpoints `/publish` and `/upload-media` require
   `Authorization: Bearer <api-token>`. Tokens are created and revoked in the
   UI under **Access tokens**.
+- Every `/v1` route takes either the session or a bearer token, and checks
+  the token's scopes (see [the `/v1` API](#the-v1-api-being-built)).
+  `GET /v1/openapi.json` is open.
 - `/healthz`, `/readyz`, `/metrics`, and the token-gated `GET /api/public/feed` remain
   open (no session required). `/metrics` is intentionally unauthenticated so
   a Prometheus scraper can reach it without a session; restrict it at the
