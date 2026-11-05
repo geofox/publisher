@@ -174,6 +174,7 @@ func (s *Store) APITokenByRaw(raw string) (APIToken, error) {
 		return APIToken{}, err
 	}
 	_, _ = s.sql.Exec(`UPDATE api_tokens SET last_used_at=? WHERE id=?`, now, t.ID)
+	t.LastUsedAt = now
 	return t, nil
 }
 

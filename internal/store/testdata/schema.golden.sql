@@ -49,7 +49,7 @@ CREATE TABLE api_tokens (
   created_at   TIMESTAMP NOT NULL,
   last_used_at TIMESTAMP,
   revoked_at   TIMESTAMP
-, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id), scopes TEXT NOT NULL DEFAULT 'posts:write media:write', expires_at TIMESTAMP);
+, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id), scopes TEXT NOT NULL DEFAULT '', expires_at TIMESTAMP);
 
 -- table draft_media
 CREATE TABLE draft_media (

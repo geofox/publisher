@@ -84,19 +84,23 @@ func (s *Store) BeginIdempotent(ctx context.Context, principal, key, method, pat
 	return nil, tx.Commit()
 }
 
-// FinishIdempotent stores the response to the request that claimed key.
-func (s *Store) FinishIdempotent(ctx context.Context, principal, key string, status int, header http.Header, body []byte) error {
+// FinishIdempotent stores the response to the request that claimed key at
+// claimed (the now it passed to BeginIdempotent). A claim that went stale
+// and was taken over by a later request no longer matches, so a slow
+// request can't overwrite its successor's record.
+func (s *Store) FinishIdempotent(ctx context.Context, principal, key string, claimed time.Time, status int, header http.Header, body []byte) error {
 	h, _ := json.Marshal(header)
 	_, err := s.sql.ExecContext(ctx, `UPDATE idempotency_keys SET state = ?, response_status = ?, response_headers = ?, response_body = ?
-		WHERE principal = ? AND key = ? AND state = ?`, IdemDone, status, string(h), body, principal, key, IdemInFlight)
+		WHERE principal = ? AND key = ? AND state = ? AND created_at = ?`,
+		IdemDone, status, string(h), body, principal, key, IdemInFlight, claimed.UTC())
 	return err
 }
 
-// AbandonIdempotent forgets a claimed key whose request did not complete
-// (a server error, a panic), so the client can try again with it.
-func (s *Store) AbandonIdempotent(ctx context.Context, principal, key string) error {
-	_, err := s.sql.ExecContext(ctx, `DELETE FROM idempotency_keys WHERE principal = ? AND key = ? AND state = ?`,
-		principal, key, IdemInFlight)
+// AbandonIdempotent forgets the claim made at claimed, whose request did
+// not complete (a server error, a panic), so the client can try again.
+func (s *Store) AbandonIdempotent(ctx context.Context, principal, key string, claimed time.Time) error {
+	_, err := s.sql.ExecContext(ctx, `DELETE FROM idempotency_keys WHERE principal = ? AND key = ? AND state = ? AND created_at = ?`,
+		principal, key, IdemInFlight, claimed.UTC())
 	return err
 }
 

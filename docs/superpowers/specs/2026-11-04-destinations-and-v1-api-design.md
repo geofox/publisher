@@ -562,7 +562,8 @@ Anything still `sending` at exit is handled by §5.3 on the next start.
   extensions: a stable `code` and, for validation, `errors[]` of
   `{pointer, code, detail}` (JSON Pointer into the request). `type` URIs
   resolve to `docs/api/errors.md#<code>`.
-- **Idempotency on every create** via `Idempotency-Key`, following
+- **Idempotency on every create** (except token creation, whose response
+  holds a secret that must not be stored) via `Idempotency-Key`, following
   draft-ietf-httpapi-idempotency-key-header-08 (active WG draft, Oct 2026
   ([datatracker](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/))):
   same key + same payload → the stored response (with

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"slices"
 	"strings"
@@ -149,8 +150,8 @@ func (a *API) v1Auth(scope string, next http.Handler) http.Handler {
 
 func (a *API) v1Principal(w http.ResponseWriter, r *http.Request) (principal, bool) {
 	if h := r.Header.Get("Authorization"); h != "" {
-		raw, found := strings.CutPrefix(h, "Bearer ")
-		if !found || raw == "" {
+		raw, found := bearerToken(h)
+		if !found {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="publisher"`)
 			problem(w, r, http.StatusUnauthorized, codeUnauthenticated, "Authorization must be a Bearer token")
 			return principal{}, false
@@ -187,20 +188,44 @@ func (a *API) v1Principal(w http.ResponseWriter, r *http.Request) (principal, bo
 }
 
 // v1Recover answers a panicking handler with a 500 problem.
+// If the handler had already started its response, the connection is
+// aborted instead: a problem can't be appended to a half-sent body.
 func v1Recover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sw := &startedWriter{ResponseWriter: w}
 		defer func() {
 			if p := recover(); p != nil {
 				if p == http.ErrAbortHandler {
 					panic(p)
 				}
 				slog.ErrorContext(r.Context(), "v1: handler panicked", "path", r.URL.Path, "panic", p)
+				if sw.started {
+					panic(http.ErrAbortHandler)
+				}
 				problem(w, r, http.StatusInternalServerError, codeInternal, "internal error")
 			}
 		}()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(sw, r)
 	})
 }
+
+// startedWriter notes whether a response has begun.
+type startedWriter struct {
+	http.ResponseWriter
+	started bool
+}
+
+func (s *startedWriter) WriteHeader(code int) {
+	s.started = true
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *startedWriter) Write(b []byte) (int, error) {
+	s.started = true
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *startedWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // maxV1Body caps a JSON request body.
 const maxV1Body = 1 << 20
@@ -208,8 +233,11 @@ const maxV1Body = 1 << 20
 // decodeJSON reads a JSON request body into v, rejecting unknown fields
 // and trailing data; on failure it answers a problem and returns false.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(strings.ToLower(ct), "application/json") {
-		problem(w, r, http.StatusUnsupportedMediaType, codeUnsupportedMediaType, "send application/json")
+	// Content-Type is required: a cross-site form or no-cors fetch can't
+	// send application/json without a CORS preflight, so this backs up the
+	// Origin check for cookie-authenticated writes.
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+		problem(w, r, http.StatusUnsupportedMediaType, codeUnsupportedMediaType, "send Content-Type: application/json")
 		return false
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxV1Body))

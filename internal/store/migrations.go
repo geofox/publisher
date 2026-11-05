@@ -32,7 +32,8 @@ var migrations = []migration{
 // tokens keep what /publish and /upload-media let them do.
 func migrateTokenScopesIdempotency(ctx context.Context, tx execer) error {
 	_, err := tx.ExecContext(ctx, `
-ALTER TABLE api_tokens ADD COLUMN scopes TEXT NOT NULL DEFAULT 'posts:write media:write';
+ALTER TABLE api_tokens ADD COLUMN scopes TEXT NOT NULL DEFAULT '';
+UPDATE api_tokens SET scopes = 'posts:write media:write';
 ALTER TABLE api_tokens ADD COLUMN expires_at TIMESTAMP;
 CREATE TABLE idempotency_keys (
   principal        TEXT NOT NULL,

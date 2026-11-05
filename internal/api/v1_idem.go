@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
@@ -109,14 +110,20 @@ func (a *API) withIdempotency(next http.Handler) http.Handler {
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		sum := sha256.New()
-		sum.Write([]byte(r.Header.Get("Content-Type")))
+		// The media type, not its spelling: "application/json; charset=utf-8"
+		// and "application/json" with one body are one request.
+		mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		sum.Write([]byte(mt))
+		sum.Write([]byte{0})
+		sum.Write([]byte(r.URL.RawQuery))
 		sum.Write([]byte{0})
 		sum.Write(body)
 		fp := hex.EncodeToString(sum.Sum(nil))
 
 		ctx := context.WithoutCancel(r.Context())
 		who := p.key()
-		prev, err := a.Store.BeginIdempotent(ctx, who, key, r.Method, r.URL.Path, fp, time.Now())
+		claimed := time.Now()
+		prev, err := a.Store.BeginIdempotent(ctx, who, key, r.Method, r.URL.Path, fp, claimed)
 		switch {
 		case errors.Is(err, store.ErrIdempotencyBusy):
 			w.Header().Set("Retry-After", "1")
@@ -150,7 +157,7 @@ func (a *API) withIdempotency(next http.Handler) http.Handler {
 				return
 			}
 			// The handler panicked: free the key, then let v1Recover answer.
-			if err := a.Store.AbandonIdempotent(ctx, who, key); err != nil {
+			if err := a.Store.AbandonIdempotent(ctx, who, key, claimed); err != nil {
 				slog.ErrorContext(ctx, "v1: abandon idempotency key", "err", err)
 			}
 		}()
@@ -158,7 +165,7 @@ func (a *API) withIdempotency(next http.Handler) http.Handler {
 		finished = true
 		status := rec.statusOr200()
 		if status >= 500 || status == http.StatusConflict || status == http.StatusTooManyRequests {
-			if err := a.Store.AbandonIdempotent(ctx, who, key); err != nil {
+			if err := a.Store.AbandonIdempotent(ctx, who, key, claimed); err != nil {
 				slog.ErrorContext(ctx, "v1: abandon idempotency key", "err", err)
 			}
 			return
@@ -169,10 +176,16 @@ func (a *API) withIdempotency(next http.Handler) http.Handler {
 				hdr.Set(h, v)
 			}
 		}
-		if err := a.Store.FinishIdempotent(ctx, who, key, status, hdr, rec.body.Bytes()); err != nil {
-			// The response went out; only a repeat will notice (as 409
-			// until the claim goes stale).
-			slog.ErrorContext(ctx, "v1: store idempotent response", "err", err)
+		// The response went out already. If it can't be stored (one retry
+		// for a busy database), a repeat gets 409 until the claim goes
+		// stale, then runs again: logged loudly, as it can duplicate.
+		err = a.Store.FinishIdempotent(ctx, who, key, claimed, status, hdr, rec.body.Bytes())
+		if err != nil {
+			err = a.Store.FinishIdempotent(ctx, who, key, claimed, status, hdr, rec.body.Bytes())
+		}
+		if err != nil {
+			slog.ErrorContext(ctx, "v1: storing an idempotent response failed; a repeat of this request may run again",
+				"key_principal", who, "err", err)
 		}
 	})
 }
@@ -187,6 +200,7 @@ type recorder struct {
 func (r *recorder) WriteHeader(status int) {
 	if r.status == 0 {
 		r.status = status
+		r.typed()
 	}
 	r.ResponseWriter.WriteHeader(status)
 }
@@ -194,9 +208,19 @@ func (r *recorder) WriteHeader(status int) {
 func (r *recorder) Write(b []byte) (int, error) {
 	if r.status == 0 {
 		r.status = http.StatusOK
+		r.typed()
 	}
 	r.body.Write(b)
 	return r.ResponseWriter.Write(b)
+}
+
+// typed makes sure a body never goes out (or is replayed) without a
+// Content-Type, so nothing can sniff it as HTML. /v1 handlers always set
+// one; this keeps the guarantee in the one place every body passes.
+func (r *recorder) typed() {
+	if r.Header().Get("Content-Type") == "" {
+		r.Header().Set("Content-Type", "application/octet-stream")
+	}
 }
 
 func (r *recorder) statusOr200() int {

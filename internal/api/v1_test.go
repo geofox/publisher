@@ -644,19 +644,62 @@ func TestV1TokenValidation(t *testing.T) {
 		{"trailing data", `{"name":"x","scopes":["admin"]} {}`, "", 400, codeInvalidJSON},
 		{"not json", `name=x`, "", 400, codeInvalidJSON},
 		{"form body", `name=x`, "application/x-www-form-urlencoded", 415, codeUnsupportedMediaType},
+		{"no content type", `{"name":"x","scopes":["admin"]}`, "-", 415, codeUnsupportedMediaType},
+		{"json with charset", `{"name":"x","scopes":["admin"]}`, "application/json; charset=utf-8", 201, ""},
+		{"jsonp", `{"name":"x","scopes":["admin"]}`, "application/jsonp", 415, codeUnsupportedMediaType},
+		{"control char", `{"name":"a\u0000b","scopes":["admin"]}`, "", 422, codeValidation},
+		{"lowercase t and z", `{"name":"x","scopes":["admin"],"expires_at":"2099-01-01t00:00:00z"}`, "", 201, ""},
 		{"too large", `{"name":"` + strings.Repeat("a", maxV1Body) + `","scopes":["admin"]}`, "", 413, codeTooLarge},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			h := map[string]string{}
-			if c.ct != "" {
+			switch c.ct {
+			case "":
+			case "-":
+				h["Content-Type"] = "" // deleted
+			default:
 				h["Content-Type"] = c.ct
 			}
-			wantProblem(t, e.do(req{method: "POST", path: "/v1/tokens", body: c.body, header: h, badRequest: true}), c.status, c.code)
+			r := e.do(req{method: "POST", path: "/v1/tokens", body: c.body, header: h, badRequest: true})
+			if c.code == "" {
+				wantStatus(t, r, c.status)
+				return
+			}
+			wantProblem(t, r, c.status, c.code)
 		})
 	}
 	// No body at all.
-	wantProblem(t, e.do(req{method: "POST", path: "/v1/tokens", badRequest: true}), 400, codeInvalidJSON)
+	wantProblem(t, e.do(req{method: "POST", path: "/v1/tokens", badRequest: true,
+		header: map[string]string{"Content-Type": "application/json"}}), 400, codeInvalidJSON)
+}
+
+// TestV1TokenCantOutliveItsMaker: a token minting a token can't give it a
+// longer life than its own.
+func TestV1TokenCantOutliveItsMaker(t *testing.T) {
+	e := newV1Env(t, true)
+	parentExp := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	_, parent, err := e.st.CreateScopedToken("short", []string{scopeAdmin}, parentExp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := parentExp.Add(time.Minute).Format(time.RFC3339)
+	sooner := parentExp.Add(-time.Minute).Format(time.RFC3339)
+	for body, want := range map[string]int{
+		`{"name":"x","scopes":["admin"]}`:                               422, // never expires
+		`{"name":"x","scopes":["admin"],"expires_at":"` + later + `"}`:  422,
+		`{"name":"x","scopes":["admin"],"expires_at":"` + sooner + `"}`: 201,
+	} {
+		r := e.do(req{method: "POST", path: "/v1/tokens", auth: parent, body: body, badRequest: want != 201})
+		if r.Code != want {
+			t.Errorf("%s: %d, want %d (%s)", body, r.Code, want, r.Body.String())
+		}
+		if want == 422 && !strings.Contains(r.Body.String(), `"exceeds_caller"`) {
+			t.Errorf("%s: %s, want exceeds_caller", body, r.Body.String())
+		}
+	}
+	// A session or a non-expiring token has no such limit.
+	wantStatus(t, e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"x","scopes":["admin"]}`}), 201)
 }
 
 func TestV1TokenListPages(t *testing.T) {
@@ -691,8 +734,78 @@ func TestV1TokenListPages(t *testing.T) {
 		}
 		path = "/v1/tokens?limit=2&cursor=" + *page.NextCursor
 	}
-	slices.Reverse(made) // newest first
+	// The expected order is the store's (created_at DESC, id DESC): on a
+	// coarse clock tokens can share a created_at, and the id breaks ties.
+	all, err := e.st.ListAPITokens()
+	if err != nil {
+		t.Fatal(err)
+	}
+	made = made[:0]
+	for _, tk := range all {
+		if tk.Name == "t" {
+			made = append(made, tokenID(tk.ID))
+		}
+	}
 	if !slices.Equal(seen, made) {
 		t.Fatalf("listed %v, want %v", seen, made)
 	}
+}
+
+func TestAbsoluteHTTPURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://cdn.example/a.png":     "https://cdn.example/a.png",
+		"http://x/a":                    "http://x/a",
+		"/avatars/original/missing.png": "",
+		"javascript:alert(1)":           "",
+		"data:image/png;base64,AAAA":    "",
+		"https:///nohost":               "",
+		"":                              "",
+	} {
+		if got := absoluteHTTPURL(in); got != want {
+			t.Errorf("absoluteHTTPURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestV1AccountWithoutDriver: an account whose type has no registered
+// driver is listed without capabilities, and still validates.
+func TestV1AccountWithoutDriver(t *testing.T) {
+	e := newV1Env(t, false)
+	if _, err := e.st.SeedEnvAccounts(context.Background(), store.DefaultOwner,
+		[]store.EnvAccount{{Type: "gone", Label: "Gone"}}); err != nil {
+		t.Fatal(err)
+	}
+	r := e.do(req{method: "GET", path: "/v1/accounts"})
+	wantStatus(t, r, 200)
+	var page listBody[v1AccountBody]
+	r.json(&page)
+	for _, ac := range page.Data {
+		if (ac.Type == "gone") != (ac.Capabilities == nil) {
+			t.Errorf("%s: capabilities = %v", ac.Type, ac.Capabilities)
+		}
+	}
+}
+
+// TestV1RecoverAfterPartialWrite: a panic after the response began aborts
+// the connection rather than appending a problem to it.
+func TestV1RecoverAfterPartialWrite(t *testing.T) {
+	h := v1Recover(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("partial"))
+		panic("boom")
+	}))
+	defer func() {
+		if p := recover(); p != http.ErrAbortHandler {
+			t.Fatalf("recovered %v, want http.ErrAbortHandler", p)
+		}
+	}()
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/v1/x", nil))
+}
+
+// TestV1CrossOriginIsAProblem: the CSRF guard answers /v1 with a problem.
+func TestV1CrossOriginIsAProblem(t *testing.T) {
+	e := newV1Env(t, true)
+	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"x","scopes":["admin"]}`,
+		header: map[string]string{"Origin": "https://evil.example"}})
+	wantProblem(t, r, 403, codeCrossOrigin)
 }

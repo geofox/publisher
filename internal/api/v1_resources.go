@@ -3,6 +3,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"net/url"
 
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/store"
@@ -97,17 +98,19 @@ func (a *API) v1Destinations(w http.ResponseWriter, _ *http.Request) {
 // GET /v1/accounts, GET /v1/accounts/{id}: the owner's accounts.
 
 type v1AccountBody struct {
-	ID           string                   `json:"id"`
-	Type         string                   `json:"type"`
-	Label        string                   `json:"label"`
-	Handle       string                   `json:"handle,omitempty"`
-	DisplayName  string                   `json:"display_name,omitempty"`
-	Avatar       string                   `json:"avatar,omitempty"`
-	Source       string                   `json:"source"`
-	Enabled      bool                     `json:"enabled"`
-	Capabilities destination.Capabilities `json:"capabilities"`
-	CreatedAt    string                   `json:"created_at"`
-	UpdatedAt    string                   `json:"updated_at"`
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Label       string `json:"label"`
+	Handle      string `json:"handle,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	Avatar      string `json:"avatar,omitempty"`
+	Source      string `json:"source"`
+	Enabled     bool   `json:"enabled"`
+	// Capabilities is absent when no driver for the type is registered
+	// (an account kept for its history after its driver went away).
+	Capabilities *destination.Capabilities `json:"capabilities,omitempty"`
+	CreatedAt    string                    `json:"created_at"`
+	UpdatedAt    string                    `json:"updated_at"`
 }
 
 // v1AccountViews renders accounts, filling the default account of each type
@@ -124,15 +127,18 @@ func (a *API) v1AccountViews(r *http.Request, accts []store.Account) []v1Account
 	for _, ac := range accts {
 		v := v1AccountBody{
 			ID: ac.ID, Type: ac.Type, Label: ac.Label, Handle: ac.Handle, Source: ac.Source, Enabled: ac.Enabled,
-			Capabilities: a.caps(r.Context(), ac.Type),
-			CreatedAt:    rfc3339(ac.CreatedAt), UpdatedAt: rfc3339(ac.UpdatedAt),
+			CreatedAt: rfc3339(ac.CreatedAt), UpdatedAt: rfc3339(ac.UpdatedAt),
+		}
+		if _, ok := destination.Lookup(ac.Type); ok {
+			c := a.caps(r.Context(), ac.Type)
+			v.Capabilities = &c
 		}
 		// The identity service knows one profile per type: the env account's.
 		if p, ok := profiles[ac.Type]; ok && ac.Enabled && ac.Source == "env" && ac.EnvKey == store.EnvKeyDefault {
 			if v.Handle == "" {
 				v.Handle = p.handle
 			}
-			v.DisplayName, v.Avatar = p.name, p.avatar
+			v.DisplayName, v.Avatar = p.name, absoluteHTTPURL(p.avatar)
 		}
 		out = append(out, v)
 	}
@@ -140,6 +146,17 @@ func (a *API) v1AccountViews(r *http.Request, accts []store.Account) []v1Account
 }
 
 type v1Profile struct{ handle, name, avatar string }
+
+// absoluteHTTPURL returns s when it is an absolute http(s) URL, else "":
+// profiles carry whatever the network serves (a relative Mastodon default,
+// a Nostr picture field holding anything).
+func absoluteHTTPURL(s string) string {
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return ""
+	}
+	return s
+}
 
 func (a *API) v1Accounts(w http.ResponseWriter, r *http.Request) {
 	limit, after, ok := pageParams(w, r)

@@ -42,7 +42,9 @@ moves over and the old routes go once `/v1` covers them.
   carry scopes (`posts:read`, `posts:write`, `media:write`, `drafts:read`,
   `drafts:write`, `accounts:read`, `admin`, which includes all) and an
   optional expiry. Tokens made before scopes keep `posts:write media:write`,
-  which is what `/publish` and `/upload-media` let them do.
+  which is what `/publish` and `/upload-media` let them do. Those two routes
+  now check scopes too: `/publish` needs `posts:write`, `/upload-media`
+  `media:write` (or `admin`). A token can't create a token that outlives it.
 - **Errors** are RFC 9457 problem details with a stable `code`; the
   [error catalogue](docs/api/errors.md) lists them.
 - **Lists** page with `?limit=` (1 to 200) and `?cursor=`; the answer is
@@ -579,8 +581,8 @@ it directly to the internet.**
 **OIDC disabled (default — `OIDC_ISSUER` unset):** the embedded web UI and
 all `/api/*`, `/v1/*`, `/publish`, and `/upload-media` endpoints are **not**
 authenticated by the service itself: every request the proxy lets through
-can do everything, token management included. (A bearer token, when one is
-sent, is still checked.) Put it behind an authenticating reverse
+can do everything, token management included. (On `/v1`, a bearer token,
+when one is sent, is still checked.) Put it behind an authenticating reverse
 proxy (Authelia, oauth2-proxy, Basic Auth) or keep it on a private network /
 VPN. The `docker run` and compose examples above bind port 8080 to
 `127.0.0.1` (localhost only), so nothing is exposed until you deliberately

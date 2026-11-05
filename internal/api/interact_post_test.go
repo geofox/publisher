@@ -47,8 +47,8 @@ func TestAPIInteractForwardsSpec(t *testing.T) {
 	mw := multipart.NewWriter(&buf)
 	spec, _ := json.Marshal(map[string]any{
 		"action": "quote", "platform": "bluesky",
-		"ref":            map[string]any{"uri": "at://x", "cid": "cidx"},
-		"source_url":     "https://bsky/9", "source_author": "@a",
+		"ref":        map[string]any{"uri": "at://x", "cid": "cidx"},
+		"source_url": "https://bsky/9", "source_author": "@a",
 		"source_preview": map[string]any{"author": "@a", "text": "orig"},
 		"text":           "hi", "fanout": []string{"mastodon"}, "number": true,
 	})

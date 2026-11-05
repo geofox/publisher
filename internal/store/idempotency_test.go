@@ -42,7 +42,7 @@ func TestIdempotencyLifecycle(t *testing.T) {
 	}
 
 	h := http.Header{"Content-Type": {"application/json"}, "Location": {"/v1/x/1"}}
-	if err := s.FinishIdempotent(ctx, "token:a", "k", 201, h, []byte(`{"id":1}`)); err != nil {
+	if err := s.FinishIdempotent(ctx, "token:a", "k", now, 201, h, []byte(`{"id":1}`)); err != nil {
 		t.Fatal(err)
 	}
 	prev, err = s.BeginIdempotent(ctx, "token:a", "k", "POST", "/v1/x", "fp1", now)
@@ -51,7 +51,7 @@ func TestIdempotencyLifecycle(t *testing.T) {
 		t.Fatalf("replay = %+v, %v", prev, err)
 	}
 	// A finished key can't be finished or abandoned again.
-	if err := s.AbandonIdempotent(ctx, "token:a", "k"); err != nil {
+	if err := s.AbandonIdempotent(ctx, "token:a", "k", now); err != nil {
 		t.Fatal(err)
 	}
 	if prev, _ := s.BeginIdempotent(ctx, "token:a", "k", "POST", "/v1/x", "fp1", now); prev == nil || prev.State != IdemDone {
@@ -73,10 +73,34 @@ func TestIdempotencyStaleClaimAndAbandon(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A claim older than IdempotencyStale died with its process.
-	if prev, err := s.BeginIdempotent(ctx, "p", "k", "POST", "/v1/x", "fp", now.Add(IdempotencyStale+time.Second)); err != nil || prev != nil {
+	takeover := now.Add(IdempotencyStale + time.Second)
+	if prev, err := s.BeginIdempotent(ctx, "p", "k", "POST", "/v1/x", "fp", takeover); err != nil || prev != nil {
 		t.Fatalf("stale claim = %+v, %v; want a fresh claim", prev, err)
 	}
-	if err := s.AbandonIdempotent(ctx, "p", "k"); err != nil {
+	// If the slow first request finishes after all, it can't touch the
+	// claim that replaced it.
+	if err := s.FinishIdempotent(ctx, "p", "k", now, 201, nil, []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AbandonIdempotent(ctx, "p", "k", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.BeginIdempotent(ctx, "p", "k", "POST", "/v1/x", "fp", takeover); !errors.Is(err, ErrIdempotencyBusy) {
+		t.Fatalf("the successor's claim was disturbed: %v", err)
+	}
+	if err := s.FinishIdempotent(ctx, "p", "k", takeover, 201, nil, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if prev, _ := s.BeginIdempotent(ctx, "p", "k", "POST", "/v1/x", "fp", takeover); prev == nil || string(prev.Body) != "new" {
+		t.Fatalf("replay = %+v, want the successor's response", prev)
+	}
+	if n, err := s.PurgeIdempotency(ctx, takeover.Add(IdempotencyTTL)); err != nil || n != 1 {
+		t.Fatalf("purge = %d, %v", n, err)
+	}
+	if _, err := s.BeginIdempotent(ctx, "p", "k", "POST", "/v1/x", "fp", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AbandonIdempotent(ctx, "p", "k", now); err != nil {
 		t.Fatal(err)
 	}
 	if prev, err := s.BeginIdempotent(ctx, "p", "k", "POST", "/v1/x", "fp", now); err != nil || prev != nil {

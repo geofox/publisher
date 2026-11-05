@@ -238,6 +238,9 @@ paths:
         Needs `admin`. The response carries the token's `secret`, the only
         time it is shown: the server keeps only a hash.
 
+        A token creating a token must give it an expiry no later than its
+        own (`422 exceeds_caller`).
+
         Not idempotent, deliberately: replaying the response would mean
         storing the secret. A retried create makes a second token; revoke
         the one you did not keep.
@@ -379,6 +382,7 @@ components:
       description: No credentials, or credentials the server does not accept (`unauthenticated`).
       headers:
         WWW-Authenticate:
+          required: true
           schema:
             type: string
       content:
@@ -386,7 +390,10 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
     InsufficientScope:
-      description: The token lacks the operation's scope (`insufficient_scope`).
+      description: |
+        The token lacks the operation's scope (`insufficient_scope`, with
+        `WWW-Authenticate` naming it), or a browser write came from another
+        site (`cross_origin`).
       headers:
         WWW-Authenticate:
           schema:
@@ -410,8 +417,8 @@ components:
   schemas:
     Problem:
       type: object
-      description: An RFC 9457 problem with a stable `code`.
-      additionalProperties: false
+      description: An RFC 9457 problem with a stable `code`. Clients should ignore members they don't know (RFC 9457 §3.2).
+      additionalProperties: true
       required: [type, title, status, code]
       properties:
         type:
@@ -434,6 +441,7 @@ components:
             - method_not_allowed
             - unauthenticated
             - insufficient_scope
+            - cross_origin
             - invalid_json
             - unsupported_media_type
             - too_large
@@ -732,7 +740,7 @@ components:
     Account:
       type: object
       additionalProperties: false
-      required: [id, type, label, source, enabled, capabilities, created_at, updated_at]
+      required: [id, type, label, source, enabled, created_at, updated_at]
       properties:
         id:
           type: string
@@ -749,12 +757,14 @@ components:
         avatar:
           type: string
           format: uri
+          description: An absolute http(s) URL; absent when the profile has none.
         source:
           type: string
           description: Where the account is configured (`env` for now).
         enabled:
           type: boolean
         capabilities:
+          description: Absent when this server has no driver for the account's type.
           $ref: "#/components/schemas/Capabilities"
         created_at:
           $ref: "#/components/schemas/Timestamp"
@@ -829,9 +839,9 @@ components:
           items:
             $ref: "#/components/schemas/Scope"
         expires_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          description: When the token stops working; omit for never.
+          description: When the token stops working, kept to the second; omit or null for never.
       examples:
         - name: n8n cross-posting
           scopes: ["posts:write", "media:write"]

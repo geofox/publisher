@@ -53,6 +53,13 @@ valid token.
 `WWW-Authenticate` header names the scope needed. Create a token with that
 scope (`admin` includes every scope).
 
+## cross_origin
+
+**403.** A state-changing request came from a web page on another site
+(its `Origin` header names another host). This blocks cross-site request
+forgery against a signed-in browser. Scripts and servers send no `Origin`
+and are not affected.
+
 ## invalid_json
 
 **400.** The body is empty, is not JSON, has a field the operation does
@@ -61,8 +68,10 @@ value. `detail` says which.
 
 ## unsupported_media_type
 
-**415.** The body is not `application/json` where the operation expects
-JSON.
+**415.** The operation takes JSON and the request's `Content-Type` is not
+`application/json` (parameters such as `charset` are fine) or is missing.
+It is required: a cross-site form can't send it, which backs up the CSRF
+check for signed-in browsers.
 
 ## too_large
 
@@ -74,7 +83,8 @@ bodies; see `GET /v1/instance` for the limits).
 **422.** The body is well-formed JSON but some values are not acceptable.
 `errors[]` lists every invalid field, so a client can show them all at once.
 Field codes include `required`, `too_long`, `unknown_scope`,
-`invalid_time` and `in_past`.
+`invalid_time`, `in_past` and `exceeds_caller` (a token tried to create a
+token that would outlive it).
 
 ## invalid_parameter
 

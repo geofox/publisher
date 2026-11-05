@@ -30,7 +30,9 @@ func (s *consumeFakeDispatch) RetryRelay(ctx context.Context, id, relay string) 
 func (s *consumeFakeDispatch) Schedule(ctx context.Context, spec dispatch.PostSpec, at time.Time) (*store.Post, error) {
 	return &store.Post{ID: "p-sched", Status: "scheduled", ScheduledAt: &at, Platforms: spec.Platforms}, nil
 }
-func (s *consumeFakeDispatch) Interact(context.Context, dispatch.InteractSpec) *store.Post { return nil }
+func (s *consumeFakeDispatch) Interact(context.Context, dispatch.InteractSpec) *store.Post {
+	return nil
+}
 func (s *consumeFakeDispatch) PostWithID(_ context.Context, id string, spec dispatch.PostSpec) *store.Post {
 	s.called = true
 	return &store.Post{ID: id, Status: "success", Platforms: spec.Platforms}

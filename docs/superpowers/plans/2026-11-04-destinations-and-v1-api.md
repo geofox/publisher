@@ -335,6 +335,13 @@ as they move.
 >   (`invalid_json`).
 > - **Account health** is not in 3a: nothing measures it yet. It arrives
 >   with the account settings work (step 4).
+> - **Deferred to 3b:** `Prefer: wait` and the ETag helpers (nothing in
+>   3a uses them), and per-route body limits with a streaming fingerprint
+>   for `Idempotency-Key`, which `POST /v1/media` needs (3a buffers up to
+>   1 MiB, enough for JSON).
+> - **Scopes bind the old machine routes too**: `/publish` needs
+>   `posts:write` and `/upload-media` `media:write` (found in review: a
+>   read-only token could publish).
 > - **Colon custom methods** (`:cancel`, `:retry`, `:preview`) can't be
 >   ServeMux patterns (a wildcard must be a whole segment); 3b routes them
 >   by hand inside a `{id}` handler.

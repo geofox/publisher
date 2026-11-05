@@ -18,6 +18,7 @@ const (
 	codeMethodNotAllowed     = "method_not_allowed"
 	codeUnauthenticated      = "unauthenticated"
 	codeInsufficientScope    = "insufficient_scope"
+	codeCrossOrigin          = "cross_origin"
 	codeInvalidJSON          = "invalid_json"
 	codeUnsupportedMediaType = "unsupported_media_type"
 	codeTooLarge             = "too_large"
@@ -38,6 +39,7 @@ var v1Codes = map[string]string{
 	codeMethodNotAllowed:     "Method not allowed",
 	codeUnauthenticated:      "Authentication required",
 	codeInsufficientScope:    "Insufficient scope",
+	codeCrossOrigin:          "Cross-origin request blocked",
 	codeInvalidJSON:          "Invalid JSON body",
 	codeUnsupportedMediaType: "Unsupported media type",
 	codeTooLarge:             "Request body too large",

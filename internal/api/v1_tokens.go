@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/geofox/publisher/internal/store"
@@ -152,8 +153,10 @@ func (a *API) v1CreateToken(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case name == "":
 		errs = append(errs, fieldError{Pointer: "/name", Code: "required", Detail: "name the token, for example after the script that uses it"})
-	case utf8.RuneCountInString(name) > maxTokenName || !utf8.ValidString(name):
+	case utf8.RuneCountInString(name) > maxTokenName:
 		errs = append(errs, fieldError{Pointer: "/name", Code: "too_long", Detail: "at most 100 characters"})
+	case strings.ContainsFunc(name, unicode.IsControl):
+		errs = append(errs, fieldError{Pointer: "/name", Code: "invalid", Detail: "no control characters"})
 	}
 	var scopes []string
 	if len(req.Scopes) == 0 {
@@ -173,7 +176,10 @@ func (a *API) v1CreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 	var expires time.Time
 	if req.ExpiresAt != nil {
-		t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+		// RFC 3339 allows a lowercase "t" and "z"; the expiry is kept to
+		// the second, as it is shown.
+		t, err := time.Parse(time.RFC3339, strings.ToUpper(*req.ExpiresAt))
+		t = t.Truncate(time.Second)
 		switch {
 		case err != nil:
 			errs = append(errs, fieldError{Pointer: "/expires_at", Code: "invalid_time", Detail: "an RFC 3339 time, such as 2027-01-01T00:00:00Z"})
@@ -181,6 +187,15 @@ func (a *API) v1CreateToken(w http.ResponseWriter, r *http.Request) {
 			errs = append(errs, fieldError{Pointer: "/expires_at", Code: "in_past", Detail: "the expiry must be in the future"})
 		default:
 			expires = t
+		}
+	}
+	// A token (always admin here) can't mint a token that outlives it, so a
+	// short-lived credential can't make itself permanent through a child.
+	if p, _ := principalFrom(r.Context()); p.Token != nil {
+		if parent := p.Token.ExpiresAt; !parent.IsZero() && (expires.IsZero() || expires.After(parent)) &&
+			(req.ExpiresAt == nil || !slices.ContainsFunc(errs, func(e fieldError) bool { return e.Pointer == "/expires_at" })) {
+			errs = append(errs, fieldError{Pointer: "/expires_at", Code: "exceeds_caller",
+				Detail: "the calling token expires at " + rfc3339(parent) + "; the new one must expire by then"})
 		}
 	}
 	if len(errs) > 0 {
