@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/geofox/publisher/internal/httpx"
@@ -47,19 +48,36 @@ func wantsHTML(r *http.Request) bool {
 	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
-// requireAPIToken gates machine endpoints via an Authorization: Bearer token.
-func (a *API) requireAPIToken(next http.Handler) http.Handler {
+// requireAPIToken gates machine endpoints via an Authorization: Bearer
+// token holding scope (or admin): /publish needs posts:write and
+// /upload-media media:write, what tokens made before scopes hold.
+func (a *API) requireAPIToken(scope string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const prefix = "Bearer "
-		h := r.Header.Get("Authorization")
-		if !strings.HasPrefix(h, prefix) {
+		raw, ok := bearerToken(r.Header.Get("Authorization"))
+		if !ok {
 			httpx.WriteError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		if _, err := a.Store.APITokenByRaw(strings.TrimPrefix(h, prefix)); err != nil {
+		t, err := a.Store.APITokenByRaw(raw)
+		if err != nil {
 			httpx.WriteError(w, http.StatusUnauthorized, "invalid token")
+			return
+		}
+		if !slices.Contains(t.Scopes, scope) && !slices.Contains(t.Scopes, scopeAdmin) {
+			httpx.WriteError(w, http.StatusForbidden, "this token lacks the "+scope+" scope")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// bearerToken reads "Bearer <token>"; the scheme is case-insensitive
+// (RFC 9110 §11.1).
+func bearerToken(h string) (string, bool) {
+	scheme, raw, found := strings.Cut(h, " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
+		return "", false
+	}
+	raw = strings.TrimSpace(raw)
+	return raw, raw != ""
 }

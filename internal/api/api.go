@@ -167,6 +167,9 @@ type API struct {
 
 	// Ready runs the /readyz checks. nil → /readyz always reports ok (tests).
 	Ready *health.Checker
+
+	// Version is the build's version, reported by GET /v1/instance.
+	Version string
 }
 
 // New creates a new API with the given publisher and media pipeline.
@@ -226,6 +229,7 @@ func (a *API) Routes() http.Handler {
 		mux.HandleFunc("GET /auth/callback", a.handleAuthCallback)
 		mux.HandleFunc("POST /auth/logout", a.handleAuthLogout)
 	}
+	a.mountV1(mux)
 	mux.Handle("/", web.Handler())
 	return withSecurityHeaders(a.withCSRFGuard(a.withGates(mux)))
 }

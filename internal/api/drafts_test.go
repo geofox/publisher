@@ -3,9 +3,9 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"mime/multipart"
 	"path/filepath"
 	"testing"
 
@@ -165,7 +165,7 @@ func TestTranslateDraftHandler(t *testing.T) {
 	a.Translator = &fakeTranslator{out: "[de] hello", src: "en"}
 	rec := postMultipart(t, a, "/api/drafts", map[string]any{
 		"master_text": "hello", "platforms": []string{"nostr"},
-		"tags": []string{"essay"},
+		"tags":      []string{"essay"},
 		"overrides": map[string]any{}, "images": []any{},
 	}, nil)
 	var created store.Draft

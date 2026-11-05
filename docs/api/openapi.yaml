@@ -1,0 +1,877 @@
+openapi: 3.1.0
+info:
+  title: Publisher API
+  version: "1"
+  summary: Publish to Nostr, Bluesky, Mastodon, Threads and more from one place.
+  description: |
+    The `/v1` API of a self-hosted Publisher server. The web app uses it too.
+
+    **Conventions**
+
+    - JSON in and out, snake_case, RFC 3339 UTC timestamps, prefixed ids
+      (`acc_`, `tok_`, and later `pst_`, `med_`, `drf_`).
+    - Errors are RFC 9457 problem details (`application/problem+json`) with a
+      stable `code`; see the [error catalogue](https://github.com/geofox/publisher/blob/main/docs/api/errors.md).
+    - Lists take `?limit=` (1–200, default 50) and `?cursor=`, and answer
+      `{"data": [...], "next_cursor": "..."}`; `next_cursor` is null on the
+      last page. Cursors are opaque.
+    - Creates marked as such honor `Idempotency-Key`
+      (draft-ietf-httpapi-idempotency-key-header-08): a repeat with the same
+      body gets the first response again, with `Idempotent-Replayed: true`;
+      a different body with the same key gets `422 idempotency_key_reused`;
+      a repeat while the first is running gets `409 idempotency_key_in_use`.
+      Keys are kept 24 hours, per caller.
+    - Responses are `Cache-Control: no-store`.
+
+    **Authentication**
+
+    Send `Authorization: Bearer <token>`, or use the browser session the web
+    app signs in with. A bearer header wins over a session cookie. Tokens
+    carry scopes; each operation names the one it needs (`admin` includes
+    every scope). A session can do everything. When the server runs without
+    OIDC, the reverse proxy in front of it is the gate and every request
+    has every scope (a bearer token, if sent, is still checked).
+  license:
+    name: See the repository
+    url: https://github.com/geofox/publisher
+servers:
+  - url: /
+security:
+  - bearer: []
+  - session: []
+tags:
+  - name: instance
+    description: The server and what it can do.
+  - name: accounts
+    description: Destination types and the accounts that publish to them.
+  - name: tokens
+    description: API tokens and the caller's identity.
+paths:
+  /v1/openapi.json:
+    get:
+      operationId: getOpenAPI
+      tags: [instance]
+      summary: This document, as JSON
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI description.
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/instance:
+    get:
+      operationId: getInstance
+      tags: [instance]
+      summary: Version, features, languages and limits
+      description: Any authenticated caller.
+      responses:
+        "200":
+          description: The instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Instance"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/destinations:
+    get:
+      operationId: listDestinations
+      tags: [accounts]
+      summary: Registered destination types and their manifests
+      description: Needs `accounts:read`. Not paginated (a handful of types).
+      security:
+        - bearer: ["accounts:read"]
+        - session: []
+      responses:
+        "200":
+          description: Every registered type, sorted by type.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Manifest"
+                  next_cursor:
+                    type: "null"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts:
+    get:
+      operationId: listAccounts
+      tags: [accounts]
+      summary: The owner's accounts, oldest first
+      description: Needs `accounts:read`. Disabled accounts are listed too (they keep their history).
+      security:
+        - bearer: ["accounts:read"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: A page of accounts.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Account"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadParameter"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts/{id}:
+    get:
+      operationId: getAccount
+      tags: [accounts]
+      summary: One account
+      description: Needs `accounts:read`.
+      security:
+        - bearer: ["accounts:read"]
+        - session: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            examples: [acc_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c]
+      responses:
+        "200":
+          description: The account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/me:
+    get:
+      operationId: getMe
+      tags: [tokens]
+      summary: Who is calling, and with which scopes
+      description: Any authenticated caller.
+      responses:
+        "200":
+          description: The caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/tokens:
+    get:
+      operationId: listTokens
+      tags: [tokens]
+      summary: API tokens, newest first
+      description: Needs `admin`. Revoked and expired tokens are listed with their status.
+      security:
+        - bearer: [admin]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: A page of tokens.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Token"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadParameter"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        default:
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: createToken
+      tags: [tokens]
+      summary: Create a token
+      description: |
+        Needs `admin`. The response carries the token's `secret`, the only
+        time it is shown: the server keeps only a hash.
+
+        A token creating a token must give it an expiry no later than its
+        own (`422 exceeds_caller`).
+
+        Not idempotent, deliberately: replaying the response would mean
+        storing the secret. A retried create makes a second token; revoke
+        the one you did not keep.
+      security:
+        - bearer: [admin]
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenCreate"
+      responses:
+        "201":
+          description: The token, with its secret.
+          headers:
+            Location:
+              description: The token's URL.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatedToken"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/tokens/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          examples: [tok_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c]
+    get:
+      operationId: getToken
+      tags: [tokens]
+      summary: One token (never its secret)
+      description: Needs `admin`.
+      security:
+        - bearer: [admin]
+        - session: []
+      responses:
+        "200":
+          description: The token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Token"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Problem"
+    delete:
+      operationId: revokeToken
+      tags: [tokens]
+      summary: Revoke a token
+      description: |
+        Needs `admin`. Takes effect at once. Revoking a revoked token
+        succeeds too, so a retried call gets the same answer. The token
+        stays listed, with status `revoked`.
+      security:
+        - bearer: [admin]
+        - session: []
+      responses:
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Problem"
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: An API token, created with `POST /v1/tokens` or in the web app.
+    session:
+      type: apiKey
+      in: cookie
+      name: publisher_session
+      description: The web app's session, set by signing in (`/auth/login`).
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: Items per page.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      description: The previous page's `next_cursor`, unchanged.
+      schema:
+        type: string
+  responses:
+    Problem:
+      description: An error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    BadRequest:
+      description: The body is not acceptable JSON (`invalid_json`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    BadParameter:
+      description: A query parameter is invalid (`invalid_parameter`, `invalid_cursor`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthenticated:
+      description: No credentials, or credentials the server does not accept (`unauthenticated`).
+      headers:
+        WWW-Authenticate:
+          required: true
+          schema:
+            type: string
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InsufficientScope:
+      description: |
+        The token lacks the operation's scope (`insufficient_scope`, with
+        `WWW-Authenticate` naming it), or a browser write came from another
+        site (`cross_origin`).
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: No such resource for this caller (`not_found`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Invalid:
+      description: Some fields are invalid (`validation_failed`); `errors` lists them.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    Problem:
+      type: object
+      description: An RFC 9457 problem with a stable `code`. Clients should ignore members they don't know (RFC 9457 §3.2).
+      additionalProperties: true
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: This error's entry in the error catalogue.
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          description: The request path.
+        code:
+          type: string
+          enum:
+            - not_found
+            - method_not_allowed
+            - unauthenticated
+            - insufficient_scope
+            - cross_origin
+            - invalid_json
+            - unsupported_media_type
+            - too_large
+            - validation_failed
+            - invalid_parameter
+            - invalid_cursor
+            - idempotency_key_invalid
+            - idempotency_key_in_use
+            - idempotency_key_reused
+            - unavailable
+            - internal
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldError"
+    FieldError:
+      type: object
+      additionalProperties: false
+      required: [code, detail]
+      properties:
+        pointer:
+          type: string
+          description: A JSON Pointer into the request body.
+        parameter:
+          type: string
+          description: A query parameter's name.
+        code:
+          type: string
+        detail:
+          type: string
+    NextCursor:
+      description: The cursor for the next page; null on the last page.
+      type: [string, "null"]
+    Timestamp:
+      type: string
+      format: date-time
+    NullableTimestamp:
+      type: [string, "null"]
+      format: date-time
+    Scope:
+      type: string
+      enum: ["posts:read", "posts:write", "media:write", "drafts:read", "drafts:write", "accounts:read", admin]
+    Instance:
+      type: object
+      additionalProperties: false
+      required: [version, auth, features, user_languages, translate_targets, limits, idempotency, scopes, destinations, pagination]
+      properties:
+        version:
+          type: string
+          description: The server build ("dev" for a local build).
+        auth:
+          type: string
+          enum: [oidc, proxy]
+          description: "`oidc`: the server signs people in. `proxy`: the reverse proxy in front is the gate."
+        features:
+          type: object
+          additionalProperties: false
+          required: [translate, video, public_feed, relay_sync]
+          properties:
+            translate:
+              type: boolean
+              description: DeepL translation is configured.
+            video:
+              type: boolean
+              description: ffmpeg is present, so video can be processed.
+            public_feed:
+              type: boolean
+              description: The public feed has a token.
+            relay_sync:
+              type: boolean
+              description: Nostr relay-list sync is available.
+        user_languages:
+          type: array
+          description: The operator's languages (ISO 639-1), in preference order.
+          items:
+            type: string
+        translate_targets:
+          type: array
+          description: The user languages translation can target; empty without translation.
+          items:
+            type: string
+        limits:
+          type: object
+          additionalProperties: false
+          required: [max_json_body_bytes, max_upload_bytes, max_video_upload_bytes, max_images_per_request, max_idempotency_key_length]
+          properties:
+            max_json_body_bytes:
+              type: integer
+            max_upload_bytes:
+              type: integer
+            max_video_upload_bytes:
+              type: integer
+            max_images_per_request:
+              type: integer
+            max_idempotency_key_length:
+              type: integer
+        idempotency:
+          type: object
+          additionalProperties: false
+          required: [ttl_secs]
+          properties:
+            ttl_secs:
+              type: integer
+              description: How long an Idempotency-Key is remembered.
+        scopes:
+          type: array
+          description: The scopes a token can hold.
+          items:
+            $ref: "#/components/schemas/Scope"
+        destinations:
+          type: array
+          description: The registered destination types.
+          items:
+            type: string
+        pagination:
+          type: object
+          additionalProperties: false
+          required: [default_limit, max_limit]
+          properties:
+            default_limit:
+              type: integer
+            max_limit:
+              type: integer
+    Manifest:
+      type: object
+      description: A destination type, the same for every account of it.
+      additionalProperties: false
+      required: [contract, type, name, kinds, defaults]
+      properties:
+        contract:
+          type: integer
+          description: The destination contract version the driver speaks.
+        type:
+          type: string
+          pattern: "^[a-z][a-z0-9_]{0,31}$"
+        name:
+          type: string
+        kinds:
+          type: array
+          items:
+            type: string
+            enum: [note, article]
+        options:
+          type: array
+          description: The type's own settings, for a UI to render and the server to validate.
+          items:
+            $ref: "#/components/schemas/OptionSpec"
+        defaults:
+          $ref: "#/components/schemas/Capabilities"
+    OptionSpec:
+      type: object
+      additionalProperties: false
+      required: [key, type, label]
+      properties:
+        key:
+          type: string
+        type:
+          type: string
+          enum: [bool, string, int, enum, enum_list]
+        enum:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [value, label]
+            properties:
+              value:
+                type: string
+                description: '"" means the default.'
+              label:
+                type: string
+        label:
+          type: string
+        help:
+          type: string
+        min:
+          type: integer
+        max:
+          type: integer
+    Capabilities:
+      type: object
+      description: What an account can do. Zero limits mean no limit.
+      additionalProperties: false
+      required: [text, title, threading, media, link_preview, content_warning, sensitive, languages, interactions, idempotent]
+      properties:
+        text:
+          type: object
+          additionalProperties: false
+          required: [max_length, counting]
+          properties:
+            max_length:
+              type: integer
+            counting:
+              type: object
+              additionalProperties: false
+              required: [unit]
+              properties:
+                unit:
+                  type: string
+                  description: graphemes, codepoints, utf16 or bytes ("" means graphemes).
+                url_length:
+                  type: integer
+                  description: The fixed cost of every URL, when the network has one.
+                mention_local_part_only:
+                  type: boolean
+        title:
+          type: object
+          additionalProperties: false
+          required: [supported, required]
+          properties:
+            supported:
+              type: boolean
+            required:
+              type: boolean
+            max_length:
+              type: integer
+        threading:
+          type: object
+          additionalProperties: false
+          required: [supported]
+          properties:
+            supported:
+              type: boolean
+            max_items:
+              type: integer
+        media:
+          type: object
+          additionalProperties: false
+          required: [transport, images, video, mix_images_video, alt_text]
+          properties:
+            transport:
+              type: string
+              enum: [bytes, url]
+            images:
+              $ref: "#/components/schemas/MediaLimit"
+            video:
+              $ref: "#/components/schemas/MediaLimit"
+            mix_images_video:
+              type: boolean
+            alt_text:
+              type: boolean
+            alt_max_length:
+              type: integer
+        link_preview:
+          type: string
+          enum: [none, server, client]
+        content_warning:
+          type: boolean
+        sensitive:
+          type: boolean
+        languages:
+          type: integer
+          description: How many language tags a post can carry.
+        visibility:
+          type: array
+          items:
+            type: string
+        interactions:
+          type: object
+          additionalProperties: false
+          required: [reply, quote, repost]
+          properties:
+            reply:
+              type: boolean
+            quote:
+              type: boolean
+            repost:
+              type: boolean
+        idempotent:
+          type: string
+          enum: [none, key, natural]
+          description: How a repeated publish of one item behaves on the network.
+        idempotency_key_ttl_secs:
+          type: integer
+    MediaLimit:
+      type: object
+      additionalProperties: false
+      required: [supported]
+      properties:
+        supported:
+          type: boolean
+        max_count:
+          type: integer
+        max_bytes:
+          type: integer
+        max_pixels:
+          type: integer
+        mimes:
+          type: array
+          items:
+            type: string
+        max_duration_secs:
+          type: integer
+        advisory_duration_secs:
+          type: integer
+    Account:
+      type: object
+      additionalProperties: false
+      required: [id, type, label, source, enabled, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: "^acc_"
+        type:
+          type: string
+          description: The destination type.
+        label:
+          type: string
+        handle:
+          type: string
+        display_name:
+          type: string
+        avatar:
+          type: string
+          format: uri
+          description: An absolute http(s) URL; absent when the profile has none.
+        source:
+          type: string
+          description: Where the account is configured (`env` for now).
+        enabled:
+          type: boolean
+        capabilities:
+          description: Absent when this server has no driver for the account's type.
+          $ref: "#/components/schemas/Capabilities"
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+    Token:
+      type: object
+      additionalProperties: false
+      required: [id, name, scopes, status, created_at, last_used_at, expires_at, revoked_at]
+      properties:
+        id:
+          type: string
+          pattern: "^tok_"
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
+        status:
+          type: string
+          enum: [active, expired, revoked]
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        last_used_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        expires_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        revoked_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+    CreatedToken:
+      type: object
+      additionalProperties: false
+      required: [id, name, scopes, status, created_at, last_used_at, expires_at, revoked_at, secret]
+      properties:
+        id:
+          type: string
+          pattern: "^tok_"
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
+        status:
+          type: string
+          enum: [active]
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        last_used_at:
+          type: "null"
+        expires_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        revoked_at:
+          type: "null"
+        secret:
+          type: string
+          description: The bearer value. Shown once; store it now.
+    TokenCreate:
+      type: object
+      additionalProperties: false
+      required: [name, scopes]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: What the token is for, such as the script that uses it.
+        scopes:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/Scope"
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the token stops working, kept to the second; omit or null for never.
+      examples:
+        - name: n8n cross-posting
+          scopes: ["posts:write", "media:write"]
+          expires_at: "2027-11-05T00:00:00Z"
+    Me:
+      type: object
+      additionalProperties: false
+      required: [kind, scopes]
+      properties:
+        kind:
+          type: string
+          enum: [session, token, proxy]
+          description: "`session`: signed in. `token`: a bearer token. `proxy`: OIDC is off and the reverse proxy let the request through."
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
+        user:
+          type: object
+          description: The signed-in person (sessions only).
+          additionalProperties: false
+          required: [id, subject]
+          properties:
+            id:
+              type: string
+            subject:
+              type: string
+            email:
+              type: string
+            name:
+              type: string
+        token:
+          $ref: "#/components/schemas/Token"

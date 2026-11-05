@@ -146,6 +146,7 @@ func main() {
 	a.Unfurl = uf
 	a.UserLanguages = cfg.UserLanguages
 	a.PublicFeedToken = cfg.PublicFeedToken
+	a.Version = version
 	a.Progress = progress.NewRegistry()
 	// Video pipeline: enabled only when both ffmpeg and ffprobe are present (dev
 	// hosts without them run image-only; the endpoints 503 with a clear message).
@@ -259,6 +260,23 @@ func main() {
 			"allowed_subjects", len(cfg.OIDCAllowedSubjects),
 			"allowed_emails", len(cfg.OIDCAllowedEmails))
 	}
+	// Expired Idempotency-Key records are dead weight: purge them hourly.
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			if n, err := st.PurgeIdempotency(ctx, time.Now()); err != nil {
+				slog.Warn("idempotency purge failed", "err", err)
+			} else if n > 0 {
+				slog.Debug("purged idempotency keys", "count", n)
+			}
+		}
+	}()
 	if cfg.ThreadsToken != "" {
 		mgr := threads.NewTokenManager(st, tc, notifier, cfg.ThreadsToken)
 		go mgr.Start(ctx)

@@ -62,6 +62,11 @@ func (a *API) withCSRFGuard(next http.Handler) http.Handler {
 				okHost := err == nil && (sameHost(u.Host, r.Host) ||
 					(allowedHost != "" && hostOnly(u.Host) == allowedHost))
 				if !okHost {
+					if p := path.Clean(r.URL.Path); p == "/v1" || strings.HasPrefix(p, "/v1/") {
+						w.Header().Set("Cache-Control", "no-store")
+						problem(w, r, http.StatusForbidden, codeCrossOrigin, "cross-origin request blocked")
+						return
+					}
 					httpx.WriteError(w, http.StatusForbidden, "cross-origin request blocked")
 					return
 				}
@@ -94,7 +99,8 @@ func (a *API) withGates(next http.Handler) http.Handler {
 		return next
 	}
 	session := a.requireSession(next)
-	token := a.requireAPIToken(next)
+	publish := a.requireAPIToken(scopePostsWrite, next)
+	upload := a.requireAPIToken(scopeMediaWrite, next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Clean the path before gate selection: net/http does not normalize
 		// r.URL.Path before the handler runs, so a raw "/auth/../api/tokens"
@@ -103,10 +109,13 @@ func (a *API) withGates(next http.Handler) http.Handler {
 		switch {
 		case p == "/healthz" || p == "/readyz" || p == "/metrics" ||
 			strings.HasPrefix(p, "/auth/") ||
-			p == "/api/public/feed":
-			next.ServeHTTP(w, r) // always-open / separately-gated
-		case p == "/publish" || p == "/upload-media":
-			token.ServeHTTP(w, r) // machine endpoints
+			p == "/api/public/feed" ||
+			p == "/v1" || strings.HasPrefix(p, "/v1/"):
+			next.ServeHTTP(w, r) // always-open / separately-gated (/v1 authenticates per route)
+		case p == "/publish":
+			publish.ServeHTTP(w, r) // machine endpoints
+		case p == "/upload-media":
+			upload.ServeHTTP(w, r)
 		default:
 			session.ServeHTTP(w, r) // SPA + browser /api/*
 		}

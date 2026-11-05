@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"strings"
 	"time"
 )
 
@@ -123,62 +124,94 @@ func (s *Store) SweepExpiredSessions() (int64, error) {
 // after creation — only its hash.
 type APIToken struct {
 	ID         string
+	OwnerID    string
 	Name       string
+	Scopes     []string
 	CreatedAt  time.Time
 	LastUsedAt time.Time
+	ExpiresAt  time.Time // zero: never
 	RevokedAt  time.Time
 	Revoked    bool
 }
 
-// CreateAPIToken mints a token, stores its hash, and returns the row plus the
-// raw secret (shown to the operator exactly once).
+// LegacyTokenScopes are what a token made before scopes could do: /publish
+// and /upload-media.
+var LegacyTokenScopes = []string{"posts:write", "media:write"}
+
+// CreateAPIToken mints a token with the old routes' scopes and no expiry.
 func (s *Store) CreateAPIToken(name string) (APIToken, string, error) {
+	return s.CreateScopedToken(name, LegacyTokenScopes, time.Time{})
+}
+
+// CreateScopedToken mints a token, stores its hash, and returns the row plus
+// the raw secret (shown to the operator exactly once). A zero expiresAt
+// never expires.
+func (s *Store) CreateScopedToken(name string, scopes []string, expiresAt time.Time) (APIToken, string, error) {
 	raw := randomToken()
 	id := newID()
 	now := time.Now().UTC()
+	var exp any
+	if !expiresAt.IsZero() {
+		exp = expiresAt.UTC()
+	}
 	_, err := s.sql.Exec(
-		`INSERT INTO api_tokens(id, name, token_hash, created_at) VALUES(?, ?, ?, ?)`,
-		id, name, hashToken(raw), now)
+		`INSERT INTO api_tokens(id, name, token_hash, created_at, scopes, expires_at) VALUES(?, ?, ?, ?, ?, ?)`,
+		id, name, hashToken(raw), now, strings.Join(scopes, " "), exp)
 	if err != nil {
 		return APIToken{}, "", err
 	}
-	return APIToken{ID: id, Name: name, CreatedAt: now}, raw, nil
+	return APIToken{ID: id, OwnerID: DefaultOwner, Name: name, Scopes: scopes, CreatedAt: now, ExpiresAt: expiresAt.UTC()}, raw, nil
 }
 
-// APITokenByRaw resolves a presented bearer secret to a live (non-revoked)
-// token and stamps last_used_at. Returns sql.ErrNoRows when absent/revoked.
+// APITokenByRaw resolves a presented bearer secret to a live (non-revoked,
+// unexpired) token and stamps last_used_at. Returns sql.ErrNoRows otherwise.
 func (s *Store) APITokenByRaw(raw string) (APIToken, error) {
 	h := hashToken(raw)
-	var t APIToken
-	var lastUsed sql.NullTime
-	err := s.sql.QueryRow(
-		`SELECT id, name, created_at, last_used_at FROM api_tokens
-		 WHERE token_hash=? AND revoked_at IS NULL`, h).
-		Scan(&t.ID, &t.Name, &t.CreatedAt, &lastUsed)
+	now := time.Now().UTC()
+	t, err := scanToken(s.sql.QueryRow(`SELECT `+tokenColumns+` FROM api_tokens
+		 WHERE token_hash=? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`, h, now))
 	if err != nil {
 		return APIToken{}, err
 	}
-	t.LastUsedAt = lastUsed.Time
-	_, _ = s.sql.Exec(`UPDATE api_tokens SET last_used_at=? WHERE id=?`, time.Now().UTC(), t.ID)
+	_, _ = s.sql.Exec(`UPDATE api_tokens SET last_used_at=? WHERE id=?`, now, t.ID)
+	t.LastUsedAt = now
+	return t, nil
+}
+
+// APIToken returns one token by id, never the secret.
+func (s *Store) APIToken(id string) (APIToken, error) {
+	return scanToken(s.sql.QueryRow(`SELECT `+tokenColumns+` FROM api_tokens WHERE id=?`, id))
+}
+
+const tokenColumns = `id, owner_id, name, scopes, created_at, last_used_at, expires_at, revoked_at`
+
+type rowScanner interface{ Scan(dest ...any) error }
+
+func scanToken(r rowScanner) (APIToken, error) {
+	var t APIToken
+	var scopes string
+	var lastUsed, expires, revoked sql.NullTime
+	if err := r.Scan(&t.ID, &t.OwnerID, &t.Name, &scopes, &t.CreatedAt, &lastUsed, &expires, &revoked); err != nil {
+		return APIToken{}, err
+	}
+	t.Scopes = strings.Fields(scopes)
+	t.LastUsedAt, t.ExpiresAt, t.RevokedAt, t.Revoked = lastUsed.Time, expires.Time, revoked.Time, revoked.Valid
 	return t, nil
 }
 
 // ListAPITokens returns all tokens (newest first), never the secret.
 func (s *Store) ListAPITokens() ([]APIToken, error) {
-	rows, err := s.sql.Query(
-		`SELECT id, name, created_at, last_used_at, revoked_at FROM api_tokens ORDER BY created_at DESC`)
+	rows, err := s.sql.Query(`SELECT ` + tokenColumns + ` FROM api_tokens ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := make([]APIToken, 0)
 	for rows.Next() {
-		var t APIToken
-		var lastUsed, revoked sql.NullTime
-		if err := rows.Scan(&t.ID, &t.Name, &t.CreatedAt, &lastUsed, &revoked); err != nil {
+		t, err := scanToken(rows)
+		if err != nil {
 			return nil, err
 		}
-		t.LastUsedAt, t.RevokedAt, t.Revoked = lastUsed.Time, revoked.Time, revoked.Valid
 		out = append(out, t)
 	}
 	return out, rows.Err()

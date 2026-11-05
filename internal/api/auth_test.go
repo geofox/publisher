@@ -74,7 +74,7 @@ func TestRequireSessionPageVsXHR(t *testing.T) {
 func TestRequireAPIToken(t *testing.T) {
 	db, _ := storeOpen(t)
 	a := &API{Store: db}
-	h := a.requireAPIToken(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := a.requireAPIToken(scopePostsWrite, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	_, raw, _ := db.CreateAPIToken("n8n")
@@ -92,6 +92,40 @@ func TestRequireAPIToken(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("valid token: code=%d want 200", rec.Code)
+	}
+	// The scheme is case-insensitive.
+	rec = httptest.NewRecorder()
+	req.Header.Set("Authorization", "bearer "+raw)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("lowercase scheme: code=%d want 200", rec.Code)
+	}
+	// A token without posts:write (or admin) is refused: scopes bind the
+	// old machine routes too.
+	for scopes, want := range map[string]int{"accounts:read": 403, "media:write": 403, "admin": 200} {
+		_, raw, _ := db.CreateScopedToken("t", []string{scopes}, time.Time{})
+		rec = httptest.NewRecorder()
+		req.Header.Set("Authorization", "Bearer "+raw)
+		h.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Errorf("token with %s: code=%d want %d", scopes, rec.Code, want)
+		}
+	}
+}
+
+// TestMachineRoutesCheckScopes goes through the real gates: /publish wants
+// posts:write and /upload-media media:write.
+func TestMachineRoutesCheckScopes(t *testing.T) {
+	e := newV1Env(t, true)
+	media := e.token(scopeMediaWrite)
+	for path, want := range map[string]int{"/publish": 403, "/upload-media": 400} {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
+		r.Header.Set("Authorization", "Bearer "+media)
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, r)
+		if rec.Code != want {
+			t.Errorf("%s with a media:write token: %d, want %d", path, rec.Code, want)
+		}
 	}
 }
 

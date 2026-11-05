@@ -310,6 +310,42 @@ as they move.
 
 # PR 3 — `/v1` API
 
+> **As built (2026-11-05): split in three.** PR 3a is the foundations and
+> the small resources; 3b posts, media and events; 3c drafts and the tools
+> (translate, verify, resolve, relay sync, public feed).
+>
+> PR 3a differences from the tasks below:
+>
+> - **`/v1` lives in package `api`** (`internal/api/v1*.go`), not a
+>   `internal/api/v1` package: the handlers share the API struct's
+>   dependencies and helpers with the old routes until PR 4 removes those,
+>   and a second package would have meant exporting most of them.
+> - **Routes are declared once**, in `v1Routes()`, with their scope and
+>   whether they take `Idempotency-Key`; mounting, auth, 405s and the
+>   conformance test all read that list.
+> - **The validator is pb33f/libopenapi-validator** (pure Go, OpenAPI 3.1).
+>   It is a test dependency only; the server serves the YAML converted to
+>   JSON with goccy/go-yaml. Adding it moved golang.org/x/{net,crypto,sys,
+>   text,sync} to newer minor versions.
+> - **Token creation is not idempotent**: its response holds the secret,
+>   and storing that for a replay would keep a usable credential in the
+>   database for 24 hours.
+> - **Validation errors are 422** (`validation_failed`) with every bad
+>   field listed; malformed JSON, unknown fields and wrong types are 400
+>   (`invalid_json`).
+> - **Account health** is not in 3a: nothing measures it yet. It arrives
+>   with the account settings work (step 4).
+> - **Deferred to 3b:** `Prefer: wait` and the ETag helpers (nothing in
+>   3a uses them), and per-route body limits with a streaming fingerprint
+>   for `Idempotency-Key`, which `POST /v1/media` needs (3a buffers up to
+>   1 MiB, enough for JSON).
+> - **Scopes bind the old machine routes too**: `/publish` needs
+>   `posts:write` and `/upload-media` `media:write` (found in review: a
+>   read-only token could publish).
+> - **Colon custom methods** (`:cancel`, `:retry`, `:preview`) can't be
+>   ServeMux patterns (a wildcard must be a whole segment); 3b routes them
+>   by hand inside a `{id}` handler.
+
 ## Task 3.1: Foundations
 
 - [ ] `internal/api/v1` package: router, problem-details writer, error
