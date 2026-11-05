@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/metrics"
 	"github.com/geofox/publisher/internal/store"
@@ -114,8 +115,18 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 	now := r.now()
 	var due []string       // platforms to retry this pass
 	var exhausted []string // platforms that just hit the cap
+	var hopeless []string  // platforms whose last failure a retry can't fix
 	for _, t := range post.Targets {
 		if !retryablePlatform(t) || t.GaveUpAt != nil {
+			continue
+		}
+		if cls := destination.ErrorClass(t.ErrorClass); !r.classRetryable(ctx, t, now) {
+			if set, err := r.disp.Store.MarkTargetGaveUp(t.ID, now); err != nil {
+				slog.ErrorContext(ctx, "retrier: mark gave-up failed", "platform", t.Platform, "err", err)
+			} else if set {
+				hopeless = append(hopeless, t.Platform+" ("+string(cls)+")")
+				metrics.IncRetryExhausted(t.Platform)
+			}
 			continue
 		}
 		if t.AttemptCount >= r.maxAttempts {
@@ -133,9 +144,10 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 	}
 	var exhaustedRelays []string
 	for _, t := range post.Targets {
-		// Only single-post nostr partials use relay-level retry; threaded /
-		// failed nostr targets are covered by the platform path above.
-		if t.Platform != "nostr" || t.Status != "partial" || len(t.Segments) > 1 {
+		// Only single-post partials with endpoint rows (Nostr relays) use
+		// endpoint-level retry; threaded and failed targets are covered by
+		// the platform path above.
+		if len(t.Relays) == 0 || t.Status != "partial" || len(t.Segments) > 1 {
 			continue
 		}
 		for _, rl := range t.Relays {
@@ -174,6 +186,62 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 	}
 	if len(exhausted) > 0 || len(exhaustedRelays) > 0 {
 		r.alertGaveUp(ctx, id, exhausted, exhaustedRelays)
+	}
+	if len(hopeless) > 0 {
+		r.alertNotRetried(ctx, id, hopeless)
+	}
+}
+
+// keyMargin is how long before the server forgets an idempotency key the
+// Retrier stops relying on it (clock skew, a slow request).
+const keyMargin = 5 * time.Minute
+
+// classRetryable reports whether an automatic retry can help the target's
+// last failure: not for auth, invalid or rejected failures, and not for an
+// unknown outcome unless the destination drops repeats (the first attempt
+// may have published). A failure recorded before classes existed ("") is
+// retried as before.
+//
+// A destination that drops repeats by key only remembers the key for a
+// while: once an attempt that may have published is older than that, a
+// retry could duplicate it, whatever the last failure was.
+func (r *Retrier) classRetryable(ctx context.Context, t store.Target, now time.Time) bool {
+	cls := destination.ErrorClass(t.ErrorClass)
+	if cls == "" {
+		return true
+	}
+	caps, _ := r.disp.Caps(ctx, t.Platform)
+	if !cls.Retryable(caps.Idempotent) {
+		return false
+	}
+	return !keyExpired(t, caps, now)
+}
+
+// keyExpired reports whether an earlier attempt at t may have published and
+// the server has since forgotten its idempotency key.
+func keyExpired(t store.Target, caps destination.Capabilities, now time.Time) bool {
+	if caps.Idempotent != destination.IdempotentKey || caps.IdempotencyKeyTTLSecs <= 0 {
+		return false
+	}
+	window := time.Duration(caps.IdempotencyKeyTTLSecs)*time.Second - keyMargin
+	for _, a := range t.Attempts {
+		if destination.ErrorClass(a.ErrorClass) == destination.ClassUnknownOutcome && now.Sub(a.AttemptedAt) > window {
+			return true
+		}
+	}
+	return false
+}
+
+// alertNotRetried fires one alert for targets the retrier won't repeat.
+func (r *Retrier) alertNotRetried(ctx context.Context, postID string, targets []string) {
+	if r.notifier == nil {
+		return
+	}
+	body := "post " + postID + " will not be retried automatically on " + strings.Join(targets, ", ") +
+		": the failure would repeat (auth, invalid, rejected) or the post may already be live (unknown_outcome). " +
+		"Check the target, fix the cause, then retry manually."
+	if err := r.notifier.Alert(ctx, "Publisher: delivery needs attention", body); err != nil {
+		slog.ErrorContext(ctx, "retrier: not-retried alert failed", "err", err)
 	}
 }
 

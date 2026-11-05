@@ -4,38 +4,37 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"strconv"
 	"strings"
 
-	gonostr "fiatjaf.com/nostr"
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/unfurl"
 )
 
+// TargetResult is the normalized outcome of publishing one item (one post or
+// one thread segment) to one platform, in the shape the store records.
 type TargetResult struct {
-	Platform        string
-	Status          string // success|partial|failed
-	Error           string
-	RemoteID        string
-	RemoteURL       string
-	CID             string // bluesky content-hash of the created record (for threading the next reply)
-	LatencyMS       int
-	RequestJSON     string
-	ResponseJSON    string
-	Relays          []store.RelayState
+	Platform string
+	Status   string // success|partial|failed
+	Error    string
+	// ErrorClass is the destination.ErrorClass of a failure ("" on success):
+	// it tells the retrier whether repeating the attempt can help.
+	ErrorClass   string
+	RemoteID     string
+	RemoteURL    string
+	RefData      json.RawMessage // destination.ItemRef.Data (Bluesky CID, Nostr signed event)
+	LatencyMS    int
+	RequestJSON  string
+	ResponseJSON string
+	Relays       []store.RelayState
+	// SignedEventJSON is RefData for destinations that redeliver (Nostr):
+	// what the fan-out and relay retry re-send.
 	SignedEventJSON string
-	PendingRelays   []string // nostr fan-out: secondary relays to rebroadcast to async
-}
-
-// ReplyRef threads one segment onto the previous in a chain. RootID/RootCID
-// identify the chain head; ParentID/ParentCID the immediately-preceding segment.
-// IDs are platform-native: at:// URIs (+ cids) for Bluesky, status/media ids for
-// Mastodon/Threads, event ids for Nostr (cids unused there).
-type ReplyRef struct {
-	RootID, RootCID, ParentID, ParentCID string
-	AuthorPubkey                         string // nostr: replied-to author hex (external replies)
+	PendingRelays   []string // secondary endpoints to deliver to asynchronously
 }
 
 type Overrides struct {
@@ -73,32 +72,13 @@ type Img struct {
 	Dim          string // "WxH" of the canonical object ("" if unknown)
 	DurationSecs int64  // video only; 0 for images
 	SizeBytes    int64  // canonical object size; 0 if unknown
+	SHA256       string // canonical object hash (NIP-92 x)
+	Blurhash     string
+	PosterURL    string // video poster frame
 }
 
-// IsVideo reports whether this attachment is a video (drives the adapter
-// gates and the bytes-vs-URL split).
+// IsVideo reports whether this attachment is a video.
 func (im Img) IsVideo() bool { return strings.HasPrefix(im.Mime, "video/") }
-
-// Adapters should populate Status ("success"|"failed") and Error in the returned
-// TargetResult. The dispatcher defensively normalizes an empty status to "failed"
-// (using the returned error for the message) so a misbehaving adapter can't be
-// silently counted as success.
-type NostrPoster interface {
-	PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error)
-	RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (ok bool, message string)
-	NostrActor
-}
-type MastodonPoster interface {
-	PostText(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error)
-	MastodonActor
-}
-type BlueskyPoster interface {
-	PostBsky(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error)
-	BlueskyActor
-}
-type ThreadsPoster interface {
-	PostThreads(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error)
-}
 
 // Unfurler builds link cards. Satisfied by *unfurl.Service; an interface so
 // dispatch tests can fake it. May be nil — links then post without cards.
@@ -107,7 +87,7 @@ type Unfurler interface {
 	Thumb(ctx context.Context, url string) (data []byte, mime string, err error)
 }
 
-// Interaction action kinds for runAction.
+// Interaction action kinds.
 const (
 	actionReply  = "reply"
 	actionRepost = "repost"
@@ -127,22 +107,6 @@ type InteractRef struct {
 	Author       string   `json:"author,omitempty"`
 	RelayHints   []string `json:"relay_hints,omitempty"`
 	Kind         int      `json:"kind,omitempty"`
-}
-
-// Actor interfaces add native repost/quote of an external post, embedded into the
-// per-platform poster interfaces. Threads has no native repost/quote of an
-// external post, so ThreadsPoster gains no actor.
-type NostrActor interface {
-	Repost(ctx context.Context, eventID, author string, kind int, relayHint string) (TargetResult, error)
-	Quote(ctx context.Context, text, eventID, author, relayHint string, imetas []gonostr.Tag) (TargetResult, error)
-}
-type BlueskyActor interface {
-	RepostBsky(ctx context.Context, subjectURI, subjectCID string) (TargetResult, error)
-	QuoteBsky(ctx context.Context, text string, o Overrides, imgs []Img, quoteURI, quoteCID string) (TargetResult, error)
-}
-type MastodonActor interface {
-	Reblog(ctx context.Context, statusID string) (TargetResult, error)
-	QuoteStatus(ctx context.Context, text, quotedID string, imgs []Img) (TargetResult, error)
 }
 
 type PostSpec struct {
@@ -169,11 +133,15 @@ type PostNotifier interface {
 	PostPublished(ctx context.Context, p *store.Post)
 }
 
+// Dispatcher publishes posts to destination accounts and records the outcome.
 type Dispatcher struct {
-	Nostr    NostrPoster
-	Mastodon MastodonPoster
-	Bluesky  BlueskyPoster
-	Threads  ThreadsPoster
+	// Accounts are the connected destination accounts, keyed by the name a
+	// post targets. Until accounts are stored (step 2, PR 2) the name is the
+	// destination type.
+	Accounts map[string]destination.Account
+	// Host re-hosts re-encoded media for URL-transport destinations. Nil
+	// keeps canonical URLs.
+	Host     MediaHost
 	Store    *store.Store // may be nil in unit tests
 	Fetcher  Fetcher
 	Unfurler Unfurler     // may be nil; attachLinkCard guards it
@@ -208,11 +176,32 @@ func (d *Dispatcher) alertFailure(ctx context.Context, p *store.Post) {
 		return
 	}
 	if p.Status == "failed" || p.Status == "partial" {
-		body := "post " + p.ID + " finished with status " + p.Status + "; auto-retry will attempt recovery"
+		body := "post " + p.ID + " finished with status " + p.Status + "; "
+		if d.anyAutoRetryable(ctx, p) {
+			body += "auto-retry will attempt recovery"
+		} else {
+			body += "it will not be retried automatically: the failure would repeat (auth, invalid, rejected) " +
+				"or the post may already be live (unknown_outcome). Check the target, fix the cause, then retry manually."
+		}
 		if err := d.Alerter.Alert(ctx, "Publisher: post delivery "+p.Status, body); err != nil {
 			slog.ErrorContext(ctx, "alertFailure", "err", err)
 		}
 	}
+}
+
+// anyAutoRetryable reports whether the Retrier will try any of the post's
+// unfinished targets again, by the same class rule it applies.
+func (d *Dispatcher) anyAutoRetryable(ctx context.Context, p *store.Post) bool {
+	for _, t := range p.Targets {
+		if t.Status != "failed" && t.Status != "partial" {
+			continue
+		}
+		caps, _ := d.Caps(ctx, t.Platform)
+		if destination.ErrorClass(t.ErrorClass).Retryable(caps.Idempotent) {
+			return true
+		}
+	}
+	return false
 }
 
 func newID() string {

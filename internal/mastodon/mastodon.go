@@ -10,6 +10,8 @@ import (
 	"time"
 
 	gomast "github.com/mattn/go-mastodon"
+
+	"github.com/geofox/publisher/internal/destination"
 )
 
 // Image is one attachment. Mastodon detects the content type from the
@@ -35,6 +37,10 @@ type Post struct {
 	Images      []Image
 	Video       *Video
 	InReplyToID string // when set, posts as a reply (threading)
+	// IdempotencyKey, when set, is sent as the Idempotency-Key header on the
+	// status create, so the server drops a repeat of the same post (Mastodon
+	// keeps keys for up to an hour).
+	IdempotencyKey string
 }
 
 type Result struct {
@@ -52,8 +58,10 @@ type Client struct {
 }
 
 func New(baseURL, token string) *Client {
+	gc := gomast.NewClient(&gomast.Config{Server: baseURL, AccessToken: token})
+	gc.Transport = idempotencyTransport{base: http.DefaultTransport}
 	return &Client{
-		c:                gomast.NewClient(&gomast.Config{Server: baseURL, AccessToken: token}),
+		c:                gc,
 		baseURL:          strings.TrimRight(baseURL, "/"),
 		token:            token,
 		http:             &http.Client{Timeout: 15 * time.Second},
@@ -63,6 +71,7 @@ func New(baseURL, token string) *Client {
 }
 
 func (cl *Client) Post(ctx context.Context, p Post) (Result, error) {
+	ctx = WithIdempotencyKey(ctx, p.IdempotencyKey)
 	var mediaIDs []gomast.ID
 
 	if p.Video != nil {
@@ -87,13 +96,16 @@ func (cl *Client) Post(ctx context.Context, p Post) (Result, error) {
 		}
 		mediaIDs = append(mediaIDs, att.ID)
 	}
+	if err := ctx.Err(); err != nil { // nothing sent
+		return Result{}, err
+	}
 	st, err := cl.c.PostStatus(ctx, &gomast.Toot{
 		Status: p.Text, SpoilerText: p.SpoilerText, Sensitive: p.Sensitive,
 		Visibility: p.Visibility, Language: p.Language, MediaIDs: mediaIDs,
 		InReplyToID: gomast.ID(p.InReplyToID),
 	})
 	if err != nil {
-		return Result{}, err
+		return Result{}, destination.Committing(err)
 	}
 	return Result{RemoteID: string(st.ID), RemoteURL: st.URL}, nil
 }
@@ -131,4 +143,70 @@ func (cl *Client) waitMediaReady(ctx context.Context, id string) error {
 		case <-time.After(cl.pollInterval):
 		}
 	}
+}
+
+type idemKey struct{}
+
+// WithIdempotencyKey attaches an Idempotency-Key to status creates made with
+// ctx. "" leaves ctx unchanged.
+func WithIdempotencyKey(ctx context.Context, key string) context.Context {
+	if key == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, idemKey{}, key)
+}
+
+// idempotencyTransport sets the Idempotency-Key header on POST
+// /api/v1/statuses when the request context carries one. go-mastodon has no
+// hook for extra headers, so it is done at the transport.
+type idempotencyTransport struct{ base http.RoundTripper }
+
+func (t idempotencyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if k, ok := req.Context().Value(idemKey{}).(string); ok && req.Method == http.MethodPost &&
+		strings.HasSuffix(req.URL.Path, "/api/v1/statuses") && req.Header.Get("Idempotency-Key") == "" {
+		req = req.Clone(req.Context())
+		req.Header.Set("Idempotency-Key", k)
+	}
+	return t.base.RoundTrip(req)
+}
+
+// InstanceLimits are the posting limits an instance announces in
+// GET /api/v2/instance (Mastodon 4.0+). Zero fields were not announced.
+type InstanceLimits struct {
+	MaxCharacters            int
+	MaxMediaAttachments      int
+	CharactersReservedPerURL int
+	ImageSizeLimit           int64
+	ImageMatrixLimit         int64
+	VideoSizeLimit           int64
+	DescriptionLimit         int
+}
+
+// Instance fetches the instance's posting limits.
+func (cl *Client) Instance(ctx context.Context) (InstanceLimits, error) {
+	var v struct {
+		Configuration struct {
+			Statuses struct {
+				MaxCharacters            int `json:"max_characters"`
+				MaxMediaAttachments      int `json:"max_media_attachments"`
+				CharactersReservedPerURL int `json:"characters_reserved_per_url"`
+			} `json:"statuses"`
+			MediaAttachments struct {
+				ImageSizeLimit   int64 `json:"image_size_limit"`
+				ImageMatrixLimit int64 `json:"image_matrix_limit"`
+				VideoSizeLimit   int64 `json:"video_size_limit"`
+				DescriptionLimit int   `json:"description_limit"`
+			} `json:"media_attachments"`
+		} `json:"configuration"`
+	}
+	if err := cl.getJSON(ctx, "/api/v2/instance", nil, &v); err != nil {
+		return InstanceLimits{}, err
+	}
+	st, ma := v.Configuration.Statuses, v.Configuration.MediaAttachments
+	return InstanceLimits{
+		MaxCharacters: st.MaxCharacters, MaxMediaAttachments: st.MaxMediaAttachments,
+		CharactersReservedPerURL: st.CharactersReservedPerURL,
+		ImageSizeLimit:           ma.ImageSizeLimit, ImageMatrixLimit: ma.ImageMatrixLimit,
+		VideoSizeLimit: ma.VideoSizeLimit, DescriptionLimit: ma.DescriptionLimit,
+	}, nil
 }

@@ -10,15 +10,6 @@ import (
 
 func glen(s string) int { return uniseg.GraphemeClusterCount(s) }
 
-func TestLimitFor(t *testing.T) {
-	cases := map[string]int{"bluesky": 300, "mastodon": 500, "threads": 500, "nostr": 0, "weird": 0}
-	for p, want := range cases {
-		if got := LimitFor(p); got != want {
-			t.Errorf("LimitFor(%q)=%d want %d", p, got, want)
-		}
-	}
-}
-
 func TestSplitNoLimitIsSingle(t *testing.T) {
 	segs, warns := Split("a fairly long nostr note that has no length cap at all", 0, Opts{})
 	if len(segs) != 1 || len(warns) != 0 {

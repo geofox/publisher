@@ -12,7 +12,10 @@ import (
 	"github.com/geofox/publisher/internal/store"
 )
 
-type relayFakeDispatch struct{ calledID, calledRelay string }
+type relayFakeDispatch struct {
+	calledID, calledRelay string
+	err                   error
+}
 
 func (f *relayFakeDispatch) Post(ctx context.Context, spec dispatch.PostSpec) *store.Post {
 	return &store.Post{ID: "x"}
@@ -22,6 +25,9 @@ func (f *relayFakeDispatch) Retry(ctx context.Context, id string, platforms []st
 }
 func (f *relayFakeDispatch) RetryRelay(ctx context.Context, id, relay string) (*store.Post, error) {
 	f.calledID, f.calledRelay = id, relay
+	if f.err != nil {
+		return nil, f.err
+	}
 	return &store.Post{ID: id, Status: "success"}, nil
 }
 func (f *relayFakeDispatch) Schedule(ctx context.Context, spec dispatch.PostSpec, at time.Time) (*store.Post, error) {
@@ -53,15 +59,17 @@ func TestRelayRetryEndpoint(t *testing.T) {
 	}
 }
 
-func TestRelayRetryRejectsNonNostr(t *testing.T) {
-	a := &API{Dispatch: &relayFakeDispatch{}}
+// A relay that isn't one of the post's (e.g. on a target without relays) is
+// a 400 from the dispatcher's ErrBadRelayRetry.
+func TestRelayRetryUnknownRelay(t *testing.T) {
+	a := &API{Dispatch: &relayFakeDispatch{err: dispatch.ErrBadRelayRetry}}
 	mux := a.Routes()
 	req := httptest.NewRequest(http.MethodPost, "/api/posts/p1/relay-retry",
 		strings.NewReader(`{"platform":"mastodon","relay":"x"}`))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("non-nostr code = %d, want 400", rec.Code)
+		t.Errorf("unknown relay code = %d, want 400", rec.Code)
 	}
 }
 

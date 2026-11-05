@@ -280,7 +280,7 @@ func TestUpdateTargetSegments(t *testing.T) {
 		{Ordinal: 0, Text: "a", RemoteID: "at://0", CID: "c0", Status: "success"},
 		{Ordinal: 1, Text: "b", RemoteID: "at://1", CID: "c1", Status: "success"},
 	}
-	if err := db.UpdateTargetSegments(tid, resumed, "success", "at://0", "https://b/0", 12, ""); err != nil {
+	if err := db.UpdateTargetSegments(tid, resumed, "success", "at://0", "https://b/0", 12, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := db.GetPost("u1")

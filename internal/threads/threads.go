@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/geofox/publisher/internal/destination"
 	"io"
 	"net/http"
 	"net/url"
@@ -247,8 +248,11 @@ func (c *Client) publish(ctx context.Context, creationID string) (string, error)
 	var resp struct {
 		ID string `json:"id"`
 	}
-	if err := c.do(ctx, http.MethodPost, "/"+c.UserID+"/threads_publish?"+v.Encode(), &resp); err != nil {
+	if err := ctx.Err(); err != nil { // nothing sent
 		return "", fmt.Errorf("publish: %w", err)
+	}
+	if err := c.do(ctx, http.MethodPost, "/"+c.UserID+"/threads_publish?"+v.Encode(), &resp); err != nil {
+		return "", destination.Committing(fmt.Errorf("publish: %w", err))
 	}
 	if resp.ID == "" {
 		return "", fmt.Errorf("publish: empty media id")
@@ -364,8 +368,7 @@ func (c *Client) do(ctx context.Context, method, path string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("%s returned %d: %s", path, resp.StatusCode, string(rb))
+		return destination.NewHTTPError(path, resp)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

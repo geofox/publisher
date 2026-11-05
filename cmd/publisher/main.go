@@ -18,7 +18,9 @@ import (
 	"github.com/geofox/publisher/internal/auth"
 	"github.com/geofox/publisher/internal/bluesky"
 	"github.com/geofox/publisher/internal/config"
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/dispatch"
+	"github.com/geofox/publisher/internal/drivers"
 	"github.com/geofox/publisher/internal/feed"
 	"github.com/geofox/publisher/internal/health"
 	"github.com/geofox/publisher/internal/identity"
@@ -89,17 +91,31 @@ func main() {
 	mc := mastodon.New(cfg.MastodonBaseURL, cfg.MastodonToken)
 	bc := bluesky.New(cfg.BlueskyPDSURL, cfg.BlueskyIdentifier, cfg.BlueskyAppPassword)
 	uf := unfurl.New()
+	drivers.Register()
+	// One account per destination type until accounts are stored (step 2,
+	// PR 2); a type whose credentials aren't configured has no account, so
+	// posting to it fails as "not configured" before any network call.
+	accounts := map[string]destination.Account{pubnostr.Type: &pubnostr.Account{P: np}}
+	if cfg.BlueskyAppPassword != "" {
+		accounts[bluesky.Type] = &bluesky.Account{C: bc}
+	}
+	if cfg.MastodonToken != "" {
+		accounts[mastodon.Type] = mastodon.NewAccount(mc)
+	}
+	if cfg.ThreadsToken != "" {
+		accounts[threads.Type] = &threads.Account{C: tc}
+	}
 	d := &dispatch.Dispatcher{
-		Nostr:    dispatch.NostrAdapter{P: np},
-		Mastodon: dispatch.MastodonAdapter{C: mc},
-		Bluesky:  dispatch.BlueskyAdapter{C: bc},
-		Threads: dispatch.ThreadsAdapter{C: tc, Host: func(ctx context.Context, body []byte, mime string) (string, error) {
+		Accounts: accounts,
+		// Re-encoded variants for URL-transport destinations (Threads) are
+		// hosted on Blossom; content addressing makes a retry reuse the URL.
+		Host: func(ctx context.Context, body []byte, mime string) (string, error) {
 			res, err := mp.Process(ctx, body, mime)
 			if err != nil {
 				return "", err
 			}
 			return res.URL, nil
-		}},
+		},
 		Store:    st,
 		Fetcher:  mp,
 		Notify:   feed.NewWebhook(cfg.FeedWebhookURL, cfg.FeedWebhookToken),
@@ -108,6 +124,7 @@ func main() {
 	a := api.New(np, mp)
 	a.Store = st
 	a.Dispatch = d
+	a.Caps = d.Caps
 	a.Unfurl = uf
 	a.UserLanguages = cfg.UserLanguages
 	a.PublicFeedToken = cfg.PublicFeedToken

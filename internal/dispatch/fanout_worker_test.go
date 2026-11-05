@@ -26,17 +26,17 @@ func (c *countingRebroadcaster) RebroadcastToRelay(_ context.Context, _, relay s
 
 type stubNostrFanout struct{ cr *countingRebroadcaster }
 
-func (s stubNostrFanout) PublishText(context.Context, string, *int, []gonostr.Tag, *ReplyRef) (TargetResult, error) {
-	return TargetResult{}, nil
+func (s stubNostrFanout) PublishText(context.Context, string, *int, []gonostr.Tag, *ReplyRef) (legacyResult, error) {
+	return legacyResult{}, nil
 }
 func (s stubNostrFanout) RebroadcastToRelay(ctx context.Context, ev, relay string) (bool, string) {
 	return s.cr.RebroadcastToRelay(ctx, ev, relay)
 }
-func (s stubNostrFanout) Repost(context.Context, string, string, int, string) (TargetResult, error) {
-	return TargetResult{}, nil
+func (s stubNostrFanout) Repost(context.Context, string, string, int, string) (legacyResult, error) {
+	return legacyResult{}, nil
 }
-func (s stubNostrFanout) Quote(context.Context, string, string, string, string, []gonostr.Tag) (TargetResult, error) {
-	return TargetResult{}, nil
+func (s stubNostrFanout) Quote(context.Context, string, string, string, string, []gonostr.Tag) (legacyResult, error) {
+	return legacyResult{}, nil
 }
 
 func newFanoutTest(t *testing.T) (*store.Store, *countingRebroadcaster, *Dispatcher) {
@@ -46,7 +46,7 @@ func newFanoutTest(t *testing.T) (*store.Store, *countingRebroadcaster, *Dispatc
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	cr := &countingRebroadcaster{}
-	return st, cr, &Dispatcher{Store: st, Nostr: stubNostrFanout{cr}}
+	return st, cr, &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostrFanout{cr}}), Store: st}
 }
 
 func TestFanoutWorkerDeliversAndMarksOK(t *testing.T) {

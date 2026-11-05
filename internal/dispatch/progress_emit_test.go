@@ -36,7 +36,7 @@ func (s *capturingSink) has(plat, status string) bool {
 // TestPostEmitsRunningThenTerminal verifies that Post emits StatusRunning before
 // calling runChain and a terminal status afterward.
 func TestPostEmitsRunningThenTerminal(t *testing.T) {
-	d := &Dispatcher{Bluesky: simpleFakeBsky{}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: simpleFakeBsky{}})}
 	sink := &capturingSink{}
 	ctx := progress.WithSink(context.Background(), sink)
 	rec := d.Post(ctx, PostSpec{Platforms: []string{"bluesky"}, MasterText: "hi"})
@@ -53,7 +53,7 @@ func TestPostEmitsRunningThenTerminal(t *testing.T) {
 
 // TestPostEmitsFailedOnError verifies that a failed platform emits StatusFailed.
 func TestPostEmitsFailedOnError(t *testing.T) {
-	d := &Dispatcher{Nostr: fakeNostr{fail: true}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fakeNostr{fail: true}})}
 	sink := &capturingSink{}
 	ctx := progress.WithSink(context.Background(), sink)
 	d.Post(ctx, PostSpec{Platforms: []string{"nostr"}, MasterText: "hi"})
@@ -68,7 +68,7 @@ func TestPostEmitsFailedOnError(t *testing.T) {
 // TestInteractEmitsRunningThenTerminal verifies that Interact (reply path) emits
 // running before and a terminal status after runChain.
 func TestInteractEmitsRunningThenTerminal(t *testing.T) {
-	d := &Dispatcher{Bluesky: &fakeBskyActor{}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: &fakeBskyActor{}})}
 	sink := &capturingSink{}
 	ctx := progress.WithSink(context.Background(), sink)
 	post := d.Interact(ctx, InteractSpec{
@@ -89,7 +89,7 @@ func TestInteractEmitsRunningThenTerminal(t *testing.T) {
 
 // TestInteractRepostEmitsProgress verifies that the repost path also emits progress.
 func TestInteractRepostEmitsProgress(t *testing.T) {
-	d := &Dispatcher{Bluesky: &fakeBskyActor{}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: &fakeBskyActor{}})}
 	sink := &capturingSink{}
 	ctx := progress.WithSink(context.Background(), sink)
 	d.Interact(ctx, InteractSpec{
@@ -108,11 +108,11 @@ func TestInteractRepostEmitsProgress(t *testing.T) {
 // per-segment running updates with a "thread k/n" detail.
 func TestRunChainEmitsThreadCounter(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Bluesky: f}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f})}
 	sink := &capturingSink{}
 	ctx := progress.WithSink(context.Background(), sink)
 	// "aaa\n---\nbbb\n---\nccc" splits into 3 segments via the --- markers.
-	out := d.runChain(ctx, "bluesky", "aaa\n---\nbbb\n---\nccc", Overrides{}, nil, nil, false, nil, nil, "t")
+	out := d.runChain(ctx, "bluesky", "aaa\n---\nbbb\n---\nccc", Overrides{}, nil, false, nil, nil, "t")
 	if out.Status != "success" {
 		t.Fatalf("chain status = %q", out.Status)
 	}
@@ -132,7 +132,7 @@ func TestRunChainEmitsThreadCounter(t *testing.T) {
 }
 
 func TestPostWithIDUsesGivenID(t *testing.T) {
-	d := &Dispatcher{Bluesky: simpleFakeBsky{}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: simpleFakeBsky{}})}
 	rec := d.PostWithID(context.Background(), "fixed-id", PostSpec{Platforms: []string{"bluesky"}, MasterText: "hi"})
 	if rec.ID != "fixed-id" {
 		t.Fatalf("expected fixed-id, got %q", rec.ID)

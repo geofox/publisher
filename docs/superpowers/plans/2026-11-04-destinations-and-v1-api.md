@@ -19,6 +19,70 @@ opened. Docker build green in CI.
 
 # PR 1 — Contract and drivers (no schema or API change)
 
+> **As built (2026-11-05).** PR 1 shipped the contract, the four drivers and
+> the dispatcher on the contract. Differences from the tasks below:
+>
+> - **One small migration (v2, `error_class`)** on `post_targets` and
+>   `target_attempts` instead of an `[invalid] …` prefix in the error text:
+>   cheaper than parsing messages and kept by PR 2. PR 2's migrations are
+>   renumbered v3 and v4.
+> - **The retrier** gives up, with one alert, on `auth`, `invalid`,
+>   `rejected`, and on `unknown_outcome` for destinations that can't drop
+>   repeats (`ErrorClass.Retryable`). `rate_limited` is treated as
+>   transient; honouring `RetryAfter` waits for the PR 2 engine.
+> - **Idempotency:** Mastodon sends a deterministic `Idempotency-Key` per
+>   item (hash of post id, target and ordinal). Bluesky `rkey` and Nostr
+>   "natural" idempotency need the persisted signed event / container id,
+>   so they move to PR 2 with the persist-first engine; both stay
+>   `IdempotentNone` until then.
+> - **Counting:** `URLLength` / `MentionLocalPartOnly` exist in the contract
+>   but no driver declares them yet; the splitter and the composer counter
+>   learn them in PR 4, so counts stay conservative.
+> - **Not moved yet:** `Resolve`, `Identity` aggregation, `verify` and the
+>   readiness checks still use their own per-platform services (PR 2, with
+>   accounts). Threads token state stays in `threads_token`. The contract
+>   test suite (Task 1.2) is per-driver `httptest` tests for now; the shared
+>   `destinationtest` suite comes with the first plug-in-facing work.
+>
+> **Review fixes (2026-11-05, two QA and one security review):**
+>
+> - Only the publishing request (`createRecord`, `threads_publish`,
+>   `POST /statuses`, reblog) can be `unknown_outcome`, via
+>   `destination.Committing`; a timeout on login, upload or status poll is
+>   `transient`, and so is a context already done before that request. A
+>   504 on the publishing request is `unknown_outcome`.
+> - Threads reads the Graph API `error.code` / `is_transient` (throttling →
+>   `rate_limited`, 190/permissions → `auth`, 1/2 → `transient`).
+> - `Capabilities.IdempotencyKeyTTLSecs` (Mastodon 3600): the retrier stops
+>   once an attempt that may have published is older than the key's TTL
+>   minus 5 minutes.
+> - Composer overrides fail open as before (PoW clamped, unknown reply
+>   control dropped); the /v1 API in PR 3 rejects bad options with a 400.
+> - Smaller fixes: Mastodon quotes carry CW, sensitive, visibility and
+>   language; the instance-limits fetch runs once, outside the lock, on its
+>   own budget; a byte-upload video over `media.FetchCap` is `invalid` (and
+>   badged in the preview); an empty Nostr note is `invalid`; the immediate
+>   failure alert no longer promises a retry the retrier won't make;
+>   `Segment.Ref` (a signed Nostr event) is stored but not sent to API
+>   clients; the e2e fakes have each driver's real interfaces and `Ref.Data`.
+> - **Deferred:** thread tails replying to an external post use our head as
+>   root (pre-existing; PR 2 engine); a Nostr segment no relay accepted
+>   keeps its remote id so resume skips it (pre-existing; PR 2's
+>   `target_items`); `AltMaxLength`, `Video.MaxCount`, `MixImagesVideo` and
+>   `Kinds` aren't enforced yet (PR 4 preview work); the guard test should
+>   also forbid importing driver packages from core once the legacy
+>   endpoints go (PR 4); Graph API error bodies are stored unscrubbed in
+>   attempt errors (pre-existing; scrub in PR 2).
+> - **Task 1.6 (Nostr and Blossom optional) moves to PR 2**, where accounts
+>   make "no Nostr account" a first-class state.
+> - **Also in PR 1:** `/api/config` returns each destination's name and
+>   capabilities and the composer takes its limits from it (a Mastodon
+>   instance's own character limit included); the thread preview uses the
+>   dispatcher's planner (`PlanTarget`). A guard test keeps destination
+>   names out of `dispatch`, `api` and `store`. Fixed on the way: Nostr
+>   content warnings were never sent (NIP-36 tag now); a Bluesky quote whose
+>   gate write failed lost its link.
+
 ## Task 1.1: `internal/destination` types
 
 **Files:** create `internal/destination/{destination,manifest,errors,counting,registry}.go` + tests.
@@ -125,7 +189,7 @@ as they move.
 
 # PR 2 — Accounts and the durable engine
 
-## Task 2.1: Migration v2 — owners and accounts
+## Task 2.1: Migration v3 — owners and accounts
 
 - [ ] `owners`, `accounts`; `owner_id` on `posts`, `drafts`, `api_tokens`,
   `users` (default `own_default`). Golden schema updated.
@@ -134,7 +198,7 @@ as they move.
 - [ ] Env seeding: upsert `source=env, env_key=default` per configured
   type; disable accounts whose env vars disappeared.
 
-## Task 2.2: Migration v3 — targets by account, items, deliveries
+## Task 2.2: Migration v4 — targets by account, items, deliveries
 
 - [ ] Rebuild `post_targets` (`noForeignKeys`), add `account_id`,
   `content_json`; `UNIQUE(post_id, account_id)`.
@@ -183,7 +247,7 @@ as they move.
   codes catalogue (`docs/api/errors.md`), cursor encoding, id prefixes,
   `Prefer: wait`, ETag helpers.
 - [ ] Auth: session or bearer on every route; token scopes + expiry
-  (migration v4 adds `scopes`, `expires_at`; existing tokens get
+  (migration v5 adds `scopes`, `expires_at`; existing tokens get
   `posts:write media:write`).
 - [ ] Idempotency middleware for creates (draft -08 semantics: replay,
   `422` on payload mismatch, `409` while in flight, 24 h expiry).

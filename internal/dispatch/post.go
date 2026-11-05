@@ -4,39 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
-	gonostr "fiatjaf.com/nostr"
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/unfurl"
 )
-
-// buildImetas builds NIP-92 imeta tags index-parallel to the media records: one
-// entry per record, in order, with an empty Tag placeholder for any record
-// without a Blossom URL. Keeping the slice index-aligned with imgs lets the
-// per-segment placement plan select each post's imetas by image index. Empty
-// placeholders are inert downstream (Publish skips len-0 tags).
-func buildImetas(recs []store.Media) []gonostr.Tag {
-	out := make([]gonostr.Tag, len(recs))
-	for i, m := range recs {
-		if m.BlossomURL == "" {
-			continue // leaves an empty Tag placeholder, preserving index alignment
-		}
-		tag := media.ImetaTag(m.BlossomURL, m.Mime, m.SHA256, m.Dim, m.Blurhash, m.PosterURL)
-		// NIP-92 "alt": the same accessibility text the other platforms get.
-		// imeta entries are single-line "key value" strings, so fold newlines.
-		if alt := strings.Join(strings.Fields(m.Alt), " "); alt != "" {
-			tag = append(tag, "alt "+alt)
-		}
-		out[i] = tag
-	}
-	return out
-}
 
 // scrubLinkCards drops any client-supplied link_card from incoming overrides.
 // LinkCard is dispatcher-computed only (attachLinkCard + PlanBlueskyCard);
@@ -50,45 +27,49 @@ func scrubLinkCards(overrides map[string]Overrides) {
 	}
 }
 
-// attachLinkCard unfurls the bluesky-effective text's card URL (trailing,
-// else first) into spec.Overrides["bluesky"].LinkCard. Best-effort: on any
-// unfurl error the post proceeds exactly as before — bare faceted link, no
-// card. Placement and trailing-strip happen later in PlanBlueskyCard.
+// attachLinkCard unfurls a link card for every targeted destination that
+// builds link previews itself (LinkPreview "client"): the card URL (trailing,
+// else first) of that target's effective text goes into its override's
+// LinkCard. Best-effort: on any unfurl error the post proceeds without a card
+// (a bare faceted link). Placement and trailing-strip happen in PlanTarget.
 func (d *Dispatcher) attachLinkCard(ctx context.Context, spec *PostSpec) {
 	if d.Unfurler == nil {
 		return
 	}
-	targeted := false
-	for _, p := range spec.Platforms {
-		if p == "bluesky" {
-			targeted = true
-			break
+	cards := map[string]*unfurl.Card{} // by URL: one fetch per link
+	for _, p := range dedupStrings(spec.Platforms) {
+		if caps, _ := d.Caps(ctx, p); caps.LinkPreview != destination.LinkPreviewClient {
+			continue
 		}
+		ov := spec.Overrides[p]
+		text := spec.MasterText
+		if ov.Text != "" {
+			text = ov.Text
+		}
+		u, _, ok := unfurl.CardURL(text)
+		if !ok {
+			continue
+		}
+		card, seen := cards[u]
+		if !seen {
+			uctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			c, err := d.Unfurler.Unfurl(uctx, u)
+			cancel()
+			if err != nil {
+				slog.WarnContext(ctx, "unfurl failed; posting without link card", "url", u, "err", err)
+			}
+			card, cards[u] = c, c
+		}
+		if card == nil {
+			continue
+		}
+		cp := *card
+		ov.LinkCard = &cp
+		if spec.Overrides == nil {
+			spec.Overrides = map[string]Overrides{}
+		}
+		spec.Overrides[p] = ov
 	}
-	if !targeted {
-		return
-	}
-	ov := spec.Overrides["bluesky"]
-	text := spec.MasterText
-	if ov.Text != "" {
-		text = ov.Text
-	}
-	u, _, ok := unfurl.CardURL(text)
-	if !ok {
-		return
-	}
-	uctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	card, err := d.Unfurler.Unfurl(uctx, u)
-	if err != nil {
-		slog.WarnContext(ctx, "unfurl failed; posting without link card", "url", u, "err", err)
-		return
-	}
-	ov.LinkCard = card
-	if spec.Overrides == nil {
-		spec.Overrides = map[string]Overrides{}
-	}
-	spec.Overrides["bluesky"] = ov
 }
 
 func (d *Dispatcher) Post(ctx context.Context, spec PostSpec) *store.Post {
@@ -104,7 +85,6 @@ func (d *Dispatcher) PostWithID(ctx context.Context, id string, spec PostSpec) *
 	}
 	ctx = logging.With(ctx, "post_id", rec.ID)
 
-	imetas := buildImetas(spec.MediaRecords)
 	scrubLinkCards(spec.Overrides)
 	d.attachLinkCard(ctx, &spec)
 
@@ -123,7 +103,7 @@ func (d *Dispatcher) PostWithID(ctx context.Context, id string, spec PostSpec) *
 			defer wg.Done()
 			sink := progress.SinkFrom(ctx)
 			sink.Platform(plat, progress.StatusRunning, "", "")
-			o := d.runChain(ctx, plat, text, ov, spec.Images, imetas, spec.Number, spec.ImgParts, nil, rec.ID)
+			o := d.runChain(ctx, plat, text, ov, spec.Images, spec.Number, spec.ImgParts, nil, rec.ID)
 			outcomes[i] = o
 			sink.Platform(plat, mapStatus(o.Status), platformDetail(o), o.HeadRemoteURL)
 		}(i, plat, text, ov)
@@ -137,10 +117,10 @@ func (d *Dispatcher) PostWithID(ctx context.Context, id string, spec PostSpec) *
 		fields, _ := json.Marshal(ov2fields(ovp))
 		tg := store.Target{
 			Platform: o.Platform, FinalText: o.FinalText, FieldsJSON: string(fields),
-			Status: o.Status, RemoteID: o.HeadRemoteID, RemoteURL: o.HeadRemoteURL, LatencyMS: o.LatencyMS,
+			Status: o.Status, ErrorClass: o.ErrorClass, RemoteID: o.HeadRemoteID, RemoteURL: o.HeadRemoteURL, LatencyMS: o.LatencyMS,
 			Relays: o.Relays, SignedEventJSON: o.SignedEventJSON, Segments: o.Segments,
 			Attempts: []store.Attempt{{
-				AttemptNo: 1, Status: o.Status, Error: o.Error, LatencyMS: o.LatencyMS, RemoteID: o.HeadRemoteID,
+				AttemptNo: 1, Status: o.Status, Error: o.Error, ErrorClass: o.ErrorClass, LatencyMS: o.LatencyMS, RemoteID: o.HeadRemoteID,
 				RequestJSON: o.RequestJSON, ResponseJSON: o.ResponseJSON, AttemptedAt: time.Now().UTC(),
 			}},
 		}
@@ -200,10 +180,11 @@ func (d *Dispatcher) dispatchTargets(ctx context.Context, post *store.Post, want
 	var imgs []Img
 	for _, m := range post.Media {
 		img := Img{Mime: m.Mime, Alt: m.Alt, BlossomURL: m.BlossomURL,
-			Dim: m.Dim, DurationSecs: m.DurationSecs, SizeBytes: m.SizeBytes}
+			Dim: m.Dim, DurationSecs: m.DurationSecs, SizeBytes: m.SizeBytes,
+			SHA256: m.SHA256, Blurhash: m.Blurhash, PosterURL: m.PosterURL}
 		// Videos: fetch only when a byte platform could use them (mirror
 		// assembleImages' policy); URL platforms ride metadata-only. A failed
-		// best-effort fetch leaves Bytes nil — adapter gates fail loudly.
+		// best-effort fetch leaves Bytes nil and the media gate fails loudly.
 		if d.Fetcher != nil && (!img.IsVideo() || (m.SizeBytes > 0 && m.SizeBytes <= media.FetchCap)) {
 			if body, fmime, err := d.Fetcher.Fetch(ctx, m.BlossomURL); err == nil {
 				img.Bytes = body
@@ -214,7 +195,6 @@ func (d *Dispatcher) dispatchTargets(ctx context.Context, post *store.Post, want
 		}
 		imgs = append(imgs, img)
 	}
-	imetas := buildImetas(post.Media)
 	for _, tg := range post.Targets {
 		if !want(tg) {
 			continue
@@ -243,26 +223,30 @@ func (d *Dispatcher) dispatchTargets(ctx context.Context, post *store.Post, want
 		// (or, for a repost, an empty one).
 		head, repost, isAction, ok := interactionAction(post, tg)
 		if isAction && !ok {
-			if err := d.Store.AppendTargetAttempt(tg.ID, "failed", errNoInteractionRef, "", "", 0, "", "", nil, ""); err != nil {
+			if err := d.Store.RecordAttempt(tg.ID, store.AttemptResult{Status: "failed", Error: errNoInteractionRef,
+				ErrorClass: string(destination.ClassInvalid)}); err != nil {
 				return err
 			}
 			continue
 		}
 		if len(tg.Segments) > 1 { // threaded target → resume the chain
-			if err := d.resumeChain(ctx, tg, ov, imgs, imetas, post.ID, head); err != nil {
+			if err := d.resumeChain(ctx, tg, ov, imgs, post.ID, head); err != nil {
 				return err
 			}
 			continue
 		}
 		var r TargetResult
-		switch {
-		case repost != nil:
-			r = d.runAction(ctx, actionRepost, tg.Platform, "", ov, nil, nil, *repost)
-		default:
-			r = d.runHead(ctx, tg.Platform, tg.FinalText, ov, imgs, imetas, head)
+		if repost != nil {
+			r = d.repost(ctx, tg.Platform, *repost)
+		} else {
+			r = d.publishItem(ctx, tg.Platform, item{text: tg.FinalText, ov: ov, imgs: imgs, head: head, postID: post.ID})
 		}
 		d.enqueueFanout(ctx, post.ID, r.Status, r.SignedEventJSON, r.PendingRelays)
-		if err := d.Store.AppendTargetAttempt(tg.ID, r.Status, r.Error, r.RemoteID, r.RemoteURL, r.LatencyMS, r.RequestJSON, r.ResponseJSON, r.Relays, r.SignedEventJSON); err != nil {
+		if err := d.Store.RecordAttempt(tg.ID, store.AttemptResult{
+			Status: r.Status, Error: r.Error, ErrorClass: r.ErrorClass, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL,
+			LatencyMS: r.LatencyMS, RequestJSON: r.RequestJSON, ResponseJSON: r.ResponseJSON,
+			Relays: r.Relays, SignedEventJSON: r.SignedEventJSON,
+		}); err != nil {
 			return err
 		}
 	}

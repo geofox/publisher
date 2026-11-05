@@ -22,10 +22,11 @@ func openDispatchStore(t *testing.T) *store.Store {
 }
 
 // fakeAlerter records Alert calls.
-type fakeAlerter struct{ calls []string }
+type fakeAlerter struct{ calls, bodies []string }
 
-func (f *fakeAlerter) Alert(_ context.Context, summary, _ string) error {
+func (f *fakeAlerter) Alert(_ context.Context, summary, body string) error {
 	f.calls = append(f.calls, summary)
+	f.bodies = append(f.bodies, body)
 	return nil
 }
 
@@ -127,7 +128,7 @@ func TestRetrierRelayLevelRetry(t *testing.T) {
 		}, `{"id":"abc"}`)
 
 	// fakeNostr lets RetryRelay "succeed" without a network.
-	d := &Dispatcher{Store: st, Nostr: fakeRebroadcaster{ok: true}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fakeRebroadcaster{ok: true}}), Store: st}
 	now := time.Now().UTC().Add(10 * time.Minute)
 	r := &Retrier{disp: d, notifier: &fakeAlerter{}, enabled: true, maxAttempts: 6,
 		base: 2 * time.Minute, max: time.Hour, now: func() time.Time { return now }}
@@ -160,7 +161,7 @@ func TestRetrierRelayLevelSkipsNotDue(t *testing.T) {
 
 	// fakeRebroadcaster{ok:true}: if the down relay were (wrongly) retried it
 	// would flip to "ok"; the assertion that it stays "failed" proves the gate.
-	d := &Dispatcher{Store: st, Nostr: fakeRebroadcaster{ok: true}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fakeRebroadcaster{ok: true}}), Store: st}
 	// Only 30s after seed — well inside the 2m base backoff for retry_count=0.
 	now := t0.Add(30 * time.Second)
 	r := &Retrier{disp: d, notifier: &fakeAlerter{}, enabled: true, maxAttempts: 6,

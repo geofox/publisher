@@ -374,7 +374,7 @@ outside those packages to keep it that way.
 
 ## 3. Accounts and owners
 
-### 3.1 Schema (migration v2)
+### 3.1 Schema (migration v3)
 
 ```sql
 CREATE TABLE owners (id TEXT PRIMARY KEY, created_at TIMESTAMP NOT NULL);
@@ -412,7 +412,7 @@ account with `source = 'env'`, `env_key = 'default'`. Its id is generated
 once and then stable, so API clients can store it. Unsetting the env vars
 disables the account (keeps history); it does not delete it.
 
-### 3.3 Targets, items and deliveries (migration v3)
+### 3.3 Targets, items and deliveries (migration v4)
 
 `post_targets` is rebuilt (SQLite can't drop a `UNIQUE` constraint in
 place; the step-1 rules require the table-rebuild recipe):
@@ -450,7 +450,7 @@ and each non-threaded target into a one-item thread, so every target has
 `items[]` from now on and the API never has to special-case "single post".
 The schema golden test and a migration test with a copy of a real v1
 database shape (threaded, single, scheduled, nostr partial) cover it. The
-step-1 runner writes `publisher.db.pre-v2.bak` before applying.
+step-1 runner writes `publisher.db.pre-v3.bak` before applying.
 
 ## 4. Content model: shared content, target overrides, items
 
@@ -721,10 +721,11 @@ Four PRs, each green on unit, e2e and Docker build, each deployable:
 1. **Contract and drivers.** `internal/destination`, the four drivers
    behind it, registry, manifests replacing the switch statements,
    host-side media fitting, error classes. Dispatcher calls drivers through
-   the contract. No schema or API change; behaviour identical except
-   classified retries and Mastodon's live limits.
-2. **Accounts and the durable engine.** Migrations v2 (owners, accounts,
-   owner ids) and v3 (targets by account, `target_items`, deliveries,
+   the contract. No API change and one additive migration (v2, the error
+   class); behaviour identical except classified retries and Mastodon's
+   live limits.
+2. **Accounts and the durable engine.** Migrations v3 (owners, accounts,
+   owner ids) and v4 (targets by account, `target_items`, deliveries,
    idempotency table); env seeding; persist-first engine with workers;
    exactly-once keys; `unknown` handling; graceful shutdown. Old API routes
    adapted onto the new engine so the web app keeps working.

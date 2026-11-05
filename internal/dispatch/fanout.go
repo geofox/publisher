@@ -3,8 +3,11 @@ package dispatch
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"sync/atomic"
 	"time"
+
+	"github.com/geofox/publisher/internal/destination"
 )
 
 // Fanout drains the nostr_fanout queue, rebroadcasting each signed event to its
@@ -59,14 +62,22 @@ func (f *Fanout) runDue(ctx context.Context) {
 		slog.ErrorContext(ctx, "fan-out: due query failed", "err", err)
 		return
 	}
+	rd := f.disp.redeliverer()
+	if rd == nil {
+		if len(jobs) > 0 {
+			slog.WarnContext(ctx, "fan-out: no account delivers to relays; jobs wait", "jobs", len(jobs))
+		}
+		return
+	}
 	sentThisPass := make(map[string]bool, len(jobs))
 	for _, j := range jobs {
 		if sentThisPass[j.RelayURL] {
 			continue // pace: at most one delivery per relay per pass (no relay is bursted)
 		}
 		sentThisPass[j.RelayURL] = true
-		ok, msg := f.disp.Nostr.RebroadcastToRelay(ctx, j.SignedEventJSON, j.RelayURL)
-		if ok {
+		dl := rd.Redeliver(ctx, destination.ItemRef{Data: []byte(j.SignedEventJSON)}, j.RelayURL)
+		msg := dl.Message
+		if dl.Status == "ok" {
 			if err := f.disp.Store.MarkFanoutOK(j.ID); err != nil {
 				slog.ErrorContext(ctx, "fan-out: mark ok failed", "id", j.ID, "err", err)
 			}
@@ -84,4 +95,21 @@ func (f *Fanout) runDue(ctx context.Context) {
 			slog.ErrorContext(ctx, "fan-out: mark retry failed", "id", j.ID, "err", err)
 		}
 	}
+}
+
+// redeliverer is the account fan-out jobs are delivered with. Jobs don't
+// record their account yet (step 2, PR 2 adds it), so this is the only
+// account that redelivers; with several, the first by name.
+func (d *Dispatcher) redeliverer() destination.Redeliverer {
+	names := make([]string, 0, len(d.Accounts))
+	for n := range d.Accounts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		if rd, ok := d.Accounts[n].(destination.Redeliverer); ok {
+			return rd
+		}
+	}
+	return nil
 }

@@ -89,7 +89,8 @@ func (a *API) assembleImages(r *http.Request, specs []imageSpec) ([]dispatch.Img
 	var recs []store.Media
 	add := func(res media.Result, alt string) {
 		imgs = append(imgs, dispatch.Img{Bytes: res.Bytes, Mime: res.Mime, Alt: alt, BlossomURL: res.URL,
-			Dim: res.Dim, DurationSecs: res.DurationSecs, SizeBytes: res.Size})
+			Dim: res.Dim, DurationSecs: res.DurationSecs, SizeBytes: res.Size,
+			SHA256: res.SHA256, Blurhash: res.Blurhash, PosterURL: res.PosterURL})
 		recs = append(recs, store.Media{
 			Ordinal: len(recs), BlossomURL: res.URL, SHA256: res.SHA256, Mime: res.Mime,
 			Dim: res.Dim, Blurhash: res.Blurhash, SizeBytes: res.Size, Alt: alt,
@@ -107,9 +108,10 @@ func (a *API) assembleImages(r *http.Request, specs []imageSpec) ([]dispatch.Img
 				// FetchCap is 110 MB). Larger canonicals ride as metadata-only:
 				// URL platforms (threads, nostr) need nothing else and byte
 				// platforms gate out first. A failed best-effort fetch leaves
-				// Bytes nil — the adapter gate then fails that target loudly.
+				// Bytes nil — the media gate then fails that target loudly.
 				img := dispatch.Img{Mime: s.Mime, Alt: s.Alt, BlossomURL: s.BlossomURL,
-					Dim: s.Dim, DurationSecs: s.DurationSecs, SizeBytes: s.SizeBytes}
+					Dim: s.Dim, DurationSecs: s.DurationSecs, SizeBytes: s.SizeBytes,
+					SHA256: s.SHA256, Blurhash: s.Blurhash, PosterURL: s.PosterURL}
 				if s.SizeBytes > 0 && s.SizeBytes <= media.FetchCap {
 					if body, _, ferr := fetch(r.Context(), s.BlossomURL); ferr == nil {
 						img.Bytes = body

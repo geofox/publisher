@@ -367,16 +367,14 @@ func (a *API) handleRetry(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleRelayRetry(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	// platform is accepted for compatibility; the relay URL identifies the
+	// target (only destinations that deliver to relays have relay rows).
 	var body struct {
 		Platform string `json:"platform"`
 		Relay    string `json:"relay"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid json")
-		return
-	}
-	if body.Platform != "nostr" {
-		httpx.WriteError(w, http.StatusBadRequest, "relay retry is nostr-only")
 		return
 	}
 	if body.Relay == "" {

@@ -17,34 +17,6 @@ type Opts struct {
 	Number bool
 }
 
-// LimitFor returns the per-platform grapheme limit. 0 means "no length limit"
-// (Nostr). Mastodon's limit is instance-configurable; 500 is the common default.
-func LimitFor(platform string) int {
-	switch platform {
-	case "bluesky":
-		return 300
-	case "mastodon", "threads":
-		return 500
-	default: // nostr and unknown
-		return 0
-	}
-}
-
-// MaxImagesFor returns the per-platform image cap for one post. 0 means "no
-// cap" (Nostr appends URLs/imeta, no attachment slots). Bluesky's 10 is the
-// app.bsky.embed.gallery client soft limit (1.123+); Mastodon's 4 is the
-// vanilla server default; Threads carousels take 10 comfortably (API max 20).
-func MaxImagesFor(platform string) int {
-	switch platform {
-	case "bluesky", "threads":
-		return 10
-	case "mastodon":
-		return 4
-	default: // nostr and unknown
-		return 0
-	}
-}
-
 // PlanMedia assigns nImages images to a chain's segments: up to cap per
 // segment, filling in order from the head. If images outrun the text
 // segments, image-only segments are appended, so len(result) >= nSegments.

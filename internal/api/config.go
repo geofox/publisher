@@ -6,17 +6,20 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/httpx"
 	"github.com/geofox/publisher/internal/translate"
 )
 
 // ─── GET /api/config ─────────────────────────────────────────────────────
 //
-// Operator preferences the frontend needs on boot. Currently just the spoken-
-// languages list (drives the Bluesky/Mastodon language defaults + dropdown).
-// Always returns an array (possibly empty) so the JS can treat it uniformly.
+// What the frontend needs on boot: the operator's spoken languages (language
+// defaults + dropdown), the translate targets, and each destination's name
+// and effective capabilities, so the composer counts against the same limits
+// dispatch splits by (a Mastodon instance's own character limit included).
+// Arrays are always arrays (possibly empty) so the JS can treat them uniformly.
 
-func (a *API) handleConfig(w http.ResponseWriter, _ *http.Request) {
+func (a *API) handleConfig(w http.ResponseWriter, r *http.Request) {
 	langs := a.UserLanguages
 	if langs == nil {
 		langs = []string{}
@@ -28,9 +31,18 @@ func (a *API) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	if a.Translator != nil {
 		targets = translate.Intersect(langs)
 	}
+	type dest struct {
+		Name         string                   `json:"name"`
+		Capabilities destination.Capabilities `json:"capabilities"`
+	}
+	dests := map[string]dest{}
+	for _, t := range destination.Types() {
+		dests[t] = dest{Name: displayName(t), Capabilities: a.caps(r.Context(), t)}
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"user_languages":    langs,
 		"translate_targets": targets,
+		"destinations":      dests,
 	})
 }
 

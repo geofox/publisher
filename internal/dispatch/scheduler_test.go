@@ -19,20 +19,20 @@ func (f *fakeNotifier) Alert(ctx context.Context, summary, body string) error {
 // fires without needing media bytes). newTestStore is defined in schedule_test.go.
 type stubNostr struct{ calls *int }
 
-func (s stubNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error) {
+func (s stubNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (legacyResult, error) {
 	if s.calls != nil {
 		*s.calls++
 	}
-	return TargetResult{Platform: "nostr", Status: "success", RemoteID: "ev1"}, nil
+	return legacyResult{Platform: "nostr", Status: "success", RemoteID: "ev1"}, nil
 }
 func (stubNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (bool, string) {
 	return true, ""
 }
-func (stubNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
-	return TargetResult{Platform: "nostr", Status: "success"}, nil
+func (stubNostr) Repost(context.Context, string, string, int, string) (legacyResult, error) {
+	return legacyResult{Platform: "nostr", Status: "success"}, nil
 }
-func (stubNostr) Quote(context.Context, string, string, string, string, []gonostr.Tag) (TargetResult, error) {
-	return TargetResult{Platform: "nostr", Status: "success"}, nil
+func (stubNostr) Quote(context.Context, string, string, string, string, []gonostr.Tag) (legacyResult, error) {
+	return legacyResult{Platform: "nostr", Status: "success"}, nil
 }
 
 func TestOverdue(t *testing.T) {
@@ -48,7 +48,7 @@ func TestOverdue(t *testing.T) {
 
 func TestSchedulerFiresDue(t *testing.T) {
 	st := newTestStore(t)
-	d := &Dispatcher{Store: st, Nostr: stubNostr{}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostr{}}), Store: st}
 	at := time.Now().Add(-time.Minute).UTC()
 	rec, err := d.Schedule(context.Background(), PostSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"}, at)
 	if err != nil {
@@ -76,7 +76,7 @@ func TestSchedulerFiresDue(t *testing.T) {
 func TestFireSkipsAlreadyDispatched(t *testing.T) {
 	st := newTestStore(t)
 	n := 0
-	d := &Dispatcher{Store: st, Nostr: stubNostr{calls: &n}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostr{calls: &n}}), Store: st}
 	at := time.Now().Add(-time.Minute).UTC()
 	rec, err := d.Schedule(context.Background(), PostSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"}, at)
 	if err != nil {
@@ -98,7 +98,7 @@ func TestFireSkipsAlreadyDispatched(t *testing.T) {
 
 func TestSchedulerMarksMissed(t *testing.T) {
 	st := newTestStore(t)
-	d := &Dispatcher{Store: st, Nostr: stubNostr{}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostr{}}), Store: st}
 	at := time.Now().Add(-5 * time.Hour).UTC() // overdue beyond 2h grace
 	rec, err := d.Schedule(context.Background(), PostSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"}, at)
 	if err != nil {

@@ -21,6 +21,16 @@ import (
 //     -update` and commit the golden diff with it.
 var migrations = []migration{
 	{version: 1, name: "baseline", up: migrateBaseline},
+	{version: 2, name: "error_class", up: migrateErrorClass},
+}
+
+// migrateErrorClass records each failure's destination.ErrorClass, so the
+// retrier can stop repeating attempts that can only fail the same way.
+func migrateErrorClass(ctx context.Context, tx execer) error {
+	_, err := tx.ExecContext(ctx, `
+ALTER TABLE post_targets ADD COLUMN error_class TEXT;
+ALTER TABLE target_attempts ADD COLUMN error_class TEXT;`)
+	return err
 }
 
 // migrateBaseline is the schema as it stood when versioned migrations were

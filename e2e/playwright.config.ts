@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 // The harness (e2e/harness) serves the real web app + API + SQLite with fake
-// platform posters and a fake Blossom server; see README.md.
+// destination accounts and a fake Blossom server; see README.md.
 const PORT = Number(process.env.E2E_PORT || 4173);
 const baseURL = `http://127.0.0.1:${PORT}`;
 
