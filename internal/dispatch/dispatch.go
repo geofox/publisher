@@ -176,11 +176,32 @@ func (d *Dispatcher) alertFailure(ctx context.Context, p *store.Post) {
 		return
 	}
 	if p.Status == "failed" || p.Status == "partial" {
-		body := "post " + p.ID + " finished with status " + p.Status + "; auto-retry will attempt recovery"
+		body := "post " + p.ID + " finished with status " + p.Status + "; "
+		if d.anyAutoRetryable(ctx, p) {
+			body += "auto-retry will attempt recovery"
+		} else {
+			body += "it will not be retried automatically: the failure would repeat (auth, invalid, rejected) " +
+				"or the post may already be live (unknown_outcome). Check the target, fix the cause, then retry manually."
+		}
 		if err := d.Alerter.Alert(ctx, "Publisher: post delivery "+p.Status, body); err != nil {
 			slog.ErrorContext(ctx, "alertFailure", "err", err)
 		}
 	}
+}
+
+// anyAutoRetryable reports whether the Retrier will try any of the post's
+// unfinished targets again, by the same class rule it applies.
+func (d *Dispatcher) anyAutoRetryable(ctx context.Context, p *store.Post) bool {
+	for _, t := range p.Targets {
+		if t.Status != "failed" && t.Status != "partial" {
+			continue
+		}
+		caps, _ := d.Caps(ctx, t.Platform)
+		if destination.ErrorClass(t.ErrorClass).Retryable(caps.Idempotent) {
+			return true
+		}
+	}
+	return false
 }
 
 func newID() string {

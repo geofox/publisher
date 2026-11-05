@@ -248,8 +248,11 @@ func (c *Client) publish(ctx context.Context, creationID string) (string, error)
 	var resp struct {
 		ID string `json:"id"`
 	}
-	if err := c.do(ctx, http.MethodPost, "/"+c.UserID+"/threads_publish?"+v.Encode(), &resp); err != nil {
+	if err := ctx.Err(); err != nil { // nothing sent
 		return "", fmt.Errorf("publish: %w", err)
+	}
+	if err := c.do(ctx, http.MethodPost, "/"+c.UserID+"/threads_publish?"+v.Encode(), &resp); err != nil {
+		return "", destination.Committing(fmt.Errorf("publish: %w", err))
 	}
 	if resp.ID == "" {
 		return "", fmt.Errorf("publish: empty media id")

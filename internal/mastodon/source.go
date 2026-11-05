@@ -119,17 +119,34 @@ func (c *Client) Reblog(ctx context.Context, id string) (Result, error) {
 		ID  string `json:"id"`
 		URL string `json:"url"`
 	}
-	if err := c.postForm(ctx, "/api/v1/statuses/"+id+"/reblog", nil, &st); err != nil {
+	if err := ctx.Err(); err != nil { // nothing sent
 		return Result{}, fmt.Errorf("reblog: %w", err)
+	}
+	if err := c.postForm(ctx, "/api/v1/statuses/"+id+"/reblog", nil, &st); err != nil {
+		return Result{}, destination.Committing(fmt.Errorf("reblog: %w", err))
 	}
 	return Result{RemoteID: st.ID, RemoteURL: st.URL}, nil
 }
 
-// QuotePost creates a native quote post (server 4.5+). text is the commentary;
-// quotedID is the LOCAL status id to quote; imgs are attached as media.
-func (c *Client) QuotePost(ctx context.Context, text, quotedID string, imgs []Image, idempotencyKey string) (Result, error) {
-	form := url.Values{"status": {text}, "quoted_status_id": {quotedID}}
-	for _, img := range imgs {
+// QuotePost creates a native quote post (server 4.5+). p.Text is the
+// commentary, with p's content warning, sensitivity, visibility, language and
+// images; quotedID is the LOCAL status id to quote. p.Video and
+// p.InReplyToID are ignored.
+func (c *Client) QuotePost(ctx context.Context, p Post, quotedID string) (Result, error) {
+	form := url.Values{"status": {p.Text}, "quoted_status_id": {quotedID}}
+	if p.SpoilerText != "" {
+		form.Set("spoiler_text", p.SpoilerText)
+	}
+	if p.Sensitive {
+		form.Set("sensitive", "true")
+	}
+	if p.Visibility != "" {
+		form.Set("visibility", p.Visibility)
+	}
+	if p.Language != "" {
+		form.Set("language", p.Language)
+	}
+	for _, img := range p.Images {
 		att, err := c.c.UploadMediaFromMedia(ctx, &gomast.Media{
 			File: bytes.NewReader(img.Bytes), Description: img.Alt,
 		})
@@ -142,8 +159,11 @@ func (c *Client) QuotePost(ctx context.Context, text, quotedID string, imgs []Im
 		ID  string `json:"id"`
 		URL string `json:"url"`
 	}
-	if err := c.postForm(WithIdempotencyKey(ctx, idempotencyKey), "/api/v1/statuses", form, &st); err != nil {
+	if err := ctx.Err(); err != nil { // nothing sent
 		return Result{}, fmt.Errorf("quote: %w", err)
+	}
+	if err := c.postForm(WithIdempotencyKey(ctx, p.IdempotencyKey), "/api/v1/statuses", form, &st); err != nil {
+		return Result{}, destination.Committing(fmt.Errorf("quote: %w", err))
 	}
 	return Result{RemoteID: st.ID, RemoteURL: st.URL}, nil
 }

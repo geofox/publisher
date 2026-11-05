@@ -10,6 +10,8 @@ import (
 	"time"
 
 	gomast "github.com/mattn/go-mastodon"
+
+	"github.com/geofox/publisher/internal/destination"
 )
 
 // Image is one attachment. Mastodon detects the content type from the
@@ -94,13 +96,16 @@ func (cl *Client) Post(ctx context.Context, p Post) (Result, error) {
 		}
 		mediaIDs = append(mediaIDs, att.ID)
 	}
+	if err := ctx.Err(); err != nil { // nothing sent
+		return Result{}, err
+	}
 	st, err := cl.c.PostStatus(ctx, &gomast.Toot{
 		Status: p.Text, SpoilerText: p.SpoilerText, Sensitive: p.Sensitive,
 		Visibility: p.Visibility, Language: p.Language, MediaIDs: mediaIDs,
 		InReplyToID: gomast.ID(p.InReplyToID),
 	})
 	if err != nil {
-		return Result{}, err
+		return Result{}, destination.Committing(err)
 	}
 	return Result{RemoteID: string(st.ID), RemoteURL: st.URL}, nil
 }

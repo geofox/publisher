@@ -105,7 +105,7 @@ func (a *Account) Publish(ctx context.Context, req destination.PublishRequest) (
 	}
 	res, err := a.C.Post(ctx, p)
 	if err != nil {
-		return out, destination.Classify(err)
+		return out, classify(err)
 	}
 	b, _ := json.Marshal(res)
 	out.Status = destination.StatusPublished

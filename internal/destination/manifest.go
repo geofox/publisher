@@ -47,6 +47,9 @@ type Capabilities struct {
 	Visibility   []string        `json:"visibility,omitempty"`
 	Interactions InteractionCaps `json:"interactions"`
 	Idempotent   IdempotencyMode `json:"idempotent"`
+	// IdempotencyKeyTTLSecs is how long the server remembers a key, for
+	// IdempotentKey (0 = indefinitely). A repeat after it can duplicate.
+	IdempotencyKeyTTLSecs int64 `json:"idempotency_key_ttl_secs,omitempty"`
 }
 
 // Link preview modes.

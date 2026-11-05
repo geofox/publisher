@@ -120,7 +120,7 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 		if !retryablePlatform(t) || t.GaveUpAt != nil {
 			continue
 		}
-		if cls := destination.ErrorClass(t.ErrorClass); !r.classRetryable(ctx, t.Platform, cls) {
+		if cls := destination.ErrorClass(t.ErrorClass); !r.classRetryable(ctx, t, now) {
 			if set, err := r.disp.Store.MarkTargetGaveUp(t.ID, now); err != nil {
 				slog.ErrorContext(ctx, "retrier: mark gave-up failed", "platform", t.Platform, "err", err)
 			} else if set {
@@ -192,17 +192,44 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 	}
 }
 
-// classRetryable reports whether an automatic retry can help a failure of
-// class cls on the named target: not for auth, invalid or rejected failures,
-// and not for an unknown outcome unless the destination drops repeats (the
-// first attempt may have published). A failure recorded before classes
-// existed ("") is retried as before.
-func (r *Retrier) classRetryable(ctx context.Context, name string, cls destination.ErrorClass) bool {
+// keyMargin is how long before the server forgets an idempotency key the
+// Retrier stops relying on it (clock skew, a slow request).
+const keyMargin = 5 * time.Minute
+
+// classRetryable reports whether an automatic retry can help the target's
+// last failure: not for auth, invalid or rejected failures, and not for an
+// unknown outcome unless the destination drops repeats (the first attempt
+// may have published). A failure recorded before classes existed ("") is
+// retried as before.
+//
+// A destination that drops repeats by key only remembers the key for a
+// while: once an attempt that may have published is older than that, a
+// retry could duplicate it, whatever the last failure was.
+func (r *Retrier) classRetryable(ctx context.Context, t store.Target, now time.Time) bool {
+	cls := destination.ErrorClass(t.ErrorClass)
 	if cls == "" {
 		return true
 	}
-	caps, _ := r.disp.Caps(ctx, name)
-	return cls.Retryable(caps.Idempotent)
+	caps, _ := r.disp.Caps(ctx, t.Platform)
+	if !cls.Retryable(caps.Idempotent) {
+		return false
+	}
+	return !keyExpired(t, caps, now)
+}
+
+// keyExpired reports whether an earlier attempt at t may have published and
+// the server has since forgotten its idempotency key.
+func keyExpired(t store.Target, caps destination.Capabilities, now time.Time) bool {
+	if caps.Idempotent != destination.IdempotentKey || caps.IdempotencyKeyTTLSecs <= 0 {
+		return false
+	}
+	window := time.Duration(caps.IdempotencyKeyTTLSecs)*time.Second - keyMargin
+	for _, a := range t.Attempts {
+		if destination.ErrorClass(a.ErrorClass) == destination.ClassUnknownOutcome && now.Sub(a.AttemptedAt) > window {
+			return true
+		}
+	}
+	return false
 }
 
 // alertNotRetried fires one alert for targets the retrier won't repeat.

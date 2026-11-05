@@ -43,6 +43,36 @@ opened. Docker build green in CI.
 >   accounts). Threads token state stays in `threads_token`. The contract
 >   test suite (Task 1.2) is per-driver `httptest` tests for now; the shared
 >   `destinationtest` suite comes with the first plug-in-facing work.
+>
+> **Review fixes (2026-11-05, two QA and one security review):**
+>
+> - Only the publishing request (`createRecord`, `threads_publish`,
+>   `POST /statuses`, reblog) can be `unknown_outcome`, via
+>   `destination.Committing`; a timeout on login, upload or status poll is
+>   `transient`, and so is a context already done before that request. A
+>   504 on the publishing request is `unknown_outcome`.
+> - Threads reads the Graph API `error.code` / `is_transient` (throttling →
+>   `rate_limited`, 190/permissions → `auth`, 1/2 → `transient`).
+> - `Capabilities.IdempotencyKeyTTLSecs` (Mastodon 3600): the retrier stops
+>   once an attempt that may have published is older than the key's TTL
+>   minus 5 minutes.
+> - Composer overrides fail open as before (PoW clamped, unknown reply
+>   control dropped); the /v1 API in PR 3 rejects bad options with a 400.
+> - Smaller fixes: Mastodon quotes carry CW, sensitive, visibility and
+>   language; the instance-limits fetch runs once, outside the lock, on its
+>   own budget; a byte-upload video over `media.FetchCap` is `invalid` (and
+>   badged in the preview); an empty Nostr note is `invalid`; the immediate
+>   failure alert no longer promises a retry the retrier won't make;
+>   `Segment.Ref` (a signed Nostr event) is stored but not sent to API
+>   clients; the e2e fakes have each driver's real interfaces and `Ref.Data`.
+> - **Deferred:** thread tails replying to an external post use our head as
+>   root (pre-existing; PR 2 engine); a Nostr segment no relay accepted
+>   keeps its remote id so resume skips it (pre-existing; PR 2's
+>   `target_items`); `AltMaxLength`, `Video.MaxCount`, `MixImagesVideo` and
+>   `Kinds` aren't enforced yet (PR 4 preview work); the guard test should
+>   also forbid importing driver packages from core once the legacy
+>   endpoints go (PR 4); Graph API error bodies are stored unscrubbed in
+>   attempt errors (pre-existing; scrub in PR 2).
 > - **Task 1.6 (Nostr and Blossom optional) moves to PR 2**, where accounts
 >   make "no Nostr account" a first-class state.
 > - **Also in PR 1:** `/api/config` returns each destination's name and

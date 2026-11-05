@@ -101,14 +101,48 @@ type Segment struct {
 	RemoteID  string `json:"remote_id,omitempty"`
 	RemoteURL string `json:"remote_url,omitempty"`
 	// Ref is the destination's private reference data for the segment
-	// (destination.ItemRef.Data), needed to reply to it.
-	Ref json.RawMessage `json:"ref,omitempty"`
+	// (destination.ItemRef.Data), needed to reply to it. It is stored but
+	// never sent to API clients (for Nostr it is the signed event, kept off
+	// the wire like Target.SignedEventJSON); see marshalSegments.
+	Ref json.RawMessage `json:"-"`
 	// CID is the Bluesky record CID of segments written before Ref existed.
 	// Read only: dispatch turns it into the Bluesky driver's Ref.
 	CID    string `json:"cid,omitempty"`
 	Status string `json:"status"` // success | failed | pending
 	Error  string `json:"error,omitempty"`
 	Images []int  `json:"images,omitempty"` // attachment indices this post carries (placement plan)
+}
+
+// storedSegment is a Segment as segments_json holds it: with its Ref, which
+// the API form leaves out.
+type storedSegment struct {
+	Segment
+	Ref json.RawMessage `json:"ref,omitempty"`
+}
+
+func marshalSegments(segs []Segment) ([]byte, error) {
+	out := make([]storedSegment, len(segs))
+	for i, sg := range segs {
+		out[i] = storedSegment{Segment: sg, Ref: sg.Ref}
+	}
+	return json.Marshal(out)
+}
+
+func unmarshalSegments(b []byte, segs *[]Segment) error {
+	var in []storedSegment
+	if err := json.Unmarshal(b, &in); err != nil {
+		return err
+	}
+	if in == nil {
+		*segs = nil
+		return nil
+	}
+	*segs = make([]Segment, len(in))
+	for i, st := range in {
+		st.Segment.Ref = st.Ref
+		(*segs)[i] = st.Segment
+	}
+	return nil
 }
 
 func (s *Store) SavePost(p *Post) error {
@@ -146,7 +180,7 @@ func (s *Store) SavePost(p *Post) error {
 	for _, tg := range p.Targets {
 		segJSON := ""
 		if len(tg.Segments) > 0 {
-			b, mErr := json.Marshal(tg.Segments)
+			b, mErr := marshalSegments(tg.Segments)
 			if mErr != nil {
 				return mErr
 			}
@@ -245,7 +279,7 @@ func (s *Store) GetPost(id string) (*Post, error) {
 			tg.GaveUpAt = &t
 		}
 		if segs.String != "" {
-			if err := json.Unmarshal([]byte(segs.String), &tg.Segments); err != nil {
+			if err := unmarshalSegments([]byte(segs.String), &tg.Segments); err != nil {
 				return nil, err
 			}
 		}
@@ -518,7 +552,7 @@ func (s *Store) UpdateTargetSegments(targetID int64, segments []Segment, status,
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	segJSON, err := json.Marshal(segments)
+	segJSON, err := marshalSegments(segments)
 	if err != nil {
 		return err
 	}

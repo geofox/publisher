@@ -1,6 +1,7 @@
 package nostr
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -96,5 +97,14 @@ func TestNoteInputQuoteAndReply(t *testing.T) {
 	pow := noteInput(destination.PublishRequest{Text: "x", Options: map[string]any{OptPOW: 12}})
 	if pow.POW == nil || *pow.POW != 12 {
 		t.Errorf("pow option not applied: %v", pow.POW)
+	}
+}
+
+// An empty note fails the same way every time: invalid, not retried.
+func TestPublishEmptyTextIsInvalid(t *testing.T) {
+	a := &Account{P: New(Config{})}
+	_, err := a.Publish(context.Background(), destination.PublishRequest{Text: "  "})
+	if got := destination.ClassOf(err); got != destination.ClassInvalid {
+		t.Fatalf("class = %q, want invalid (err %v)", got, err)
 	}
 }

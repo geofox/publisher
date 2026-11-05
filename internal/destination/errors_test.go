@@ -45,10 +45,23 @@ func TestClassify(t *testing.T) {
 		{"library status", fmt.Errorf("post: %w", statusErr(401)), ClassAuth},
 		{"dial refused", &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}, ClassTransient},
 		{"dns", &net.DNSError{Err: "no such host"}, ClassTransient},
-		{"deadline", fmt.Errorf("post: %w", context.DeadlineExceeded), ClassUnknownOutcome},
-		{"net timeout", &net.OpError{Op: "read", Err: timeoutErr{}}, ClassUnknownOutcome},
-		{"reset", &net.OpError{Op: "read", Err: syscall.ECONNRESET}, ClassUnknownOutcome},
-		{"eof", fmt.Errorf("read: %w", io.ErrUnexpectedEOF), ClassUnknownOutcome},
+		// On the publishing request, a timeout or a dropped connection may
+		// have been applied.
+		{"commit deadline", Committing(fmt.Errorf("post: %w", context.DeadlineExceeded)), ClassUnknownOutcome},
+		{"commit canceled", fmt.Errorf("x: %w", Committing(context.Canceled)), ClassUnknownOutcome},
+		{"commit net timeout", Committing(&net.OpError{Op: "read", Err: timeoutErr{}}), ClassUnknownOutcome},
+		{"commit reset", Committing(&net.OpError{Op: "read", Err: syscall.ECONNRESET}), ClassUnknownOutcome},
+		{"commit eof", Committing(fmt.Errorf("read: %w", io.ErrUnexpectedEOF)), ClassUnknownOutcome},
+		{"commit 504", Committing(he(504)), ClassUnknownOutcome},
+		{"commit 500", Committing(he(500)), ClassTransient},
+		{"commit 422", Committing(he(422)), ClassInvalid},
+		{"commit dial", Committing(&net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}), ClassTransient},
+		// On any other step (login, upload, poll) nothing was posted.
+		{"deadline", fmt.Errorf("post: %w", context.DeadlineExceeded), ClassTransient},
+		{"net timeout", &net.OpError{Op: "read", Err: timeoutErr{}}, ClassTransient},
+		{"reset", &net.OpError{Op: "read", Err: syscall.ECONNRESET}, ClassTransient},
+		{"eof", fmt.Errorf("read: %w", io.ErrUnexpectedEOF), ClassTransient},
+		{"504", he(504), ClassTransient},
 		{"explicit invalid", fmt.Errorf("wrap: %w", Invalidf("video too long")), ClassInvalid},
 		{"plain", errors.New("something odd"), ClassTransient},
 	}

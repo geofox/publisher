@@ -100,19 +100,27 @@ func (r *recorder) handler() http.Handler {
 // fakeAccount is a destination account that records what it was asked to
 // publish instead of calling the network. It speaks the real driver's
 // manifest, so the core splits, fits and gates media exactly as in
-// production.
+// production. It implements only destination.Account; fakeReposter and
+// fakeRelayAccount add the optional interfaces the real account has.
 type fakeAccount struct {
 	rec    *recorder
 	drv    destination.Driver
 	id     func(seq string) string // remote id for a recorded call id
 	url    func(seq string) string
+	data   func(seq string) json.RawMessage // the driver's Ref.Data; nil = none
 	images func(media []destination.MediaItem) []imageRef
 }
 
+// fakeReposter is a fakeAccount that can repost (Bluesky, Mastodon).
+type fakeReposter struct{ *fakeAccount }
+
+// fakeRelayAccount reposts and redelivers to relays (Nostr).
+type fakeRelayAccount struct{ fakeReposter }
+
 var (
 	_ destination.Account     = (*fakeAccount)(nil)
-	_ destination.Reposter    = (*fakeAccount)(nil)
-	_ destination.Redeliverer = (*fakeAccount)(nil)
+	_ destination.Reposter    = fakeReposter{}
+	_ destination.Redeliverer = fakeRelayAccount{}
 )
 
 func (f *fakeAccount) Manifest() destination.Manifest { return f.drv.Manifest() }
@@ -134,11 +142,11 @@ func (f *fakeAccount) Publish(_ context.Context, req destination.PublishRequest)
 	return f.result(c)
 }
 
-func (f *fakeAccount) Repost(_ context.Context, src destination.SourceRef) (destination.PublishResult, error) {
+func (f fakeReposter) Repost(_ context.Context, src destination.SourceRef) (destination.PublishResult, error) {
 	return f.result(call{Platform: f.drv.Manifest().Type, Action: "repost", ReplyTo: sourceID(src)})
 }
 
-func (f *fakeAccount) Redeliver(_ context.Context, _ destination.ItemRef, endpoint string) destination.Delivery {
+func (f fakeRelayAccount) Redeliver(_ context.Context, _ destination.ItemRef, endpoint string) destination.Delivery {
 	return destination.Delivery{Endpoint: endpoint, Status: "ok"}
 }
 
@@ -150,6 +158,9 @@ func (f *fakeAccount) result(c call) (destination.PublishResult, error) {
 	}
 	out := destination.PublishResult{Status: destination.StatusPublished,
 		Ref: destination.ItemRef{ID: f.id(seq), URL: f.url(seq)}}
+	if f.data != nil {
+		out.Ref.Data = f.data(seq)
+	}
 	if c.Platform == nostr.Type {
 		out.Deliveries = []destination.Delivery{{Endpoint: "wss://relay.e2e.invalid", Status: "ok"}}
 	}
@@ -197,13 +208,20 @@ func imetaField(t gonostr.Tag, key string) string {
 // fakeAccounts returns one recording account per built-in destination.
 func fakeAccounts(rec *recorder) map[string]destination.Account {
 	same := func(prefix string) func(string) string { return func(s string) string { return prefix + s } }
+	// Ref.Data as the real drivers fill it: the record CID that Bluesky
+	// replies need, and the signed event Nostr relay retries re-send.
+	cid := func(s string) json.RawMessage { return bluesky.RefData("bafye2e" + s) }
+	event := func(s string) json.RawMessage {
+		b, _ := json.Marshal(map[string]any{"id": s, "kind": 1, "content": "", "sig": "e2e"})
+		return b
+	}
 	return map[string]destination.Account{
-		nostr.Type: &fakeAccount{rec: rec, drv: nostr.Driver{}, id: same(""),
-			url: same("https://njump.e2e.invalid/"), images: imetaImages},
-		mastodon.Type: &fakeAccount{rec: rec, drv: mastodon.Driver{}, id: same(""),
-			url: same("https://mastodon.e2e.invalid/@me/"), images: attachments},
-		bluesky.Type: &fakeAccount{rec: rec, drv: bluesky.Driver{}, id: same("at://did:plc:e2e/app.bsky.feed.post/"),
-			url: same("https://bsky.e2e.invalid/post/"), images: attachments},
+		nostr.Type: fakeRelayAccount{fakeReposter{&fakeAccount{rec: rec, drv: nostr.Driver{}, id: same(""),
+			url: same("https://njump.e2e.invalid/"), data: event, images: imetaImages}}},
+		mastodon.Type: fakeReposter{&fakeAccount{rec: rec, drv: mastodon.Driver{}, id: same(""),
+			url: same("https://mastodon.e2e.invalid/@me/"), images: attachments}},
+		bluesky.Type: fakeReposter{&fakeAccount{rec: rec, drv: bluesky.Driver{}, id: same("at://did:plc:e2e/app.bsky.feed.post/"),
+			url: same("https://bsky.e2e.invalid/post/"), data: cid, images: attachments}},
 		threads.Type: &fakeAccount{rec: rec, drv: threads.Driver{}, id: same(""),
 			url: same("https://threads.e2e.invalid/t/"), images: attachments},
 	}

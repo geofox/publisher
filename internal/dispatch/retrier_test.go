@@ -22,10 +22,11 @@ func openDispatchStore(t *testing.T) *store.Store {
 }
 
 // fakeAlerter records Alert calls.
-type fakeAlerter struct{ calls []string }
+type fakeAlerter struct{ calls, bodies []string }
 
-func (f *fakeAlerter) Alert(_ context.Context, summary, _ string) error {
+func (f *fakeAlerter) Alert(_ context.Context, summary, body string) error {
 	f.calls = append(f.calls, summary)
+	f.bodies = append(f.bodies, body)
 	return nil
 }
 

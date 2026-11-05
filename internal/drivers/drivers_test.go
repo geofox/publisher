@@ -103,7 +103,7 @@ func TestVideoLimits(t *testing.T) {
 	}
 	for i, c := range cases {
 		m := manifest(t, c.typ)
-		fail, warns := dispatch.VideoCheck(m.Name, m.Defaults.Media.Video, c.size, c.dur)
+		fail, warns := dispatch.VideoCheck(m.Name, m.Defaults.Media, c.size, c.dur)
 		if (c.failPart == "") != (fail == "") || !strings.Contains(fail, c.failPart) {
 			t.Errorf("case %d %s: fail %q, want ~%q", i, c.typ, fail, c.failPart)
 		}

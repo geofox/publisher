@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/transcode"
 )
 
@@ -28,10 +29,18 @@ func imageProfile(name string, l destination.Limit) (transcode.Profile, bool) {
 // VideoCheck reports a hard failure reason ("" = none) and advisories for a
 // video against an account's video limits. Shared by dispatch (which fails
 // the target before any network call) and the preview (which badges it).
-func VideoCheck(name string, l destination.Limit, sizeBytes, durationSecs int64) (fail string, warns []string) {
+//
+// A byte upload also needs the video in memory, which media.FetchCap bounds
+// whatever the destination announces (a Mastodon instance may allow more).
+func VideoCheck(name string, mc destination.MediaCaps, sizeBytes, durationSecs int64) (fail string, warns []string) {
+	l := mc.Video
 	var fails []string
 	if !l.Supported {
 		fails = append(fails, name+" does not take video")
+	}
+	if mc.Transport == destination.TransportBytes && sizeBytes > media.FetchCap &&
+		(l.MaxBytes == 0 || l.MaxBytes > media.FetchCap) {
+		fails = append(fails, fmt.Sprintf("video over %s (the most Publisher can upload to %s)", humanBytes(media.FetchCap), name))
 	}
 	if l.MaxBytes > 0 && sizeBytes > l.MaxBytes {
 		fails = append(fails, fmt.Sprintf("video over %s (%s limit)", humanBytes(l.MaxBytes), name))
@@ -58,7 +67,7 @@ func gateVideo(name string, mc destination.MediaCaps, imgs []Img) error {
 		if size == 0 {
 			size = int64(len(im.Bytes))
 		}
-		if fail, _ := VideoCheck(name, mc.Video, size, im.DurationSecs); fail != "" {
+		if fail, _ := VideoCheck(name, mc, size, im.DurationSecs); fail != "" {
 			return destination.Invalidf("video %d: %s", i, fail)
 		}
 		if mc.Transport == destination.TransportBytes && len(im.Bytes) == 0 {

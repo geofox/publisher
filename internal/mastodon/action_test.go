@@ -42,7 +42,7 @@ func TestQuotePostSendsQuotedStatusID(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := New(srv.URL, "tok")
-	res, err := c.QuotePost(context.Background(), "my take", "99", nil, "")
+	res, err := c.QuotePost(context.Background(), Post{Text: "my take"}, "99")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestQuotePostSendsMediaIDs(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "tok")
-	res, err := c.QuotePost(context.Background(), "take", "99", []Image{{Bytes: []byte("img"), Alt: "a cat"}}, "")
+	res, err := c.QuotePost(context.Background(), Post{Text: "take", Images: []Image{{Bytes: []byte("img"), Alt: "a cat"}}}, "99")
 	if err != nil {
 		t.Fatal(err)
 	}

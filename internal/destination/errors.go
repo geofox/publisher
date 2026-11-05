@@ -32,9 +32,11 @@ const (
 	// ClassRejected: the server refused the content for another reason
 	// (other 4xx).
 	ClassRejected ErrorClass = "rejected"
-	// ClassUnknownOutcome: the request may have been applied (a timeout or a
-	// dropped connection after it was sent). Retrying can duplicate unless
-	// the destination is idempotent.
+	// ClassUnknownOutcome: the request that publishes may have been applied
+	// (a timeout or a dropped connection after it was sent, a gateway
+	// timeout). Retrying can duplicate unless the destination is idempotent.
+	// Only an error marked with Committing can have this class: a timeout on
+	// any other step (a login, an upload, a status poll) posted nothing.
 	ClassUnknownOutcome ErrorClass = "unknown_outcome"
 )
 
@@ -100,6 +102,24 @@ func NewHTTPError(op string, resp *http.Response) *HTTPError {
 	return &HTTPError{Op: op, StatusCode: resp.StatusCode, Header: resp.Header.Clone(), Body: string(b)}
 }
 
+// commitErr marks an error from the request that creates the item.
+type commitErr struct{ err error }
+
+func (e *commitErr) Error() string { return e.err.Error() }
+func (e *commitErr) Unwrap() error { return e.err }
+
+// Committing marks err as coming from the request that publishes the item
+// (createRecord, threads_publish, POST /statuses), so Classify may read a
+// timeout or a dropped connection as an unknown outcome. A nil err gives nil.
+// Callers check ctx.Err() before sending: a context already done sent
+// nothing, and that error must stay unmarked.
+func Committing(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &commitErr{err: err}
+}
+
 // Classify turns any error into an *Error. A nil error gives nil; an *Error
 // anywhere in the chain is returned as is.
 func Classify(err error) *Error {
@@ -110,15 +130,27 @@ func Classify(err error) *Error {
 	if errors.As(err, &de) {
 		return de
 	}
+	var ce *commitErr
+	committing := errors.As(err, &ce)
 	var he *HTTPError
 	if errors.As(err, &he) {
-		return &Error{Class: ClassForStatus(he.StatusCode), RetryAfter: retryAfter(he.Header), Err: err}
+		return &Error{Class: classForCommit(ClassForStatus(he.StatusCode), he.StatusCode, committing),
+			RetryAfter: retryAfter(he.Header), Err: err}
 	}
 	var sc interface{ HTTPStatus() int }
 	if errors.As(err, &sc) {
-		return &Error{Class: ClassForStatus(sc.HTTPStatus()), Err: err}
+		return &Error{Class: classForCommit(ClassForStatus(sc.HTTPStatus()), sc.HTTPStatus(), committing), Err: err}
 	}
-	return &Error{Class: classifyTransport(err), Err: err}
+	return &Error{Class: classifyTransport(err, committing), Err: err}
+}
+
+// classForCommit refines a status class for the publishing request: a 504
+// means a gateway gave up waiting while the server may still have applied it.
+func classForCommit(c ErrorClass, code int, committing bool) ErrorClass {
+	if committing && code == http.StatusGatewayTimeout {
+		return ClassUnknownOutcome
+	}
+	return c
 }
 
 // ClassOf is Classify(err).Class, or "" for a nil error.
@@ -149,9 +181,10 @@ func ClassForStatus(code int) ErrorClass {
 }
 
 // classifyTransport sorts errors that never produced a response. A failure to
-// connect sent nothing (transient); a timeout or a dropped connection may have
-// happened after the server applied the request (unknown outcome).
-func classifyTransport(err error) ErrorClass {
+// connect sent nothing (transient). A timeout or a dropped connection on the
+// publishing request may have happened after the server applied it (unknown
+// outcome); on any other step nothing was posted yet (transient).
+func classifyTransport(err error, committing bool) ErrorClass {
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		return ClassTransient
@@ -161,6 +194,9 @@ func classifyTransport(err error) ErrorClass {
 		return ClassTransient
 	}
 	if errors.Is(err, syscall.ECONNREFUSED) {
+		return ClassTransient
+	}
+	if !committing {
 		return ClassTransient
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||

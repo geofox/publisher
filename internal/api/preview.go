@@ -98,7 +98,7 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 			if !strings.HasPrefix(m.Mime, "video/") {
 				continue
 			}
-			fail, warns := dispatch.VideoCheck(displayName(plat), mc.Video, m.SizeBytes, m.DurationSecs)
+			fail, warns := dispatch.VideoCheck(displayName(plat), mc, m.SizeBytes, m.DurationSecs)
 			if fail != "" {
 				out = append(out, dispatch.FitNote{Ordinal: i, Note: "✗ " + fail + " — this target will fail"})
 			}

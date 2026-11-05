@@ -14,6 +14,7 @@ import (
 	"github.com/geofox/publisher/internal/bluesky"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/mastodon"
+	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/threads"
 )
@@ -216,5 +217,23 @@ func TestPrepareMediaVideoFirstAndUntouched(t *testing.T) {
 	}
 	if !out[0].IsVideo() || string(out[0].Bytes) != "vid" || out[0].Width != 1080 || out[0].Height != 1920 || out[0].PosterURL != "https://b/poster" {
 		t.Fatalf("video must lead, untouched, with its dimensions: %+v", out[0])
+	}
+}
+
+// An instance may allow bigger videos than Publisher can pull into memory
+// for a byte upload. Such a video fails up front as invalid (and the preview
+// badges it), not as a "fetch failed" that the retrier repeats.
+func TestGateVideoOverFetchCapIsInvalid(t *testing.T) {
+	name, mc := capsOf(mastodon.Driver{})
+	mc.Video.MaxBytes = 200 << 20 // the instance announces 200 MB
+	vid := Img{Mime: "video/mp4", SizeBytes: media.FetchCap + 1, BlossomURL: "https://b/v"}
+	err := gateVideo(name, mc, []Img{vid})
+	if destination.ClassOf(err) != destination.ClassInvalid || !strings.Contains(err.Error(), "the most Publisher can upload") {
+		t.Fatalf("err = %v (class %q), want invalid naming the upload cap", err, destination.ClassOf(err))
+	}
+	// URL ingestion never holds the bytes: no cap.
+	_, umc := capsOf(nostr.Driver{})
+	if fail, _ := VideoCheck("Nostr", umc, media.FetchCap+1, 0); fail != "" {
+		t.Fatalf("URL transport must not be capped: %q", fail)
 	}
 }

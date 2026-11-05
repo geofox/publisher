@@ -3,6 +3,7 @@ package nostr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -169,6 +170,9 @@ func (a *Account) Repost(ctx context.Context, src destination.SourceRef) (destin
 func (a *Account) publish(ctx context.Context, in PublishInput) (destination.PublishResult, error) {
 	out := destination.PublishResult{Status: destination.StatusFailed}
 	res, err := a.P.Publish(ctx, in)
+	if errors.Is(err, ErrInvalidInput) {
+		return out, destination.Invalid(err) // fails the same way every time
+	}
 	if err != nil {
 		return out, destination.Classify(err)
 	}

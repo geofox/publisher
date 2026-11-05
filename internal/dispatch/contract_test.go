@@ -49,6 +49,8 @@ func published(n int) destination.PublishResult {
 		Ref: destination.ItemRef{ID: "id" + itoa(n), URL: "https://x/" + itoa(n), Data: []byte(`{"n":` + itoa(n) + `}`)}}
 }
 
+var zero = 0
+
 // stubManifest is a microblog with a 20-character limit, two images per post
 // and the given idempotency mode.
 func stubManifest(mode destination.IdempotencyMode) destination.Manifest {
@@ -58,6 +60,7 @@ func stubManifest(mode destination.IdempotencyMode) destination.Manifest {
 		Options: []destination.OptionSpec{
 			{Key: "reply_gate", Type: destination.OptionString},
 			{Key: "reply_control", Type: destination.OptionEnum, Enum: []destination.EnumValue{{Value: "everyone"}}},
+			{Key: "pow", Type: destination.OptionInt, Min: &zero},
 		},
 		Defaults: destination.Capabilities{
 			Text:      destination.TextCaps{MaxLength: 20, Counting: destination.Counting{Unit: destination.UnitGraphemes}},
@@ -177,17 +180,24 @@ func TestRequestCarriesOnlySupportedFields(t *testing.T) {
 	}
 }
 
-func TestInvalidOptionFailsBeforePublishing(t *testing.T) {
+// The composer's override fields fail open, as the old adapters did: a value
+// the option doesn't accept is dropped and an int out of range is clamped,
+// so a stale override never fails a post.
+func TestLegacyOverridesFailOpen(t *testing.T) {
 	acct := &stubAccount{manifest: stubManifest(destination.IdempotentNone)}
 	d := stubDispatcher(t, acct)
+	pow := -3
 	rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"},
-		Overrides: map[string]Overrides{"stub": {ThreadsReplyControl: "bogus"}}})
-	tg := rec.Targets[0]
-	if len(acct.reqs) != 0 || tg.Status != "failed" || tg.ErrorClass != string(destination.ClassInvalid) {
-		t.Fatalf("want an invalid failure with nothing sent; sent %d, target %+v", len(acct.reqs), tg)
+		Overrides: map[string]Overrides{"stub": {ThreadsReplyControl: "bogus", POW: &pow}}})
+	if rec.Status != "success" || len(acct.reqs) != 1 {
+		t.Fatalf("post must go out; status %q, sent %d", rec.Status, len(acct.reqs))
 	}
-	if !strings.Contains(tg.Attempts[0].Error, "reply_control") {
-		t.Errorf("error should name the option: %q", tg.Attempts[0].Error)
+	opts := acct.reqs[0].Options
+	if _, ok := opts["reply_control"]; ok {
+		t.Errorf("an unaccepted enum value must be dropped: %v", opts)
+	}
+	if opts["pow"] != 0 {
+		t.Errorf("a negative pow must be clamped to 0: %v", opts)
 	}
 }
 
@@ -290,6 +300,86 @@ func TestRetrierHonorsErrorClass(t *testing.T) {
 				}
 			} else if tg.Status != "success" {
 				t.Fatalf("retry should have succeeded: %+v", tg)
+			}
+		})
+	}
+}
+
+// The immediate failure alert must not promise an auto-retry the Retrier
+// won't make.
+func TestFailureAlertMatchesRetryClass(t *testing.T) {
+	cases := []struct {
+		name  string
+		class destination.ErrorClass
+		want  string
+	}{
+		{"transient", destination.ClassTransient, "auto-retry will attempt recovery"},
+		{"invalid", destination.ClassInvalid, "will not be retried automatically"},
+		{"unknown outcome, no idempotency", destination.ClassUnknownOutcome, "will not be retried automatically"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			acct := &stubAccount{manifest: stubManifest(destination.IdempotentNone),
+				publish: func(int, destination.PublishRequest) (destination.PublishResult, error) {
+					return destination.PublishResult{Status: destination.StatusFailed},
+						&destination.Error{Class: tc.class, Err: errors.New("boom")}
+				}}
+			d := stubDispatcher(t, acct)
+			al := &fakeAlerter{}
+			d.Alerter = al
+			d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}})
+			if len(al.bodies) != 1 || !strings.Contains(al.bodies[0], tc.want) {
+				t.Fatalf("alert bodies = %q, want one containing %q", al.bodies, tc.want)
+			}
+		})
+	}
+}
+
+// A destination that drops repeats by key remembers the key for a limited
+// time (Mastodon: an hour). Once an attempt that may have published is older
+// than that, the Retrier stops, even if a later failure was transient.
+func TestRetrierStopsWhenIdempotencyKeyExpires(t *testing.T) {
+	cases := []struct {
+		name    string
+		classes []destination.ErrorClass // classes of the failed attempts, in order
+		after   time.Duration            // how long after the first attempt the Retrier runs
+		retried bool
+	}{
+		{"within the window", []destination.ErrorClass{destination.ClassUnknownOutcome}, 30 * time.Minute, true},
+		{"past the window", []destination.ErrorClass{destination.ClassUnknownOutcome}, 2 * time.Hour, false},
+		{"transient after an old unknown outcome",
+			[]destination.ErrorClass{destination.ClassUnknownOutcome, destination.ClassTransient}, 2 * time.Hour, false},
+		{"only transient failures", []destination.ErrorClass{destination.ClassTransient}, 2 * time.Hour, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := stubManifest(destination.IdempotentKey)
+			m.Defaults.IdempotencyKeyTTLSecs = 3600
+			n := 0
+			acct := &stubAccount{manifest: m,
+				publish: func(i int, _ destination.PublishRequest) (destination.PublishResult, error) {
+					if n < len(tc.classes) {
+						c := tc.classes[n]
+						n++
+						return destination.PublishResult{}, &destination.Error{Class: c, Err: errors.New("boom")}
+					}
+					return published(i), nil
+				}}
+			d := stubDispatcher(t, acct)
+			rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}})
+			for range tc.classes[1:] { // the later failed attempts
+				if _, err := d.Retry(context.Background(), rec.ID, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sent := len(acct.reqs)
+			now := time.Now().UTC().Add(tc.after)
+			r := &Retrier{disp: d, notifier: &fakeAlerter{}, enabled: true, maxAttempts: 6,
+				base: time.Minute, max: time.Hour, now: func() time.Time { return now }}
+			r.runDue(context.Background())
+			if retried := len(acct.reqs) > sent; retried != tc.retried {
+				got, _ := d.Store.GetPost(rec.ID)
+				t.Fatalf("retried = %v, want %v (target %+v)", retried, tc.retried, got.Targets[0])
 			}
 		})
 	}

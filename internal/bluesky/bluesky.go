@@ -447,8 +447,11 @@ func (c *Client) createRecord(ctx context.Context, s session, collection, rkey s
 		URI string `json:"uri"`
 		CID string `json:"cid"`
 	}
-	if err := c.do(ctx, "/xrpc/com.atproto.repo.createRecord", "application/json", s.AccessJwt, body, &resp); err != nil {
+	if err := ctx.Err(); err != nil { // nothing sent
 		return "", "", fmt.Errorf("createRecord: %w", err)
+	}
+	if err := c.do(ctx, "/xrpc/com.atproto.repo.createRecord", "application/json", s.AccessJwt, body, &resp); err != nil {
+		return "", "", destination.Committing(fmt.Errorf("createRecord: %w", err))
 	}
 	return resp.URI, resp.CID, nil
 }

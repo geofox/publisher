@@ -51,6 +51,8 @@ func (Driver) Manifest() destination.Manifest {
 			Visibility:     []string{"public", "unlisted", "private", "direct"},
 			Interactions:   destination.InteractionCaps{Reply: true, Quote: true, Repost: true},
 			Idempotent:     destination.IdempotentKey,
+			// Mastodon keeps an Idempotency-Key for an hour.
+			IdempotencyKeyTTLSecs: 3600,
 		},
 	}
 }
@@ -66,6 +68,7 @@ type Account struct {
 	caps      destination.Capabilities
 	fetchedAt time.Time
 	failedAt  time.Time
+	inflight  chan struct{} // closed when the running limits fetch ends
 }
 
 var (
@@ -84,25 +87,55 @@ func (a *Account) Manifest() destination.Manifest { return Driver{}.Manifest() }
 // instance's announced limits applied, cached for an hour. A failed fetch is
 // retried after a minute; until then the last good value (or the defaults) is
 // used.
+//
+// One fetch runs at a time, outside the lock and on its own 3 s budget, so a
+// caller that gives up (a closed browser tab) neither cancels it nor marks it
+// failed; concurrent callers wait for the same fetch, or until their own ctx
+// ends, and then read the cache.
 func (a *Account) Capabilities(ctx context.Context) destination.Capabilities {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	now := time.Now()
 	if !a.fetchedAt.IsZero() && now.Sub(a.fetchedAt) < capsTTL {
-		return a.caps
+		c := a.caps
+		a.mu.Unlock()
+		return c
 	}
 	if !a.failedAt.IsZero() && now.Sub(a.failedAt) < time.Minute {
-		return a.cachedOrDefaults()
+		c := a.cachedOrDefaults()
+		a.mu.Unlock()
+		return c
 	}
-	fctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	done := a.inflight
+	if done == nil {
+		done = make(chan struct{})
+		a.inflight = done
+		go a.fetchLimits(done)
+	}
+	a.mu.Unlock()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cachedOrDefaults()
+}
+
+// fetchLimits reads the instance's limits into the cache and closes done.
+func (a *Account) fetchLimits(done chan struct{}) {
+	fctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	lim, err := a.C.Instance(fctx)
+	a.mu.Lock()
+	now := time.Now()
 	if err != nil {
 		a.failedAt = now
-		return a.cachedOrDefaults()
+	} else {
+		a.caps, a.fetchedAt, a.failedAt = applyLimits(Driver{}.Manifest().Defaults, lim), now, time.Time{}
 	}
-	a.caps, a.fetchedAt, a.failedAt = applyLimits(Driver{}.Manifest().Defaults, lim), now, time.Time{}
-	return a.caps
+	a.inflight = nil
+	a.mu.Unlock()
+	close(done)
 }
 
 func (a *Account) cachedOrDefaults() destination.Capabilities {
@@ -159,18 +192,18 @@ func (a *Account) Publish(ctx context.Context, req destination.PublishRequest) (
 		images = append(images, Image{Bytes: m.Bytes, Alt: m.Alt})
 	}
 
+	p := Post{
+		Text: req.Text, SpoilerText: req.ContentWarning, Sensitive: req.Sensitive,
+		Visibility: req.Visibility, Language: lang, Images: images, Video: video,
+		IdempotencyKey: req.IdempotencyKey,
+	}
 	var res Result
 	var err error
 	if req.Quote != nil {
 		// Native quotes (Mastodon 4.5+) carry text and images; the composer
 		// doesn't offer video with quotes.
-		res, err = a.C.QuotePost(ctx, req.Text, req.Quote.LocalID, images, req.IdempotencyKey)
+		res, err = a.C.QuotePost(ctx, p, req.Quote.LocalID)
 	} else {
-		p := Post{
-			Text: req.Text, SpoilerText: req.ContentWarning, Sensitive: req.Sensitive,
-			Visibility: req.Visibility, Language: lang, Images: images, Video: video,
-			IdempotencyKey: req.IdempotencyKey,
-		}
 		switch {
 		case req.InReplyTo != nil:
 			p.InReplyToID = req.InReplyTo.Parent.ID

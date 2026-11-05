@@ -179,6 +179,11 @@ func (d *Dispatcher) request(ctx context.Context, acct destination.Account, name
 // legacyOptions maps the composer's per-platform override fields onto
 // destination option keys, keeping only the keys the manifest declares. The
 // /v1 API (PR 3) takes options directly and retires this.
+//
+// Like the old adapters, it fails open: an int out of range is clamped (a
+// negative PoW meant none) and a value the option doesn't accept is dropped
+// (an unknown Threads reply control meant the default), so a stale override
+// never fails a post.
 func legacyOptions(m destination.Manifest, ov Overrides) map[string]any {
 	all := map[string]any{}
 	if ov.POW != nil {
@@ -198,7 +203,19 @@ func legacyOptions(m destination.Manifest, ov Overrides) map[string]any {
 	}
 	var out map[string]any
 	for k, v := range all {
-		if _, ok := m.Option(k); !ok {
+		spec, ok := m.Option(k)
+		if !ok {
+			continue
+		}
+		if n, isInt := v.(int); isInt && spec.Type == destination.OptionInt {
+			if spec.Min != nil && n < *spec.Min {
+				v = *spec.Min
+			}
+			if spec.Max != nil && n > *spec.Max {
+				v = *spec.Max
+			}
+		}
+		if errs := destination.ValidateOptions([]destination.OptionSpec{spec}, map[string]any{k: v}); len(errs) > 0 {
 			continue
 		}
 		if out == nil {
