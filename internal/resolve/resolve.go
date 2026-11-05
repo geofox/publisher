@@ -57,6 +57,9 @@ type Preview struct {
 type Media struct {
 	URL string `json:"url"`
 	Alt string `json:"alt,omitempty"`
+	// Video marks a moving attachment (video, gifv, audio); link-quotes
+	// copy images only.
+	Video bool `json:"video,omitempty"`
 }
 
 // Caps reports per-action availability; Reason explains a false Allowed.

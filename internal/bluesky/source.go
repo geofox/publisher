@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/geofox/publisher/internal/destination"
 	"net/http"
 	"net/url"
 	"strings"
@@ -63,8 +63,7 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, access
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("%s: %s: %s", path, resp.Status, string(rb))
+		return destination.NewHTTPError(path, resp)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
@@ -74,7 +73,7 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, access
 // app.bsky.actor.getProfile adds displayName + avatar. Best-effort: returns the
 // session handle even if the profile call fails.
 func (c *Client) Profile(ctx context.Context) (handle, displayName, avatar string, err error) {
-	s, err := c.createSession(ctx)
+	s, err := c.readSession(ctx)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -84,6 +83,7 @@ func (c *Client) Profile(ctx context.Context) (handle, displayName, avatar strin
 		Avatar      string `json:"avatar"`
 	}
 	if err := c.get(ctx, "/xrpc/app.bsky.actor.getProfile", url.Values{"actor": {s.Did}}, s.AccessJwt, &p); err != nil {
+		c.dropReadSession()
 		return s.Handle, "", "", err
 	}
 	if p.Handle == "" {
@@ -94,15 +94,20 @@ func (c *Client) Profile(ctx context.Context) (handle, displayName, avatar strin
 
 // GetPost resolves a bsky.app URL to a SourcePost using an authed session (viewer
 // flags are only meaningful when authed).
-func (c *Client) GetPost(ctx context.Context, postURL string) (*SourcePost, error) {
+func (c *Client) GetPost(ctx context.Context, postURL string) (_ *SourcePost, err error) {
 	actor, rkey, err := parsePostURL(postURL)
 	if err != nil {
 		return nil, err
 	}
-	s, err := c.createSession(ctx)
+	s, err := c.readSession(ctx)
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if err != nil {
+			c.dropReadSession()
+		}
+	}()
 	did := actor
 	if !strings.HasPrefix(actor, "did:") {
 		var rh struct {

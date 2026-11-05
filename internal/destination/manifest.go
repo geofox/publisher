@@ -85,6 +85,8 @@ type InteractionCaps struct {
 	Reply  bool `json:"reply"`
 	Quote  bool `json:"quote"`
 	Repost bool `json:"repost"`
+	// QuoteVideo: a native quote can carry a video.
+	QuoteVideo bool `json:"quote_video"`
 }
 
 // IdempotencyMode says how a repeated publish of the same item behaves.

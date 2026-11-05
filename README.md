@@ -66,7 +66,8 @@ move with the web app, which moves over before the old routes go.
   post's URL (or a Nostr `nevent`/`note` id). The server looks the post
   up; the action happens on your account on its network, which `targets`
   must include. A quote's other targets get a link-quote: your text, the
-  original's text and author, its link and its images.
+  original's text (at most 500 characters, mentions defused) and author,
+  its link and, best-effort, up to four of its images (not videos).
 
 - **Statuses** are one vocabulary: a post or target is `scheduled`,
   `publishing`, `published`, `partial`, `failed`, `canceled` or `missed`,

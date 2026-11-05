@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/geofox/publisher/internal/transcode"
@@ -174,6 +175,42 @@ type Client struct {
 	// Transport bounds the hang-prone phases instead; ctx provides the
 	// ceiling.
 	uploadHTTP *http.Client
+
+	// readMu guards readSess, the session reused by lookups (GetPost,
+	// Profile) so that resolving posts doesn't spend the account's
+	// createSession rate limit, which publishing also needs.
+	readMu   sync.Mutex
+	readSess session
+	readExp  time.Time
+}
+
+// readSessionTTL is how long lookups reuse a session. Access tokens live
+// longer (about two hours on bsky.social); a short reuse keeps the window
+// small if one is revoked.
+const readSessionTTL = 15 * time.Minute
+
+// readSession returns the cached lookup session, creating one when there is
+// none or it is older than readSessionTTL.
+func (c *Client) readSession(ctx context.Context) (session, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	if c.readSess.AccessJwt != "" && time.Now().Before(c.readExp) {
+		return c.readSess, nil
+	}
+	s, err := c.createSession(ctx)
+	if err != nil {
+		return session{}, err
+	}
+	c.readSess, c.readExp = s, time.Now().Add(readSessionTTL)
+	return s, nil
+}
+
+// dropReadSession forgets the cached lookup session after a failed call, so
+// an expired or revoked token is replaced on the next lookup.
+func (c *Client) dropReadSession() {
+	c.readMu.Lock()
+	c.readSess, c.readExp = session{}, time.Time{}
+	c.readMu.Unlock()
 }
 
 func New(pds, identifier, appPassword string) *Client {

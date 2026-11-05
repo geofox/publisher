@@ -5,11 +5,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
 	gonostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip19"
+
+	"github.com/geofox/publisher/internal/netguard"
 )
 
 // SourceEvent is a fetched external event plus decoded pointer metadata. It is
@@ -75,7 +78,8 @@ func (p *Publisher) ResolveSource(ctx context.Context, input string) (*SourceEve
 	if err != nil {
 		return nil, err
 	}
-	urls := p.sourceRelays(ctx, ptr.RelayHints)
+	hints := publicRelayHints(ctx, net.DefaultResolver, ptr.RelayHints)
+	urls := p.sourceRelays(ctx, hints)
 	id, err := gonostr.IDFromHex(ptr.IDHex)
 	if err != nil {
 		return nil, fmt.Errorf("bad event id: %w", err)
@@ -90,7 +94,7 @@ func (p *Publisher) ResolveSource(ctx context.Context, input string) (*SourceEve
 		Kind:       int(ev.Kind),
 		Content:    ev.Content,
 		CreatedAt:  ev.CreatedAt.Time(),
-		RelayHints: ptr.RelayHints,
+		RelayHints: hints,
 		Protected:  hasProtectedTag(ev.Tags),
 	}
 	if prof := p.fetchOne(ctx, urls, gonostr.Filter{
@@ -162,9 +166,31 @@ func pubkeyHexOrEmpty(pk gonostr.PubKey) string {
 	return pk.Hex()
 }
 
-// sourceRelays unions pointer hints with the owner's NIP-65 write relays (and
-// the configured fallbacks), dropping overlay relays the container can't reach
-// and de-duping.
+// maxRelayHints caps how many relays a pasted reference may name; the rest
+// are ignored.
+const maxRelayHints = 4
+
+// publicRelayHints keeps the hints the server may dial: wss:// only, public
+// hosts only, at most maxRelayHints. Hints come from whoever made the
+// reference, so without this a pasted nevent could make the server open
+// connections to its own network (SSRF) or to hundreds of relays.
+func publicRelayHints(ctx context.Context, r netguard.Resolver, hints []string) []string {
+	var out []string
+	for _, h := range hints {
+		if len(out) == maxRelayHints {
+			break
+		}
+		if IsOverlayRelay(h) || netguard.CheckPublicURL(ctx, r, h, "wss") != nil {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+// sourceRelays unions pointer hints (already checked by publicRelayHints) with the
+// owner's NIP-65 write relays (and the configured fallbacks), dropping
+// overlay relays the container can't reach and de-duping.
 func (p *Publisher) sourceRelays(ctx context.Context, hints []string) []string {
 	seen := map[string]bool{}
 	var out []string

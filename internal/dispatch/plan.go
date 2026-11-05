@@ -357,6 +357,9 @@ func ReproductionText(spec InteractSpec, plat string) string {
 // InteractText is a reply's or quote's commentary on the source's account.
 func InteractText(spec InteractSpec, plat string) string { return interactText(spec, plat) }
 
+// reproductionMedia is a quote reproduction's media: the user's, then the
+// source's re-hosted media, capped at limit (0 = no cap). User media comes
+// first.
 func reproductionMedia(nUser int, spec InteractSpec, limit int) []planMedia {
 	out := postMedia(nUser)
 	nSource := max(len(spec.SourceImages), len(spec.SourceMediaRecords))

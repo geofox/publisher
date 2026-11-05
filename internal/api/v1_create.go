@@ -98,6 +98,9 @@ type createPlan struct {
 	// ix is the reply, quote or repost, with the post it acts on.
 	ix     *dispatch.InteractSpec
 	source *resolve.SourceRef
+	// upstream is set when the source's network couldn't be reached: the
+	// request may be retried (502).
+	upstream bool
 }
 
 type plannedTarget struct {
@@ -366,8 +369,13 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 
 	plan.spec.MasterText = text
 	plan.spec.Source = "api"
-	if _, _, n := req.interaction(); n > 0 && len(errs) == 0 {
-		a.planInteraction(ctx, req, plan, add)
+	if _, _, n := req.interaction(); n > 0 {
+		a.checkInteraction(req, plan, add)
+		// Resolving costs a request to the source's network: only for an
+		// otherwise valid request.
+		if len(errs) == 0 {
+			a.planInteraction(ctx, req, plan, add)
+		}
 	}
 
 	// The planner's split must stay a reasonable thread.
@@ -484,6 +492,10 @@ func (a *API) v1CreatePost(w http.ResponseWriter, r *http.Request) {
 		invalid(w, r, errs)
 		return
 	}
+	if plan.upstream {
+		problem(w, r, http.StatusBadGateway, codeUpstream, "the post's network could not be reached; try again")
+		return
+	}
 	// Saving plans the post, which may fetch a link card: the post must
 	// not be lost to a client that hangs up meanwhile.
 	var p *store.Post
@@ -494,7 +506,9 @@ func (a *API) v1CreatePost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ctx := context.WithoutCancel(r.Context())
-		a.rehostSourceMedia(ctx, plan.ix, plan.source)
+		if want, n := sourceImagesWanted(plan), a.rehostSourceMedia(ctx, plan); n < want {
+			slog.WarnContext(ctx, "v1: quote: some of the original's images were not copied", "want", want, "copied", n)
+		}
 		p, err = ienq.EnqueueInteraction(ctx, *plan.ix)
 	} else {
 		p, err = enq.Enqueue(context.WithoutCancel(r.Context()), plan.spec, plan.at)
@@ -622,6 +636,10 @@ func (a *API) v1PreviewPost(w http.ResponseWriter, r *http.Request) {
 		invalid(w, r, errs)
 		return
 	}
+	if plan.upstream {
+		problem(w, r, http.StatusBadGateway, codeUpstream, "the post's network could not be reached; try again")
+		return
+	}
 	metas := make([]transcode.Meta, len(plan.media))
 	for i, m := range plan.media {
 		mw, mh := transcode.ParseDim(m.Dim)
@@ -653,8 +671,13 @@ func (a *API) v1PreviewPost(w http.ResponseWriter, r *http.Request) {
 			vt.Role = ix.Action
 			if pt.account.Type != ix.SourcePlatform {
 				vt.Role = "link_quote"
-				if n := len(plan.source.Preview.Media); n > 0 {
-					vt.Warnings = append(vt.Warnings, "the original's images are copied to media storage and attached when posting")
+				if n := sourceImagesWanted(plan); n > 0 && a.media != nil && pt.caps.Media.Images.Supported {
+					if c := pt.caps.Media.Images.MaxCount; c > 0 {
+						n = max(0, min(n, c-len(plan.media)))
+					}
+					if n > 0 {
+						vt.Warnings = append(vt.Warnings, "up to "+strconv.Itoa(n)+" of the original's images are copied to media storage and attached after yours when posting")
+					}
 				}
 			}
 			if ix.Action == "repost" {

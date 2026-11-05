@@ -110,8 +110,10 @@ func (a MastodonAdapter) ResolveSource(ctx context.Context, input string) (*Sour
 		quote = Cap{Allowed: true}
 	case "manual":
 		quote = Cap{Allowed: true, Reason: "needs the author's approval (lands pending)"}
+	case "denied":
+		quote = Cap{Allowed: false, Reason: "the author doesn't allow quotes of this post"}
 	default:
-		quote = Cap{Allowed: false, Reason: "native quote not available — will link instead"}
+		quote = Cap{Allowed: false, Reason: "this post can't be quoted from your server (native quotes need Mastodon 4.5 or later); share its link instead"}
 	}
 	repost := Cap{Allowed: true}
 	if st.Visibility == "private" || st.Visibility == "direct" {
@@ -119,7 +121,7 @@ func (a MastodonAdapter) ResolveSource(ctx context.Context, input string) (*Sour
 	}
 	media := make([]Media, 0, len(st.Media))
 	for _, m := range st.Media {
-		media = append(media, Media{URL: m.URL, Alt: m.Alt})
+		media = append(media, Media{URL: m.URL, Alt: m.Alt, Video: m.Video})
 	}
 	name := st.AuthorName
 	if name == "" {

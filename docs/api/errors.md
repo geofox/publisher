@@ -84,7 +84,11 @@ bodies; see `GET /v1/instance` for the limits).
 `errors[]` lists every invalid field, so a client can show them all at once.
 Field codes include `required`, `too_long`, `unknown_scope`,
 `invalid_time`, `in_past` and `exceeds_caller` (a token tried to create a
-token that would outlive it).
+token that would outlive it). For a reply, quote or repost the source URL
+can be `unrecognized`, `not_supported` (Threads), `not_configured` or
+`unresolvable` (not found, deleted, private, or not yet known to your
+server); `not_allowed` and `missing_source_account` concern the action
+and its targets.
 
 ## invalid_parameter
 
@@ -136,8 +140,9 @@ configuration.
 ## upstream_failed
 
 **502.** A service the server depends on failed: media storage (Blossom)
-refused or could not take the file. `detail` gives its reason. Retry later
-or check the media storage configuration.
+refused or could not take the file, or the network of a post you reply to,
+quote or repost could not be reached (a timeout, a 5xx, a rate limit).
+Retry later; for media, check the media storage configuration.
 
 ## insufficient_storage
 

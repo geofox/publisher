@@ -90,10 +90,12 @@ func (h strHolder) contains(sub string) bool { return strings.Contains(h.s, sub)
 type fakeMastoActor struct {
 	lastPostText strHolder
 	quoteImgs    []Img
+	postImgs     []Img
 }
 
-func (f *fakeMastoActor) PostText(_ context.Context, text string, _ Overrides, _ []Img, _ *ReplyRef) (legacyResult, error) {
+func (f *fakeMastoActor) PostText(_ context.Context, text string, _ Overrides, imgs []Img, _ *ReplyRef) (legacyResult, error) {
 	f.lastPostText = strHolder{s: text}
+	f.postImgs = imgs
 	return legacyResult{Platform: "mastodon", Status: "success", RemoteID: "m1"}, nil
 }
 func (f *fakeMastoActor) Reblog(context.Context, string) (legacyResult, error) {
@@ -368,5 +370,27 @@ func TestEnqueueInteractionQuote(t *testing.T) {
 	}
 	if !masto.lastPostText.contains("the original") || !masto.lastPostText.contains("https://bsky.app/x") {
 		t.Errorf("link-quote = %q", masto.lastPostText.s)
+	}
+	if len(masto.postImgs) != 1 || masto.postImgs[0].Alt != "a cat" {
+		t.Errorf("link-quote images = %+v, want the original's", masto.postImgs)
+	}
+}
+
+// TestQuotedTextInert: a link-quote copies someone else's text, so it must
+// not mention people on the owner's behalf, hide text with bidi controls, or
+// run on without end.
+func TestQuotedTextInert(t *testing.T) {
+	sp := SourcePreview{Author: "@ann\u202e.example", Text: "hi @victim@mastodon.social and @_x, mail a@b\u0007 \u2066ok\u2069 @ alone"}
+	got := assembleReproduction("", sp, "https://x/9")
+	want := "— @ann.example:\nhi @\u2060victim@\u2060mastodon.social and @\u2060_x, mail a@\u2060b ok @ alone\n\nhttps://x/9"
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+	long := strings.Repeat("é", 600)
+	if q := quotedText(long); q != strings.Repeat("é", maxQuotedRunes)+"…" {
+		t.Fatalf("long text: %d runes", len([]rune(q)))
+	}
+	if q := quotedText(" short \n"); q != "short" {
+		t.Fatalf("short = %q", q)
 	}
 }
