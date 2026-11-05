@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -92,17 +93,33 @@ func (s *Store) ClaimItem(ctx context.Context, now time.Time, f ClaimFilter) (*C
 	if err != nil {
 		return nil, err
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT post_id, platform FROM post_targets WHERE id = ?`, c.TargetID).
-		Scan(&c.PostID, &c.Platform); err != nil {
+	var account string
+	if err := tx.QueryRowContext(ctx, `SELECT post_id, platform, account_id FROM post_targets WHERE id = ?`, c.TargetID).
+		Scan(&c.PostID, &c.Platform, &account); err != nil {
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE post_targets SET status = 'sending' WHERE id = ?`, c.TargetID); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE posts SET status = 'sending' WHERE id = ? AND status <> 'sending'`, c.PostID); err != nil {
+	res, err := tx.ExecContext(ctx, `UPDATE posts SET status = 'sending' WHERE id = ? AND status <> 'sending'`, c.PostID)
+	if err != nil {
 		return nil, err
 	}
-	return &c, tx.Commit()
+	if n, _ := res.RowsAffected(); n > 0 {
+		if err := emit(ctx, tx, c.PostID, EventPostUpdated, EventData{Status: "sending"}, now); err != nil {
+			return nil, err
+		}
+	}
+	ord := c.Ordinal
+	if err := emit(ctx, tx, c.PostID, EventItemSending, EventData{Status: ItemSending, TargetID: c.TargetID,
+		AccountID: account, Platform: c.Platform, Ordinal: &ord}, now); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	s.ev.fire()
+	return &c, nil
 }
 
 // SetItemRef records a claimed item's ref before it is sent, so every
@@ -228,7 +245,46 @@ func (s *Store) RecordItemResult(ctx context.Context, r ItemResult) (Outcome, er
 	if err := tx.QueryRowContext(ctx, `SELECT status FROM posts WHERE id = ?`, r.PostID).Scan(&out.PostAfter); err != nil {
 		return out, err
 	}
-	return out, tx.Commit()
+	if err := emitItemResult(ctx, tx, r, out, at); err != nil {
+		return out, err
+	}
+	if err := tx.Commit(); err != nil {
+		return out, err
+	}
+	s.ev.fire()
+	return out, nil
+}
+
+// emitItemResult logs what RecordItemResult changed: the item, its
+// endpoints, and the post when its status moved.
+func emitItemResult(ctx context.Context, tx *sql.Tx, r ItemResult, out Outcome, at time.Time) error {
+	var account, url string
+	if err := tx.QueryRowContext(ctx, `SELECT pt.account_id, COALESCE(ti.remote_url, '') FROM target_items ti
+		JOIN post_targets pt ON pt.id = ti.target_id WHERE ti.id = ?`, r.ItemID).Scan(&account, &url); err != nil {
+		return err
+	}
+	ord := r.Ordinal
+	base := EventData{TargetID: r.TargetID, AccountID: account, Platform: r.Platform, Ordinal: &ord}
+	typ := map[string]string{ItemPublished: EventItemPublished, ItemPartial: EventItemPartial,
+		ItemFailed: EventItemFailed, ItemUnknown: EventItemUnknown, ItemCanceled: EventItemCanceled}[r.Status]
+	if typ != "" && !r.NotSent {
+		d := base
+		d.Status, d.RemoteURL, d.ErrorClass, d.Error = r.Status, url, r.ErrorClass, Scrub(r.Error)
+		if err := emit(ctx, tx, r.PostID, typ, d, at); err != nil {
+			return err
+		}
+	}
+	for _, dl := range r.Deliveries {
+		d := base
+		d.Status, d.Endpoint, d.Error = dl.Status, dl.URL, Scrub(dl.Message)
+		if err := emit(ctx, tx, r.PostID, EventDelivery, d, at); err != nil {
+			return err
+		}
+	}
+	if out.PostBefore != out.PostAfter {
+		return emitPostStatus(ctx, tx, r.PostID, at)
+	}
+	return nil
 }
 
 func boolInt(b bool) int {
@@ -263,6 +319,9 @@ func itemStatuses(ctx context.Context, tx *sql.Tx, targetID int64) ([]string, er
 func targetStatusOf(items []string) string {
 	if len(items) == 0 {
 		return "failed"
+	}
+	if !slices.ContainsFunc(items, func(st string) bool { return st != ItemCanceled }) {
+		return "canceled"
 	}
 	switch items[0] {
 	case ItemPlanned, ItemSending:
@@ -329,8 +388,17 @@ func (s *Store) MarkDue(ctx context.Context, postID string, targetIDs []int64, n
 		if _, err := tx.ExecContext(ctx, `UPDATE posts SET status = 'sending' WHERE id = ?`, postID); err != nil {
 			return 0, err
 		}
+		if err := emit(ctx, tx, postID, EventPostUpdated, EventData{Status: "sending"}, now); err != nil {
+			return 0, err
+		}
 	}
-	return due, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	if due > 0 {
+		s.ev.fire()
+	}
+	return due, nil
 }
 
 // SendingItem is an item a stopped process left in flight.
@@ -452,7 +520,14 @@ func (s *Store) markMissed(ctx context.Context, id string) (bool, error) {
 		WHERE status = 'planned' AND target_id IN (SELECT id FROM post_targets WHERE post_id = ?)`, id); err != nil {
 		return false, err
 	}
-	return true, tx.Commit()
+	if err := emitPostStatus(ctx, tx, id, time.Now()); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	s.ev.fire()
+	return true, nil
 }
 
 // Unscheduled is a failed item with no retry time whose target hasn't
@@ -525,4 +600,105 @@ func (s *Store) PostStatus(ctx context.Context, id string) (string, error) {
 	var st string
 	err := s.sql.QueryRowContext(ctx, `SELECT status FROM posts WHERE id = ?`, id).Scan(&st)
 	return st, err
+}
+
+// ErrNothingToCancel is returned by CancelPost when nothing of the post
+// is still to be sent.
+var ErrNothingToCancel = errors.New("nothing left to cancel")
+
+// CancelPost stops what a post still has to send: its planned items (a
+// scheduled post, or the rest of a thread) and the failed ones the engine
+// would retry become canceled. Unknown items keep their status (they may
+// be live) but are no longer retried. An item being sent right now
+// finishes; a thread stops after it. Targets left failed or partial are
+// marked given up, so the retrier leaves them; a retry by hand still
+// works. The post ends up canceled when nothing went out, partial or
+// failed otherwise. Returns ErrNothingToCancel when nothing was still to
+// be sent, sql.ErrNoRows for no post.
+func (s *Store) CancelPost(ctx context.Context, postID string, now time.Time) error {
+	now = now.UTC()
+	tx, err := s.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM posts WHERE id = ?`, postID).Scan(&exists); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `UPDATE target_items SET status = 'canceled', next_attempt_at = NULL
+		WHERE target_id IN (SELECT id FROM post_targets WHERE post_id = ?)
+		  AND (status = 'planned'
+		       OR (status = 'failed' AND target_id IN (SELECT id FROM post_targets WHERE post_id = ? AND gave_up_at IS NULL)))
+		RETURNING id, target_id, ordinal`, postID, postID)
+	if err != nil {
+		return err
+	}
+	type canceled struct {
+		item, target int64
+		ordinal      int
+	}
+	var done []canceled
+	for rows.Next() {
+		var c canceled
+		if err := rows.Scan(&c.item, &c.target, &c.ordinal); err != nil {
+			rows.Close()
+			return err
+		}
+		done = append(done, c)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	// Unknown items still to be retried stop being retried.
+	res, err := tx.ExecContext(ctx, `UPDATE target_items SET next_attempt_at = NULL
+		WHERE status = 'unknown' AND target_id IN (SELECT id FROM post_targets WHERE post_id = ? AND gave_up_at IS NULL)`, postID)
+	if err != nil {
+		return err
+	}
+	unknown, _ := res.RowsAffected()
+	if len(done) == 0 && unknown == 0 {
+		return ErrNothingToCancel
+	}
+	targets := map[int64]bool{}
+	for _, c := range done {
+		var account, platform string
+		if err := tx.QueryRowContext(ctx, `SELECT account_id, platform FROM post_targets WHERE id = ?`, c.target).
+			Scan(&account, &platform); err != nil {
+			return err
+		}
+		ord := c.ordinal
+		if err := emit(ctx, tx, postID, EventItemCanceled, EventData{Status: ItemCanceled, TargetID: c.target,
+			AccountID: account, Platform: platform, Ordinal: &ord}, now); err != nil {
+			return err
+		}
+		targets[c.target] = true
+	}
+	for id := range targets {
+		statuses, err := itemStatuses(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		// A target still sending its current item keeps 'sending' until
+		// that item is recorded.
+		if _, err := tx.ExecContext(ctx, `UPDATE post_targets SET status = ? WHERE id = ?`, targetStatusOf(statuses), id); err != nil {
+			return err
+		}
+	}
+	// What is left failed or partial is not the retrier's to send.
+	if _, err := tx.ExecContext(ctx, `UPDATE post_targets SET gave_up_at = ?
+		WHERE post_id = ? AND gave_up_at IS NULL AND status IN ('failed', 'partial')`, now, postID); err != nil {
+		return err
+	}
+	if err := recomputeStatus(tx, postID); err != nil {
+		return err
+	}
+	if err := emitPostStatus(ctx, tx, postID, now); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.ev.fire()
+	return nil
 }

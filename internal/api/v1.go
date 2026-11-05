@@ -65,7 +65,11 @@ type v1Route struct {
 	Scope        string // "" = any authenticated caller
 	Idempotent   bool   // a create that honors Idempotency-Key
 	Public       bool   // no authentication (the OpenAPI document)
-	Handler      http.HandlerFunc
+	// Actions are the custom methods (AIP-136) a POST route serves as
+	// Path:action, documented one by one; the handler splits them off,
+	// since a ServeMux wildcard must be a whole segment.
+	Actions []string
+	Handler http.HandlerFunc
 }
 
 // v1Routes lists every /v1 operation. Handlers are added here and nowhere
@@ -83,6 +87,12 @@ func (a *API) v1Routes() []v1Route {
 		{Method: "POST", Path: "/v1/tokens", Scope: scopeAdmin, Handler: a.v1CreateToken},
 		{Method: "GET", Path: "/v1/tokens/{id}", Scope: scopeAdmin, Handler: a.v1GetToken},
 		{Method: "DELETE", Path: "/v1/tokens/{id}", Scope: scopeAdmin, Handler: a.v1RevokeToken},
+		{Method: "GET", Path: "/v1/posts", Scope: scopePostsRead, Handler: a.v1ListPosts},
+		{Method: "GET", Path: "/v1/posts/{id}", Scope: scopePostsRead, Handler: a.v1GetPost},
+		{Method: "PATCH", Path: "/v1/posts/{id}", Scope: scopePostsWrite, Handler: a.v1PatchPost},
+		{Method: "POST", Path: "/v1/posts/{id}", Scope: scopePostsWrite, Actions: []string{"cancel", "retry"}, Handler: a.v1PostAction},
+		{Method: "GET", Path: "/v1/posts/{id}/events", Scope: scopePostsRead, Handler: a.v1PostEvents},
+		{Method: "GET", Path: "/v1/events", Scope: scopePostsRead, Handler: a.v1Events},
 	}
 	return rs
 }
@@ -236,7 +246,8 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	// Content-Type is required: a cross-site form or no-cors fetch can't
 	// send application/json without a CORS preflight, so this backs up the
 	// Origin check for cookie-authenticated writes.
-	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || (mt != "application/json" && (r.Method != http.MethodPatch || mt != "application/merge-patch+json")) {
 		problem(w, r, http.StatusUnsupportedMediaType, codeUnsupportedMediaType, "send Content-Type: application/json")
 		return false
 	}

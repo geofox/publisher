@@ -170,6 +170,11 @@ type API struct {
 
 	// Version is the build's version, reported by GET /v1/instance.
 	Version string
+
+	// Stopping is closed when the server shuts down, which ends the event
+	// streams (they would otherwise hold the shutdown until its deadline).
+	// nil: streams end only when their client leaves.
+	Stopping <-chan struct{}
 }
 
 // New creates a new API with the given publisher and media pipeline.

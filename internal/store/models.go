@@ -34,10 +34,15 @@ type Post struct {
 	// FirstSuccessAt is the earliest time the post went live on ANY platform
 	// (MIN over successful attempts). Set only by PublicFeed, never serialized.
 	// Retries append later attempt rows, so this never moves once set.
-	FirstSuccessAt *time.Time   `json:"-"`
-	Targets        []Target     `json:"targets,omitempty"`
-	Media          []Media      `json:"media,omitempty"`
-	Interaction    *Interaction `json:"interaction,omitempty"`
+	FirstSuccessAt *time.Time `json:"-"`
+	OwnerID        string     `json:"-"`
+	Hidden         bool       `json:"-"`
+	// Attention: settled with an item in an unknown state or a target the
+	// engine gave up on (set by GetPost and ListPostsPage).
+	Attention   bool         `json:"-"`
+	Targets     []Target     `json:"targets,omitempty"`
+	Media       []Media      `json:"media,omitempty"`
+	Interaction *Interaction `json:"interaction,omitempty"`
 }
 
 // Target is one account a post publishes to. Its items are the posts it
@@ -228,7 +233,20 @@ func (s *Store) SavePost(p *Post) error {
 			}
 		}
 	}
-	return tx.Commit()
+	if err := emit(ctx, tx, p.ID, EventPostCreated, EventData{Status: p.Status, ScheduledAt: p.ScheduledAt}, now); err != nil {
+		return err
+	}
+	if PostSettled(p.Status) {
+		// Recorded already finished (an interaction answered inline).
+		if err := emit(ctx, tx, p.ID, EventPostCompleted, EventData{Status: p.Status}, now); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.ev.fire()
+	return nil
 }
 
 func (s *Store) GetPost(id string) (*Post, error) {
@@ -237,8 +255,10 @@ func (s *Store) GetPost(id string) (*Post, error) {
 	var schedAt sql.NullTime
 	var interactionJSON sql.NullString // NULL on rows that predate the column migration
 	err := s.sql.QueryRow(
-		`SELECT id,created_at,master_text,platforms,delay_seconds,source,status,scheduled_at,interaction_json FROM posts WHERE id=?`, id,
-	).Scan(&p.ID, &p.CreatedAt, &p.MasterText, &platforms, &p.DelaySeconds, &p.Source, &p.Status, &schedAt, &interactionJSON)
+		`SELECT id,created_at,master_text,platforms,delay_seconds,source,status,scheduled_at,interaction_json,owner_id,hidden,`+attentionExpr+`
+		   FROM posts p WHERE id=?`, id,
+	).Scan(&p.ID, &p.CreatedAt, &p.MasterText, &platforms, &p.DelaySeconds, &p.Source, &p.Status, &schedAt, &interactionJSON,
+		&p.OwnerID, &p.Hidden, &p.Attention)
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +361,7 @@ func recomputeStatus(q rowQuerier, postID string) error {
 		return err
 	}
 	defer rows.Close()
-	total, succ, fail, open := 0, 0, 0, 0
+	total, succ, fail, open, canc := 0, 0, 0, 0, 0
 	for rows.Next() {
 		var st string
 		if err := rows.Scan(&st); err != nil {
@@ -355,6 +375,8 @@ func recomputeStatus(q rowQuerier, postID string) error {
 			fail++
 		case "sending", "scheduled", "pending":
 			open++ // still to be sent
+		case "canceled":
+			canc++
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -364,7 +386,9 @@ func recomputeStatus(q rowQuerier, postID string) error {
 	switch {
 	case open > 0:
 		status = "sending"
-	case total == 0 || fail == total:
+	case total > 0 && canc == total:
+		status = "canceled"
+	case total == 0 || (succ == 0 && fail > 0 && fail+canc == total):
 		status = "failed"
 	case succ == total:
 		status = "success"
@@ -453,14 +477,34 @@ func (s *Store) UpdateRelayStatus(targetID int64, relayURL, status, message stri
 	if err := recomputeTargetStatus(tx, targetID); err != nil {
 		return err
 	}
-	var postID string
-	if err := tx.QueryRow(`SELECT post_id FROM post_targets WHERE id=?`, targetID).Scan(&postID); err != nil {
+	var postID, account, platform, before string
+	if err := tx.QueryRow(`SELECT pt.post_id, pt.account_id, pt.platform, p.status FROM post_targets pt
+		JOIN posts p ON p.id = pt.post_id WHERE pt.id=?`, targetID).Scan(&postID, &account, &platform, &before); err != nil {
 		return err
 	}
 	if err := recomputeStatus(tx, postID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	ctx, now := context.Background(), time.Now()
+	zero := 0
+	if err := emit(ctx, tx, postID, EventDelivery, EventData{TargetID: targetID, AccountID: account, Platform: platform,
+		Ordinal: &zero, Status: status, Endpoint: relayURL, Error: Scrub(message)}, now); err != nil {
+		return err
+	}
+	var after string
+	if err := tx.QueryRow(`SELECT status FROM posts WHERE id=?`, postID).Scan(&after); err != nil {
+		return err
+	}
+	if after != before {
+		if err := emitPostStatus(ctx, tx, postID, now); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.ev.fire()
+	return nil
 }
 
 // nullStr stores "" as NULL.
@@ -481,14 +525,46 @@ var ErrNotHideable = errors.New("post cannot be hidden")
 // HidePost soft-deletes a terminal post: it stays in the archive (data, retry
 // history, backups) but is excluded from the history list. Pending posts
 // (scheduled/sending) can't be hidden.
-func (s *Store) HidePost(id string) error {
-	res, err := s.sql.Exec(`UPDATE posts SET hidden=1 WHERE id=? AND status NOT IN ('scheduled','sending')`, id)
+func (s *Store) HidePost(id string) error { return s.SetPostHidden(id, true) }
+
+// SetPostHidden hides or shows a terminal post again. Hiding a pending post
+// is ErrNotHideable; showing one that isn't hidden is a no-op.
+func (s *Store) SetPostHidden(id string, hidden bool) error {
+	ctx := context.Background()
+	tx, err := s.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	q := `UPDATE posts SET hidden=1 WHERE id=? AND hidden=0 AND status NOT IN ('scheduled','sending','cancelling','pending')`
+	if !hidden {
+		q = `UPDATE posts SET hidden=0 WHERE id=? AND hidden=1`
+	}
+	res, err := tx.ExecContext(ctx, q, id)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
+		var h bool
+		var status string
+		err := tx.QueryRowContext(ctx, `SELECT hidden, status FROM posts WHERE id=?`, id).Scan(&h, &status)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return ErrNotHideable
+		case err != nil:
+			return err
+		case h == hidden:
+			return nil // already so
+		}
 		return ErrNotHideable
 	}
+	if err := emit(ctx, tx, id, EventPostUpdated, EventData{Hidden: &hidden}, time.Now()); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.ev.fire()
 	return nil
 }
 
@@ -511,7 +587,15 @@ func (s *Store) RescheduleScheduled(id string, at time.Time) error {
 		WHERE status='planned' AND target_id IN (SELECT id FROM post_targets WHERE post_id=?)`, at.UTC(), id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	u := at.UTC()
+	if err := emit(context.Background(), tx, id, EventPostUpdated, EventData{Status: "scheduled", ScheduledAt: &u}, time.Now()); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.ev.fire()
+	return nil
 }
 
 // CancelScheduled deletes a pending post (and its rows); ErrNotPending otherwise.

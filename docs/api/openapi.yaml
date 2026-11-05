@@ -46,6 +46,10 @@ tags:
     description: Destination types and the accounts that publish to them.
   - name: tokens
     description: API tokens and the caller's identity.
+  - name: posts
+    description: Posts and what became of them on each account.
+  - name: events
+    description: Server-sent event streams of what happens to posts.
 paths:
   /v1/openapi.json:
     get:
@@ -332,6 +336,292 @@ paths:
           $ref: "#/components/responses/NotFound"
         default:
           $ref: "#/components/responses/Problem"
+  /v1/posts:
+    get:
+      operationId: listPosts
+      tags: [posts]
+      summary: Posts, newest first
+      description: |
+        Needs `posts:read`. Hidden posts are left out unless `hidden=true`,
+        which lists only hidden ones. Targets come without items or
+        attempts; get a post for those.
+      security:
+        - bearer: ["posts:read"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          description: Comma-separated post statuses to keep.
+          schema:
+            type: string
+            examples: ["failed,needs_attention"]
+        - name: account
+          in: query
+          description: Keep posts with a target on this account.
+          schema:
+            type: string
+            pattern: "^acc_"
+        - name: q
+          in: query
+          description: Keep posts whose text contains this.
+          schema:
+            type: string
+        - name: since
+          in: query
+          description: Keep posts created at or after this time.
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          description: Keep posts created before this time.
+          schema:
+            type: string
+            format: date-time
+        - name: hidden
+          in: query
+          description: true lists hidden posts instead of shown ones.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: A page of posts.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Post"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadParameter"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/posts/{id}:
+    parameters:
+      - $ref: "#/components/parameters/PostID"
+    get:
+      operationId: getPost
+      tags: [posts]
+      summary: One post, with its targets, items, deliveries and attempts
+      description: Needs `posts:read`.
+      security:
+        - bearer: ["posts:read"]
+        - session: []
+      responses:
+        "200":
+          description: The post.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Post"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: updatePost
+      tags: [posts]
+      summary: Reschedule, hide or show a post
+      description: |
+        Needs `posts:write`. A JSON merge patch of `schedule.at` (a
+        scheduled post only) and `hidden` (a post with nothing left to send
+        only). Hiding keeps the post and its history; it only leaves the
+        default list.
+      security:
+        - bearer: ["posts:write"]
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostPatch"
+          application/merge-patch+json:
+            schema:
+              $ref: "#/components/schemas/PostPatch"
+      responses:
+        "200":
+          description: The post after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Post"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/posts/{id}:cancel:
+    parameters:
+      - $ref: "#/components/parameters/PostID"
+    post:
+      operationId: cancelPost
+      tags: [posts]
+      summary: Cancel what a post has not sent
+      description: |
+        Needs `posts:write`. Stops what the post still has to send: all of
+        a scheduled post, or the rest of a thread (the item being sent at
+        that moment finishes). Failed items waiting for an automatic retry
+        are canceled too; items whose outcome is `unknown` keep that status,
+        since they may be live, but are no longer retried. Targets left
+        `failed` or `partial` get `gave_up_at`, and a `:retry` still sends
+        them by hand. The post becomes `canceled` when nothing went out,
+        else `partial` or `failed`. The post stays in the history. With
+        nothing left to send: 409.
+      security:
+        - bearer: ["posts:write"]
+        - session: []
+      responses:
+        "200":
+          description: The post after canceling.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Post"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/posts/{id}:retry:
+    parameters:
+      - $ref: "#/components/parameters/PostID"
+    post:
+      operationId: retryPost
+      tags: [posts]
+      summary: Send a post's failed items again
+      description: |
+        Needs `posts:write`. Without a body, retries every target that
+        failed, was missed, or is a thread that stopped part way. `targets`
+        narrows that; `deliveries` retries single failed Nostr relays.
+        Answers 202 at once: the engine sends within seconds, and the
+        post's event stream reports the outcome. With nothing to retry: 409.
+      security:
+        - bearer: ["posts:write"]
+        - session: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryRequest"
+      responses:
+        "202":
+          description: The post, its items due again.
+          headers:
+            Location:
+              description: The post's URL.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Post"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/posts/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/PostID"
+    get:
+      operationId: streamPostEvents
+      tags: [events]
+      summary: A post's events, as server-sent events
+      description: |
+        Needs `posts:read`. Replays the post's events from the start (or
+        after `Last-Event-ID` / `after`), then streams new ones, and ends
+        once the post has nothing left to send. Each message has `id`,
+        `event` (the type) and `data` (an Event as JSON). Events are kept
+        7 days.
+      security:
+        - bearer: ["posts:read"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/LastEventID"
+        - $ref: "#/components/parameters/After"
+      responses:
+        "200":
+          $ref: "#/components/responses/EventStream"
+        "400":
+          $ref: "#/components/responses/BadParameter"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/events:
+    get:
+      operationId: streamEvents
+      tags: [events]
+      summary: All the owner's events, as server-sent events
+      description: |
+        Needs `posts:read`. Streams events from now on (or after
+        `Last-Event-ID` / `after`, for a client catching up) until the
+        client disconnects; a `: ping` comment every 15 seconds keeps idle
+        connections open. Events are kept 7 days.
+      security:
+        - bearer: ["posts:read"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/LastEventID"
+        - $ref: "#/components/parameters/After"
+      responses:
+        "200":
+          $ref: "#/components/responses/EventStream"
+        "400":
+          $ref: "#/components/responses/BadParameter"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        default:
+          $ref: "#/components/responses/Problem"
 components:
   securitySchemes:
     bearer:
@@ -344,6 +634,27 @@ components:
       name: publisher_session
       description: The web app's session, set by signing in (`/auth/login`).
   parameters:
+    PostID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples: [pst_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c]
+    LastEventID:
+      name: Last-Event-ID
+      in: header
+      description: Resume after this event id (browsers send it on reconnect).
+      schema:
+        type: string
+        pattern: "^[0-9]+$"
+    After:
+      name: after
+      in: query
+      description: Resume after this event id, for clients that can't set headers.
+      schema:
+        type: integer
+        minimum: 0
     Limit:
       name: limit
       in: query
@@ -360,6 +671,19 @@ components:
       schema:
         type: string
   responses:
+    InvalidState:
+      description: Not possible in the resource's current state (`invalid_state`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    EventStream:
+      description: |
+        A stream of server-sent events. Each message's `data` is an Event.
+      content:
+        text/event-stream:
+          schema:
+            type: string
     Problem:
       description: An error.
       content:
@@ -415,6 +739,279 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
   schemas:
+    PostStatus:
+      type: string
+      description: |
+        `scheduled`, `publishing` (queued or being sent), then `published`,
+        `partial` (some of it went out), `failed`, `canceled` or `missed`
+        (a scheduled time passed while the server was down). Any settled
+        post with an item in an unknown state, or one the engine gave up
+        retrying, is `needs_attention`.
+      enum: [scheduled, publishing, published, partial, failed, canceled, missed, needs_attention]
+    Post:
+      type: object
+      additionalProperties: false
+      required: [id, status, created_at, scheduled_at, hidden, source, content, interaction, targets]
+      properties:
+        id:
+          type: string
+          pattern: "^pst_"
+        status:
+          $ref: "#/components/schemas/PostStatus"
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        scheduled_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        hidden:
+          type: boolean
+        source:
+          type: string
+          description: What created it (web, api, …).
+        content:
+          type: object
+          additionalProperties: false
+          required: [text, media]
+          properties:
+            text:
+              type: string
+            media:
+              type: array
+              items:
+                $ref: "#/components/schemas/PostMedia"
+        interaction:
+          description: Set when the post replies to, quotes or reposts another post.
+          oneOf:
+            - type: "null"
+            - type: object
+              additionalProperties: false
+              required: [action, url]
+              properties:
+                action:
+                  type: string
+                  enum: [reply, quote, repost]
+                url:
+                  type: string
+                platform:
+                  type: string
+                author:
+                  type: string
+        targets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Target"
+    PostMedia:
+      type: object
+      additionalProperties: false
+      required: [url, mime]
+      properties:
+        url:
+          type: string
+        mime:
+          type: string
+        alt:
+          type: string
+        sha256:
+          type: string
+        size_bytes:
+          type: integer
+        dim:
+          type: string
+          description: WIDTHxHEIGHT.
+        blurhash:
+          type: string
+        duration_secs:
+          type: integer
+        poster_url:
+          type: string
+    TargetStatus:
+      type: string
+      enum: [scheduled, publishing, published, partial, failed, canceled, missed]
+    Target:
+      type: object
+      description: One account the post goes to. Items and attempts are in a single post's view only.
+      additionalProperties: false
+      required: [id, account, type, status, gave_up_at]
+      properties:
+        id:
+          type: string
+          pattern: "^tgt_"
+        account:
+          type: string
+          pattern: "^acc_"
+        type:
+          type: string
+          description: The destination type.
+        status:
+          $ref: "#/components/schemas/TargetStatus"
+        error_class:
+          type: string
+          description: The class of the latest failure (transient, rate_limited, auth, invalid, unknown, …).
+        gave_up_at:
+          description: When automatic retries stopped; a retry by hand starts them again.
+          $ref: "#/components/schemas/NullableTimestamp"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
+        attempts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Attempt"
+    ItemStatus:
+      type: string
+      enum: [planned, sending, published, partial, failed, unknown, canceled]
+      description: "`unknown`: a send was in flight when the server stopped, and whether it went out is not known."
+    Item:
+      type: object
+      description: One post the target makes (one, or one per thread part).
+      additionalProperties: false
+      required: [ordinal, status, text, media, attempts, next_attempt_at, published_at, deliveries]
+      properties:
+        ordinal:
+          type: integer
+        status:
+          $ref: "#/components/schemas/ItemStatus"
+        text:
+          type: string
+        media:
+          type: array
+          description: Indexes into the post's content.media.
+          items:
+            type: integer
+        url:
+          type: string
+        remote_id:
+          type: string
+        error:
+          type: string
+        error_class:
+          type: string
+        attempts:
+          type: integer
+        next_attempt_at:
+          description: When the engine sends it next; null when nothing is planned.
+          $ref: "#/components/schemas/NullableTimestamp"
+        published_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        deliveries:
+          type: array
+          description: Per-endpoint results, for destinations that deliver to several (Nostr relays).
+          items:
+            $ref: "#/components/schemas/Delivery"
+    Delivery:
+      type: object
+      additionalProperties: false
+      required: [endpoint, status, retries, attempted_at, gave_up_at]
+      properties:
+        endpoint:
+          type: string
+        status:
+          type: string
+          enum: [ok, failed, skipped, pending]
+        message:
+          type: string
+        retries:
+          type: integer
+        attempted_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        gave_up_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+    Attempt:
+      type: object
+      additionalProperties: false
+      required: [number, status, latency_ms, attempted_at]
+      properties:
+        number:
+          type: integer
+        status:
+          type: string
+        error:
+          type: string
+        error_class:
+          type: string
+        latency_ms:
+          type: integer
+        attempted_at:
+          $ref: "#/components/schemas/Timestamp"
+    PostPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        schedule:
+          type: object
+          additionalProperties: false
+          required: [at]
+          properties:
+            at:
+              type: string
+              format: date-time
+        hidden:
+          type: boolean
+    RetryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        targets:
+          type: array
+          items:
+            type: string
+            pattern: "^tgt_"
+        deliveries:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [target, endpoint]
+            properties:
+              target:
+                type: string
+                pattern: "^tgt_"
+              endpoint:
+                type: string
+    Event:
+      type: object
+      description: |
+        The `data` of one server-sent event. Types: `post.created`,
+        `post.updated` (status, schedule or visibility), `post.completed`
+        (nothing left to send), `item.sending`, `item.published`,
+        `item.partial`, `item.failed`, `item.unknown`, `item.canceled`,
+        `delivery.updated`. Fields are present as the type needs.
+      additionalProperties: false
+      required: [id, type, created_at, post]
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        post:
+          type: string
+          pattern: "^pst_"
+        status:
+          type: string
+          description: The post's status for post events; the item's or delivery's otherwise.
+        target:
+          type: string
+        account:
+          type: string
+        destination:
+          type: string
+        ordinal:
+          type: integer
+        url:
+          type: string
+        error_class:
+          type: string
+        error:
+          type: string
+        endpoint:
+          type: string
+        scheduled_at:
+          $ref: "#/components/schemas/Timestamp"
+        hidden:
+          type: boolean
     Problem:
       type: object
       description: An RFC 9457 problem with a stable `code`. Clients should ignore members they don't know (RFC 9457 §3.2).
@@ -448,6 +1045,7 @@ components:
             - validation_failed
             - invalid_parameter
             - invalid_cursor
+            - invalid_state
             - idempotency_key_invalid
             - idempotency_key_in_use
             - idempotency_key_reused

@@ -260,7 +260,8 @@ func main() {
 			"allowed_subjects", len(cfg.OIDCAllowedSubjects),
 			"allowed_emails", len(cfg.OIDCAllowedEmails))
 	}
-	// Expired Idempotency-Key records are dead weight: purge them hourly.
+	// Expired Idempotency-Key records and old events are dead weight: purge
+	// them hourly.
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
@@ -274,6 +275,11 @@ func main() {
 				slog.Warn("idempotency purge failed", "err", err)
 			} else if n > 0 {
 				slog.Debug("purged idempotency keys", "count", n)
+			}
+			if n, err := st.PurgeEvents(ctx, time.Now()); err != nil {
+				slog.Warn("event purge failed", "err", err)
+			} else if n > 0 {
+				slog.Debug("purged events", "count", n)
 			}
 		}
 	}()
@@ -303,6 +309,10 @@ func main() {
 		ReadTimeout:  60 * time.Second,
 		WriteTimeout: 120 * time.Second,
 	}
+	// Shutdown waits for open requests; event streams end on this signal.
+	stopping := make(chan struct{})
+	a.Stopping = stopping
+	srv.RegisterOnShutdown(func() { close(stopping) })
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServe() }()
 	slog.Info("publisher starting",

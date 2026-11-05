@@ -25,6 +25,7 @@ const (
 	codeValidation           = "validation_failed"
 	codeInvalidParameter     = "invalid_parameter"
 	codeInvalidCursor        = "invalid_cursor"
+	codeInvalidState         = "invalid_state"
 	codeIdemInvalid          = "idempotency_key_invalid"
 	codeIdemInUse            = "idempotency_key_in_use"
 	codeIdemReused           = "idempotency_key_reused"
@@ -46,6 +47,7 @@ var v1Codes = map[string]string{
 	codeValidation:           "Validation failed",
 	codeInvalidParameter:     "Invalid query parameter",
 	codeInvalidCursor:        "Invalid cursor",
+	codeInvalidState:         "Not possible in the resource's current state",
 	codeIdemInvalid:          "Invalid Idempotency-Key",
 	codeIdemInUse:            "Idempotency-Key in use",
 	codeIdemReused:           "Idempotency-Key reused",
