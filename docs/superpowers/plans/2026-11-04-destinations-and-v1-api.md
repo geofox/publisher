@@ -310,9 +310,11 @@ as they move.
 
 # PR 3 — `/v1` API
 
-> **As built (2026-11-05): split in three.** PR 3a is the foundations and
-> the small resources; 3b posts, media and events; 3c drafts and the tools
-> (translate, verify, resolve, relay sync, public feed).
+> **As built (2026-11-05): split in four.** PR 3a is the foundations and
+> the small resources; 3b reading and managing posts plus the event log;
+> 3c creating posts (`POST /v1/posts`, `:preview`, `Prefer: wait`) and
+> media; 3d drafts and the tools (translate, verify, resolve, relay sync,
+> public feed).
 >
 > PR 3a differences from the tasks below:
 >
@@ -345,6 +347,46 @@ as they move.
 > - **Colon custom methods** (`:cancel`, `:retry`, `:preview`) can't be
 >   ServeMux patterns (a wildcard must be a whole segment); 3b routes them
 >   by hand inside a `{id}` handler.
+>
+> PR 3b:
+>
+> - **The event log is a table** (migration v6, `events`), written in the
+>   same transaction as each state change (post created, status changes,
+>   each item's outcome, each Nostr delivery, reschedule, hide), kept 7
+>   days. The SSE streams read it, so a client resumes with
+>   `Last-Event-ID` across restarts; an in-process signal wakes streams
+>   at once, with a 1 s poll behind it. It is also the future webhook
+>   source. The old in-memory progress registry stays for the old routes.
+> - **`:cancel` keeps the post** (the old `/cancel` deleted it): planned
+>   items and failed ones awaiting an automatic retry become `canceled`,
+>   unknown items keep their status but stop being retried, targets left
+>   failed or partial are marked given up. A given-up failure is not
+>   rewritten (409). Store statuses gain `canceled`.
+> - **Store statuses keep the old words** (`success`, `sending`) until
+>   PR 4 moves the web app; the API maps them, and `needs_attention` is
+>   computed in SQL so the list can filter on it.
+> - **`:retry` answers 202** and marks items due; the engine sends them
+>   within its poll interval. Relay retries run in the background.
+> - **Streams end on shutdown** (`API.Stopping`, closed by the server's
+>   `RegisterOnShutdown`), so a graceful stop doesn't wait for clients.
+> - **Owner checks**: every post read goes through the principal's owner
+>   (404 otherwise), ready for more than one owner.
+> - **Test harness**: libopenapi-validator's radix tree takes
+>   `/v1/posts/pst_1:cancel` for `/v1/posts/{id}`; the tests give it a
+>   lookup that finds nothing so its template regexes match instead.
+> - **Review fixes**: a cancel sticks (`posts.canceled_at`: an item in
+>   flight isn't retried, a retry by hand clears it and revives canceled
+>   items); "settled" means no automatic retry is due either, so
+>   `post.completed` is sent once, when nothing is left; PATCH checks
+>   everything before changing anything; delivery retries are deduped,
+>   aimed at the named target and stopped on shutdown; delivery messages
+>   are scrubbed; streams are capped (64 open, 1 h each), HEAD returns at
+>   once, and a settled post's stream answers 204 to a client that has
+>   everything (EventSource then stops).
+> - **Deferred from review**: a delivery retry that fails before reaching
+>   the relay (no stored event) is only logged, no event; event `status`
+>   is the post's status, not `needs_attention`; event ids are global
+>   (gaps show other owners' volume once there are several).
 
 ## Task 3.1: Foundations
 

@@ -10,7 +10,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-type Store struct{ sql *sql.DB }
+type Store struct {
+	sql *sql.DB
+	ev  eventSignal
+}
 
 func Open(path string) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {

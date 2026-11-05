@@ -96,6 +96,13 @@ as `limit=0`. `errors[]` names the parameter.
 **400.** `cursor` is not one this server issued. Pass `next_cursor` from the
 previous page unchanged; cursors are opaque.
 
+## invalid_state
+
+**409.** The request is valid but the resource is not in a state that
+allows it: rescheduling a post that isn't scheduled, hiding one still to be
+sent, canceling a post with nothing left to cancel, or retrying one with
+nothing to retry. `detail` says which.
+
 ## idempotency_key_invalid
 
 **400.** The `Idempotency-Key` header is malformed. Send one key: a quoted

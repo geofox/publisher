@@ -25,6 +25,27 @@ var migrations = []migration{
 	{version: 3, name: "owners_accounts", up: migrateOwnersAccounts, noForeignKeys: true},
 	{version: 4, name: "target_items", up: migrateTargetItems, noForeignKeys: true},
 	{version: 5, name: "token_scopes_idempotency", up: migrateTokenScopesIdempotency},
+	{version: 6, name: "events", up: migrateEvents},
+}
+
+// migrateEvents (v6) adds the event log behind GET /v1/events: one row per
+// state change, written in the transaction that makes the change, so a
+// client resuming with Last-Event-ID misses nothing.
+func migrateEvents(ctx context.Context, tx execer) error {
+	_, err := tx.ExecContext(ctx, `
+CREATE TABLE events (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id   TEXT NOT NULL,
+  post_id    TEXT,
+  type       TEXT NOT NULL,
+  data       TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL
+);
+CREATE INDEX idx_events_owner ON events(owner_id, id);
+CREATE INDEX idx_events_post ON events(post_id, id);
+CREATE INDEX idx_events_created ON events(created_at);
+ALTER TABLE posts ADD COLUMN canceled_at TIMESTAMP;`)
+	return err
 }
 
 // migrateTokenScopesIdempotency (v5) gives API tokens scopes and an optional

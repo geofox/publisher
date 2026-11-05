@@ -34,9 +34,28 @@ every route, request and response against it. So far it has:
 | `GET /v1/accounts`, `GET /v1/accounts/{id}` | `accounts:read` | accounts with profile and capabilities |
 | `GET /v1/me` | any | who is calling, with which scopes |
 | `GET/POST /v1/tokens`, `GET/DELETE /v1/tokens/{id}` | `admin` | API tokens with scopes and expiry |
+| `GET /v1/posts` | `posts:read` | the history, newest first; filter by `status`, `account`, `q`, `since`, `until`, `hidden` |
+| `GET /v1/posts/{id}` | `posts:read` | a post with its targets, items (thread parts), deliveries and attempts |
+| `PATCH /v1/posts/{id}` | `posts:write` | reschedule (`schedule.at`), hide or show (`hidden`) |
+| `POST /v1/posts/{id}:cancel` | `posts:write` | stop what a post still has to send; it stays in the history |
+| `POST /v1/posts/{id}:retry` | `posts:write` | send failed items again, optionally only some `targets` or Nostr `deliveries` |
+| `GET /v1/posts/{id}/events` | `posts:read` | a post's progress as server-sent events, from its first event until it settles |
+| `GET /v1/events` | `posts:read` | every post's events as they happen |
 
-Posts, media and events come next, then drafts and the tools; the web app
-moves over and the old routes go once `/v1` covers them.
+Creating posts and media come next, then drafts and the tools; the web
+app moves over and the old routes go once `/v1` covers them.
+
+- **Statuses** are one vocabulary: a post or target is `scheduled`,
+  `publishing`, `published`, `partial`, `failed`, `canceled` or `missed`,
+  and a settled post that needs you (an item whose outcome is unknown, or
+  one the automatic retries gave up on) shows as `needs_attention`. An
+  item (one post on one account, or one part of a thread) is `planned`,
+  `sending`, `published`, `partial`, `failed`, `unknown` or `canceled`.
+- **Events** are kept 7 days. Each has an `id`; reconnect with
+  `Last-Event-ID` (browsers do it for you) or `?after=` to resume where
+  you left off. `GET /v1/events` starts from now unless you pass one. A
+  post's stream ends after `post.completed`; close your EventSource then
+  (one that reconnects gets 204, which stops it).
 
 - **Auth:** the browser session, or `Authorization: Bearer <token>`. Tokens
   carry scopes (`posts:read`, `posts:write`, `media:write`, `drafts:read`,
@@ -58,6 +77,9 @@ moves over and the old routes go once `/v1` covers them.
 curl -s -X POST https://publisher.example/v1/tokens \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d '{"name":"n8n","scopes":["posts:write","media:write"],"expires_at":"2027-11-05T00:00:00Z"}'
+
+# Watch every post's progress (Ctrl-C to stop).
+curl -sN https://publisher.example/v1/events -H "Authorization: Bearer $TOKEN"
 ```
 
 ### `POST /publish`

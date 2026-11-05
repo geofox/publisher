@@ -4,6 +4,15 @@ CREATE INDEX idx_draft_media_draft_id ON draft_media(draft_id);
 -- index idx_drafts_updated_at
 CREATE INDEX idx_drafts_updated_at ON drafts(updated_at DESC);
 
+-- index idx_events_created
+CREATE INDEX idx_events_created ON events(created_at);
+
+-- index idx_events_owner
+CREATE INDEX idx_events_owner ON events(owner_id, id);
+
+-- index idx_events_post
+CREATE INDEX idx_events_post ON events(post_id, id);
+
 -- index idx_idempotency_keys_expires
 CREATE INDEX idx_idempotency_keys_expires ON idempotency_keys(expires_at);
 
@@ -75,6 +84,16 @@ CREATE TABLE drafts (
   tags_json   TEXT NOT NULL DEFAULT '[]',
   spec_json   TEXT NOT NULL
 , owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id));
+
+-- table events
+CREATE TABLE events (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id   TEXT NOT NULL,
+  post_id    TEXT,
+  type       TEXT NOT NULL,
+  data       TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL
+);
 
 -- table idempotency_keys
 CREATE TABLE idempotency_keys (
@@ -163,7 +182,7 @@ CREATE TABLE posts (
   delay_seconds INTEGER NOT NULL DEFAULT 0,
   source        TEXT NOT NULL,
   status        TEXT NOT NULL
-, scheduled_at TIMESTAMP, hidden INTEGER NOT NULL DEFAULT 0, interaction_json TEXT, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id));
+, scheduled_at TIMESTAMP, hidden INTEGER NOT NULL DEFAULT 0, interaction_json TEXT, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id), canceled_at TIMESTAMP);
 
 -- table schema_migrations
 CREATE TABLE schema_migrations (

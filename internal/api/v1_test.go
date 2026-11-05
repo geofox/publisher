@@ -18,6 +18,7 @@ import (
 	"github.com/pb33f/libopenapi"
 	validator "github.com/pb33f/libopenapi-validator"
 	"github.com/pb33f/libopenapi-validator/config"
+	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
 
 	apidocs "github.com/geofox/publisher/docs/api"
 	"github.com/geofox/publisher/internal/auth"
@@ -44,13 +45,22 @@ func openAPIValidator(t *testing.T) validator.Validator {
 		}
 		// Auth is tested directly; the validator can't model "a session
 		// or, with OIDC off, nothing".
-		oaVal, oaErr = validator.NewValidator(doc, config.WithFormatAssertions(), config.WithoutSecurityValidation())
+		oaVal, oaErr = validator.NewValidator(doc, config.WithFormatAssertions(), config.WithoutSecurityValidation(),
+			// The radix tree takes /v1/posts/pst_1:cancel for /v1/posts/{id};
+			// the regex matcher behind it knows {id}:cancel.
+			config.WithPathTree(regexOnly{}))
 	})
 	if len(oaErr) > 0 {
 		t.Fatalf("openapi: %v", oaErr)
 	}
 	return oaVal
 }
+
+// regexOnly is a path lookup that finds nothing, so the validator matches
+// every path with its templates' regular expressions.
+type regexOnly struct{}
+
+func (regexOnly) Lookup(string) (*v3.PathItem, string, bool) { return nil, "", false }
 
 type v1Env struct {
 	t      *testing.T
@@ -141,6 +151,8 @@ type req struct {
 	// undocumented: no operation matches (an unknown route or method), so
 	// nothing is validated.
 	undocumented bool
+	// ctx ends the request (a stream that otherwise runs on).
+	ctx context.Context
 }
 
 func (e *v1Env) do(rq req) v1Resp {
@@ -150,6 +162,9 @@ func (e *v1Env) do(rq req) v1Resp {
 		body = strings.NewReader(rq.body)
 	}
 	r := httptest.NewRequest(rq.method, rq.path, body)
+	if rq.ctx != nil {
+		r = r.WithContext(rq.ctx)
+	}
 	if rq.body != "" {
 		r.Header.Set("Content-Type", "application/json")
 	}
@@ -262,6 +277,12 @@ func TestOpenAPIDocumentIsValid(t *testing.T) {
 func TestV1RoutesMatchDocument(t *testing.T) {
 	var routes []string
 	for _, rt := range (&API{}).v1Routes() {
+		if len(rt.Actions) > 0 {
+			for _, act := range rt.Actions {
+				routes = append(routes, rt.Method+" "+rt.Path+":"+act)
+			}
+			continue
+		}
 		routes = append(routes, rt.Method+" "+rt.Path)
 	}
 	sort.Strings(routes)
@@ -326,6 +347,11 @@ func TestV1Conformance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.seedPost("pub", "success", "bluesky")
+	e.seedScheduled("sch", time.Now().Add(time.Hour), "bluesky")
+	e.seedPost("fail", "failed", "mastodon")
+	stream, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
 	calls := []struct {
 		pattern string
 		req     req
@@ -341,6 +367,13 @@ func TestV1Conformance(t *testing.T) {
 		{"POST /v1/tokens", req{method: "POST", path: "/v1/tokens", body: `{"name":"ci","scopes":["posts:read"],"expires_at":"2099-01-01T00:00:00Z"}`}, 201},
 		{"GET /v1/tokens/{id}", req{method: "GET", path: "/v1/tokens/" + tokenID(tok.ID)}, 200},
 		{"DELETE /v1/tokens/{id}", req{method: "DELETE", path: "/v1/tokens/" + tokenID(tok.ID)}, 204},
+		{"GET /v1/posts", req{method: "GET", path: "/v1/posts"}, 200},
+		{"GET /v1/posts/{id}", req{method: "GET", path: "/v1/posts/pst_pub"}, 200},
+		{"PATCH /v1/posts/{id}", req{method: "PATCH", path: "/v1/posts/pst_sch", body: `{"schedule":{"at":"2099-01-01T09:00:00Z"}}`}, 200},
+		{"POST /v1/posts/{id}:cancel", req{method: "POST", path: "/v1/posts/pst_sch:cancel"}, 200},
+		{"POST /v1/posts/{id}:retry", req{method: "POST", path: "/v1/posts/pst_fail:retry"}, 202},
+		{"GET /v1/posts/{id}/events", req{method: "GET", path: "/v1/posts/pst_pub/events"}, 200},
+		{"GET /v1/events", req{method: "GET", path: "/v1/events?after=0", ctx: stream}, 200},
 	}
 	seen := map[string]bool{}
 	for _, c := range calls {
@@ -351,8 +384,17 @@ func TestV1Conformance(t *testing.T) {
 		seen[c.pattern] = true
 	}
 	for _, rt := range e.api.v1Routes() {
-		if !seen[rt.Method+" "+rt.Path] {
-			t.Errorf("%s %s is not exercised by TestV1Conformance", rt.Method, rt.Path)
+		patterns := []string{rt.Method + " " + rt.Path}
+		if len(rt.Actions) > 0 {
+			patterns = nil
+			for _, act := range rt.Actions {
+				patterns = append(patterns, rt.Method+" "+rt.Path+":"+act)
+			}
+		}
+		for _, p := range patterns {
+			if !seen[p] {
+				t.Errorf("%s is not exercised by TestV1Conformance", p)
+			}
 		}
 	}
 }
