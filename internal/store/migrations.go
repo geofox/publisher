@@ -26,6 +26,33 @@ var migrations = []migration{
 	{version: 4, name: "target_items", up: migrateTargetItems, noForeignKeys: true},
 	{version: 5, name: "token_scopes_idempotency", up: migrateTokenScopesIdempotency},
 	{version: 6, name: "events", up: migrateEvents},
+	{version: 7, name: "media_objects", up: migrateMediaObjects},
+}
+
+// migrateMediaObjects (v7) stores the media /v1 uploads, before any post
+// uses them: an image is ready at once, a video once processed.
+func migrateMediaObjects(ctx context.Context, tx execer) error {
+	_, err := tx.ExecContext(ctx, `
+CREATE TABLE media_objects (
+  id            TEXT PRIMARY KEY,
+  owner_id      TEXT NOT NULL REFERENCES owners(id),
+  status        TEXT NOT NULL,
+  url           TEXT NOT NULL DEFAULT '',
+  sha256        TEXT NOT NULL DEFAULT '',
+  mime          TEXT NOT NULL DEFAULT '',
+  dim           TEXT NOT NULL DEFAULT '',
+  blurhash      TEXT NOT NULL DEFAULT '',
+  size_bytes    INTEGER NOT NULL DEFAULT 0,
+  duration_secs INTEGER NOT NULL DEFAULT 0,
+  poster_url    TEXT NOT NULL DEFAULT '',
+  alt           TEXT NOT NULL DEFAULT '',
+  error         TEXT NOT NULL DEFAULT '',
+  job_id        TEXT NOT NULL DEFAULT '',
+  created_at    TIMESTAMP NOT NULL,
+  updated_at    TIMESTAMP NOT NULL
+);
+CREATE INDEX idx_media_objects_owner ON media_objects(owner_id, created_at);`)
+	return err
 }
 
 // migrateEvents (v6) adds the event log behind GET /v1/events: one row per

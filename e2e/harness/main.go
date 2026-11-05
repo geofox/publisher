@@ -71,8 +71,17 @@ func run() error {
 
 	rec := newRecorder()
 	drivers.Register()
+	accounts := fakeAccounts(rec)
+	// As in production: one stored account per configured type.
+	var seed []store.EnvAccount
+	for typ, acct := range accounts {
+		seed = append(seed, store.EnvAccount{Type: typ, Label: acct.Manifest().Name})
+	}
+	if _, err := st.SeedEnvAccounts(context.Background(), store.DefaultOwner, seed); err != nil {
+		return err
+	}
 	d := &dispatch.Dispatcher{
-		Accounts: fakeAccounts(rec),
+		Accounts: accounts,
 		Store:    st,
 		Fetcher:  mp,
 		Policy:   dispatch.RetryPolicy{Enabled: true, MaxAttempts: 6, Base: 2 * time.Minute, Max: time.Hour},

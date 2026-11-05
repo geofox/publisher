@@ -182,7 +182,7 @@ func (p *Pipeline) blossomUploadStream(ctx context.Context, body io.Reader, size
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		rb, _ := io.ReadAll(resp.Body)
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
 		return "", fmt.Errorf("blossom %d: %s", resp.StatusCode, string(rb))
 	}
 	var bd struct {

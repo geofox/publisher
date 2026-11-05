@@ -122,11 +122,27 @@ key: you will get that request's response.
 request (another body or another route). A key names one request: use a new
 key for a new request. Keys are kept for 24 hours.
 
+## unreadable_upload
+
+**400.** An upload's body could not be read: the connection dropped, or a
+`multipart/form-data` body is malformed. Send the file again.
+
 ## unavailable
 
 **503.** A dependency the operation needs is not there: no database, or a
 feature that is not configured. Retry later or check the server's
 configuration.
+
+## upstream_failed
+
+**502.** A service the server depends on failed: media storage (Blossom)
+refused or could not take the file. `detail` gives its reason. Retry later
+or check the media storage configuration.
+
+## insufficient_storage
+
+**507.** The server ran out of disk space while receiving an upload. Try
+again later; the server's owner needs to free space.
 
 ## internal
 

@@ -88,11 +88,19 @@ func (a *API) v1Routes() []v1Route {
 		{Method: "GET", Path: "/v1/tokens/{id}", Scope: scopeAdmin, Handler: a.v1GetToken},
 		{Method: "DELETE", Path: "/v1/tokens/{id}", Scope: scopeAdmin, Handler: a.v1RevokeToken},
 		{Method: "GET", Path: "/v1/posts", Scope: scopePostsRead, Handler: a.v1ListPosts},
+		{Method: "POST", Path: "/v1/posts", Scope: scopePostsWrite, Idempotent: true, Handler: a.v1CreatePost},
+		{Method: "POST", Path: "/v1/posts:preview", Scope: scopePostsWrite, Handler: a.v1PreviewPost},
 		{Method: "GET", Path: "/v1/posts/{id}", Scope: scopePostsRead, Handler: a.v1GetPost},
 		{Method: "PATCH", Path: "/v1/posts/{id}", Scope: scopePostsWrite, Handler: a.v1PatchPost},
 		{Method: "POST", Path: "/v1/posts/{id}", Scope: scopePostsWrite, Actions: []string{"cancel", "retry"}, Handler: a.v1PostAction},
 		{Method: "GET", Path: "/v1/posts/{id}/events", Scope: scopePostsRead, Handler: a.v1PostEvents},
 		{Method: "GET", Path: "/v1/events", Scope: scopePostsRead, Handler: a.v1Events},
+		// Not idempotent: a repeat upload stores the same content-addressed
+		// file again, under a new id.
+		{Method: "POST", Path: "/v1/media", Scope: scopeMediaWrite, Handler: a.v1UploadMedia},
+		{Method: "POST", Path: "/v1/media:compress", Scope: scopeMediaWrite, Handler: a.v1CompressMedia},
+		{Method: "GET", Path: "/v1/media/{id}", Scope: scopeMediaWrite, Handler: a.v1GetMedia},
+		{Method: "PATCH", Path: "/v1/media/{id}", Scope: scopeMediaWrite, Handler: a.v1PatchMedia},
 	}
 	return rs
 }

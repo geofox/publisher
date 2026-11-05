@@ -9,7 +9,7 @@ info:
     **Conventions**
 
     - JSON in and out, snake_case, RFC 3339 UTC timestamps, prefixed ids
-      (`acc_`, `tok_`, and later `pst_`, `med_`, `drf_`).
+      (`acc_`, `tok_`, `pst_`, `tgt_`, `med_`, and later `drf_`).
     - Errors are RFC 9457 problem details (`application/problem+json`) with a
       stable `code`; see the [error catalogue](https://github.com/geofox/publisher/blob/main/docs/api/errors.md).
     - Lists take `?limit=` (1–200, default 50) and `?cursor=`, and answer
@@ -48,6 +48,8 @@ tags:
     description: API tokens and the caller's identity.
   - name: posts
     description: Posts and what became of them on each account.
+  - name: media
+    description: Images and videos uploaded once and named by id in posts.
   - name: events
     description: Server-sent event streams of what happens to posts.
 paths:
@@ -410,6 +412,129 @@ paths:
           $ref: "#/components/responses/InsufficientScope"
         default:
           $ref: "#/components/responses/Problem"
+    post:
+      operationId: createPost
+      tags: [posts]
+      summary: Publish or schedule a post
+      description: |
+        Needs `posts:write`. Shared `content` goes to every account in
+        `targets`; each target can override the text, content warning,
+        sensitivity and languages, and set its destination's `options`
+        (listed by `GET /v1/destinations`, plus `visibility` where the
+        account's capabilities list values). Media are named by id, from
+        `POST /v1/media`, and must be `ready`. Text too long for an account
+        is split into a thread there (`threading.numbering` adds 1/n
+        counters); `POST /v1/posts:preview` shows the split.
+
+        The post is saved before anything is sent, then the engine sends
+        it. The answer is `202` at once, with the post `publishing` (or
+        `scheduled`, with `schedule.at`). With `Prefer: wait=N` (seconds,
+        at most 60) it waits until the post settles and answers `201`
+        with the outcome, or `202` if it has not settled by then;
+        `Preference-Applied` says the wait was honored. A scheduled post
+        does not wait. Idempotent: send an `Idempotency-Key` so a retried
+        request can't post twice. While a request waits, a retry with its
+        key gets `409 idempotency_key_in_use`; `Prefer` is not part of the
+        request's identity, so a retry that adds a wait gets the first
+        answer back without waiting.
+      security:
+        - bearer: ["posts:write"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Prefer"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostCreate"
+      responses:
+        "201":
+          description: The post, settled within the wait.
+          headers:
+            Location:
+              description: The post's URL.
+              schema:
+                type: string
+            Preference-Applied:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Post"
+        "202":
+          description: The post, saved; the engine is sending it (or will, when scheduled).
+          headers:
+            Location:
+              description: The post's URL.
+              schema:
+                type: string
+            Preference-Applied:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Post"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/posts:preview:
+    post:
+      operationId: previewPost
+      tags: [posts]
+      summary: Plan a post without sending it
+      description: |
+        Needs `posts:write`. Takes the body of `POST /v1/posts`, validates it
+        the same way and answers what each account would get: its thread
+        items with the media each carries, the link card (fetched with a
+        short timeout; absent if the page is slow), notes on media that
+        will be converted to fit, and warnings. Nothing is saved or sent.
+      security:
+        - bearer: ["posts:write"]
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostCreate"
+      responses:
+        "200":
+          description: The plan per account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostPreview"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
   /v1/posts/{id}:
     parameters:
       - $ref: "#/components/parameters/PostID"
@@ -565,6 +690,244 @@ paths:
           $ref: "#/components/responses/Invalid"
         default:
           $ref: "#/components/responses/Problem"
+  /v1/media:
+    post:
+      operationId: uploadMedia
+      tags: [media]
+      summary: Upload an image or a video
+      description: |
+        Needs `media:write`. Send `multipart/form-data` with a `file` part
+        (and optional `alt` and `preset` parts, in any order), or the file itself as the
+        body with its `image/*` or `video/*` type and `alt` and `preset` in
+        the query. The type is read from the file's content (JPEG, PNG,
+        GIF, WebP, HEIC, or a video). Images are stored in media storage at once: `201`,
+        `ready`. Videos are normalized in the background (`preset`:
+        `1080p`, the default, `720p` or `480p`): `202`, `processing`; poll
+        `GET /v1/media/{id}` until it is `ready` or `failed`. Images are at
+        most 64 MiB, videos 1 GiB. Not idempotent: a repeat stores the
+        same file again under a new id.
+      security:
+        - bearer: ["media:write"]
+        - session: []
+      parameters:
+        - name: alt
+          in: query
+          description: Alt text, for a raw body.
+          schema:
+            type: string
+        - name: preset
+          in: query
+          description: Video size, for a raw body.
+          schema:
+            type: string
+            enum: ["1080p", "720p", "480p"]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  contentMediaType: application/octet-stream
+                alt:
+                  type: string
+                preset:
+                  type: string
+          image/*:
+            schema:
+              type: string
+              contentMediaType: application/octet-stream
+          video/*:
+            schema:
+              type: string
+              contentMediaType: application/octet-stream
+          application/octet-stream:
+            schema:
+              type: string
+              contentMediaType: application/octet-stream
+      responses:
+        "201":
+          description: The image, stored.
+          headers:
+            Location:
+              description: The media's URL.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaObject"
+        "202":
+          description: The video, being processed.
+          headers:
+            Location:
+              description: The media's URL.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaObject"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "502":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
+        "507":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/media:compress:
+    post:
+      operationId: compressMedia
+      tags: [media]
+      summary: Re-encode an image
+      description: |
+        Needs `media:write`. Re-encodes an image as JPEG with a `preset`:
+        `large` (2048 px long edge), `medium` (1600), `small` (1080) or
+        `convert` (full size; turns HEIC into JPEG). Answers the new
+        bytes; nothing is stored. Send `multipart/form-data` with `file` and
+        `preset` parts, or the image as the body with `preset` in the query.
+      security:
+        - bearer: ["media:write"]
+        - session: []
+      parameters:
+        - name: preset
+          in: query
+          schema:
+            type: string
+            enum: [convert, large, medium, small]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  contentMediaType: application/octet-stream
+                preset:
+                  type: string
+          image/*:
+            schema:
+              type: string
+              contentMediaType: application/octet-stream
+          application/octet-stream:
+            schema:
+              type: string
+              contentMediaType: application/octet-stream
+      responses:
+        "200":
+          description: The re-encoded image.
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                contentMediaType: image/jpeg
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/media/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          examples: [med_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c]
+    get:
+      operationId: getMedia
+      tags: [media]
+      summary: One media object, with its processing state
+      description: |
+        Needs `media:write`. A video being processed has `processing` (its
+        stage and progress, 0 to 1); a video whose processing was cut off
+        by a restart is `failed` and must be uploaded again.
+      security:
+        - bearer: ["media:write"]
+        - session: []
+      responses:
+        "200":
+          description: The media object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaObject"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: updateMedia
+      tags: [media]
+      summary: Set a media object's alt text
+      description: |
+        Needs `media:write`. `alt` is required; `""` clears it. Posts
+        already made keep the alt text they were sent with.
+      security:
+        - bearer: ["media:write"]
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MediaPatch"
+          application/merge-patch+json:
+            schema:
+              $ref: "#/components/schemas/MediaPatch"
+      responses:
+        "200":
+          description: The media object after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaObject"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
   /v1/posts/{id}/events:
     parameters:
       - $ref: "#/components/parameters/PostID"
@@ -645,6 +1008,22 @@ components:
       name: publisher_session
       description: The web app's session, set by signing in (`/auth/login`).
   parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: |
+        A key naming this request, so a retry gets the first response
+        instead of a second post: a quoted string of 1 to 255 visible ASCII
+        characters (`"6f1c2b"`).
+      schema:
+        type: string
+        maxLength: 257
+    Prefer:
+      name: Prefer
+      in: header
+      description: "`wait=N` (RFC 7240): wait up to N seconds (at most 60) for the outcome."
+      schema:
+        type: string
     PostID:
       name: id
       in: path
@@ -810,6 +1189,232 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Target"
+    PostCreate:
+      type: object
+      additionalProperties: false
+      required: [content, targets]
+      properties:
+        content:
+          $ref: "#/components/schemas/PostContentIn"
+        targets:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/TargetIn"
+        threading:
+          type: object
+          additionalProperties: false
+          properties:
+            numbering:
+              type: boolean
+              description: Add 1/n counters to the parts of a split post.
+        schedule:
+          type: object
+          additionalProperties: false
+          required: [at]
+          properties:
+            at:
+              type: string
+              format: date-time
+              description: When to publish; in the future. Leave `schedule` out to publish now.
+      example:
+        content:
+          text: "Hello from the API"
+          media: [{id: med_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c, alt: "A gradient"}]
+          languages: [en]
+        targets:
+          - account: acc_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c
+            options: {reply_gate: following}
+          - account: acc_0d3e4f5a6b7c8d9e0f1a2b3c6f1c2b9a
+            options: {visibility: unlisted}
+            content: {content_warning: politics}
+        threading: {numbering: true}
+    PostContentIn:
+      type: object
+      additionalProperties: false
+      description: What every target posts unless it overrides it. A post needs text or media.
+      properties:
+        text:
+          type: string
+          maxLength: 50000
+        media:
+          type: array
+          maxItems: 40
+          description: Images, or one video. Each must be `ready`.
+          items:
+            type: object
+            additionalProperties: false
+            required: [id]
+            properties:
+              id:
+                type: string
+                pattern: "^med_"
+              alt:
+                type: ["string", "null"]
+                description: Alt text for this post; null or absent uses the media object's.
+        content_warning:
+          type: ["string", "null"]
+          maxLength: 1000
+        sensitive:
+          type: ["boolean", "null"]
+        languages:
+          type: ["array", "null"]
+          maxItems: 10
+          items:
+            type: string
+    TargetIn:
+      type: object
+      additionalProperties: false
+      required: [account]
+      properties:
+        account:
+          type: string
+          description: An enabled account's id, from `GET /v1/accounts`. One account per destination type for now.
+        options:
+          type: object
+          description: The destination's options by key (`GET /v1/destinations`), and `visibility` where the account lists values. null leaves an option at its default.
+          additionalProperties: true
+        content:
+          type: object
+          additionalProperties: false
+          description: This account's overrides; a field left out or null inherits. `languages` [] sends none. `text` can't be blank (leave it out to use the shared text).
+          properties:
+            text:
+              type: ["string", "null"]
+              maxLength: 50000
+            content_warning:
+              type: ["string", "null"]
+              maxLength: 1000
+            sensitive:
+              type: ["boolean", "null"]
+            languages:
+              type: ["array", "null"]
+              maxItems: 10
+              items:
+                type: string
+    PostPreview:
+      type: object
+      additionalProperties: false
+      required: [targets]
+      properties:
+        targets:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [account, type, items, link_card, warnings, media_notes]
+            properties:
+              account:
+                type: string
+              type:
+                type: string
+              items:
+                type: array
+                description: The thread parts, in order; one for a post that fits.
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [text, media]
+                  properties:
+                    text:
+                      type: string
+                    media:
+                      type: array
+                      description: Indexes into `content.media`.
+                      items:
+                        type: integer
+              link_card:
+                description: The card this account gets, on item `item`; null for none.
+                oneOf:
+                  - type: "null"
+                  - type: object
+                    additionalProperties: false
+                    required: [item, url, title, description]
+                    properties:
+                      item:
+                        type: integer
+                      url:
+                        type: string
+                      title:
+                        type: string
+                      description:
+                        type: string
+                      thumb_url:
+                        type: string
+              warnings:
+                type: array
+                items:
+                  type: string
+              media_notes:
+                type: array
+                description: Media that will be converted to fit this account.
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [media, note]
+                  properties:
+                    media:
+                      type: integer
+                    note:
+                      type: string
+    MediaObject:
+      type: object
+      additionalProperties: false
+      required: [id, status, mime, alt, url, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: "^med_"
+        status:
+          type: string
+          enum: [processing, ready, failed]
+        mime:
+          type: string
+        alt:
+          type: string
+        url:
+          type: ["string", "null"]
+          description: The file in media storage; null until it is ready.
+        sha256:
+          type: string
+        size_bytes:
+          type: integer
+        dim:
+          type: string
+          description: WIDTHxHEIGHT.
+        blurhash:
+          type: string
+        duration_secs:
+          type: integer
+        poster_url:
+          type: string
+        error:
+          type: string
+          description: Why processing failed.
+        processing:
+          type: object
+          additionalProperties: false
+          required: [stage, progress]
+          properties:
+            stage:
+              type: string
+            progress:
+              type: number
+              minimum: 0
+              maximum: 1
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+    MediaPatch:
+      type: object
+      additionalProperties: false
+      required: [alt]
+      properties:
+        alt:
+          type: string
+          maxLength: 10000
     PostMedia:
       type: object
       additionalProperties: false
@@ -1060,7 +1665,10 @@ components:
             - idempotency_key_invalid
             - idempotency_key_in_use
             - idempotency_key_reused
+            - unreadable_upload
             - unavailable
+            - upstream_failed
+            - insufficient_storage
             - internal
         errors:
           type: array

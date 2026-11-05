@@ -163,8 +163,10 @@ func (d *Dispatcher) planPostCards(ctx context.Context, id string, spec PostSpec
 	}
 	n := mediaCount(spec.Images, spec.MediaRecords)
 	for _, plat := range platforms {
-		rec.Targets = append(rec.Targets, d.planTarget(ctx, id, plat, finalText(spec, plat), spec.Overrides[plat],
-			postMedia(n), spec.ImgParts, spec.Number, due, targetStatusFor(status)))
+		tg := d.planTarget(ctx, id, plat, finalText(spec, plat), spec.Overrides[plat],
+			postMedia(n), spec.ImgParts, spec.Number, due, targetStatusFor(status))
+		tg.AccountID = spec.Accounts[plat]
+		rec.Targets = append(rec.Targets, tg)
 	}
 	return rec, thumbs
 }
@@ -190,6 +192,30 @@ func (d *Dispatcher) Schedule(ctx context.Context, spec PostSpec, at time.Time) 
 	}
 	d.kick()
 	return rec, nil
+}
+
+// Enqueue persists a post for the background workers: due now, or at at
+// when it is set (a scheduled post). Nothing is sent inline, so it returns
+// as soon as the post is saved.
+func (d *Dispatcher) Enqueue(ctx context.Context, spec PostSpec, at *time.Time) (*store.Post, error) {
+	if d.Store == nil {
+		return nil, errors.New("publishing requires a store")
+	}
+	id := newID()
+	ctx = logging.With(ctx, "post_id", id)
+	due, status := d.now(), "sending"
+	if at != nil {
+		due, status = at.UTC(), "scheduled"
+	}
+	rec := d.planPost(ctx, id, spec, &due, status)
+	if at != nil {
+		rec.ScheduledAt = &due
+	}
+	if err := d.create(ctx, rec); err != nil {
+		return nil, err
+	}
+	d.kick()
+	return d.recorded(ctx, rec), nil
 }
 
 // Fire sends a scheduled post now, inline.

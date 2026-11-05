@@ -19,6 +19,9 @@ CREATE INDEX idx_idempotency_keys_expires ON idempotency_keys(expires_at);
 -- index idx_item_deliveries_item
 CREATE INDEX idx_item_deliveries_item ON item_deliveries(item_id);
 
+-- index idx_media_objects_owner
+CREATE INDEX idx_media_objects_owner ON media_objects(owner_id, created_at);
+
 -- index idx_nostr_fanout_due
 CREATE INDEX idx_nostr_fanout_due ON nostr_fanout(status, next_attempt_at);
 
@@ -137,6 +140,26 @@ CREATE TABLE media (
   size_bytes  INTEGER,
   alt         TEXT
 , duration_secs INTEGER, poster_url TEXT);
+
+-- table media_objects
+CREATE TABLE media_objects (
+  id            TEXT PRIMARY KEY,
+  owner_id      TEXT NOT NULL REFERENCES owners(id),
+  status        TEXT NOT NULL,
+  url           TEXT NOT NULL DEFAULT '',
+  sha256        TEXT NOT NULL DEFAULT '',
+  mime          TEXT NOT NULL DEFAULT '',
+  dim           TEXT NOT NULL DEFAULT '',
+  blurhash      TEXT NOT NULL DEFAULT '',
+  size_bytes    INTEGER NOT NULL DEFAULT 0,
+  duration_secs INTEGER NOT NULL DEFAULT 0,
+  poster_url    TEXT NOT NULL DEFAULT '',
+  alt           TEXT NOT NULL DEFAULT '',
+  error         TEXT NOT NULL DEFAULT '',
+  job_id        TEXT NOT NULL DEFAULT '',
+  created_at    TIMESTAMP NOT NULL,
+  updated_at    TIMESTAMP NOT NULL
+);
 
 -- table nostr_fanout
 CREATE TABLE nostr_fanout (

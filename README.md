@@ -34,6 +34,8 @@ every route, request and response against it. So far it has:
 | `GET /v1/accounts`, `GET /v1/accounts/{id}` | `accounts:read` | accounts with profile and capabilities |
 | `GET /v1/me` | any | who is calling, with which scopes |
 | `GET/POST /v1/tokens`, `GET/DELETE /v1/tokens/{id}` | `admin` | API tokens with scopes and expiry |
+| `POST /v1/posts` | `posts:write` | publish or schedule a post to one or more accounts (`Idempotency-Key`, `Prefer: wait`) |
+| `POST /v1/posts:preview` | `posts:write` | the same body: what each account would get (thread parts, link card, warnings); sends nothing |
 | `GET /v1/posts` | `posts:read` | the history, newest first; filter by `status`, `account`, `q`, `since`, `until`, `hidden` |
 | `GET /v1/posts/{id}` | `posts:read` | a post with its targets, items (thread parts), deliveries and attempts |
 | `PATCH /v1/posts/{id}` | `posts:write` | reschedule (`schedule.at`), hide or show (`hidden`) |
@@ -41,9 +43,23 @@ every route, request and response against it. So far it has:
 | `POST /v1/posts/{id}:retry` | `posts:write` | send failed items again, optionally only some `targets` or Nostr `deliveries` |
 | `GET /v1/posts/{id}/events` | `posts:read` | a post's progress as server-sent events, from its first event until it settles |
 | `GET /v1/events` | `posts:read` | every post's events as they happen |
+| `POST /v1/media` | `media:write` | upload an image (stored at once) or a video (processed in the background) |
+| `GET/PATCH /v1/media/{id}` | `media:write` | a media object's state; set its alt text |
+| `POST /v1/media:compress` | `media:write` | re-encode an image with a preset (HEIC to JPEG too); stores nothing |
 
-Creating posts and media come next, then drafts and the tools; the web
-app moves over and the old routes go once `/v1` covers them.
+Drafts and the tools come next (replies, quotes and reposts with them);
+the web app moves over and the old routes go once `/v1` covers them.
+
+- **Posting** is two steps: upload media (`POST /v1/media`, which answers
+  a `med_` id), then `POST /v1/posts` naming the accounts
+  (`GET /v1/accounts`) and the media. Each account can override the text,
+  content warning, sensitivity and languages, and set its destination's
+  options (`GET /v1/destinations`; `visibility` on Mastodon). Text too long
+  for an account becomes a thread there. The answer is `202` at once and
+  the engine sends the post; add `Prefer: wait=30` to get `201` with the
+  outcome when it settles within 30 seconds (60 at most). Send an
+  `Idempotency-Key` so a retried request can't post twice. A video must
+  be `ready` (poll `GET /v1/media/{id}`) before a post can use it.
 
 - **Statuses** are one vocabulary: a post or target is `scheduled`,
   `publishing`, `published`, `partial`, `failed`, `canceled` or `missed`,
@@ -77,6 +93,15 @@ app moves over and the old routes go once `/v1` covers them.
 curl -s -X POST https://publisher.example/v1/tokens \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d '{"name":"n8n","scopes":["posts:write","media:write"],"expires_at":"2027-11-05T00:00:00Z"}'
+
+# Upload an image, then post it to Bluesky and Mastodon and wait for the outcome.
+MED=$(curl -s -X POST "https://publisher.example/v1/media?alt=A%20sunset" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: image/jpeg' --data-binary @sunset.jpg | jq -r .id)
+curl -s -X POST https://publisher.example/v1/posts \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: \"$(uuidgen)\"" -H 'Prefer: wait=30' \
+  -d '{"content":{"text":"Evening","media":[{"id":"'"$MED"'"}]},
+       "targets":[{"account":"acc_…"},{"account":"acc_…","options":{"visibility":"unlisted"}}]}'
 
 # Watch every post's progress (Ctrl-C to stop).
 curl -sN https://publisher.example/v1/events -H "Authorization: Bearer $TOKEN"

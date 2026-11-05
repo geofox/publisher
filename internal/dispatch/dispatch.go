@@ -121,6 +121,9 @@ type PostSpec struct {
 	ImgParts     []int         // per-image part anchor, parallel to Images; nil ⇒ all front-load
 	MediaRecords []store.Media // already uploaded to Blossom, for archival
 	Number       bool          // append k/n counters to threaded segments
+	// Accounts names the account each platform posts as (platform →
+	// account id); a platform left out gets its env account.
+	Accounts map[string]string
 }
 
 type Fetcher interface {
