@@ -2,9 +2,11 @@ package verify
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -80,5 +82,21 @@ func TestSafeClientRefusesRedirectToLoopback(t *testing.T) {
 	c := NewSafeClient(2 * time.Second)
 	if _, err := c.Get(redirector.URL); err == nil {
 		t.Fatal("expected redirect-to-loopback chain to be blocked, got nil error")
+	}
+}
+
+// TestFetchProblemHidesAddresses: a verdict says the host couldn't be
+// reached, not which address it resolved to.
+func TestFetchProblemHidesAddresses(t *testing.T) {
+	c := NewSafeClient(2 * time.Second)
+	_, err := c.Get("http://127.0.0.1:1/x")
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if got := fetchProblem(err); strings.Contains(got, "127.0.0.1") || !strings.Contains(got, "not on the public internet") {
+		t.Fatalf("fetchProblem = %q", got)
+	}
+	if got := fetchProblem(errors.New("status 404")); got != "status 404" {
+		t.Fatalf("plain error = %q", got)
 	}
 }

@@ -102,6 +102,15 @@ func (a *API) v1Routes() []v1Route {
 		{Method: "POST", Path: "/v1/media:compress", Scope: scopeMediaWrite, Handler: a.v1CompressMedia},
 		{Method: "GET", Path: "/v1/media/{id}", Scope: scopeMediaWrite, Handler: a.v1GetMedia},
 		{Method: "PATCH", Path: "/v1/media/{id}", Scope: scopeMediaWrite, Handler: a.v1PatchMedia},
+		// Tools. Translating spends the DeepL quota, so it needs posts:write.
+		{Method: "POST", Path: "/v1/translate", Scope: scopePostsWrite, Handler: a.v1Translate},
+		{Method: "POST", Path: "/v1/verify", Scope: scopePostsRead, Handler: a.v1Verify},
+		{Method: "GET", Path: "/v1/accounts/{id}/nostr/relays", Scope: scopeAdmin, Handler: a.v1GetRelays},
+		{Method: "PUT", Path: "/v1/accounts/{id}/nostr/relays", Scope: scopeAdmin, Handler: a.v1PutRelays},
+		{Method: "POST", Path: "/v1/accounts/{id}/nostr/relays:scan", Scope: scopeAdmin, Handler: a.v1RelaysAction("scan")},
+		{Method: "POST", Path: "/v1/accounts/{id}/nostr/relays:sync", Scope: scopeAdmin, Handler: a.v1RelaysAction("sync")},
+		// Its own token (PUBLIC_FEED_TOKEN), checked by the handler.
+		{Method: "GET", Path: "/v1/public/feed", Public: true, Handler: a.v1PublicFeed},
 	}
 	return rs
 }

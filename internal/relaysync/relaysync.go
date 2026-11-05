@@ -32,7 +32,7 @@ type ApplyResult struct {
 	Direction string `json:"direction"` // pull | push
 	Published int    `json:"published"`
 	Failed    int    `json:"failed"`
-	Status    string `json:"status"` // ok | unreachable | auth | error
+	Status    string `json:"status"` // ok | partial | unreachable | auth | error
 	Message   string `json:"message,omitempty"`
 }
 

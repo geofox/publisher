@@ -60,7 +60,7 @@ func (mv *MastodonVerifier) Verify(ctx context.Context, in Input) Verdict {
 
 	objRaw, err := mv.fetchAPRaw(ctx, strings.TrimSpace(in.Raw))
 	if err != nil {
-		return errVerdict(mv.platform, "could not fetch object: "+err.Error())
+		return errVerdict(mv.platform, "could not fetch object: "+fetchProblem(err))
 	}
 	if looksLikeHTML(objRaw) {
 		return errVerdict(mv.platform, htmlNotAPMessage(mv.platform))
@@ -75,7 +75,7 @@ func (mv *MastodonVerifier) Verify(ctx context.Context, in Input) Verdict {
 
 	actorRaw, err := mv.fetchAPRaw(ctx, obj.AttributedTo)
 	if err != nil {
-		return errVerdict(mv.platform, "could not fetch actor: "+err.Error())
+		return errVerdict(mv.platform, "could not fetch actor: "+fetchProblem(err))
 	}
 	if looksLikeHTML(actorRaw) {
 		return errVerdict(mv.platform, "the actor URL returned an HTML page, not ActivityPub")

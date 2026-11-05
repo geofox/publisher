@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/geofox/publisher/internal/destination"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -106,7 +107,9 @@ type API struct {
 	Sync      Syncer       // set by cmd/publisher; used by relay-sync endpoints
 	HomeRelay string       // set by cmd/publisher; the home relay URL
 	Verify    Verifier     // set by cmd/publisher; verifies pasted events / post URLs
-	Resolve   Resolver     // set by cmd/publisher; resolves pasted post URLs/ids
+	// relaySyncMu lets one /v1 relay scan or sync run at a time.
+	relaySyncMu sync.Mutex
+	Resolve     Resolver // set by cmd/publisher; resolves pasted post URLs/ids
 
 	// UserLanguages is the operator's spoken-languages list (ISO 639-1 codes);
 	// exposed via GET /api/config so the frontend can default the Bluesky and

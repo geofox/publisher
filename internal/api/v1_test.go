@@ -352,6 +352,11 @@ func TestV1Conformance(t *testing.T) {
 	e.seedPost("fail", "failed", "mastodon")
 	e.withEngine()
 	e.api.Resolve = sourcesResolver{}
+	e.api.Translator = v1FakeTranslator{}
+	e.api.Verify = &v1FakeVerifier{}
+	e.api.Sync = &v1FakeSyncer{}
+	e.api.PublicFeedToken = "feed-secret"
+	relays := "/v1/accounts/" + e.withNostr() + "/nostr/relays"
 	med := e.upload("conf")
 	png := string(pngBytes(t, 4, 4))
 	imgHdr := map[string]string{"Content-Type": "image/png"}
@@ -387,6 +392,13 @@ func TestV1Conformance(t *testing.T) {
 		{"POST /v1/posts/{id}:retry", req{method: "POST", path: "/v1/posts/pst_fail:retry"}, 202},
 		{"GET /v1/posts/{id}/events", req{method: "GET", path: "/v1/posts/pst_pub/events"}, 200},
 		{"GET /v1/events", req{method: "GET", path: "/v1/events?after=0", ctx: stream}, 200},
+		{"POST /v1/translate", req{method: "POST", path: "/v1/translate", body: `{"text":"hi","target_lang":"fr"}`}, 200},
+		{"POST /v1/verify", req{method: "POST", path: "/v1/verify", body: `{"input":"https://bsky.app/profile/a/post/b"}`}, 200},
+		{"PUT /v1/accounts/{id}/nostr/relays", req{method: "PUT", path: relays, body: `{"secondary":["wss://a.example"]}`}, 200},
+		{"GET /v1/accounts/{id}/nostr/relays", req{method: "GET", path: relays}, 200},
+		{"POST /v1/accounts/{id}/nostr/relays:scan", req{method: "POST", path: relays + ":scan", body: `{"relays":["wss://a.example"]}`}, 200},
+		{"POST /v1/accounts/{id}/nostr/relays:sync", req{method: "POST", path: relays + ":sync", body: `{"direction":"pull"}`}, 200},
+		{"GET /v1/public/feed", req{method: "GET", path: "/v1/public/feed?limit=5", auth: "feed-secret"}, 200},
 	}
 	seen := map[string]bool{}
 	for _, c := range calls {

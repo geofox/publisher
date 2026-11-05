@@ -47,9 +47,14 @@ every route, request and response against it. So far it has:
 | `POST /v1/media` | `media:write` | upload an image (stored at once) or a video (processed in the background) |
 | `GET/PATCH /v1/media/{id}` | `media:write` | a media object's state; set its alt text |
 | `POST /v1/media:compress` | `media:write` | re-encode an image with a preset (HEIC to JPEG too); stores nothing |
+| `POST /v1/translate` | `posts:write` | translate text with DeepL (when `DEEPL_API_KEY` is set) |
+| `POST /v1/verify` | `posts:read` | who signed a Nostr event or a post URL, and how sure that is; uses no credentials |
+| `GET/PUT /v1/accounts/{id}/nostr/relays` | `admin` | a Nostr account's relays for relay sync; `PUT` replaces the secondary list |
+| `POST /v1/accounts/{id}/nostr/relays:scan` | `admin` | compare each relay with your home relay (changes nothing) |
+| `POST /v1/accounts/{id}/nostr/relays:sync` | `admin` | copy missing events: `pull` to the home relay, `push` from it |
+| `GET /v1/public/feed` | feed token | your published posts for a homepage, with `PUBLIC_FEED_TOKEN` as the bearer |
 
-The tools (translate, verify, relay sync, public feed) come next; drafts
-move with the web app, which moves over before the old routes go.
+Drafts move with the web app, which moves over before the old routes go.
 
 - **Posting** is two steps: upload media (`POST /v1/media`, which answers
   a `med_` id), then `POST /v1/posts` naming the accounts
@@ -518,7 +523,7 @@ infrastructure and should be overridden.
 | `ALERT_WEBHOOK_URL` | no | — | Webhook posted to on scheduled-post failure |
 | `ALERT_WEBHOOK_USER` | no | `alertmanager` | Basic-auth user for the alert webhook |
 | `ALERT_WEBHOOK_PASS` | no | — | Basic-auth password for the alert webhook (**secret**) |
-| `PUBLIC_FEED_TOKEN` | no | — | Bearer token gating `GET /api/public/feed`; unset disables the endpoint (**secret**) |
+| `PUBLIC_FEED_TOKEN` | no | — | Bearer token gating `GET /v1/public/feed` (and the old `GET /api/public/feed`); unset disables the endpoint (**secret**) |
 | `FEED_WEBHOOK_URL` | no | — | Signal-only webhook POSTed when a feed-eligible post is published |
 | `FEED_WEBHOOK_TOKEN` | no | — | Bearer token sent on the feed webhook so the receiver can verify it (**secret**) |
 | `PORT` | no | `8080` | Listen port |

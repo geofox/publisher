@@ -56,3 +56,49 @@ func (s *Store) SeedSyncRelaysIfEmpty(defaults []string) error {
 	}
 	return nil
 }
+
+// SetSyncRelays replaces the secondary relay list with urls, in that order.
+// Relays already listed keep their place in the order; new ones follow.
+func (s *Store) SetSyncRelays(urls []string) error {
+	tx, err := s.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	keep := map[string]bool{}
+	for _, u := range urls {
+		keep[u] = true
+	}
+	rows, err := tx.Query(`SELECT url FROM sync_relays`)
+	if err != nil {
+		return err
+	}
+	var drop []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			rows.Close()
+			return err
+		}
+		if !keep[u] {
+			drop = append(drop, u)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, u := range drop {
+		if _, err := tx.Exec(`DELETE FROM sync_relays WHERE url=?`, u); err != nil {
+			return err
+		}
+	}
+	now := time.Now().UTC()
+	for i, u := range urls {
+		if _, err := tx.Exec(`INSERT INTO sync_relays(url, added_at) VALUES(?, ?) ON CONFLICT(url) DO NOTHING`,
+			u, now.Add(time.Duration(i)*time.Microsecond)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}

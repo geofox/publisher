@@ -54,7 +54,7 @@ func (bv *BlueskyVerifier) Verify(ctx context.Context, in Input) Verdict {
 	}
 	ident, err := bv.dir.Lookup(ctx, atid)
 	if err != nil {
-		return errVerdict("bluesky", "could not resolve identity: "+err.Error())
+		return errVerdict("bluesky", "could not resolve identity: "+fetchProblem(err))
 	}
 
 	handleVerified := ident.Handle != syntax.HandleInvalid
@@ -73,7 +73,7 @@ func (bv *BlueskyVerifier) Verify(ctx context.Context, in Input) Verdict {
 
 	car, err := bv.fetchCAR(ctx, pds, ident.DID.String(), collection, rkey)
 	if err != nil {
-		return errVerdict("bluesky", "could not fetch record: "+err.Error())
+		return errVerdict("bluesky", "could not fetch record: "+fetchProblem(err))
 	}
 
 	commit, r, err := repo.LoadRepoFromCAR(ctx, bytes.NewReader(car))

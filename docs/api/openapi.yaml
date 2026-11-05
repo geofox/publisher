@@ -52,6 +52,8 @@ tags:
     description: Images and videos uploaded once and named by id in posts.
   - name: events
     description: Server-sent event streams of what happens to posts.
+  - name: tools
+    description: Translation, signature checks, Nostr relay sync and the public feed.
 paths:
   /v1/openapi.json:
     get:
@@ -591,6 +593,331 @@ paths:
           $ref: "#/components/responses/Problem"
         default:
           $ref: "#/components/responses/Problem"
+  /v1/translate:
+    post:
+      operationId: translate
+      tags: [tools]
+      summary: Translate text with DeepL
+      description: |
+        Needs `posts:write` (it spends the server's DeepL quota). `503` when
+        no DeepL key is configured; `GET /v1/instance` says so in
+        `features.translate` and lists `translate_targets`. A DeepL failure
+        is `502 upstream_failed`.
+      security:
+        - bearer: ["posts:write"]
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TranslateIn"
+      responses:
+        "200":
+          description: The translation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Translation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "502":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/verify:
+    post:
+      operationId: verify
+      tags: [tools]
+      summary: Check who signed a post
+      description: |
+        Needs `posts:read`. Takes a Nostr event (its JSON), a Bluesky,
+        Mastodon or Threads post URL, or an at:// URI, and reports who
+        signed it and how sure that is. Uses no credentials. The verdict is
+        always `200`: `status` is `verified`, `failed` (the signature or
+        origin check failed: tampering or impersonation) or `error` (the
+        check could not complete, which is not evidence of forgery).
+      security:
+        - bearer: ["posts:read"]
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyIn"
+      responses:
+        "200":
+          description: The verdict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Verdict"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "503":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts/{id}/nostr/relays:
+    parameters:
+      - $ref: "#/components/parameters/AccountID"
+    get:
+      operationId: getNostrRelays
+      tags: [tools]
+      summary: A Nostr account's relays, for relay sync
+      description: |
+        Needs `admin`. Relay sync copies your events between your home
+        relay and your other relays: the NIP-65 write relays your profile
+        lists, and a secondary list kept on this server. `targets` is what
+        a scan or sync goes through. `404` for an account that isn't the
+        server's configured Nostr account. Relay URLs are stored and
+        compared in one form: scheme and host in lower case, no default
+        port, no trailing slash.
+      security:
+        - bearer: ["admin"]
+        - session: []
+      responses:
+        "200":
+          description: The relays.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NostrRelays"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+    put:
+      operationId: setNostrRelays
+      tags: [tools]
+      summary: Replace the secondary relay list
+      description: |
+        Needs `admin`. At most 50 `ws://` or `wss://` relays: not the home
+        relay, not Tor or I2P relays, and not loopback or link-local
+        addresses (a relay on your own network is fine). Relays already
+        listed keep their place; new ones follow, in the order given.
+      security:
+        - bearer: ["admin"]
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NostrRelaysIn"
+      responses:
+        "200":
+          description: The relays, after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NostrRelays"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts/{id}/nostr/relays:scan:
+    parameters:
+      - $ref: "#/components/parameters/AccountID"
+    post:
+      operationId: scanNostrRelays
+      tags: [tools]
+      summary: Compare relays with the home relay
+      description: |
+        Needs `admin`. For each target relay (or the ones named in
+        `relays`), how many of your events the home relay lacks and the
+        relay lacks. Changes nothing. The body is optional. A relay that
+        can't be reached is reported in its row, not as an error. One scan
+        or sync runs at a time (`409` while another does), and each is
+        bounded to 5 minutes: relays not reached in time are reported in
+        their rows, so name fewer relays per call when many are slow.
+        `502` when a named relay may be a NIP-65 one that couldn't be read;
+        `503` when relay sync is not configured.
+      security:
+        - bearer: ["admin"]
+        - session: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RelaySelection"
+      responses:
+        "200":
+          description: One row per relay.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [relays]
+                properties:
+                  relays:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RelayScan"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "502":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts/{id}/nostr/relays:sync:
+    parameters:
+      - $ref: "#/components/parameters/AccountID"
+    post:
+      operationId: syncNostrRelays
+      tags: [tools]
+      summary: Copy missing events between relays
+      description: |
+        Needs `admin`. `pull` copies the events the home relay lacks from
+        each relay to it; `push` copies the events each relay lacks from
+        the home relay. Events are your own, already signed: nothing is
+        signed again. Per-relay outcomes are in the rows. Runs one at a
+        time and within 5 minutes, as `:scan` does. `503` when relay sync
+        is not configured.
+      security:
+        - bearer: ["admin"]
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RelaySyncIn"
+      responses:
+        "200":
+          description: One row per relay.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RelaySyncResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "502":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/public/feed:
+    get:
+      operationId: getPublicFeed
+      tags: [tools]
+      summary: Your published posts, for a homepage
+      description: |
+        Gated by its own token (`PUBLIC_FEED_TOKEN`), not an API token, so
+        a website's server can read it while holding nothing that can
+        post. `404` while no feed token is configured. Lists published,
+        unhidden posts that aren't replies, with their public links (a
+        Mastodon post that isn't public is left out), newest first.
+      security:
+        - feedToken: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: The feed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicFeed"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
   /v1/posts/{id}:
     parameters:
       - $ref: "#/components/parameters/PostID"
@@ -1063,6 +1390,10 @@ components:
       in: cookie
       name: publisher_session
       description: The web app's session, set by signing in (`/auth/login`).
+    feedToken:
+      type: http
+      scheme: bearer
+      description: The public feed's own token (`PUBLIC_FEED_TOKEN`); it can do nothing else.
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -1080,6 +1411,13 @@ components:
       description: "`wait=N` (RFC 7240): wait up to N seconds (at most 60) for the outcome."
       schema:
         type: string
+    AccountID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples: [acc_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c]
     PostID:
       name: id
       in: path
@@ -1443,6 +1781,295 @@ components:
                     media:
                       type: integer
                     note:
+                      type: string
+    TranslateIn:
+      type: object
+      additionalProperties: false
+      required: [text, target_lang]
+      properties:
+        text:
+          type: string
+          maxLength: 50000
+        target_lang:
+          type: string
+          description: An ISO 639-1 code DeepL translates into, such as `fr`.
+          examples: [fr]
+    Translation:
+      type: object
+      additionalProperties: false
+      required: [text, detected_source_language]
+      properties:
+        text:
+          type: string
+        detected_source_language:
+          type: string
+          description: ISO 639-1, as DeepL detected it.
+    VerifyIn:
+      type: object
+      additionalProperties: false
+      required: [input]
+      properties:
+        input:
+          type: string
+          description: A Nostr event's JSON, a post URL, or an at:// URI.
+        platform:
+          type: string
+          enum: [nostr, bluesky, mastodon, threads]
+          description: Leave it out to detect the platform from `input`.
+        expected:
+          type: string
+          maxLength: 500
+          description: An identity to match the signer against (an npub, handle, DID or acct).
+    Verdict:
+      type: object
+      additionalProperties: false
+      required: [platform, status, checks]
+      properties:
+        platform:
+          type: string
+        status:
+          type: string
+          enum: [verified, failed, error]
+        assurance:
+          type: string
+          enum: [cryptographic, origin]
+          description: "`cryptographic`: a signature checked against the key; `origin`: the post was fetched from the server that hosts its author."
+        signer:
+          type: object
+          additionalProperties: false
+          properties:
+            pubkey_hex:
+              type: string
+            npub:
+              type: string
+            did:
+              type: string
+            handle:
+              type: string
+            handle_verified:
+              type: boolean
+            pds:
+              type: string
+            actor_uri:
+              type: string
+            acct:
+              type: string
+            origin_host:
+              type: string
+        expected:
+          type: object
+          additionalProperties: false
+          required: [provided, matches]
+          properties:
+            provided:
+              type: string
+            matches:
+              type: boolean
+            detail:
+              type: string
+        content:
+          type: object
+          additionalProperties: false
+          properties:
+            text:
+              type: string
+            created_at:
+              type: string
+            kind:
+              type: string
+        checks:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, result]
+            properties:
+              name:
+                type: string
+              result:
+                type: string
+                enum: [pass, fail, skip]
+              detail:
+                type: string
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          type: string
+          description: Why the check could not complete (status `error`).
+    NostrRelays:
+      type: object
+      additionalProperties: false
+      required: [home, nip65, secondary, targets, nip65_error]
+      properties:
+        home:
+          type: string
+          description: The relay the others are compared with.
+        nip65:
+          type: array
+          description: The write relays your profile lists, read from relays.
+          items:
+            type: string
+        secondary:
+          type: array
+          description: The relays added on this server.
+          items:
+            type: string
+        targets:
+          type: array
+          description: The relays a scan or sync goes through, in order.
+          items:
+            type: object
+            additionalProperties: false
+            required: [url, group]
+            properties:
+              url:
+                type: string
+              group:
+                type: string
+                enum: [nip65, secondary]
+        nip65_error:
+          type: ["string", "null"]
+          description: Why the NIP-65 relays couldn't be read (they are then missing from `nip65` and `targets`); null when they were.
+    NostrRelaysIn:
+      type: object
+      additionalProperties: false
+      required: [secondary]
+      properties:
+        secondary:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            maxLength: 512
+    RelaySelection:
+      type: object
+      additionalProperties: false
+      properties:
+        relays:
+          type: array
+          description: Only these targets (all of them when left out or empty).
+          items:
+            type: string
+    RelaySyncIn:
+      type: object
+      additionalProperties: false
+      required: [direction]
+      properties:
+        direction:
+          type: string
+          enum: [pull, push]
+        relays:
+          type: array
+          description: Only these targets (all of them when left out or empty).
+          items:
+            type: string
+    RelayScan:
+      type: object
+      additionalProperties: false
+      required: [url, group, missing_at_home, missing_at_relay, status]
+      properties:
+        url:
+          type: string
+        group:
+          type: string
+          enum: [nip65, secondary]
+        missing_at_home:
+          type: integer
+        missing_at_relay:
+          type: integer
+        status:
+          type: string
+          enum: [ok, unreachable, auth, error]
+        message:
+          type: string
+    RelaySyncResult:
+      type: object
+      additionalProperties: false
+      required: [url, direction, published, failed, status]
+      properties:
+        url:
+          type: string
+        direction:
+          type: string
+          enum: [pull, push]
+        published:
+          type: integer
+        failed:
+          type: integer
+        status:
+          type: string
+          enum: [ok, partial, unreachable, auth, error]
+          description: "`partial`: some events were accepted and some refused (see `message`)."
+        message:
+          type: string
+    PublicFeed:
+      type: object
+      additionalProperties: false
+      required: [version, generated_at, posts]
+      properties:
+        version:
+          type: integer
+          const: 1
+        generated_at:
+          type: string
+          format: date-time
+        posts:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, published_at, text, links]
+            properties:
+              id:
+                type: string
+              published_at:
+                type: string
+                format: date-time
+              text:
+                type: string
+              media:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [url, mime]
+                  properties:
+                    url:
+                      type: string
+                    mime:
+                      type: string
+                    alt:
+                      type: string
+                    dim:
+                      type: string
+                    blurhash:
+                      type: string
+              interaction:
+                type: object
+                additionalProperties: false
+                required: [action, source_platform, source_url, source_author]
+                properties:
+                  action:
+                    type: string
+                    enum: [quote, repost]
+                  source_platform:
+                    type: string
+                  source_url:
+                    type: string
+                  source_author:
+                    type: string
+              links:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [platform, url]
+                  properties:
+                    platform:
+                      type: string
+                    url:
                       type: string
     ResolvedSource:
       type: object
