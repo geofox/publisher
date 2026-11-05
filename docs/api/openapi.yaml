@@ -692,8 +692,10 @@ paths:
         Needs `admin`. Relay sync copies your events between your home
         relay and your other relays: the NIP-65 write relays your profile
         lists, and a secondary list kept on this server. `targets` is what
-        a scan or sync goes through. `404` for an account that isn't a
-        Nostr account.
+        a scan or sync goes through. `404` for an account that isn't the
+        server's configured Nostr account. Relay URLs are stored and
+        compared in one form: scheme and host in lower case, no default
+        port, no trailing slash.
       security:
         - bearer: ["admin"]
         - session: []
@@ -719,9 +721,10 @@ paths:
       tags: [tools]
       summary: Replace the secondary relay list
       description: |
-        Needs `admin`. At most 50 `ws://` or `wss://` relays, not the home
-        relay and not Tor or I2P relays. Relays already listed keep their
-        place; new ones follow, in the order given.
+        Needs `admin`. At most 50 `ws://` or `wss://` relays: not the home
+        relay, not Tor or I2P relays, and not loopback or link-local
+        addresses (a relay on your own network is fine). Relays already
+        listed keep their place; new ones follow, in the order given.
       security:
         - bearer: ["admin"]
         - session: []
@@ -767,8 +770,12 @@ paths:
         Needs `admin`. For each target relay (or the ones named in
         `relays`), how many of your events the home relay lacks and the
         relay lacks. Changes nothing. The body is optional. A relay that
-        can't be reached is reported in its row, not as an error. `503`
-        when relay sync is not configured.
+        can't be reached is reported in its row, not as an error. One scan
+        or sync runs at a time (`409` while another does), and each is
+        bounded to 5 minutes: relays not reached in time are reported in
+        their rows, so name fewer relays per call when many are slow.
+        `502` when a named relay may be a NIP-65 one that couldn't be read;
+        `503` when relay sync is not configured.
       security:
         - bearer: ["admin"]
         - session: []
@@ -808,6 +815,8 @@ paths:
           $ref: "#/components/responses/Problem"
         "422":
           $ref: "#/components/responses/Invalid"
+        "502":
+          $ref: "#/components/responses/Problem"
         "503":
           $ref: "#/components/responses/Problem"
         default:
@@ -823,8 +832,9 @@ paths:
         Needs `admin`. `pull` copies the events the home relay lacks from
         each relay to it; `push` copies the events each relay lacks from
         the home relay. Events are your own, already signed: nothing is
-        signed again. Per-relay outcomes are in the rows. `503` when relay
-        sync is not configured.
+        signed again. Per-relay outcomes are in the rows. Runs one at a
+        time and within 5 minutes, as `:scan` does. `503` when relay sync
+        is not configured.
       security:
         - bearer: ["admin"]
         - session: []
@@ -864,6 +874,8 @@ paths:
           $ref: "#/components/responses/Problem"
         "422":
           $ref: "#/components/responses/Invalid"
+        "502":
+          $ref: "#/components/responses/Problem"
         "503":
           $ref: "#/components/responses/Problem"
         default:
@@ -901,6 +913,8 @@ paths:
         "401":
           $ref: "#/components/responses/Problem"
         "404":
+          $ref: "#/components/responses/Problem"
+        "503":
           $ref: "#/components/responses/Problem"
         default:
           $ref: "#/components/responses/Problem"
@@ -1887,7 +1901,7 @@ components:
     NostrRelays:
       type: object
       additionalProperties: false
-      required: [home, nip65, secondary, targets]
+      required: [home, nip65, secondary, targets, nip65_error]
       properties:
         home:
           type: string
@@ -1915,6 +1929,9 @@ components:
               group:
                 type: string
                 enum: [nip65, secondary]
+        nip65_error:
+          type: ["string", "null"]
+          description: Why the NIP-65 relays couldn't be read (they are then missing from `nip65` and `targets`); null when they were.
     NostrRelaysIn:
       type: object
       additionalProperties: false
@@ -1983,7 +2000,8 @@ components:
           type: integer
         status:
           type: string
-          enum: [ok, unreachable, auth, error]
+          enum: [ok, partial, unreachable, auth, error]
+          description: "`partial`: some events were accepted and some refused (see `message`)."
         message:
           type: string
     PublicFeed:

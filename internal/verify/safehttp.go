@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"syscall"
 	"time"
 
@@ -54,5 +56,25 @@ func NewSafeClient(timeout time.Duration) *http.Client {
 			}
 			return nil
 		},
+	}
+}
+
+// fetchProblem is how a failed fetch is reported in a verdict: the reason
+// (an HTTP status, a parse error) when the host answered, but only a fixed
+// description when it couldn't be reached, so a verdict doesn't echo
+// resolved addresses or tell an internal host from a public one.
+func fetchProblem(err error) string {
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		return err.Error()
+	}
+	var ne net.Error
+	switch {
+	case strings.Contains(ue.Err.Error(), "blocked non-public address"):
+		return "the host is not on the public internet; only public hosts are checked"
+	case errors.As(ue.Err, &ne) && ne.Timeout():
+		return "the host did not answer in time"
+	default:
+		return "the host could not be reached"
 	}
 }

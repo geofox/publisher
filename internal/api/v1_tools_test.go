@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -46,8 +47,12 @@ func (f *v1FakeSyncer) Scan(_ context.Context, ts []relaysync.Target) []relaysyn
 func (f *v1FakeSyncer) Apply(_ context.Context, ts []relaysync.Target, dir string) []relaysync.ApplyResult {
 	f.scanned, f.dir = ts, dir
 	out := []relaysync.ApplyResult{}
-	for _, t := range ts {
-		out = append(out, relaysync.ApplyResult{URL: t.URL, Direction: dir, Published: 2, Status: "ok"})
+	for i, t := range ts {
+		res := relaysync.ApplyResult{URL: t.URL, Direction: dir, Published: 2, Status: "ok"}
+		if i == 1 {
+			res.Failed, res.Status, res.Message = 1, "partial", "1 event refused"
+		}
+		out = append(out, res)
 	}
 	return out
 }
@@ -108,8 +113,8 @@ func TestV1Verify(t *testing.T) {
 		t.Fatalf("verdict = %+v, input = %+v", got, fv.got)
 	}
 	p := wantProblem(t, e.do(req{method: "POST", path: "/v1/verify", badRequest: true,
-		body: `{"input":"","platform":"myspace"}`}), 422, codeValidation)
-	if c := fieldCodes(p); c != "/input:required /platform:invalid" {
+		body: `{"input":"","platform":"myspace","expected":"` + strings.Repeat("x", 501) + `"}`}), 422, codeValidation)
+	if c := fieldCodes(p); c != "/input:required /platform:invalid /expected:too_long" {
 		t.Fatalf("errors = %s", c)
 	}
 }
@@ -121,7 +126,7 @@ func TestV1Relays(t *testing.T) {
 	put := func(body string) v1Resp {
 		return e.do(req{method: "PUT", path: base, body: body, badRequest: true})
 	}
-	r := put(`{"secondary":["wss://b.example/","wss://a.example","ws://192.168.1.5:7777"]}`)
+	r := put(`{"secondary":["wss://b.example/","WSS://A.Example:443","ws://192.168.1.5:7777"]}`)
 	wantStatus(t, r, 200)
 	var got v1RelaysBody
 	r.json(&got)
@@ -129,8 +134,10 @@ func TestV1Relays(t *testing.T) {
 		got.Home != "wss://home.example" || len(got.Targets) != 3 || got.Targets[0].Group != "secondary" {
 		t.Fatalf("relays = %+v", got)
 	}
-	p := wantProblem(t, put(`{"secondary":["https://x.example","wss://home.example","wss://x.onion","wss://a.example","wss://a.example/","wss://u:p@x.example"]}`), 422, codeValidation)
-	if c := fieldCodes(p); c != "/secondary/0:invalid /secondary/1:not_allowed /secondary/2:not_allowed /secondary/4:duplicate /secondary/5:invalid" {
+	p := wantProblem(t, put(`{"secondary":["https://x.example","wss://HOME.example:443/","wss://x.onion","wss://a.example","wss://a.example/","wss://u:p@x.example",`+
+		`"ws://127.0.0.1:6379","ws://169.254.169.254","wss://localhost","ws://[::1]:80"]}`), 422, codeValidation)
+	if c := fieldCodes(p); c != "/secondary/0:invalid /secondary/1:not_allowed /secondary/2:not_allowed /secondary/4:duplicate /secondary/5:invalid"+
+		" /secondary/6:not_allowed /secondary/7:not_allowed /secondary/8:not_allowed /secondary/9:not_allowed" {
 		t.Fatalf("errors = %s", c)
 	}
 	wantProblem(t, put(`{}`), 422, codeValidation)
@@ -152,7 +159,12 @@ func TestV1Relays(t *testing.T) {
 	}
 	p = wantProblem(t, e.do(req{method: "POST", path: base + ":sync", badRequest: true,
 		body: `{"direction":"sideways","relays":["wss://nope.example"]}`}), 422, codeValidation)
-	if c := fieldCodes(p); c != "/relays/0:unknown_relay /direction:invalid" {
+	if c := fieldCodes(p); c != "/direction:invalid" {
+		t.Fatalf("errors = %s", c)
+	}
+	p = wantProblem(t, e.do(req{method: "POST", path: base + ":sync", badRequest: true,
+		body: `{"direction":"pull","relays":["wss://nope.example"]}`}), 422, codeValidation)
+	if c := fieldCodes(p); c != "/relays/0:unknown_relay" {
 		t.Fatalf("errors = %s", c)
 	}
 	r = e.do(req{method: "POST", path: base + ":sync", body: `{"direction":"push"}`})
@@ -160,10 +172,28 @@ func TestV1Relays(t *testing.T) {
 	if fs.dir != "push" || len(fs.scanned) != 3 {
 		t.Fatalf("sync = %s %+v", fs.dir, fs.scanned)
 	}
+	// One at a time.
+	e.api.relaySyncMu.Lock()
+	wantProblem(t, e.do(req{method: "POST", path: base + ":sync", body: `{"direction":"push"}`}), 409, codeInvalidState)
+	e.api.relaySyncMu.Unlock()
+	// A chunked request with no body scans everything.
+	chunked := httptest.NewRequest("POST", base+":scan", nil)
+	chunked.ContentLength = -1
+	chunked.AddCookie(e.cookie)
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, chunked)
+	if rec.Code != 200 || len(fs.scanned) != 3 {
+		t.Fatalf("chunked empty scan: %d %s", rec.Code, rec.Body.String())
+	}
 
 	// Only a Nostr account has relays.
 	wantProblem(t, e.do(req{method: "GET", path: "/v1/accounts/" + e.acct("bluesky") + "/nostr/relays"}), 404, codeNotFound)
 	wantProblem(t, e.do(req{method: "GET", path: "/v1/accounts/acc_nope/nostr/relays"}), 404, codeNotFound)
+	// A disabled Nostr account.
+	if _, err := e.st.SeedEnvAccounts(context.Background(), store.DefaultOwner, []store.EnvAccount{{Type: "bluesky", Label: "Bluesky"}}); err != nil {
+		t.Fatal(err)
+	}
+	wantProblem(t, e.do(req{method: "GET", path: base}), 409, codeInvalidState)
 	// Relay sync needs admin.
 	_, raw, err := e.st.CreateScopedToken("w", []string{"posts:write"}, time.Time{})
 	if err != nil {
@@ -183,6 +213,12 @@ func TestV1PublicFeed(t *testing.T) {
 	e.api.PublicFeedToken = "feed-secret"
 	wantProblem(t, feedReq("none", ""), 401, codeUnauthenticated)
 	wantProblem(t, feedReq("wrong", ""), 401, codeUnauthenticated)
+	// An API token is not the feed token.
+	_, apiTok, err := e.st.CreateScopedToken("api", []string{"admin"}, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantProblem(t, feedReq(apiTok, ""), 401, codeUnauthenticated)
 	r := feedReq("feed-secret", "")
 	wantStatus(t, r, 200)
 	var got struct {

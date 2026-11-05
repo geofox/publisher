@@ -1,12 +1,18 @@
 package api
 
 import (
+	"bufio"
+	"context"
 	"crypto/subtle"
+	"errors"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/geofox/publisher/internal/destination"
@@ -129,6 +135,9 @@ func contains(list []string, s string) bool {
 const (
 	maxSyncRelays   = 50
 	maxSyncRelayURL = 512
+	// relaySyncBudget bounds one scan or sync; name fewer relays per call
+	// when many are slow.
+	relaySyncBudget = 5 * time.Minute
 )
 
 type v1RelaysBody struct {
@@ -140,6 +149,9 @@ type v1RelaysBody struct {
 	Secondary []string `json:"secondary"`
 	// Targets are the relays a scan or sync goes through, in order.
 	Targets []relaysync.Target `json:"targets"`
+	// NIP65Error says why the NIP-65 relays couldn't be read (they are
+	// then missing from nip65 and targets); null when they were.
+	NIP65Error *string `json:"nip65_error"`
 }
 
 type v1RelaysPut struct {
@@ -182,6 +194,12 @@ func (a *API) nostrAccount(w http.ResponseWriter, r *http.Request) bool {
 			problem(w, r, http.StatusConflict, codeInvalidState, "this account is disabled (not configured on this server)")
 			return false
 		}
+		// Relay sync works on the server's configured Nostr identity (its
+		// key, home relay and relay list), which is the env account's.
+		if ac.Source != "env" || ac.EnvKey != store.EnvKeyDefault {
+			problem(w, r, http.StatusNotFound, codeNotFound, "relay sync works for the server's configured Nostr account only")
+			return false
+		}
 		return true
 	}
 	problem(w, r, http.StatusNotFound, codeNotFound, "no account "+id)
@@ -190,8 +208,14 @@ func (a *API) nostrAccount(w http.ResponseWriter, r *http.Request) bool {
 
 func (a *API) v1RelaysView(r *http.Request) (v1RelaysBody, error) {
 	var nip65 []string
+	var nip65Err *string
 	if a.np != nil {
-		if got, err := a.np.ResolveWriteRelays(r.Context()); err == nil {
+		got, err := a.np.ResolveWriteRelays(r.Context())
+		if err != nil {
+			slog.WarnContext(r.Context(), "v1: relays: NIP-65 lookup", "err", err)
+			msg := "your relay list (NIP-65) could not be read from the bootstrap relay; try again"
+			nip65Err = &msg
+		} else {
 			nip65 = got
 		}
 	}
@@ -203,7 +227,7 @@ func (a *API) v1RelaysView(r *http.Request) (v1RelaysBody, error) {
 		nip65 = []string{}
 	}
 	return v1RelaysBody{Home: a.HomeRelay, NIP65: nip65, Secondary: secondary,
-		Targets: relaysync.ResolveTargets(nip65, secondary, a.HomeRelay)}, nil
+		Targets: relaysync.ResolveTargets(nip65, secondary, a.HomeRelay), NIP65Error: nip65Err}, nil
 }
 
 func (a *API) writeRelays(w http.ResponseWriter, r *http.Request) {
@@ -239,16 +263,21 @@ func (a *API) v1PutRelays(w http.ResponseWriter, r *http.Request) {
 	}
 	seen := map[string]bool{}
 	urls := []string{}
+	home := normalizeRelay(a.HomeRelay)
 	for i, raw := range req.Secondary {
 		ptr := "/secondary/" + strconv.Itoa(i)
-		u := strings.TrimRight(strings.TrimSpace(raw), "/")
+		u := normalizeRelay(raw)
 		switch {
-		case len(u) > maxSyncRelayURL:
+		case len(raw) > maxSyncRelayURL:
 			errs = append(errs, fieldError{Pointer: ptr, Code: "too_long", Detail: "at most 512 characters"})
 		case !validRelayURL(u):
 			errs = append(errs, fieldError{Pointer: ptr, Code: "invalid", Detail: "a ws:// or wss:// relay URL"})
-		case !a.validSecondaryRelay(u):
-			errs = append(errs, fieldError{Pointer: ptr, Code: "not_allowed", Detail: "not the home relay, and not a Tor or I2P relay (the server can't reach those)"})
+		case u == home:
+			errs = append(errs, fieldError{Pointer: ptr, Code: "not_allowed", Detail: "this is the home relay, which the others are compared with"})
+		case pubnostr.IsOverlayRelay(u):
+			errs = append(errs, fieldError{Pointer: ptr, Code: "not_allowed", Detail: "Tor and I2P relays can't be reached from the server"})
+		case localRelay(u):
+			errs = append(errs, fieldError{Pointer: ptr, Code: "not_allowed", Detail: "loopback and link-local addresses are refused (a relay on your network is fine)"})
 		case seen[u]:
 			errs = append(errs, fieldError{Pointer: ptr, Code: "duplicate", Detail: "this relay is already in the list"})
 		default:
@@ -268,6 +297,58 @@ func (a *API) v1PutRelays(w http.ResponseWriter, r *http.Request) {
 	a.writeRelays(w, r)
 }
 
+// hasBody reports whether the request carries a body, peeking when its
+// length isn't declared (a chunked request).
+func hasBody(r *http.Request) bool {
+	if r.ContentLength >= 0 || r.Body == nil {
+		return r.ContentLength > 0
+	}
+	br := bufio.NewReader(r.Body)
+	_, err := br.Peek(1)
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{br, r.Body}
+	return err == nil
+}
+
+// normalizeRelay is the form relay URLs are stored and compared in: no
+// surrounding space or trailing slash, scheme and host in lower case, and
+// no default port.
+func normalizeRelay(raw string) string {
+	s := strings.TrimRight(strings.TrimSpace(raw), "/")
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return s
+	}
+	u.Scheme, u.Host = strings.ToLower(u.Scheme), strings.ToLower(u.Host)
+	if p := u.Port(); (u.Scheme == "wss" && p == "443") || (u.Scheme == "ws" && p == "80") {
+		u.Host = u.Hostname()
+		if strings.Contains(u.Host, ":") {
+			u.Host = "[" + u.Host + "]"
+		}
+	}
+	return strings.TrimRight(u.String(), "/")
+}
+
+// localRelay reports a relay on this machine or a link-local address (the
+// cloud metadata service lives there): never a relay worth syncing with,
+// and a way to probe the server's own ports. Private (LAN) addresses stay
+// allowed for a relay at home.
+func localRelay(s string) bool {
+	u, err := url.Parse(s)
+	if err != nil {
+		return true
+	}
+	h := u.Hostname()
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && (ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() ||
+		ip.IsMulticast() || ip.IsInterfaceLocalMulticast())
+}
+
 // validRelayURL reports a ws(s) URL with a host and nothing a relay URL
 // doesn't carry.
 func validRelayURL(s string) bool {
@@ -275,6 +356,9 @@ func validRelayURL(s string) bool {
 	return err == nil && (u.Scheme == "ws" || u.Scheme == "wss") && u.Host != "" && u.User == nil &&
 		u.Fragment == "" && strings.TrimSpace(s) == s && !strings.ContainsAny(s, " \t\r\n")
 }
+
+// errNIP65: a named relay may be a NIP-65 one that couldn't be read.
+var errNIP65 = errors.New("NIP-65 relays unavailable")
 
 // syncTargets narrows the sync targets to the relays a request names
 // (every target when it names none). A named relay that isn't a target is
@@ -292,14 +376,17 @@ func (a *API) syncTargets(r *http.Request, relays []string) ([]relaysync.Target,
 	}
 	byURL := map[string]relaysync.Target{}
 	for _, t := range view.Targets {
-		byURL[strings.TrimRight(t.URL, "/")] = t
+		byURL[normalizeRelay(t.URL)] = t
 	}
 	var out []relaysync.Target
 	var errs []fieldError
 	picked := map[string]bool{}
 	for i, u := range relays {
-		n := strings.TrimRight(strings.TrimSpace(u), "/")
+		n := normalizeRelay(u)
 		t, ok := byURL[n]
+		if !ok && view.NIP65Error != nil {
+			return nil, nil, errNIP65
+		}
 		if !ok {
 			errs = append(errs, fieldError{Pointer: "/relays/" + strconv.Itoa(i), Code: "unknown_relay",
 				Detail: "not one of this account's relays; see targets in GET on this path"})
@@ -321,8 +408,9 @@ func (a *API) v1RelaysAction(action string) http.HandlerFunc {
 		var relays []string
 		var direction string
 		if action == "scan" {
+			// The body is optional: none at all means every target.
 			var req v1RelaysScanReq
-			if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
+			if hasBody(r) && !decodeJSON(w, r, &req) {
 				return
 			}
 			relays = req.Relays
@@ -340,29 +428,46 @@ func (a *API) v1RelaysAction(action string) http.HandlerFunc {
 			problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "relay sync is not configured on this server")
 			return
 		}
+		if action == "sync" && direction != "pull" && direction != "push" {
+			invalid(w, r, []fieldError{{Pointer: "/direction", Code: "invalid",
+				Detail: "pull (copy from the relays to your home relay) or push (from home to the relays)"}})
+			return
+		}
 		targets, errs, err := a.syncTargets(r, relays)
-		if err != nil {
+		switch {
+		case errors.Is(err, errNIP65):
+			problem(w, r, http.StatusBadGateway, codeUpstream, "your relay list (NIP-65) could not be read from the bootstrap relay; try again")
+			return
+		case err != nil:
 			slog.ErrorContext(r.Context(), "v1: relays", "err", err)
 			problem(w, r, http.StatusInternalServerError, codeInternal, "reading the relays failed")
 			return
-		}
-		if action == "sync" && direction != "pull" && direction != "push" {
-			errs = append(errs, fieldError{Pointer: "/direction", Code: "invalid",
-				Detail: "pull (copy from the relays to your home relay) or push (from home to the relays)"})
-		}
-		if len(errs) > 0 {
+		case len(errs) > 0:
 			invalid(w, r, errs)
 			return
 		}
+		// One scan or sync at a time: each holds a connection per relay
+		// and every event of the account in memory.
+		if !a.relaySyncMu.TryLock() {
+			problem(w, r, http.StatusConflict, codeInvalidState, "a relay scan or sync is already running; try again when it ends")
+			return
+		}
+		defer a.relaySyncMu.Unlock()
+		// Relays are visited one after another, each allowed a minute: bound
+		// the whole call, and keep the connection open long enough to
+		// answer. Relays not reached in time are reported in their rows.
+		ctx, cancel := context.WithTimeout(r.Context(), relaySyncBudget)
+		defer cancel()
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(relaySyncBudget + 30*time.Second))
 		if action == "scan" {
-			out := a.Sync.Scan(r.Context(), targets)
+			out := a.Sync.Scan(ctx, targets)
 			if out == nil {
 				out = []relaysync.RelayDiff{}
 			}
 			writeV1(w, http.StatusOK, map[string]any{"relays": out})
 			return
 		}
-		out := a.Sync.Apply(r.Context(), targets, direction)
+		out := a.Sync.Apply(ctx, targets, direction)
 		if out == nil {
 			out = []relaysync.ApplyResult{}
 		}
@@ -377,8 +482,12 @@ func (a *API) v1RelaysAction(action string) http.HandlerFunc {
 // server, which should hold nothing that can post. Not found while no
 // token is configured.
 func (a *API) v1PublicFeed(w http.ResponseWriter, r *http.Request) {
-	if a.PublicFeedToken == "" || a.Store == nil {
+	if a.PublicFeedToken == "" {
 		problem(w, r, http.StatusNotFound, codeNotFound, "the public feed is off on this server (set PUBLIC_FEED_TOKEN)")
+		return
+	}
+	if a.Store == nil {
+		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "no database")
 		return
 	}
 	const prefix = "Bearer "

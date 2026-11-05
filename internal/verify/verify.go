@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 )
@@ -126,7 +127,8 @@ func (s *Service) Verify(ctx context.Context, in Input) (verdict Verdict) {
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			verdict = errVerdict(platform, fmt.Sprintf("internal verifier error: %v", r))
+			slog.ErrorContext(ctx, "verify: verifier panicked", "platform", platform, "panic", fmt.Sprint(r))
+			verdict = errVerdict(platform, "internal verifier error; the server log has details")
 		}
 	}()
 	return v.Verify(ctx, in)

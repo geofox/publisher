@@ -494,6 +494,22 @@ as they move.
 >   holds a token that can post. `limit` out of range is `400`, not
 >   clamped.
 > - `/v1/drafts/{id}:translate` moves with drafts to PR 4.
+> - **Review fixes (2 QA + 1 security):** `:scan`/`:sync` run one at a
+>   time (`409`), within 5 minutes (context deadline, write deadline
+>   extended to answer; unreached relays reported in their rows), so they
+>   no longer outlive the 120 s WriteTimeout silently. `partial` added to
+>   the sync status enum. A failed NIP-65 lookup is reported
+>   (`nip65_error`, and `502` when a named relay may be one of those).
+>   Relay URLs are normalized (case, default port, slash) before
+>   comparing and storing; loopback and link-local relays are refused
+>   (LAN stays allowed). Relay routes accept only the env Nostr account
+>   (its key and list are the server's). Verify verdicts no longer echo
+>   transport errors (resolved addresses) or panic text, on the old route
+>   too. Chunked empty `:scan` bodies work. Feed without a database is
+>   `503`.
+>   Deferred: a DeepL quota/rate limit per token; per-relay messages stay
+>   detailed (admin only, the owner debugging their relays); sync as a
+>   background job if 5 minutes proves short.
 
 ## Task 3.1: Foundations
 
