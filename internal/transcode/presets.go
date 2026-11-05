@@ -23,3 +23,15 @@ func PresetParams(name string) (ImageParams, bool) {
 	}
 	return ImageParams{}, false
 }
+
+// ImagePresetNames lists the names PresetParams accepts.
+var ImagePresetNames = []string{"convert", "large", "medium", "small"}
+
+// VideoPresetNames lists the video presets, largest first.
+var VideoPresetNames = []string{"1080p", "720p", "480p"}
+
+// IsVideoPreset reports whether name is a video preset FitVideoDims knows.
+func IsVideoPreset(name string) bool {
+	_, ok := videoBoxes[name]
+	return ok
+}

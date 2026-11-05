@@ -237,3 +237,19 @@ func pngBomb(t *testing.T, w, h int) []byte {
 	// CRC now wrong, but DecodeConfig reads dims before checking it.
 	return b
 }
+
+func TestPresetNamesMatch(t *testing.T) {
+	for _, n := range ImagePresetNames {
+		if _, ok := PresetParams(n); !ok {
+			t.Errorf("image preset %q not accepted", n)
+		}
+	}
+	if len(VideoPresetNames) != len(videoBoxes) {
+		t.Fatalf("VideoPresetNames %v vs boxes %v", VideoPresetNames, videoBoxes)
+	}
+	for _, n := range VideoPresetNames {
+		if !IsVideoPreset(n) {
+			t.Errorf("video preset %q unknown", n)
+		}
+	}
+}

@@ -350,6 +350,11 @@ func TestV1Conformance(t *testing.T) {
 	e.seedPost("pub", "success", "bluesky")
 	e.seedScheduled("sch", time.Now().Add(time.Hour), "bluesky")
 	e.seedPost("fail", "failed", "mastodon")
+	e.withEngine()
+	med := e.upload("conf")
+	png := string(pngBytes(t, 4, 4))
+	imgHdr := map[string]string{"Content-Type": "image/png"}
+	newPost := `{"content":{"text":"hi","media":[{"id":"` + med + `"}]},"targets":[{"account":"` + e.acct("bluesky") + `"}]}`
 	stream, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	calls := []struct {
@@ -368,6 +373,12 @@ func TestV1Conformance(t *testing.T) {
 		{"GET /v1/tokens/{id}", req{method: "GET", path: "/v1/tokens/" + tokenID(tok.ID)}, 200},
 		{"DELETE /v1/tokens/{id}", req{method: "DELETE", path: "/v1/tokens/" + tokenID(tok.ID)}, 204},
 		{"GET /v1/posts", req{method: "GET", path: "/v1/posts"}, 200},
+		{"POST /v1/posts", req{method: "POST", path: "/v1/posts", body: newPost, header: map[string]string{"Idempotency-Key": `"conf-1"`}}, 202},
+		{"POST /v1/posts:preview", req{method: "POST", path: "/v1/posts:preview", body: newPost}, 200},
+		{"POST /v1/media", req{method: "POST", path: "/v1/media?alt=x", body: png, header: imgHdr}, 201},
+		{"POST /v1/media:compress", req{method: "POST", path: "/v1/media:compress?preset=small", body: png, header: imgHdr}, 200},
+		{"GET /v1/media/{id}", req{method: "GET", path: "/v1/media/" + med}, 200},
+		{"PATCH /v1/media/{id}", req{method: "PATCH", path: "/v1/media/" + med, body: `{"alt":"new"}`}, 200},
 		{"GET /v1/posts/{id}", req{method: "GET", path: "/v1/posts/pst_pub"}, 200},
 		{"PATCH /v1/posts/{id}", req{method: "PATCH", path: "/v1/posts/pst_sch", body: `{"schedule":{"at":"2099-01-01T09:00:00Z"}}`}, 200},
 		{"POST /v1/posts/{id}:cancel", req{method: "POST", path: "/v1/posts/pst_sch:cancel"}, 200},

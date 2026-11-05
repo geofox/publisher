@@ -388,6 +388,40 @@ as they move.
 >   is the post's status, not `needs_attention`; event ids are global
 >   (gaps show other owners' volume once there are several).
 
+> PR 3c:
+>
+> - **Notes only.** `POST /v1/posts` takes shared content (text, media by
+>   id, content warning, sensitive, languages), targets (account, options,
+>   content overrides), `threading.numbering` and `schedule.at`. Explicit
+>   per-account items wait for the step-3 editor; replies, quotes, reposts,
+>   fan-out and draft consumption move to 3d with resolve and drafts.
+> - **One account per type** in a request: the engine still sends through
+>   one account per type (keyed by type) until step 4 adds accounts.
+>   Targets record the account id (`PostSpec.Accounts`).
+> - **Options are checked strictly**, unlike the legacy overrides, which
+>   fail open: unknown keys, wrong types, out-of-range ints and a Bluesky
+>   reply gate with an unknown word are 422. Every declared option must
+>   have a mapping onto the engine's overrides (a test checks), so none is
+>   silently dropped.
+> - **Media objects** (migration v7, `media_objects`): an image is stored
+>   in Blossom at once (201, `ready`); a video is a video job (202,
+>   `processing`) that a goroutine finishes when the job ends, and that a
+>   GET refreshes too. A processing object whose job is gone (a restart)
+>   becomes `failed`. Posts copy the media's fields, so a post keeps the
+>   alt text it was sent with.
+> - **Async by default**: the post is saved (`Dispatcher.Enqueue`) and the
+>   workers send it; `Prefer: wait=N` (≤ 60 s) waits on the event log
+>   until the post settles (201) or the wait ends (202). A scheduled post
+>   doesn't wait.
+> - **Bounds**: 50 000 characters of text, 20 targets, 10 languages, 40
+>   media (one video, not mixed with images), 100 thread parts per
+>   account.
+> - **New error codes**: `unreadable_upload` (400) and `upstream_failed`
+>   (502, media storage refused the file).
+> - Pre-existing: `TestConcurrentWritersDontFailBusy` fails about one run
+>   in eight under `-race` on main too (a write waits out the 5 s
+>   `busy_timeout` under the race detector's slowdown).
+
 ## Task 3.1: Foundations
 
 - [ ] `internal/api/v1` package: router, problem-details writer, error
