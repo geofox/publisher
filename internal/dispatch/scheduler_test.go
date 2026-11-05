@@ -35,38 +35,42 @@ func (stubNostr) Quote(context.Context, string, string, string, string, []gonost
 	return legacyResult{Platform: "nostr", Status: "success"}, nil
 }
 
-func TestOverdue(t *testing.T) {
-	now := time.Unix(1_000_000, 0)
-	grace := 2 * time.Hour
-	if overdue(now, now.Add(-time.Minute), grace) {
-		t.Error("1m overdue is within grace")
-	}
-	if !overdue(now, now.Add(-3*time.Hour), grace) {
-		t.Error("3h overdue exceeds 2h grace")
-	}
-}
-
-func TestSchedulerFiresDue(t *testing.T) {
+func TestEngineFiresDueScheduledPost(t *testing.T) {
 	st := newTestStore(t)
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostr{}}), Store: st}
+	fn := &fakeNotifier{}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostr{}}), Store: st, Alerter: fn, ScheduleGrace: 2 * time.Hour}
 	at := time.Now().Add(-time.Minute).UTC()
 	rec, err := d.Schedule(context.Background(), PostSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"}, at)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	fn := &fakeNotifier{}
-	now := time.Now().UTC()
-	s := NewScheduler(d, fn, 2*time.Hour)
-	s.now = func() time.Time { return now }
-	s.runDue(context.Background())
-
+	d.passes(context.Background())
+	if n := d.runDue(context.Background()); n != 1 {
+		t.Fatalf("ran %d items, want 1", n)
+	}
 	got, _ := st.GetPost(rec.ID)
 	if got.Status != "success" {
 		t.Errorf("due post should have fired to success, status = %q", got.Status)
 	}
 	if len(fn.msgs) != 0 {
 		t.Errorf("no missed-alert expected for an in-grace fire, got %v", fn.msgs)
+	}
+}
+
+func TestEngineLeavesFutureScheduledPost(t *testing.T) {
+	st := newTestStore(t)
+	n := 0
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostr{calls: &n}}), Store: st}
+	rec, err := d.Schedule(context.Background(), PostSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"},
+		time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ran := d.runDue(context.Background()); ran != 0 || n != 0 {
+		t.Fatalf("a post due in an hour ran now: items %d, publishes %d", ran, n)
+	}
+	if got, _ := st.GetPost(rec.ID); got.Status != "scheduled" {
+		t.Errorf("status = %q, want scheduled", got.Status)
 	}
 }
 
@@ -96,26 +100,34 @@ func TestFireSkipsAlreadyDispatched(t *testing.T) {
 	}
 }
 
-func TestSchedulerMarksMissed(t *testing.T) {
+func TestEngineMarksMissed(t *testing.T) {
 	st := newTestStore(t)
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostr{}}), Store: st}
+	n := 0
+	fn := &fakeNotifier{}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostr{calls: &n}}), Store: st, Alerter: fn, ScheduleGrace: 2 * time.Hour}
 	at := time.Now().Add(-5 * time.Hour).UTC() // overdue beyond 2h grace
 	rec, err := d.Schedule(context.Background(), PostSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"}, at)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	fn := &fakeNotifier{}
-	now := time.Now().UTC()
-	s := NewScheduler(d, fn, 2*time.Hour)
-	s.now = func() time.Time { return now }
-	s.runDue(context.Background())
-
+	// Workers never claim a missed post, even before the pass marks it.
+	if ran := d.runDue(context.Background()); ran != 0 || n != 0 {
+		t.Fatalf("an overdue post was sent: items %d, publishes %d", ran, n)
+	}
+	d.passes(context.Background())
+	d.passes(context.Background()) // alerted once
 	got, _ := st.GetPost(rec.ID)
-	if got.Status != "missed" {
-		t.Errorf("status = %q, want missed", got.Status)
+	if got.Status != "missed" || got.Targets[0].Status != "missed" {
+		t.Errorf("status = %q / %q, want missed", got.Status, got.Targets[0].Status)
 	}
 	if len(fn.msgs) != 1 {
 		t.Errorf("expected one missed alert, got %v", fn.msgs)
+	}
+	// A retry sends it.
+	if _, err := d.Retry(context.Background(), rec.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetPost(rec.ID); got.Status != "success" || n != 1 {
+		t.Errorf("retried missed post: status %q, publishes %d", got.Status, n)
 	}
 }

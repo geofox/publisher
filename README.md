@@ -167,19 +167,53 @@ re-sent). With `number`, segments get per-platform ` k/n` counters.
 
 ### Automatic failure recovery
 
-Failed and partial deliveries are re-driven automatically by a background
-Retrier with exponential backoff (`AUTO_RETRY_BASE_DELAY` × 2 per attempt,
-capped at `AUTO_RETRY_MAX_DELAY`), up to `AUTO_RETRY_MAX_ATTEMPTS` per target.
-Nostr partials retry at the per-relay level (rebroadcasting the same signed
-event, no duplicate note); other platforms retry the whole target. `missed`
-scheduled posts are **not** auto-retried (a scheduling miss, not a delivery
-failure) — retry them manually.
+Every post is saved, with each part it will publish, before anything is sent.
+Publishing then goes one part at a time: a thread posts in order on each
+platform, and platforms post in parallel. So a post survives a crash or a
+restart. What was still to send is sent when the publisher comes back, and a
+thread carries on from the part it stopped at.
 
-After the cap, a target/relay is marked **given up** and an operational alert
-fires once (via `ALERT_WEBHOOK_URL`). Immediate-post failures also alert. The
-History tab gains an **attention** filter (delivery failed/partial) with a live
-count from `GET /api/posts/attention/count`; manual retry remains available on
-any target, including given-up ones.
+Failed parts are retried automatically with exponential backoff
+(`AUTO_RETRY_BASE_DELAY` × 2 per attempt, capped at `AUTO_RETRY_MAX_DELAY`),
+up to `AUTO_RETRY_MAX_ATTEMPTS` per part. A rate-limited platform is retried
+no sooner than it asks. Failures a retry can't fix are not retried: an expired
+token, content the platform refuses, invalid input. Nostr partials retry at
+the per-relay level, rebroadcasting the same signed event, so no duplicate
+note is created. `missed` scheduled posts are **not** auto-retried, because a
+scheduling miss isn't a delivery failure; retry them manually.
+
+**When a send may already have gone out.** The publisher can stop, or a
+request can time out, after a platform received a post but before the answer
+came back. What happens next depends on the platform:
+
+- **Mastodon** drops a repeat with the same idempotency key for an hour, so
+  the part is retried within that hour, counted from the first attempt that
+  may have gone out (a server error counts: it can come after the post was
+  saved).
+- **Nostr** notes are signed and saved before the first send, and every
+  attempt re-sends that same event. Relays dedupe it by id.
+- **Bluesky**, **Threads** and Nostr reposts can't drop a repeat, and neither
+  can Mastodon after the hour. The part is not retried: it is marked "may have been
+  posted", and an alert asks you to check the platform and retry by hand if
+  it isn't there.
+
+When retries stop (the cap, or a failure that would repeat), the target is
+marked **given up** and an operational alert fires once (via
+`ALERT_WEBHOOK_URL`); a post's first-run alert names the targets that gave up.
+Immediate-post failures also alert. The History tab
+gains an **attention** filter (delivery failed/partial) with a live count from
+`GET /api/posts/attention/count`. Manual retry remains available on any
+target, including given-up ones.
+
+### Stopping and restarting
+
+On `SIGTERM` (`docker stop`) the publisher stops gracefully. `/readyz`
+returns `503` (`accepting_work: false`) for 3 seconds so load balancers stop
+sending traffic, then new connections are refused, and requests and parts
+being published finish, for up to 25 seconds in all. Docker's default stop timeout is 10
+seconds, so give the container 30 (`stop_grace_period: 30s` in compose,
+`docker stop -t 30`). Anything still being sent when the time runs out is
+handled on the next start as described above.
 
 ### `POST /api/resolve`
 
@@ -301,6 +335,7 @@ Readiness: can this instance accept and persist work right now?
 | `database` | yes | SQLite doesn't answer, or its schema version isn't the one this build expects |
 | `data_disk` | no | less than 256 MiB free on the database's filesystem |
 | `video_workdir` | no | (video enabled only) the work directory isn't writable |
+| `accepting_work` | yes | the publisher is shutting down |
 
 `status` is `ok`, `degraded` (a non-critical check failed; still `200`), or
 `unavailable` (a critical check failed; `503`). Failed checks carry a short
@@ -370,12 +405,13 @@ infrastructure and should be overridden.
 | `POW_DIFFICULTY_DEFAULT` | no | `16` | Default leading-zero-bit PoW target |
 | `POW_DIFFICULTY_MAX` | no | `28` | Hard cap on per-request PoW override |
 | `POW_TIMEOUT` | no | `30s` | Per-publish mining timeout |
-| `SCHEDULE_GRACE` | no | `2h` | Grace window for firing overdue scheduled posts |
-| `AUTO_RETRY_ENABLED` | no | `true` | Master switch for the auto-retry worker (Retrier) |
-| `AUTO_RETRY_MAX_ATTEMPTS` | no | `6` | Per-target attempt cap before giving up |
+| `SCHEDULE_GRACE` | no | `2h` | Grace window for firing overdue scheduled posts (must be positive) |
+| `AUTO_RETRY_ENABLED` | no | `true` | Master switch for automatic retries (failed parts and relay deliveries) |
+| `AUTO_RETRY_MAX_ATTEMPTS` | no | `6` | Attempts per part (and per relay) before giving up (at least 1; turn retries off with `AUTO_RETRY_ENABLED=false`) |
 | `AUTO_RETRY_BASE_DELAY` | no | `2m` | First backoff interval |
 | `AUTO_RETRY_MAX_DELAY` | no | `1h` | Backoff ceiling |
-| `RETRIER_TICK` | no | `60s` | Retrier loop cadence |
+| `RETRIER_TICK` | no | `60s` | Relay-retry loop cadence |
+| `PUBLISH_WORKERS` | no | `4` | Parts the background engine publishes at once (scheduled posts, retries) |
 | `DB_PATH` | no | `/data/publisher.db` | SQLite archive path (mount a volume here) |
 | `MASTODON_BASE_URL` | no | — | Mastodon instance URL (enables Mastodon cross-post) |
 | `MASTODON_TOKEN` | no | — | Mastodon access token (**secret**) |
@@ -418,7 +454,7 @@ right one automatically.
 
 ```bash
 mkdir -p ./data
-docker run -d --name publisher \
+docker run -d --name publisher --stop-timeout 30 \
   -p 127.0.0.1:8080:8080 \
   -v "$PWD/data:/data" \
   -e NSEC_HEX=<64-char-hex-secret> \
@@ -437,6 +473,8 @@ services:
     image: ghcr.io/geofox/publisher:latest
     container_name: publisher
     restart: unless-stopped
+    # Time to finish what is being published on `docker stop` (default 10s).
+    stop_grace_period: 30s
     ports:
       - "127.0.0.1:8080:8080"
     environment:

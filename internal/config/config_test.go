@@ -182,3 +182,23 @@ func TestFeedEnvVars(t *testing.T) {
 		t.Errorf("FeedWebhookToken = %q, want %q", cfg.FeedWebhookToken, "wtok")
 	}
 }
+
+// Values whose meaning would silently flip under the engine are refused.
+func TestRetryAndGraceBounds(t *testing.T) {
+	for _, tc := range []struct{ key, val string }{
+		{"SCHEDULE_GRACE", "0s"},
+		{"AUTO_RETRY_MAX_ATTEMPTS", "0"},
+		{"AUTO_RETRY_BASE_DELAY", "0s"},
+		{"AUTO_RETRY_MAX_DELAY", "1s"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			t.Setenv("NSEC_HEX", tNSEC)
+			t.Setenv("OWNER_PUBKEY", tPUB)
+			t.Setenv("BLOSSOM_URL", "https://b.example.com")
+			t.Setenv(tc.key, tc.val)
+			if _, err := Load(); err == nil {
+				t.Errorf("%s=%s should be refused", tc.key, tc.val)
+			}
+		})
+	}
+}

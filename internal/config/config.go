@@ -69,6 +69,7 @@ type Config struct {
 
 	// Auto-retry / Retrier settings.
 	AutoRetryEnabled     bool
+	PublishWorkers       int // items the engine sends at once
 	AutoRetryMaxAttempts int
 	AutoRetryBaseDelay   time.Duration
 	AutoRetryMaxDelay    time.Duration
@@ -152,6 +153,9 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("SCHEDULE_GRACE: %w", err)
 	}
 	c.AutoRetryEnabled = getBool("AUTO_RETRY_ENABLED", true)
+	if c.PublishWorkers, err = strconv.Atoi(getEnv("PUBLISH_WORKERS", "4")); err != nil || c.PublishWorkers < 1 {
+		return c, fmt.Errorf("PUBLISH_WORKERS must be a positive integer")
+	}
 	if c.AutoRetryMaxAttempts, err = strconv.Atoi(getEnv("AUTO_RETRY_MAX_ATTEMPTS", "6")); err != nil {
 		return c, fmt.Errorf("AUTO_RETRY_MAX_ATTEMPTS: %w", err)
 	}
@@ -160,6 +164,17 @@ func Load() (Config, error) {
 	}
 	if c.AutoRetryMaxDelay, err = time.ParseDuration(getEnv("AUTO_RETRY_MAX_DELAY", "1h")); err != nil {
 		return c, fmt.Errorf("AUTO_RETRY_MAX_DELAY: %w", err)
+	}
+	if c.ScheduleGrace <= 0 {
+		return c, fmt.Errorf("SCHEDULE_GRACE must be positive (a scheduled post later than this is marked missed)")
+	}
+	if c.AutoRetryEnabled {
+		if c.AutoRetryMaxAttempts < 1 {
+			return c, fmt.Errorf("AUTO_RETRY_MAX_ATTEMPTS must be at least 1; set AUTO_RETRY_ENABLED=false to turn retries off")
+		}
+		if c.AutoRetryBaseDelay <= 0 || c.AutoRetryMaxDelay < c.AutoRetryBaseDelay {
+			return c, fmt.Errorf("AUTO_RETRY_BASE_DELAY must be positive and AUTO_RETRY_MAX_DELAY at least as long")
+		}
 	}
 	if c.RetrierTick, err = time.ParseDuration(getEnv("RETRIER_TICK", "60s")); err != nil {
 		return c, fmt.Errorf("RETRIER_TICK: %w", err)

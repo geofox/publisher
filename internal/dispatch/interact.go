@@ -3,12 +3,8 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"strings"
-	"time"
 
-	"github.com/geofox/publisher/internal/logging"
-	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -53,19 +49,6 @@ func assembleReproduction(commentary string, sp SourcePreview, sourceURL string)
 	return strings.Join(parts, "\n\n")
 }
 
-// capMedia returns the user's images followed by source images, truncated to max
-// (max <= 0 means no cap). User images always take priority.
-func capMedia(user, source []Img, max int) []Img {
-	out := append([]Img(nil), user...)
-	for _, m := range source {
-		if max > 0 && len(out) >= max {
-			break
-		}
-		out = append(out, m)
-	}
-	return out
-}
-
 // mediaMax is the per-post image cap of the account a target names (0 = no
 // cap), the same value the splitter and the preview use.
 func (d *Dispatcher) mediaMax(ctx context.Context, plat string) int {
@@ -82,108 +65,6 @@ func interactText(spec InteractSpec, plat string) string {
 		return t
 	}
 	return spec.Text
-}
-
-func (d *Dispatcher) fanoutChain(ctx context.Context, plat string, spec InteractSpec, postID string) chainOutcome {
-	text := assembleReproduction(interactText(spec, plat), spec.SourcePreview, spec.SourceURL)
-	imgs := capMedia(spec.Images, spec.SourceImages, d.mediaMax(ctx, plat))
-	ov := spec.Overrides[plat]
-	// Interactions carry no per-image part anchors; nil ⇒ runChain front-loads.
-	return d.runChain(ctx, plat, text, ov, imgs, spec.Number, nil, nil, postID)
-}
-
-// Interact performs reply/repost/quote and records it as a store.Post carrying an
-// interaction descriptor. Reply/quote thread the source action as the chain head on
-// the source platform; quote also fans out an assembled reproduction (commentary +
-// original text + source URL + re-hosted source media) to each Fanout platform.
-func (d *Dispatcher) Interact(ctx context.Context, spec InteractSpec) *store.Post {
-	return d.InteractWithID(ctx, newID(), spec)
-}
-
-func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec InteractSpec) *store.Post {
-	rec := &store.Post{
-		ID: id, CreatedAt: time.Now().UTC(), MasterText: spec.Text,
-		Source: "web", Media: spec.MediaRecords,
-		Interaction: &store.Interaction{
-			Action: spec.Action, SourcePlatform: spec.SourcePlatform,
-			SourceURL: spec.SourceURL, SourceAuthor: spec.SourceAuthor,
-			Ref: marshalRef(spec.Ref),
-		},
-	}
-	ctx = logging.With(ctx, "post_id", rec.ID)
-	scrubLinkCards(spec.Overrides)
-	var outcomes []chainOutcome
-	switch spec.Action {
-	case actionRepost:
-		sink := progress.SinkFrom(ctx)
-		sink.Platform(spec.SourcePlatform, progress.StatusRunning, "", "")
-		r := d.repost(ctx, spec.SourcePlatform, spec.Ref)
-		d.enqueueFanout(ctx, rec.ID, r.Status, r.SignedEventJSON, r.PendingRelays)
-		o := chainOutcome{
-			Platform: r.Platform, Status: r.Status, Error: r.Error, ErrorClass: r.ErrorClass,
-			HeadRemoteID: r.RemoteID, HeadRemoteURL: r.RemoteURL, LatencyMS: r.LatencyMS,
-			Relays: r.Relays, SignedEventJSON: r.SignedEventJSON, RequestJSON: r.RequestJSON, ResponseJSON: r.ResponseJSON,
-		}
-		sink.Platform(spec.SourcePlatform, mapStatus(o.Status), platformDetail(o), o.HeadRemoteURL)
-		outcomes = append(outcomes, o)
-	case actionReply, actionQuote:
-		ov := spec.Overrides[spec.SourcePlatform]
-		head := &headSpec{}
-		if spec.Action == actionReply {
-			head.reply = &spec.Ref
-		} else {
-			head.quote = &spec.Ref
-		}
-		sink := progress.SinkFrom(ctx)
-		sink.Platform(spec.SourcePlatform, progress.StatusRunning, "", "")
-		o := d.runChain(ctx, spec.SourcePlatform, interactText(spec, spec.SourcePlatform), ov, spec.Images, spec.Number, nil, head, rec.ID)
-		sink.Platform(spec.SourcePlatform, mapStatus(o.Status), platformDetail(o), o.HeadRemoteURL)
-		outcomes = append(outcomes, o)
-		for _, p := range spec.Fanout {
-			if p == spec.SourcePlatform {
-				continue
-			}
-			sink.Platform(p, progress.StatusRunning, "", "")
-			fo := d.fanoutChain(ctx, p, spec, rec.ID)
-			sink.Platform(p, mapStatus(fo.Status), platformDetail(fo), fo.HeadRemoteURL)
-			outcomes = append(outcomes, fo)
-		}
-	}
-
-	succ, failed := 0, 0
-	for _, o := range outcomes {
-		fields, _ := json.Marshal(ov2fields(spec.Overrides[o.Platform]))
-		rec.Platforms = append(rec.Platforms, o.Platform)
-		rec.Targets = append(rec.Targets, store.Target{
-			Platform: o.Platform, FinalText: o.FinalText, FieldsJSON: string(fields),
-			Status: o.Status, ErrorClass: o.ErrorClass, RemoteID: o.HeadRemoteID, RemoteURL: o.HeadRemoteURL, LatencyMS: o.LatencyMS,
-			Relays: o.Relays, SignedEventJSON: o.SignedEventJSON, Segments: o.Segments,
-			Attempts: []store.Attempt{{AttemptNo: 1, Status: o.Status, Error: o.Error, ErrorClass: o.ErrorClass, LatencyMS: o.LatencyMS,
-				RemoteID: o.HeadRemoteID, RequestJSON: o.RequestJSON, ResponseJSON: o.ResponseJSON, AttemptedAt: time.Now().UTC()}},
-		})
-		switch o.Status {
-		case "success":
-			succ++
-		case "failed":
-			failed++
-		}
-	}
-	switch total := len(outcomes); {
-	case total == 0 || failed == total:
-		rec.Status = "failed"
-	case succ == total:
-		rec.Status = "success"
-	default:
-		rec.Status = "partial"
-	}
-	if d.Store != nil {
-		if err := d.Store.SavePost(rec); err != nil {
-			slog.ErrorContext(ctx, "savepost (interact) failed", "err", err)
-		}
-	}
-	d.notify(ctx, rec)
-	d.alertFailure(ctx, rec)
-	return rec
 }
 
 // marshalRef serializes the source's native ref for Interaction.Ref, so a

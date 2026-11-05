@@ -75,7 +75,8 @@ func stubManifest(mode destination.IdempotencyMode) destination.Manifest {
 
 func stubDispatcher(t *testing.T, acct *stubAccount) *Dispatcher {
 	t.Helper()
-	return &Dispatcher{Accounts: map[string]destination.Account{"stub": acct}, Store: openDispatchStore(t)}
+	return &Dispatcher{Accounts: map[string]destination.Account{"stub": acct}, Store: openDispatchStore(t),
+		Policy: RetryPolicy{Enabled: true, MaxAttempts: 6, Base: time.Minute, Max: time.Hour}}
 }
 
 // The chain is split by the account's own capabilities, and each item
@@ -278,11 +279,12 @@ func TestRetrierHonorsErrorClass(t *testing.T) {
 					return published(n), nil
 				}}
 			d := stubDispatcher(t, acct)
-			rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}})
 			al := &fakeAlerter{}
+			d.Alerter = al
+			rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}})
 			now := time.Now().UTC().Add(time.Hour)
-			r := &Retrier{disp: d, notifier: al, enabled: true, maxAttempts: 6,
-				base: time.Minute, max: time.Hour, now: func() time.Time { return now }}
+			d.Clock = func() time.Time { return now }
+			r := struct{ runDue func(context.Context) }{func(ctx context.Context) { d.passes(ctx); d.runDue(ctx) }}
 			r.runDue(context.Background())
 
 			got, _ := d.Store.GetPost(rec.ID)
@@ -291,7 +293,7 @@ func TestRetrierHonorsErrorClass(t *testing.T) {
 				t.Fatalf("retried = %v, want %v (target %+v)", retried, c.retried, tg)
 			}
 			if !c.retried {
-				if tg.GaveUpAt == nil || len(al.calls) != 1 || !strings.Contains(al.calls[0], "needs attention") {
+				if tg.GaveUpAt == nil || len(al.calls) != 1 || !strings.Contains(al.bodies[0], "will not be retried automatically") {
 					t.Fatalf("a hopeless failure must give up with one alert: gave_up=%v alerts=%v", tg.GaveUpAt, al.calls)
 				}
 				r.runDue(context.Background())
@@ -349,7 +351,11 @@ func TestRetrierStopsWhenIdempotencyKeyExpires(t *testing.T) {
 		{"past the window", []destination.ErrorClass{destination.ClassUnknownOutcome}, 2 * time.Hour, false},
 		{"transient after an old unknown outcome",
 			[]destination.ErrorClass{destination.ClassUnknownOutcome, destination.ClassTransient}, 2 * time.Hour, false},
-		{"only transient failures", []destination.ErrorClass{destination.ClassTransient}, 2 * time.Hour, true},
+		// A 5xx can come after the server committed, so a transient failure
+		// starts the key window too.
+		{"transient within the window", []destination.ErrorClass{destination.ClassTransient}, 30 * time.Minute, true},
+		{"transient past the window", []destination.ErrorClass{destination.ClassTransient}, 2 * time.Hour, false},
+		{"rate limited past the window", []destination.ErrorClass{destination.ClassRateLimited}, 2 * time.Hour, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -374,9 +380,9 @@ func TestRetrierStopsWhenIdempotencyKeyExpires(t *testing.T) {
 			}
 			sent := len(acct.reqs)
 			now := time.Now().UTC().Add(tc.after)
-			r := &Retrier{disp: d, notifier: &fakeAlerter{}, enabled: true, maxAttempts: 6,
-				base: time.Minute, max: time.Hour, now: func() time.Time { return now }}
-			r.runDue(context.Background())
+			d.Clock = func() time.Time { return now }
+			d.passes(context.Background())
+			d.runDue(context.Background())
 			if retried := len(acct.reqs) > sent; retried != tc.retried {
 				got, _ := d.Store.GetPost(rec.ID)
 				t.Fatalf("retried = %v, want %v (target %+v)", retried, tc.retried, got.Targets[0])

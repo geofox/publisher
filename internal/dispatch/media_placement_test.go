@@ -15,7 +15,7 @@ import (
 // 0 is unanchored and fills head-first.
 func TestRunChainPlacesAnchoredImage(t *testing.T) {
 	f := &fakeMastoChain{}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Mastodon: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Mastodon: f})}
 	out := d.runChain(context.Background(), "mastodon", "a\n---\nb\n---\nc",
 		Overrides{}, testImgs(2), false, []int{0, 2}, nil, "t")
 
@@ -48,7 +48,7 @@ func TestRunChainPlacesAnchoredImage(t *testing.T) {
 // plan. The non-front-loaded case: image 1 is on segment 2, not segment 0.
 func TestResumeReadsPersistedPlacement(t *testing.T) {
 	f := &fakeMastoChain{}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Mastodon: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Mastodon: f})}
 	// Segment 0 already succeeded (RemoteID set) — resume continues from seg 1.
 	// The persisted placement: seg0 had image 0, seg1 has no images, seg2 has image 1.
 	tg := store.Target{

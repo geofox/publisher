@@ -50,10 +50,10 @@ func (Driver) Manifest() destination.Manifest {
 			LinkPreview:    destination.LinkPreviewNone,
 			ContentWarning: true,
 			Interactions:   destination.InteractionCaps{Reply: true, Quote: true, Repost: true},
-			// Each attempt signs a new event today, so a repeat is a second
-			// note. Persisting the signed event before sending (step 2, PR 2)
-			// makes this "natural".
-			Idempotent: destination.IdempotentNone,
+			// The core persists the signed event (Prepare) before the
+			// first send and every attempt re-sends it: relays dedupe by
+			// event id.
+			Idempotent: destination.IdempotentNatural,
 		},
 	}
 }
@@ -68,6 +68,7 @@ var (
 	_ destination.Reposter    = (*Account)(nil)
 	_ destination.Redeliverer = (*Account)(nil)
 	_ destination.Identifier  = (*Account)(nil)
+	_ destination.Preparer    = (*Account)(nil)
 )
 
 // Manifest implements destination.Account.
@@ -83,9 +84,72 @@ func (a *Account) Capabilities(context.Context) destination.Capabilities {
 func (a *Account) Publish(ctx context.Context, req destination.PublishRequest) (destination.PublishResult, error) {
 	in := noteInput(req)
 	trace, _ := json.Marshal(map[string]any{"text": in.Text, "pow": in.POW, "imeta": in.Imetas, "tags": in.Tags})
-	out, err := a.publish(ctx, in)
+	var out destination.PublishResult
+	var err error
+	if len(req.Prepared) > 0 {
+		var se SignedEvent
+		if se, err = a.prepared(req.Prepared, in.Kind); err != nil {
+			out.Status = destination.StatusFailed
+		} else {
+			out, err = a.result(a.P.Broadcast(ctx, se))
+		}
+	} else {
+		out, err = a.publish(ctx, in)
+	}
 	out.Trace.Request = string(trace)
 	return out, err
+}
+
+// Prepare implements destination.Preparer: the signed (and mined) event,
+// which Publish then broadcasts on every attempt.
+func (a *Account) Prepare(ctx context.Context, req destination.PublishRequest) (json.RawMessage, error) {
+	se, err := a.P.Sign(ctx, noteInput(req))
+	if errors.Is(err, ErrInvalidInput) {
+		return nil, destination.Invalid(err)
+	}
+	if err != nil {
+		return nil, destination.Classify(err)
+	}
+	b, err := json.Marshal(se.Event)
+	if err != nil {
+		return nil, destination.Invalid(err)
+	}
+	return b, nil
+}
+
+// prepared decodes and checks a prepared event: it must be the owner's,
+// validly signed, and of the kind the item publishes.
+func (a *Account) prepared(raw json.RawMessage, kind int) (SignedEvent, error) {
+	var ev gonostr.Event
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		return SignedEvent{}, destination.Invalidf("stored event: %w", err)
+	}
+	if ev.PubKey != a.P.cfg.OwnerPubkey || !ev.CheckID() {
+		return SignedEvent{}, destination.Invalidf("stored event is not the owner's")
+	}
+	if !ev.VerifySignature() {
+		return SignedEvent{}, destination.Invalidf("stored event has a bad signature")
+	}
+	if kind == 0 {
+		kind = 1
+	}
+	if int(ev.Kind) != kind {
+		return SignedEvent{}, destination.Invalidf("stored event is kind %d, not %d", ev.Kind, kind)
+	}
+	return SignedEvent{Event: ev, POW: minedPOW(ev)}, nil
+}
+
+// minedPOW is the NIP-13 difficulty an event was mined to, from its nonce
+// tag (["nonce", n, target]), or 0.
+func minedPOW(ev gonostr.Event) int {
+	for _, tg := range ev.Tags {
+		if len(tg) >= 3 && tg[0] == "nonce" {
+			if n, err := strconv.Atoi(tg[2]); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 // noteInput maps a request to a kind-1 note: imeta tags for the media, a
@@ -176,6 +240,12 @@ func (a *Account) publish(ctx context.Context, in PublishInput) (destination.Pub
 	if err != nil {
 		return out, destination.Classify(err)
 	}
+	return a.result(res)
+}
+
+// result maps a broadcast's relay outcomes to the contract's result.
+func (a *Account) result(res PublishResult) (destination.PublishResult, error) {
+	out := destination.PublishResult{Status: destination.StatusFailed}
 	b, _ := json.Marshal(res)
 	out.Trace.Response = string(b)
 	out.Ref = destination.ItemRef{ID: res.EventID, Data: json.RawMessage(res.SignedEvent)}

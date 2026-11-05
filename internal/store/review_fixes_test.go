@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -95,11 +97,8 @@ func TestNewItemsKeyedAndDue(t *testing.T) {
 		}
 	}
 
-	if _, err := st.sql.Exec(`UPDATE posts SET status='sending' WHERE id='nk'`); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.MarkMissed("nk"); err != nil {
-		t.Fatal(err)
+	if ok, err := st.markMissed(context.Background(), "nk"); err != nil || !ok {
+		t.Fatalf("markMissed = %v, %v", ok, err)
 	}
 	for _, it := range items() {
 		if it.NextAttemptAt != nil {
@@ -158,7 +157,18 @@ func TestConcurrentWritersDontFailBusy(t *testing.T) {
 					errs <- err
 					continue
 				}
-				if err := st.AppendTargetAttempt(gp.Targets[0].ID, "success", "", "r", "u", 1, "", "", nil, ""); err != nil {
+				ctx := context.Background()
+				tid := gp.Targets[0].ID
+				if _, err := st.MarkDue(ctx, id, []int64{tid}, time.Now()); err != nil {
+					errs <- err
+					continue
+				}
+				c, err := st.ClaimItem(ctx, time.Now(), ClaimFilter{TargetID: tid})
+				if err != nil || c == nil {
+					errs <- fmt.Errorf("claim: %v, %v", c, err)
+					continue
+				}
+				if _, err := st.RecordItemResult(ctx, ItemResult{Claim: *c, Status: ItemPublished, RemoteID: "r", At: time.Now()}); err != nil {
 					errs <- err
 				}
 			}

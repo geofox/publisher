@@ -50,7 +50,7 @@ func (*capturingNostr) Quote(context.Context, string, string, string, string, []
 
 func TestDispatchNostrImeta(t *testing.T) {
 	cn := &capturingNostr{}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: cn})}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: cn})}
 	rec := d.Post(context.Background(), PostSpec{
 		MasterText: "hi", Platforms: []string{"nostr"}, Source: "web",
 		Images: []Img{
@@ -74,7 +74,7 @@ func TestDispatchNostrImeta(t *testing.T) {
 
 func TestDispatchNostrNoMedia(t *testing.T) {
 	cn := &capturingNostr{}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: cn})}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: cn})}
 	d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"nostr"}, Source: "web"})
 	if len(cn.gotImetas) != 0 {
 		t.Errorf("text-only post should pass no imeta, got %v", cn.gotImetas)
@@ -94,7 +94,7 @@ func (fakeMasto) QuoteStatus(context.Context, string, string, []Img) (legacyResu
 }
 
 func TestDispatchFanOut(t *testing.T) {
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fakeNostr{fail: true}, Mastodon: fakeMasto{}})}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: fakeNostr{fail: true}, Mastodon: fakeMasto{}})}
 	rec := d.Post(context.Background(), PostSpec{
 		MasterText: "hi", Platforms: []string{"nostr", "mastodon"}, Source: "web",
 	})
@@ -113,7 +113,7 @@ func TestDispatchFanOut(t *testing.T) {
 }
 
 func TestDispatchEmptyPlatforms(t *testing.T) {
-	d := &Dispatcher{}
+	d := &Dispatcher{Store: openDispatchStore(t)}
 	rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: nil, Source: "web"})
 	if rec.Status != "failed" {
 		t.Errorf("empty platforms status = %q, want failed", rec.Status)
@@ -121,7 +121,7 @@ func TestDispatchEmptyPlatforms(t *testing.T) {
 }
 
 func TestDispatchNilAdapter(t *testing.T) {
-	d := &Dispatcher{} // Nostr nil
+	d := &Dispatcher{Store: openDispatchStore(t)} // Nostr nil
 	rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"nostr"}, Source: "web"})
 	if rec.Status != "failed" || rec.Targets[0].Attempts[0].Error == "" {
 		t.Errorf("nil adapter not handled: %+v", rec)
@@ -129,7 +129,7 @@ func TestDispatchNilAdapter(t *testing.T) {
 }
 
 func TestDispatchDedupsPlatforms(t *testing.T) {
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fakeNostr{}})}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: fakeNostr{}})}
 	rec := d.Post(context.Background(), PostSpec{
 		MasterText: "hi", Platforms: []string{"nostr", "nostr"}, Source: "web",
 	})
@@ -151,7 +151,7 @@ func (simpleFakeBsky) QuoteBsky(context.Context, string, Overrides, []Img, strin
 }
 
 func TestDispatchBluesky(t *testing.T) {
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: simpleFakeBsky{}})}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: simpleFakeBsky{}})}
 	rec := d.Post(context.Background(), PostSpec{
 		MasterText: "hi", Platforms: []string{"bluesky"}, Source: "web",
 		Overrides: map[string]Overrides{"bluesky": {Langs: []string{"en"}}},
@@ -168,7 +168,7 @@ func (fakeThreads) PostThreads(ctx context.Context, text string, o Overrides, im
 }
 
 func TestDispatchThreads(t *testing.T) {
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Threads: fakeThreads{}})}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Threads: fakeThreads{}})}
 	rec := d.Post(context.Background(), PostSpec{
 		MasterText: "hi", Platforms: []string{"threads"}, Source: "web",
 		Overrides: map[string]Overrides{"threads": {TopicTag: "golang"}},
@@ -199,7 +199,7 @@ func (partialNostr) Quote(context.Context, string, string, string, string, []gon
 // A single partial target must make the whole post partial (not failed) — the
 // in-memory rec.Status returned to the API must match store.recomputeStatus.
 func TestPostPartialTarget(t *testing.T) {
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: partialNostr{}})}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: partialNostr{}})}
 	rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"nostr"}, Source: "web"})
 	if rec.Status != "partial" {
 		t.Errorf("post status = %q, want partial", rec.Status)
