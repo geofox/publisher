@@ -48,7 +48,7 @@ func (Driver) Manifest() destination.Manifest {
 			},
 			LinkPreview:  destination.LinkPreviewClient,
 			Languages:    3,
-			Interactions: destination.InteractionCaps{Reply: true, Quote: true, Repost: true},
+			Interactions: destination.InteractionCaps{Reply: true, Quote: true, Repost: true, QuoteVideo: true},
 			Idempotent:   destination.IdempotentNone,
 		},
 	}

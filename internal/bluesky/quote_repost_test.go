@@ -128,3 +128,47 @@ func TestAuthorityOf(t *testing.T) {
 		}
 	}
 }
+
+// TestGetPostReusesSession guards against resolving posts spending the
+// account's createSession rate limit: lookups share one session, and a failed
+// lookup drops it so the next one logs in again.
+func TestGetPostReusesSession(t *testing.T) {
+	var sessions, fail int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/xrpc/com.atproto.server.createSession":
+			sessions++
+			w.Write([]byte(`{"accessJwt":"jwt","did":"did:plc:me","handle":"me"}`))
+		case "/xrpc/app.bsky.feed.getPosts":
+			if fail > 0 {
+				fail--
+				http.Error(w, `{"error":"ExpiredToken"}`, 400)
+				return
+			}
+			w.Write([]byte(`{"posts":[{"uri":"at://did:plc:a/app.bsky.feed.post/x","cid":"cidx","author":{"handle":"a"},"record":{"text":"hi"},"viewer":{}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "id", "pw")
+	get := func() error {
+		_, err := c.GetPost(context.Background(), "https://bsky.app/profile/did:plc:a/post/x")
+		return err
+	}
+	for range 5 {
+		if err := get(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sessions != 1 {
+		t.Fatalf("5 lookups made %d sessions, want 1", sessions)
+	}
+	fail = 1
+	if get() == nil {
+		t.Fatal("want an error")
+	}
+	if err := get(); err != nil || sessions != 2 {
+		t.Fatalf("after a failure: err %v, sessions %d, want a new session", err, sessions)
+	}
+}

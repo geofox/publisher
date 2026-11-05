@@ -7,34 +7,18 @@ import (
 	"net/http"
 	"syscall"
 	"time"
+
+	"github.com/geofox/publisher/internal/netguard"
 )
 
 // maxRedirects bounds redirect chains so a hostile server can't spin us forever.
 const maxRedirects = 5
 
-// cgnatRange is RFC 6598 carrier-grade NAT space (100.64.0.0/10) — internal,
-// never a legitimate public verification target.
-var cgnatRange = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
-
 // maxResponseBytes caps any verification response body (CAR files, AP objects).
 const maxResponseBytes int64 = 8 << 20 // 8 MB
 
-// isBlockedIP reports whether an IP is in a range we must never dial from a
-// user-controlled URL: loopback, RFC1918/ULA private, link-local, or the
-// unspecified address. This is the core SSRF guard.
-func isBlockedIP(ip net.IP) bool {
-	if ip.IsLoopback() ||
-		ip.IsPrivate() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsUnspecified() {
-		return true
-	}
-	if ip4 := ip.To4(); ip4 != nil && cgnatRange.Contains(ip4) {
-		return true
-	}
-	return false
-}
+// isBlockedIP is the core SSRF guard (see netguard.IsBlockedIP).
+func isBlockedIP(ip net.IP) bool { return netguard.IsBlockedIP(ip) }
 
 // NewSafeClient returns an SSRF-guarded *http.Client that refuses
 // loopback/private/link-local/CGNAT targets.

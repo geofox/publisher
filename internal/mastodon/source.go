@@ -28,7 +28,12 @@ type SourceStatus struct {
 	QuoteCurrentUser string // automatic|manual|denied|unknown|"" (no quote info)
 }
 
-type SourceMedia struct{ URL, Alt string }
+// SourceMedia is one attachment of a resolved status. Video is set for
+// anything but a still image (video, gifv, audio).
+type SourceMedia struct {
+	URL, Alt string
+	Video    bool
+}
 
 var reTag = regexp.MustCompile(`<[^>]+>`)
 
@@ -64,6 +69,7 @@ func (c *Client) ResolveStatus(ctx context.Context, postURL string) (*SourceStat
 			Acct        string `json:"acct"`
 		} `json:"account"`
 		MediaAttachments []struct {
+			Type        string `json:"type"`
 			URL         string `json:"url"`
 			Description string `json:"description"`
 		} `json:"media_attachments"`
@@ -80,7 +86,7 @@ func (c *Client) ResolveStatus(ctx context.Context, postURL string) (*SourceStat
 		Visibility: st.Visibility, QuoteCurrentUser: st.QuoteApproval.CurrentUser,
 	}
 	for _, m := range st.MediaAttachments {
-		out.Media = append(out.Media, SourceMedia{URL: m.URL, Alt: m.Description})
+		out.Media = append(out.Media, SourceMedia{URL: m.URL, Alt: m.Description, Video: m.Type != "" && m.Type != "image"})
 	}
 	return out, nil
 }

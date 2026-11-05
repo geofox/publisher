@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"unicode"
 
 	"github.com/geofox/publisher/internal/store"
 )
@@ -31,6 +32,11 @@ type InteractSpec struct {
 	SourcePreview      SourcePreview // for fan-out reproduction
 	SourceImages       []Img         // original's media, re-hosted (fan-out only)
 	SourceMediaRecords []store.Media // archival records for the re-hosted source media
+	// Source is where the post came from ("web" when empty).
+	Source string
+	// Accounts names the account each platform posts as (platform →
+	// account id); a platform left out gets its env account.
+	Accounts map[string]string
 }
 
 // assembleReproduction builds a fan-out post body: commentary, an attributed copy
@@ -40,13 +46,75 @@ func assembleReproduction(commentary string, sp SourcePreview, sourceURL string)
 	if c := strings.TrimSpace(commentary); c != "" {
 		parts = append(parts, c)
 	}
-	if strings.TrimSpace(sp.Text) != "" {
-		parts = append(parts, "— "+sp.Author+":\n"+sp.Text)
+	if t := quotedText(sp.Text); t != "" {
+		parts = append(parts, "— "+quotedAuthor(sp.Author)+":\n"+t)
 	}
 	if sourceURL != "" {
 		parts = append(parts, sourceURL)
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// maxQuotedRunes caps how much of the original a link-quote copies; the link
+// leads to the rest.
+const maxQuotedRunes = 500
+
+// quotedText is the original's text as a link-quote copies it. The text
+// comes from someone else, so it is made inert: control and bidi characters
+// are dropped, an @ that would start a mention gets a word joiner after it
+// (so the copy doesn't notify the people the original names), and the text
+// is cut at maxQuotedRunes.
+func quotedText(s string) string {
+	var b strings.Builder
+	n := 0
+	rs := []rune(strings.TrimSpace(s))
+	for i, r := range rs {
+		if isInvisibleControl(r) {
+			continue
+		}
+		if n == maxQuotedRunes {
+			return strings.TrimSpace(b.String()) + "…"
+		}
+		b.WriteRune(r)
+		n++
+		if r == '@' && i+1 < len(rs) && (unicode.IsLetter(rs[i+1]) || unicode.IsDigit(rs[i+1]) || rs[i+1] == '_') {
+			b.WriteRune('\u2060')
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// quotedAuthor is the original's author as a link-quote names it: control and
+// bidi characters dropped, at most 100 characters. The handle's @ is kept,
+// so the author is credited as on the original network.
+func quotedAuthor(s string) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range strings.TrimSpace(s) {
+		if isInvisibleControl(r) || r == '\n' || r == '\t' {
+			continue
+		}
+		if n == 100 {
+			b.WriteRune('…')
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
+}
+
+// isInvisibleControl reports C0/C1 controls (but not newline or tab) and the
+// bidi embedding, override and isolate characters, which can make copied
+// text display differently from what it says.
+func isInvisibleControl(r rune) bool {
+	switch {
+	case r == '\n' || r == '\t':
+		return false
+	case r < 0x20, r >= 0x7f && r < 0xa0, r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+		return true
+	}
+	return false
 }
 
 // mediaMax is the per-post image cap of the account a target names (0 = no

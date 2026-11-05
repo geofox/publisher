@@ -432,7 +432,8 @@ paths:
         at most 60) it waits until the post settles and answers `201`
         with the outcome, or `202` if it has not settled by then;
         `Preference-Applied` says the wait was honored. A scheduled post
-        does not wait. Idempotent: send an `Idempotency-Key` so a retried
+        does not wait. `reply_to`, `quote` or `repost` (see SourceIn) make
+        the post an interaction with another post. Idempotent: send an `Idempotency-Key` so a retried
         request can't post twice. While a request waits, a retry with its
         key gets `409 idempotency_key_in_use`; `Prefer` is not part of the
         request's identity, so a retry that adds a wait gets the first
@@ -492,6 +493,10 @@ paths:
           $ref: "#/components/responses/Problem"
         "422":
           $ref: "#/components/responses/Invalid"
+        "502":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
         default:
           $ref: "#/components/responses/Problem"
   /v1/posts:preview:
@@ -533,6 +538,57 @@ paths:
           $ref: "#/components/responses/Problem"
         "422":
           $ref: "#/components/responses/Invalid"
+        "502":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/resolve:
+    post:
+      operationId: resolveSource
+      tags: [posts]
+      summary: Look up a post to reply to, quote or repost
+      description: |
+        Needs `posts:write`. Resolves a post URL (Bluesky, Mastodon) or a
+        Nostr nevent/note id: its author, text and media, the account of
+        yours on its network, and whether you can reply to, quote or
+        repost it. Threads posts can't be resolved (its API has no URL
+        lookup). Problems with the URL are `422` with a field code on
+        `/url`: `unrecognized` (not a post URL or Nostr id),
+        `not_supported` (Threads), `not_configured` (the network isn't
+        configured here), `unresolvable` (not found, deleted, private, or
+        not yet known to your server), `too_long`. When the post's network
+        can't be reached (a timeout, a 5xx), the answer is `502`
+        `upstream_failed`: try again.
+      security:
+        - bearer: ["posts:write"]
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SourceIn"
+      responses:
+        "200":
+          description: The post and what you can do with it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolvedSource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "502":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
         default:
           $ref: "#/components/responses/Problem"
   /v1/posts/{id}:
@@ -1218,6 +1274,12 @@ components:
               type: string
               format: date-time
               description: When to publish; in the future. Leave `schedule` out to publish now.
+        reply_to:
+          $ref: "#/components/schemas/SourceIn"
+        quote:
+          $ref: "#/components/schemas/SourceIn"
+        repost:
+          $ref: "#/components/schemas/SourceIn"
       example:
         content:
           text: "Hello from the API"
@@ -1230,6 +1292,26 @@ components:
             options: {visibility: unlisted}
             content: {content_warning: politics}
         threading: {numbering: true}
+    SourceIn:
+      type: object
+      additionalProperties: false
+      required: [url]
+      description: |
+        A post to act on, by its URL (or a Nostr nevent/note id). Set at most
+        one of `reply_to`, `quote` and `repost`. The server resolves it; the
+        action happens on your account on the source's network, which
+        `targets` must include. Only a quote may have other targets: each
+        gets a link-quote: your text, the original's text with its author
+        (at most 500 characters, with its mentions defused so nobody is
+        notified), its URL, and, best-effort, up to four of its images
+        copied after yours (not videos). A repost carries no content,
+        content settings or options. A Mastodon quote can't carry a video.
+        These are sent now: `schedule` is refused. The URL is resolved
+        as in `POST /v1/resolve`, with the same errors.
+      properties:
+        url:
+          type: string
+          maxLength: 2048
     PostContentIn:
       type: object
       additionalProperties: false
@@ -1303,12 +1385,16 @@ components:
           items:
             type: object
             additionalProperties: false
-            required: [account, type, items, link_card, warnings, media_notes]
+            required: [account, type, role, items, link_card, warnings, media_notes]
             properties:
               account:
                 type: string
               type:
                 type: string
+              role:
+                type: string
+                enum: [post, reply, quote, repost, link_quote]
+                description: What the account gets; `link_quote` is a quote's copy on another network.
               items:
                 type: array
                 description: The thread parts, in order; one for a post that fits.
@@ -1358,6 +1444,70 @@ components:
                       type: integer
                     note:
                       type: string
+    ResolvedSource:
+      type: object
+      additionalProperties: false
+      required: [platform, url, author, text, media, created_at, account, actions]
+      properties:
+        platform:
+          type: string
+        url:
+          type: string
+        author:
+          type: object
+          additionalProperties: false
+          required: [name, handle]
+          properties:
+            name:
+              type: string
+            handle:
+              type: string
+        text:
+          type: string
+        media:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [url, alt, type]
+            properties:
+              url:
+                type: string
+              alt:
+                type: string
+              type:
+                type: string
+                enum: [image, video]
+                description: A link-quote copies images only.
+        created_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        account:
+          type: ["string", "null"]
+          description: Your enabled account on the post's network; null when you have none.
+        actions:
+          type: object
+          additionalProperties: false
+          required: [reply, quote, repost]
+          properties:
+            reply:
+              $ref: "#/components/schemas/ActionAvailability"
+            quote:
+              $ref: "#/components/schemas/ActionAvailability"
+            repost:
+              $ref: "#/components/schemas/ActionAvailability"
+    ActionAvailability:
+      type: object
+      additionalProperties: false
+      required: [allowed]
+      properties:
+        allowed:
+          type: boolean
+        reason:
+          type: string
+          description: |
+            Why not, when not allowed. An allowed action may have one too, as
+            a note (a Mastodon quote that needs the author's approval lands
+            pending); `POST /v1/posts:preview` repeats it as a warning.
     MediaObject:
       type: object
       additionalProperties: false
@@ -1919,7 +2069,7 @@ components:
         interactions:
           type: object
           additionalProperties: false
-          required: [reply, quote, repost]
+          required: [reply, quote, repost, quote_video]
           properties:
             reply:
               type: boolean
@@ -1927,6 +2077,9 @@ components:
               type: boolean
             repost:
               type: boolean
+            quote_video:
+              type: boolean
+              description: A native quote can carry a video.
         idempotent:
           type: string
           enum: [none, key, natural]

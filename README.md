@@ -35,6 +35,7 @@ every route, request and response against it. So far it has:
 | `GET /v1/me` | any | who is calling, with which scopes |
 | `GET/POST /v1/tokens`, `GET/DELETE /v1/tokens/{id}` | `admin` | API tokens with scopes and expiry |
 | `POST /v1/posts` | `posts:write` | publish or schedule a post to one or more accounts (`Idempotency-Key`, `Prefer: wait`) |
+| `POST /v1/resolve` | `posts:write` | look up a post by URL: author, text, media, and whether you can reply, quote or repost |
 | `POST /v1/posts:preview` | `posts:write` | the same body: what each account would get (thread parts, link card, warnings); sends nothing |
 | `GET /v1/posts` | `posts:read` | the history, newest first; filter by `status`, `account`, `q`, `since`, `until`, `hidden` |
 | `GET /v1/posts/{id}` | `posts:read` | a post with its targets, items (thread parts), deliveries and attempts |
@@ -47,8 +48,8 @@ every route, request and response against it. So far it has:
 | `GET/PATCH /v1/media/{id}` | `media:write` | a media object's state; set its alt text |
 | `POST /v1/media:compress` | `media:write` | re-encode an image with a preset (HEIC to JPEG too); stores nothing |
 
-Drafts and the tools come next (replies, quotes and reposts with them);
-the web app moves over and the old routes go once `/v1` covers them.
+The tools (translate, verify, relay sync, public feed) come next; drafts
+move with the web app, which moves over before the old routes go.
 
 - **Posting** is two steps: upload media (`POST /v1/media`, which answers
   a `med_` id), then `POST /v1/posts` naming the accounts
@@ -60,6 +61,13 @@ the web app moves over and the old routes go once `/v1` covers them.
   outcome when it settles within 30 seconds (60 at most). Send an
   `Idempotency-Key` so a retried request can't post twice. A video must
   be `ready` (poll `GET /v1/media/{id}`) before a post can use it.
+- **Replies, quotes and reposts** use the same endpoint: add
+  `"reply_to": {"url": "…"}`, `"quote": {…}` or `"repost": {…}` with the
+  post's URL (or a Nostr `nevent`/`note` id). The server looks the post
+  up; the action happens on your account on its network, which `targets`
+  must include. A quote's other targets get a link-quote: your text, the
+  original's text (at most 500 characters, mentions defused) and author,
+  its link and, best-effort, up to four of its images (not videos).
 
 - **Statuses** are one vocabulary: a post or target is `scheduled`,
   `publishing`, `published`, `partial`, `failed`, `canceled` or `missed`,

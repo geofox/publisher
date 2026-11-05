@@ -438,6 +438,45 @@ as they move.
 >   in eight under `-race` on main too (a write waits out the 5 s
 >   `busy_timeout` under the race detector's slowdown).
 
+> PR 3d (split again: 3d interactions, 3e the tools):
+>
+> - **Interactions name the source by URL.** `reply_to`, `quote` or
+>   `repost` on `POST /v1/posts` take `{url}`; the server resolves it (the
+>   same resolver as `/api/resolve`), so clients never carry platform
+>   refs. The action happens on the target account of the source's type,
+>   which must be in `targets`; only a quote may have other targets, each
+>   a link-quote. A quote's source images are copied to Blossom at create
+>   time (best-effort, no videos). Interactions are sent now: `schedule`
+>   is refused.
+> - **Persist first for interactions too**: `Dispatcher.EnqueueInteraction`
+>   plans with `planInteract` (shared with the inline `InteractWithID`)
+>   and leaves sending to the workers.
+> - **`POST /v1/resolve`** returns the post's author, text, media, created
+>   time, your account on its network and per-action availability; it
+>   doesn't return the native ref.
+> - **Drafts move to PR 4.** A /v1 draft holds the `/v1` post body (media
+>   by id), unlike today's composer drafts; moving them now would mean two
+>   formats in one table, or converting drafts the current web app still
+>   reads. PR 4 moves the web app and converts the drafts once (their
+>   media become media objects). Draft consumption (`draft` on create)
+>   goes with them.
+> - **Review fixes (2 QA + 1 security):** Nostr relay hints in a pasted
+>   nevent are dialed only when `wss://` and public (`internal/netguard`),
+>   at most 4. Bluesky lookups reuse one session for 15 min, so resolving
+>   can't spend the createSession rate limit publishing needs. Copying a
+>   quote's images: at most 4 (and what the link-quotes have room for),
+>   20 MiB each, in parallel, 30 s in all, videos skipped by type before
+>   fetching. A link-quote's copied text is inert: controls and bidi
+>   characters dropped, mentions defused with a word joiner, cut at 500
+>   characters (web composer mirrors it). Resolve errors: `unrecognized`,
+>   `not_supported`, `not_configured`, `unresolvable` (422, fixed text) or
+>   502 `upstream_failed` for timeouts/5xx. Reposts refuse content
+>   settings and options (the engine ignores them). A native quote with
+>   video is refused unless `interactions.quote_video` (Mastodon's quote
+>   drops video). Mastodon "can't quote" reasons no longer promise a link.
+>   Deferred: hashtags in copied text stay live; a per-token rate limit on
+>   `/v1/resolve`; the preview lists copied images only as a warning.
+
 ## Task 3.1: Foundations
 
 - [ ] `internal/api/v1` package: router, problem-details writer, error

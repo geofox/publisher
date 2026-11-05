@@ -49,7 +49,7 @@ func (Driver) Manifest() destination.Manifest {
 			},
 			LinkPreview:    destination.LinkPreviewNone,
 			ContentWarning: true,
-			Interactions:   destination.InteractionCaps{Reply: true, Quote: true, Repost: true},
+			Interactions:   destination.InteractionCaps{Reply: true, Quote: true, Repost: true, QuoteVideo: true},
 			// The core persists the signed event (Prepare) before the
 			// first send and every attempt re-sends it: relays dedupe by
 			// event id.

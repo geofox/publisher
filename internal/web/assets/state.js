@@ -49,6 +49,22 @@ export function masterParts() {
 
 export function effectiveText(p) { return state.ov[p].text != null ? state.ov[p].text : state.master; }
 
+// The original's text and author as a link-quote copies them; these mirror Go
+// dispatch.quotedText / quotedAuthor: controls and bidi characters dropped, a
+// mention-starting @ followed by a word joiner, the text cut at 500
+// characters (the author at 100).
+const invisible = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu;
+function cut(chars, n) {
+  return chars.length > n ? chars.slice(0, n).join("").trim() + "…" : chars.join("").trim();
+}
+export function quotedText(s) {
+  const chars = [...s.trim().replace(invisible, "")];
+  return cut(chars, 500).replace(/@(?=[\p{L}\p{N}_])/gu, "@\u2060");
+}
+function quotedAuthor(s) {
+  return cut([...s.trim().replace(invisible, "").replace(/[\n\t]/g, "")], 100);
+}
+
 // assembleReproduction mirrors Go dispatch.assembleReproduction so a fan-out
 // target's live preview matches what gets posted: commentary, an attributed copy
 // of the original's text, then the source URL (blank-line separated). `sp` is the
@@ -58,7 +74,8 @@ export function assembleReproduction(commentary, sp, sourceURL) {
   const c = (commentary || "").trim();
   if (c) parts.push(c);
   sp = sp || {};
-  if ((sp.text || "").trim()) parts.push("— " + (sp.author_handle || "") + ":\n" + sp.text);
+  const t = quotedText(sp.text || "");
+  if (t) parts.push("— " + quotedAuthor(sp.author_handle || "") + ":\n" + t);
   if (sourceURL) parts.push(sourceURL);
   return parts.join("\n\n");
 }
