@@ -11,7 +11,7 @@ let _seq = 0;
 
 // fromV1 reads a POST /v1/resolve answer into the shape the composer keeps
 // for a source post.
-function fromV1(r) {
+export function fromV1(r) {
   const caps = {};
   for (const a of ["reply", "repost", "quote"]) caps[a] = (r.actions && r.actions[a]) || { allowed: false };
   return {

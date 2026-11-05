@@ -149,6 +149,8 @@ func main() {
 	a.PublicFeedToken = cfg.PublicFeedToken
 	a.Version = version
 	a.Progress = progress.NewRegistry()
+	// Drafts saved before /v1 get their /v1 shape, once, before requests.
+	a.ConvertOldDrafts(context.Background())
 	// Video pipeline: enabled only when both ffmpeg and ffprobe are present (dev
 	// hosts without them run image-only; the endpoints 503 with a clear message).
 	{

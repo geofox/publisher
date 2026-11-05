@@ -1,8 +1,16 @@
 "use strict";
-import { state, buildSpec, defaultOv, clearImages, bumpImagesGen } from "./state.js";
-import { loadDraft, markDirty, renderImages, newKey } from "./compose.js";
+import { state, v1PostBody, clearImages } from "./state.js";
+import { loadDraft, markDirty, mediaReady, newKey, resetComposer, rerenderComposer } from "./compose.js";
 import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
-import { flash, el } from "./common.js";
+import { flash, el, v1, problemError, confirmModal, ORDER } from "./common.js";
+import { accountByID, loadAccounts } from "./accounts.js";
+import { fromV1 } from "./interact.js";
+
+// Drafts live on the server (/v1/drafts). A draft holds a POST /v1/posts
+// body; the composer turns itself into one to save (v1PostBody) and reads
+// one back (specFromDraft). Each save sends the version it last read
+// (If-Match), so a draft changed in another tab is not overwritten
+// unknowingly.
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -17,6 +25,7 @@ function closeMobileSidebar() {
 
 let activeFilters = { q: "", tags: new Set() };
 let drafts = []; // last loaded list
+let listSeq = 0;
 
 function relativeTime(iso) {
   const d = new Date(iso);
@@ -27,15 +36,36 @@ function relativeTime(iso) {
   return Math.floor(s / 86400) + "d";
 }
 
+// draftCall is a /v1/drafts request that also returns the ETag.
+async function draftCall(path, { method = "GET", body, ifMatch } = {}) {
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (ifMatch) headers["If-Match"] = ifMatch;
+  const r = await fetch(path, {
+    method, credentials: "same-origin", headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = r.status === 204 ? null : await r.json().catch(() => null);
+  if (!r.ok) {
+    const err = problemError(r.status, data);
+    err.etag = r.headers.get("ETag") || "";
+    throw err;
+  }
+  return { data, etag: r.headers.get("ETag") || "" };
+}
+
+const draftPath = id => "/v1/drafts/" + encodeURIComponent(id);
+
 export async function loadDraftList() {
   const qs = new URLSearchParams();
   if (activeFilters.q) qs.set("q", activeFilters.q);
   for (const t of activeFilters.tags) qs.append("tag", t);
   qs.set("limit", "50");
+  const seq = ++listSeq;
   try {
-    const r = await fetch("/api/drafts?" + qs.toString(), { credentials: "same-origin" });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    drafts = await r.json();
+    const page = await v1("/v1/drafts?" + qs.toString());
+    if (seq !== listSeq) return; // a newer search answered first
+    drafts = (page && page.data) || [];
     renderList();
     renderTagFilters();
   } catch (e) {
@@ -46,30 +76,22 @@ export async function loadDraftList() {
 function renderList() {
   const list = $("#draft-list");
   if (!list) return;
-  list.innerHTML = "";
+  list.replaceChildren();
   if (!drafts || drafts.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "muted";
-    empty.style.padding = "8px";
-    empty.textContent = "No drafts yet.";
-    list.appendChild(empty);
+    list.append(el("div", { class: "muted", style: "padding:8px", text: "No drafts yet." }));
     refreshActiveControls();
     return;
   }
   for (const d of drafts) {
-    const row = document.createElement("div");
-    row.className = "draft-row" + (state.activeDraftId === d.id ? " active" : "");
+    const row = el("div", { class: "draft-row" + (state.activeDraftId === d.id ? " active" : "") },
+      el("div", { class: "title", text: d.title || "(untitled)" }),
+      el("div", { class: "preview", text: d.preview || "" }),
+      el("div", { class: "meta" },
+        el("span", { text: (d.tags || []).map(t => "#" + t).join(" ") }),
+        el("span", { class: "age", text: relativeTime(d.updated_at) })));
     row.dataset.id = d.id;
-    row.innerHTML = `
-      <div class="title">${escapeHTML(d.title || "(untitled)")}</div>
-      <div class="preview">${escapeHTML(d.preview || "")}</div>
-      <div class="meta">
-        <span>${(d.tags || []).map(t => "#" + escapeHTML(t)).join(" ")}</span>
-        <span class="age">${relativeTime(d.updated_at)}</span>
-      </div>
-    `;
     row.addEventListener("click", () => openDraft(d.id));
-    list.appendChild(row);
+    list.append(row);
   }
   refreshActiveControls();
 }
@@ -77,56 +99,177 @@ function renderList() {
 function renderTagFilters() {
   const box = $("#draft-tags");
   if (!box) return;
-  const all = new Set();
+  const all = new Set(activeFilters.tags);
   for (const d of drafts || []) for (const t of d.tags || []) all.add(t);
-  box.innerHTML = "";
+  box.replaceChildren();
   for (const t of all) {
-    const chip = document.createElement("span");
-    chip.className = "tag-chip" + (activeFilters.tags.has(t) ? " active" : "");
-    chip.textContent = "#" + t;
+    const chip = el("span", { class: "tag-chip" + (activeFilters.tags.has(t) ? " active" : ""), text: "#" + t });
     chip.addEventListener("click", () => {
       if (activeFilters.tags.has(t)) activeFilters.tags.delete(t);
       else activeFilters.tags.add(t);
       loadDraftList();
     });
-    box.appendChild(chip);
+    box.append(chip);
   }
 }
 
-async function openDraft(id) {
-  if (state.dirty && !confirm("Discard unsaved changes and load this draft?")) return;
+// ovFromTarget reads a target back into the composer's per-platform card:
+// the reverse of state.js v1Target.
+function ovFromTarget(p, t) {
+  const o = {}, opts = t.options || {}, c = t.content || {};
+  const langs = Array.isArray(c.languages) ? c.languages : [];
+  o.text = typeof c.text === "string" ? c.text : null;
+  if (p === "bluesky") {
+    o.reply = opts.reply_gate || "";
+    o.disable_quotes = !!opts.disable_quotes;
+    o.langs = langs.join(",");
+  }
+  if (p === "mastodon") {
+    o.visibility = opts.visibility || "";
+    o.spoiler_text = c.content_warning || "";
+    o.sensitive = !!c.sensitive;
+    o.language = langs[0] || "";
+  }
+  if (p === "threads") {
+    o.topic_tag = opts.topic_tag || "";
+    o.reply_control = opts.reply_control || "";
+  }
+  if (p === "nostr") {
+    if (opts.pow != null) o.pow = opts.pow;
+    o.content_warning = c.content_warning || "";
+  }
+  return o;
+}
+
+// sourceInteraction resolves the post a draft replies to or quotes, for the
+// composer's interaction mode; null (with a note) when it can't be read.
+async function sourceInteraction(post, platforms) {
+  const action = post.quote ? "quote" : post.reply_to ? "reply" : "";
+  if (!action) return { interaction: null };
+  const url = (post.quote || post.reply_to).url;
   try {
-    const r = await fetch("/api/drafts/" + encodeURIComponent(id), { credentials: "same-origin" });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const d = await r.json();
-    // hydrate spec from d.spec (stored JSON) augmented with d.media on the front
-    let spec = {};
-    try { spec = JSON.parse(d.spec || "{}"); } catch { spec = {}; }
-    spec.id = d.id;
-    spec.media = d.media || [];
-    loadDraft(spec);
+    const src = fromV1(await v1("/v1/resolve", { method: "POST", body: { url } }));
+    return {
+      interaction: {
+        action, platform: src.platform,
+        sourcePreview: src.preview, sourceURL: src.preview.web_url, sourceAuthor: src.preview.author_handle,
+        sourceInput: url, caps: src.caps,
+        prevPlatforms: new Set(platforms.length ? platforms : ORDER),
+      },
+    };
+  } catch (e) {
+    return { interaction: null, lost: "The post this draft " + (action === "quote" ? "quotes" : "replies to") +
+      " couldn't be loaded (" + e.message + "): it opens as a new post" };
+  }
+}
+
+// specFromDraft turns a /v1 draft into what the composer's loadDraft reads.
+async function specFromDraft(d, etag) {
+  const accountsRead = await loadAccounts().then(() => true, () => false);
+  const post = d.post || {}, c = post.content || {};
+  const platforms = [], overrides = {};
+  let skipped = 0;
+  for (const t of post.targets || []) {
+    const a = accountByID(t.account);
+    if (!a || !ORDER.includes(a.type) || platforms.includes(a.type)) { skipped++; continue; }
+    platforms.push(a.type);
+    overrides[a.type] = ovFromTarget(a.type, t);
+  }
+  const objects = new Map((d.media || []).map(m => [m.id, m]));
+  const media = [], anchors = {};
+  let missing = 0;
+  for (const cm of c.media || []) {
+    const m = objects.get(cm.id);
+    if (!m) { missing++; continue; }
+    const id = newKey();
+    media.push({
+      client_id: id, media_id: m.id, blossom_url: m.url, mime: m.mime, dim: m.dim || "",
+      blurhash: m.blurhash || "", size_bytes: m.size_bytes || 0,
+      alt: typeof cm.alt === "string" ? cm.alt : (m.alt || ""),
+      duration_secs: m.duration_secs || 0, poster_url: m.poster_url || "",
+    });
+    if (cm.part > 0) anchors[id] = cm.part;
+  }
+  const { interaction, lost } = await sourceInteraction(post, platforms);
+  const notes = [];
+  if (!accountsRead && (post.targets || []).length) {
+    notes.push("The accounts couldn't be read: check where this goes before saving or posting");
+  } else if (skipped) notes.push(skipped + " of the draft's accounts aren't available here and were left out");
+  if (missing) notes.push(missing + " attachment(s) were deleted and left out");
+  if (lost) notes.push(lost);
+  return {
+    id: d.id, etag,
+    master_text: typeof c.text === "string" ? c.text : "",
+    platforms: interaction ? [interaction.platform, ...platforms.filter(p => p !== interaction.platform)] : platforms,
+    overrides, media, anchors, interaction,
+    number: post.threading ? !!post.threading.numbering : true,
+    scheduled_at: post.schedule && post.schedule.at,
+    notice: notes.length ? notes.join(" · ") : "",
+  };
+}
+
+// showDraft loads a /v1 draft into the composer. The spec is built first
+// (it may resolve a source post); the composer changes only once it is
+// ready, and only if still wanted (current: a newer open didn't start).
+async function showDraft(d, etag, notice, current = () => true) {
+  const spec = await specFromDraft(d, etag);
+  if (!current()) return;
+  // What was in Compose was confirmed away (or saved): replace it as is.
+  state.dirty = false;
+  state.master = "";
+  clearImages();
+  state.interaction = null;
+  if (notice && !spec.notice) spec.notice = notice;
+  spec.onLoaded = () => {
     renderTagChips(d.tags || []);
     clearRecovery();
     renderList();
     closeMobileSidebar();
     refreshActiveControls();
+    setStatus("", "");
+  };
+  // A note to read must outlast the usual "Draft loaded" flash.
+  loadDraft(spec);
+}
+
+let openSeq = 0;
+
+async function openDraft(id) {
+  if (state.dirty && !confirm("Discard unsaved changes and load this draft?")) return;
+  const seq = ++openSeq;
+  try {
+    const { data, etag } = await draftCall(draftPath(id));
+    await showDraft(data, etag, "", () => seq === openSeq);
   } catch (e) {
+    if (seq !== openSeq) return;
+    if (e.status === 404) { flash("That draft is gone"); loadDraftList(); return; }
     alert("Failed to load draft: " + e.message);
   }
 }
 
-function escapeHTML(s) {
-  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
 function setStatus(kind, text) {
-  const el = document.getElementById("draft-status");
-  if (!el) return;
-  el.className = "draft-status " + (kind || "");
-  el.textContent = text || "";
+  const node = document.getElementById("draft-status");
+  if (!node) return;
+  node.className = "draft-status " + (kind || "");
+  node.textContent = text || "";
 }
 
-export async function saveActiveDraft() {
+// draftBody is the composer as a draft: its post as it stands (targets
+// without an account left out), and its tags.
+function draftBody() {
+  const post = v1PostBody();
+  post.targets = post.targets.filter(t => t.account);
+  return { tags: currentTagChips(), post };
+}
+
+let saving = null;
+
+export function saveActiveDraft(opts) {
+  if (!saving) saving = doSave(opts).finally(() => { saving = null; });
+  return saving;
+}
+
+async function doSave({ overwrite = false } = {}) {
   if (state.images.some(i => i.video && i.phase !== "ready")) {
     flash(state.images.some(i => i.video && i.phase === "failed")
       ? "The video failed — retry or remove it first"
@@ -136,72 +279,55 @@ export async function saveActiveDraft() {
   const save = document.getElementById("draft-save");
   if (save) save.disabled = true;
   setStatus("saving", "saving…");
-  const spec = buildSpec();
-  spec.tags = currentTagChips();
-  // A compress still in flight would resolve onto detached entries after the
-  // save swaps state.images for blossom refs — abort them; the save uploads
-  // whatever each attachment's file is right now.
-  for (const img of state.images) {
-    if (img._compressAbort) { img._compressAbort.abort(); img._compressAbort = null; }
-  }
-  const fd = new FormData();
-  fd.append("spec", JSON.stringify(spec));
-  state.images.forEach((img, idx) => {
-    if (img.file) fd.append("img_" + idx, img.file);
-  });
   try {
-    let url = "/api/drafts";
-    let method = "POST";
+    if (!(await mediaReady())) { setStatus("error", "not saved: an attachment isn't uploaded"); return; }
+    const body = draftBody();
+    const edits = state.edits; // what this save holds
+    let res;
     if (state.activeDraftId) {
-      url = "/api/drafts/" + encodeURIComponent(state.activeDraftId);
-      method = "PUT";
-    }
-    const r = await fetch(url, { method, body: fd, credentials: "same-origin" });
-    if (!r.ok) {
-      if (r.status === 404 && state.activeDraftId) {
-        // stale id — fall through to a POST
-        state.activeDraftId = null;
-        return saveActiveDraft();
+      try {
+        res = await draftCall(draftPath(state.activeDraftId), {
+          method: "PATCH", body, ifMatch: overwrite ? "*" : (state.draftETag || "*"),
+        });
+      } catch (e) {
+        if (e.status === 404) {
+          state.activeDraftId = null; // deleted elsewhere: save it anew
+        } else if (e.status === 412) {
+          setStatus("error", "changed in another tab");
+          conflictModal();
+          return;
+        } else throw e;
       }
-      throw new Error("HTTP " + r.status);
     }
-    const saved = await r.json();
-    state.activeDraftId = saved.id;
-    state.dirty = false;
-    // refresh state.images to use the server-returned media (so subsequent saves don't re-upload)
-    // Shape must match compose.js loadDraft hydration so video identity, phase, and duration
-    // survive the remap — otherwise the XOR guard, video tile, and duration gates break.
-    clearImages();
-    state.images = (saved.media || []).map(m => ({
-      // Preserve the stable id (same as loadDraft) so placement anchors keyed by
-      // img.id keep matching after a save — otherwise every image's id becomes
-      // undefined and state.anchors collapses onto a single key.
-      id: m.client_id || m.id || newKey(),
-      blossom_url: m.blossom_url, sha256: m.sha256, mime: m.mime,
-      dim: m.dim, blurhash: m.blurhash, size_bytes: m.size_bytes,
-      alt: m.alt || "", ordinal: m.ordinal, file: null, media_id: m.media_id || "",
-      url: m.blossom_url || "",
-      duration_secs: m.duration_secs || 0,
-      poster_url: m.poster_url || "",
-      video: /^video\//.test(m.mime || ""),
-      phase: /^video\//.test(m.mime || "") ? "ready" : undefined,
-    }));
-    bumpImagesGen();
-    // Re-render the thumbnail strip so each alt input's oninput rebinds to the
-    // NEW state.images objects. Without this, the inputs stay bound to the
-    // pre-save objects and a subsequent alt edit is written to a detached object
-    // and lost on the next save.
-    renderImages();
-    setStatus("saved", "saved just now");
+    if (!res) res = await draftCall("/v1/drafts", { method: "POST", body });
+    state.activeDraftId = res.data.id;
+    state.draftETag = res.etag;
+    if (state.edits === edits) {
+      state.dirty = false;
+      setStatus("saved", "saved just now");
+    } else {
+      setStatus("dirty", "unsaved changes"); // edited while saving
+    }
     snapshot(); // clears recovery (since activeDraftId is now set)
     loadDraftList();
     refreshActiveControls();
   } catch (e) {
     setStatus("error", "save failed — retry");
+    flash("Draft not saved: " + e.message);
     console.warn("saveActiveDraft:", e);
   } finally {
     if (save) save.disabled = false;
   }
+}
+
+// conflictModal: the draft was saved elsewhere since this tab read it.
+function conflictModal() {
+  confirmModal({
+    title: "This draft changed in another tab",
+    body: "It was saved somewhere else after you opened it. Overwrite it with what's here, or cancel and open it from the list to see the other version (your edits here would be lost).",
+    confirmText: "Overwrite",
+    onConfirm: async () => { await saveActiveDraft({ overwrite: true }); return true; },
+  });
 }
 
 export function newDraft() {
@@ -209,17 +335,21 @@ export function newDraft() {
     const choice = confirm("You have unsaved changes. OK to discard and start a new draft? (Cancel to keep editing.)");
     if (!choice) return;
   }
-  // reset state
-  state.master = "";
+  clearComposer();
+}
+
+// clearComposer empties Compose for a new draft: text, media, settings,
+// schedule, numbering, targets and tags.
+function clearComposer() {
+  openSeq++; // a draft still opening must not land afterwards
   state.activeDraftId = null;
+  state.draftETag = "";
   state.dirty = false;
-  clearImages();
-  state.interaction = null;
-  // reset overrides to defaults — iterate state.ov keys for safety
-  for (const p of Object.keys(state.ov)) state.ov[p] = defaultOv(p);
-  // best-effort UI refresh
-  const ta = document.getElementById("master") || document.getElementById("m");
-  if (ta) ta.value = "";
+  state.anchors = {};
+  state.platforms = new Set(ORDER);
+  resetComposer();
+  const num = document.getElementById("threadnum"); if (num) num.checked = true;
+  rerenderComposer();
   renderTagChips([]);
   setStatus("", "");
   loadDraftList();
@@ -228,23 +358,21 @@ export function newDraft() {
 
 function currentTagChips() {
   return Array.from(document.querySelectorAll("#draft-tags-input .tag-chip"))
-    .map(el => el.dataset.tag);
+    .map(node => node.dataset.tag);
 }
 
 function renderTagChips(tags) {
   const host = document.querySelector("#draft-tags-input .tag-chips");
   if (!host) return;
-  host.innerHTML = "";
+  host.replaceChildren();
   for (const t of tags) {
-    const chip = document.createElement("span");
-    chip.className = "tag-chip";
+    const chip = el("span", { class: "tag-chip", text: "#" + t + " ✕" });
     chip.dataset.tag = t;
-    chip.textContent = "#" + t + " ✕";
     chip.addEventListener("click", () => {
       chip.remove();
       markDirty();
     });
-    host.appendChild(chip);
+    host.append(chip);
   }
 }
 
@@ -277,9 +405,9 @@ function maybeShowRecoveryBanner() {
   if (r) r.addEventListener("click", () => {
     const all = recovered.images || [];
     const refs = all.filter(i => i.blossom_url);
-    // Reference attachments (ready videos, re-saved image refs) hydrate like a
+    // Reference attachments (uploaded images, ready videos) hydrate like a
     // loaded draft; fresh local-File images cannot survive localStorage.
-    loadDraft({ ...recovered, media: refs });
+    loadDraft({ ...recovered, id: null, media: refs });
     if (all.length > refs.length) {
       flash((all.length - refs.length) + " attachment(s) couldn't be restored — re-attach them");
     }
@@ -342,22 +470,20 @@ export function installDraftsSidebar() {
 export async function deleteActiveDraft() {
   if (!state.activeDraftId) return;
   if (!confirm("Delete this draft? This cannot be undone.")) return;
+  const del = async ifMatch => draftCall(draftPath(state.activeDraftId), { method: "DELETE", ifMatch });
   try {
-    const r = await fetch("/api/drafts/" + encodeURIComponent(state.activeDraftId), {
-      method: "DELETE", credentials: "same-origin",
-    });
-    if (!r.ok && r.status !== 204) throw new Error("HTTP " + r.status);
-    state.activeDraftId = null;
-    state.dirty = false;
-    state.master = "";
-    clearImages();
-    const ta = document.getElementById("master") || document.getElementById("m");
-    if (ta) ta.value = "";
-    setStatus("", "");
-    loadDraftList();
-    refreshActiveControls();
+    try {
+      await del(state.draftETag || "*");
+    } catch (e) {
+      if (e.status === 404) { clearComposer(); return; } // already gone
+      if (e.status !== 412) throw e;
+      if (!confirm("This draft was changed in another tab since you opened it. Delete it anyway?")) return;
+      await del("*");
+    }
+    clearComposer();
   } catch (e) {
     setStatus("error", "delete failed");
+    flash("Draft not deleted: " + e.message);
     console.warn("deleteActiveDraft:", e);
   }
 }
@@ -375,32 +501,23 @@ export function populateTranslateMenu() {
   sel.hidden = false;
   sel.replaceChildren(el("option", { value: "", text: "🌐 Translate to…" }),
     ...targets.map(t => el("option", { value: t, text: String(t).toUpperCase() })));
-  // attach the change handler once (replace any prior handler by cloning the node would lose the options;
-  // instead, idempotently bind a property-based handler):
+  // A property handler, so calling this again doesn't bind twice.
   sel.onchange = async () => {
     const target = sel.value;
     sel.value = "";
-    if (!target || !state.activeDraftId) return;
+    if (!target) return;
+    if (!state.activeDraftId) { flash("Save the draft first, then translate it"); return; }
+    if (state.dirty) { flash("Save your changes first: the translation is made from the saved draft"); return; }
     setStatus("saving", "translating…");
     try {
-      const r = await fetch(
-        "/api/drafts/" + encodeURIComponent(state.activeDraftId) + "/translate",
-        { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target }), credentials: "same-origin" }
-      );
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const newD = await r.json();
-      // load the new draft into Compose
-      let spec = {};
-      try { spec = JSON.parse(newD.spec || "{}"); } catch {}
-      spec.id = newD.id;
-      spec.media = newD.media || [];
-      loadDraft(spec);
-      renderTagChips(newD.tags || []);
-      setStatus("saved", "translated → new draft");
+      const { data, etag } = await draftCall(draftPath(state.activeDraftId) + ":translate", {
+        method: "POST", body: { target_lang: target },
+      });
+      await showDraft(data, etag, "Translated → new draft");
       loadDraftList();
     } catch (e) {
       setStatus("error", "translate failed");
+      flash("Translate failed: " + e.message);
       console.warn("translate:", e);
     }
   };

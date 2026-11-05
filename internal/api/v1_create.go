@@ -49,6 +49,8 @@ type v1CreatePostReq struct {
 	ReplyTo *v1SourceIn `json:"reply_to"`
 	Quote   *v1SourceIn `json:"quote"`
 	Repost  *v1SourceIn `json:"repost"`
+	// Draft, when set, is deleted once the post is saved (posting a draft).
+	Draft *string `json:"draft"`
 }
 
 type v1CreateContent struct {
@@ -95,6 +97,7 @@ type v1CreateSchedule struct {
 type createPlan struct {
 	spec    dispatch.PostSpec
 	at      *time.Time
+	draft   *store.V1Draft // the draft the post uses up, as read
 	targets []plannedTarget
 	media   []*store.MediaObject // the post's media, in order
 	// mediaReq is each media's index in the request.
@@ -155,6 +158,25 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 		errs = append(errs, fieldError{Pointer: ptr, Code: code, Detail: detail})
 	}
 	plan := &createPlan{}
+
+	if req.Draft != nil {
+		pr, _ := principalFrom(ctx)
+		sid, ok := parseID(*req.Draft, prefixDraft)
+		switch {
+		case !pr.can(scopeDraftsWrite):
+			add("/draft", "not_permitted", "posting a draft needs the drafts:write scope")
+		case !ok:
+			add("/draft", "unknown_draft", "no such draft")
+		default:
+			d, err := a.Store.GetV1Draft(ctx, owner, sid)
+			if errors.Is(err, store.ErrDraftNotFound) {
+				add("/draft", "unknown_draft", "no such draft")
+			} else if err != nil {
+				return nil, nil, err
+			}
+			plan.draft = d
+		}
+	}
 
 	// Shared content.
 	text := ""
@@ -514,15 +536,32 @@ func (a *API) v1CreatePost(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, http.StatusBadGateway, codeUpstream, "the post's network could not be reached; try again")
 		return
 	}
+	ienq, _ := a.Dispatch.(interactionEnqueuer)
+	if plan.ix != nil && ienq == nil {
+		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "publishing replies, quotes and reposts is not available")
+		return
+	}
+	// The draft is taken before the post is saved, so two requests posting
+	// it (a double click, two tabs) make one post; a draft saved again since
+	// it was read is not lost. If saving fails, the draft is put back.
+	if d := plan.draft; d != nil {
+		switch err := a.Store.DeleteV1Draft(r.Context(), d.OwnerID, d.ID, d.Version); {
+		case errors.Is(err, store.ErrDraftNotFound):
+			invalid(w, r, []fieldError{{Pointer: "/draft", Code: "unknown_draft", Detail: "the draft was posted or deleted meanwhile"}})
+			return
+		case errors.Is(err, store.ErrDraftConflict):
+			invalid(w, r, []fieldError{{Pointer: "/draft", Code: "draft_changed", Detail: "the draft was saved again meanwhile; post what it holds now"}})
+			return
+		case err != nil:
+			slog.ErrorContext(r.Context(), "v1: take posted draft", "err", err)
+			problem(w, r, http.StatusInternalServerError, codeInternal, "saving the post failed")
+			return
+		}
+	}
 	// Saving plans the post, which may fetch a link card: the post must
 	// not be lost to a client that hangs up meanwhile.
 	var p *store.Post
 	if plan.ix != nil {
-		ienq, ok := a.Dispatch.(interactionEnqueuer)
-		if !ok {
-			problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "publishing replies, quotes and reposts is not available")
-			return
-		}
 		ctx := context.WithoutCancel(r.Context())
 		if want, n := sourceImagesWanted(plan), a.rehostSourceMedia(ctx, plan); n < want {
 			slog.WarnContext(ctx, "v1: quote: some of the original's images were not copied", "want", want, "copied", n)
@@ -533,6 +572,11 @@ func (a *API) v1CreatePost(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.ErrorContext(r.Context(), "v1: save post", "err", err)
+		if d := plan.draft; d != nil {
+			if rerr := a.Store.RestoreV1Draft(context.WithoutCancel(r.Context()), d); rerr != nil {
+				slog.ErrorContext(r.Context(), "v1: put back draft after a failed post", "draft_id", d.ID, "err", rerr)
+			}
+		}
 		problem(w, r, http.StatusInternalServerError, codeInternal, "saving the post failed")
 		return
 	}

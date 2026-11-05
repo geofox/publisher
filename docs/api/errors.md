@@ -94,6 +94,10 @@ Resolving an unknown item (`:resolve`) adds `unknown_item`, and for its
 `url` `not_found` (no such post), `not_own` (another account's post),
 `duplicate` (another part of the same thread) and `not_permitted` (the
 account's token can't look posts up, e.g. Mastodon without `read:search`).
+Drafts add `unknown_media` and `unknown_account` (media or accounts that
+aren't yours), and posting one (`draft` on `POST /v1/posts`) adds
+`unknown_draft`, `draft_changed` (saved again meanwhile) and
+`not_permitted` (the token lacks `drafts:write`).
 
 ## invalid_parameter
 
@@ -130,6 +134,13 @@ key: you will get that request's response.
 **422.** This key was already used, by this caller, for a different
 request (another body or another route). A key names one request: use a new
 key for a new request. Keys are kept for 24 hours.
+
+## precondition_failed
+
+**412.** The `If-Match` header names a version the resource is no longer
+at: it changed since you read it (a draft saved from another tab, say).
+The response's `ETag` is the current version. Read the resource again,
+merge, and retry with the new ETag, or send `If-Match: *` to overwrite.
 
 ## unreadable_upload
 

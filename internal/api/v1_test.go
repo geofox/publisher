@@ -362,6 +362,11 @@ func TestV1Conformance(t *testing.T) {
 	png := string(pngBytes(t, 4, 4))
 	imgHdr := map[string]string{"Content-Type": "image/png"}
 	newPost := `{"content":{"text":"hi","media":[{"id":"` + med + `"}]},"targets":[{"account":"` + e.acct("bluesky") + `"}]}`
+	drf := &store.V1Draft{OwnerID: store.DefaultOwner, Text: "draft", Body: `{"content":{"text":"draft"},"targets":[]}`}
+	if err := e.st.CreateV1Draft(context.Background(), drf); err != nil {
+		t.Fatal(err)
+	}
+	drfPath := "/v1/drafts/" + draftAPIID(drf.ID)
 	stream, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	calls := []struct {
@@ -401,6 +406,12 @@ func TestV1Conformance(t *testing.T) {
 		{"GET /v1/accounts/{id}/nostr/relays", req{method: "GET", path: relays}, 200},
 		{"POST /v1/accounts/{id}/nostr/relays:scan", req{method: "POST", path: relays + ":scan", body: `{"relays":["wss://a.example"]}`}, 200},
 		{"POST /v1/accounts/{id}/nostr/relays:sync", req{method: "POST", path: relays + ":sync", body: `{"direction":"pull"}`}, 200},
+		{"GET /v1/drafts", req{method: "GET", path: "/v1/drafts?q=dr&tag=x"}, 200},
+		{"POST /v1/drafts", req{method: "POST", path: "/v1/drafts", body: `{"title":"t","tags":["x"],"post":` + newPost + `}`}, 201},
+		{"GET /v1/drafts/{id}", req{method: "GET", path: drfPath}, 200},
+		{"PATCH /v1/drafts/{id}", req{method: "PATCH", path: drfPath, header: map[string]string{"If-Match": `"1"`}, body: `{"title":"new"}`}, 200},
+		{"POST /v1/drafts/{id}:translate", req{method: "POST", path: drfPath + ":translate", body: `{"target_lang":"fr"}`}, 201},
+		{"DELETE /v1/drafts/{id}", req{method: "DELETE", path: drfPath, header: map[string]string{"If-Match": `"2"`}}, 204},
 		{"GET /v1/public/feed", req{method: "GET", path: "/v1/public/feed?limit=5", auth: "feed-secret"}, 200},
 	}
 	seen := map[string]bool{}

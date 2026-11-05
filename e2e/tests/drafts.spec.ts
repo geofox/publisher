@@ -115,3 +115,89 @@ test("a draft with the same image twice posts both", async ({ page, fakes }) => 
   const calls = await fakes.waitForCalls(m, 4);
   for (const c of calls) expect(c.images, c.platform).toHaveLength(2);
 });
+
+test("a draft keeps its targets, numbering and tags", async ({ page }) => {
+  const m = marker("draftset");
+  await openApp(page);
+  await page.locator("#master").fill(`Settings ${m}\n---\nsecond`);
+  await page.locator("#chips .target-row.p-threads").click();
+  await page.locator("#threadnum").uncheck();
+  const tag = page.locator("#draft-tags-input input");
+  await tag.fill("Work");
+  await tag.press("Enter");
+  await page.locator("#draft-save").click();
+  await expect(page.locator("#draft-list .draft-row", { hasText: m })).toBeVisible();
+
+  // Stored as a POST /v1/posts body.
+  const list = await (await page.request.get(`/v1/drafts?q=${m}&tag=work`)).json();
+  expect(list.data).toHaveLength(1);
+  const d = await (await page.request.get(`/v1/drafts/${list.data[0].id}`)).json();
+  expect(d.post.content.text).toBe(`Settings ${m}\n---\nsecond`);
+  expect(d.post.targets).toHaveLength(3);
+  expect(d.post.threading).toEqual({ numbering: false });
+
+  await page.reload();
+  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#threadnum")).toBeChecked();
+  await page.locator("#draft-list .draft-row", { hasText: m }).click();
+  await expect(page.locator("#master")).toHaveValue(`Settings ${m}\n---\nsecond`);
+  await expect(page.locator("#threadnum")).not.toBeChecked();
+  await expect(page.locator("#chips .target-row.p-threads")).toHaveClass(/\boff\b/);
+  await expect(page.locator("#chips .target-row.p-bluesky")).not.toHaveClass(/\boff\b/);
+  await expect(page.locator("#draft-tags-input .tag-chip")).toHaveText(["#work ✕"]);
+});
+
+test("saving over a draft changed in another tab asks first", async ({ page, context }) => {
+  const m = marker("draftconf");
+  await openApp(page);
+  await page.locator("#master").fill(`Version one ${m}`);
+  await page.locator("#draft-save").click();
+  await expect(page.locator("#draft-list .draft-row", { hasText: m })).toBeVisible();
+
+  // Another tab opens the same draft, then this tab saves a change.
+  const other = await context.newPage();
+  await openApp(other);
+  await other.locator("#draft-list .draft-row", { hasText: m }).click();
+  await expect(other.locator("#master")).toHaveValue(`Version one ${m}`);
+  await page.locator("#master").fill(`Version two ${m}`);
+  await page.locator("#draft-save").click();
+  await expect(page.locator("#draft-status")).toHaveText("saved just now");
+
+  // The other tab's save is stale: it asks, and overwrites on request.
+  await other.locator("#master").fill(`Version three ${m}`);
+  await other.locator("#draft-save").click();
+  const modal = other.locator(".modal.confirm");
+  await expect(modal).toContainText("This draft changed in another tab");
+  await modal.getByRole("button", { name: "Overwrite" }).click();
+  await expect(other.locator("#draft-status")).toHaveText("saved just now");
+  const list = await (await page.request.get(`/v1/drafts?q=${m}`)).json();
+  expect(list.data).toHaveLength(1);
+  expect(list.data[0].preview).toBe(`Version three ${m}`);
+  await other.close();
+});
+
+test("a scheduled draft reopens scheduled, and New clears it", async ({ page }) => {
+  const m = marker("draftsched");
+  await openApp(page);
+  await page.locator("#master").fill(`Later ${m}`);
+  const later = await page.evaluate(() => {
+    const d = new Date(Date.now() + 2 * 24 * 3600 * 1000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  });
+  await page.locator("#schedat").fill(later);
+  await page.locator("#draft-save").click();
+  await expect(page.locator("#draft-list .draft-row", { hasText: m })).toBeVisible();
+
+  await page.reload();
+  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await page.locator("#draft-list .draft-row", { hasText: m }).click();
+  await expect(page.locator("#schedat")).toHaveValue(later);
+  await expect(page.locator("#submit")).toHaveText("Schedule");
+  await expect(page.locator("#schedclear")).toBeVisible();
+
+  await page.locator("#draft-new").click();
+  await expect(page.locator("#schedat")).toHaveValue("");
+  await expect(page.locator("#submit")).toHaveText("Post");
+  await expect(page.locator("#master")).toHaveValue("");
+});

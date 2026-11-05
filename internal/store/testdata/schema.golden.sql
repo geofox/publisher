@@ -1,6 +1,9 @@
 -- index idx_draft_media_draft_id
 CREATE INDEX idx_draft_media_draft_id ON draft_media(draft_id);
 
+-- index idx_drafts_owner_updated
+CREATE INDEX idx_drafts_owner_updated ON drafts(owner_id, updated_at, id);
+
 -- index idx_drafts_updated_at
 CREATE INDEX idx_drafts_updated_at ON drafts(updated_at DESC);
 
@@ -21,6 +24,9 @@ CREATE INDEX idx_item_deliveries_item ON item_deliveries(item_id);
 
 -- index idx_media_objects_owner
 CREATE INDEX idx_media_objects_owner ON media_objects(owner_id, created_at);
+
+-- index idx_media_objects_sha
+CREATE INDEX idx_media_objects_sha ON media_objects(owner_id, sha256);
 
 -- index idx_nostr_fanout_due
 CREATE INDEX idx_nostr_fanout_due ON nostr_fanout(status, next_attempt_at);
@@ -86,7 +92,7 @@ CREATE TABLE drafts (
   master_text TEXT NOT NULL DEFAULT '',
   tags_json   TEXT NOT NULL DEFAULT '[]',
   spec_json   TEXT NOT NULL
-, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id));
+, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id), body_json TEXT, version INTEGER NOT NULL DEFAULT 1);
 
 -- table events
 CREATE TABLE events (

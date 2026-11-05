@@ -32,7 +32,9 @@ export const state = {
   translateTargets: [],
   // Drafts integration
   activeDraftId: null, // id of the draft currently loaded into Compose, or null
+  draftETag: "",       // its version as last read or saved, for If-Match
   dirty: false,        // true when in-memory spec differs from last saved state
+  edits: 0,            // counts edits (markDirty), so a save knows if more came meanwhile
   anchors: {},         // image id → 0-based part index (keyed by stable image id)
 };
 ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
@@ -123,10 +125,9 @@ function ovFor(p) {
   return o;
 }
 
-// imageSpecs serializes state.images for a draft (the drafts API, until
-// drafts move to /v1). A fresh image still being uploaded becomes a `ref`
-// entry whose bytes ride as a multipart file; one in media storage (uploaded
-// through /v1/media, or a loaded draft's) becomes a `blossom_url` reference.
+// imageSpecs serializes state.images for the recovery snapshot. A fresh
+// image not uploaded yet can't survive a reload (its bytes are only in
+// memory); one in media storage becomes a reference with its media id.
 export function imageSpecs() {
   return state.images.filter(i => !(i.video && i.phase !== "ready")).map((i, idx) => {
     const url = i.file ? (i.media_id && i.remote_url) : i.blossom_url;
