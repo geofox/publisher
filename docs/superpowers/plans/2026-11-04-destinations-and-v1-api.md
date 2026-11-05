@@ -383,6 +383,10 @@ as they move.
 >   are scrubbed; streams are capped (64 open, 1 h each), HEAD returns at
 >   once, and a settled post's stream answers 204 to a client that has
 >   everything (EventSource then stops).
+> - **Deferred from review**: a delivery retry that fails before reaching
+>   the relay (no stored event) is only logged, no event; event `status`
+>   is the post's status, not `needs_attention`; event ids are global
+>   (gaps show other owners' volume once there are several).
 
 ## Task 3.1: Foundations
 
