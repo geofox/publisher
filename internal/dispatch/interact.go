@@ -118,6 +118,7 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 		Interaction: &store.Interaction{
 			Action: spec.Action, SourcePlatform: spec.SourcePlatform,
 			SourceURL: spec.SourceURL, SourceAuthor: spec.SourceAuthor,
+			Ref: marshalRef(spec.Ref),
 		},
 	}
 	ctx = logging.With(ctx, "post_id", rec.ID)
@@ -140,7 +141,7 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 		ov := spec.Overrides[spec.SourcePlatform]
 		head := &headSpec{}
 		if spec.Action == actionReply {
-			head.reply = buildReplyRef(spec)
+			head.reply = buildReplyRef(spec.SourcePlatform, spec.Ref)
 		} else {
 			head.quote = &spec.Ref
 		}
@@ -199,9 +200,8 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 // buildReplyRef derives the platform reply ref from the source. Bluesky: parent =
 // source, root = its thread root (or source if top-level). Mastodon: parent id =
 // local id. Nostr: parent = event id with the external author for the p-tag.
-func buildReplyRef(spec InteractSpec) *ReplyRef {
-	ref := spec.Ref
-	switch spec.SourcePlatform {
+func buildReplyRef(platform string, ref InteractRef) *ReplyRef {
+	switch platform {
 	case "bluesky":
 		root, rootCID := ref.ReplyRootURI, ref.ReplyRootCID
 		if root == "" {
@@ -214,4 +214,44 @@ func buildReplyRef(spec InteractSpec) *ReplyRef {
 		return &ReplyRef{RootID: ref.EventID, ParentID: ref.EventID, AuthorPubkey: ref.Author}
 	}
 	return nil
+}
+
+// marshalRef serializes the source's native ref for Interaction.Ref, so a
+// retry can repeat the reply/quote/repost instead of posting plainly.
+func marshalRef(ref InteractRef) json.RawMessage {
+	b, err := json.Marshal(ref)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// errNoInteractionRef is recorded on a retry of an interaction target whose
+// post predates Interaction.Ref: without the source ref the action can't be
+// repeated, and posting the text plainly would publish the wrong thing.
+const errNoInteractionRef = "cannot retry: this reply/quote/repost was recorded without its source reference; redo it from the composer"
+
+// interactionAction returns how a retry must re-run target tg of post: the
+// head action for the interaction's source-platform target (reply/quote head,
+// or a repost), nil/false for every other target (plain posts, including
+// quote fan-out reproductions). ok=false with a target means the action
+// can't be repeated (missing ref).
+func interactionAction(post *store.Post, tg store.Target) (head *headSpec, repost *InteractRef, isAction, ok bool) {
+	ix := post.Interaction
+	if ix == nil || tg.Platform != ix.SourcePlatform {
+		return nil, nil, false, true
+	}
+	var ref InteractRef
+	if len(ix.Ref) == 0 || json.Unmarshal(ix.Ref, &ref) != nil {
+		return nil, nil, true, false
+	}
+	switch ix.Action {
+	case actionRepost:
+		return nil, &ref, true, true
+	case actionQuote:
+		return &headSpec{quote: &ref}, nil, true, true
+	case actionReply:
+		return &headSpec{reply: buildReplyRef(ix.SourcePlatform, ref)}, nil, true, true
+	}
+	return nil, nil, true, false
 }

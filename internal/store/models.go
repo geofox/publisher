@@ -14,6 +14,10 @@ type Interaction struct {
 	SourcePlatform string `json:"source_platform"`
 	SourceURL      string `json:"source_url"`
 	SourceAuthor   string `json:"source_author"`
+	// Ref is the source post's platform-native reference (dispatch.InteractRef
+	// as JSON), kept so a retry can repeat the action. Empty on rows recorded
+	// before it existed.
+	Ref json.RawMessage `json:"ref,omitempty"`
 }
 
 type Post struct {

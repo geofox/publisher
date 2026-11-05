@@ -238,13 +238,29 @@ func (d *Dispatcher) dispatchTargets(ctx context.Context, post *store.Post, want
 				ov.LinkCard.ThumbData, ov.LinkCard.ThumbMime = data, mime
 			}
 		}
-		if len(tg.Segments) > 1 { // threaded target → resume the chain
-			if err := d.resumeChain(ctx, tg, ov, imgs, imetas, post.ID); err != nil {
+		// The source-platform target of a reply/quote/repost must repeat its
+		// action; re-posting its text plainly would publish a top-level post
+		// (or, for a repost, an empty one).
+		head, repost, isAction, ok := interactionAction(post, tg)
+		if isAction && !ok {
+			if err := d.Store.AppendTargetAttempt(tg.ID, "failed", errNoInteractionRef, "", "", 0, "", "", nil, ""); err != nil {
 				return err
 			}
 			continue
 		}
-		r := d.runPlatform(ctx, tg.Platform, tg.FinalText, ov, imgs, imetas, nil)
+		if len(tg.Segments) > 1 { // threaded target → resume the chain
+			if err := d.resumeChain(ctx, tg, ov, imgs, imetas, post.ID, head); err != nil {
+				return err
+			}
+			continue
+		}
+		var r TargetResult
+		switch {
+		case repost != nil:
+			r = d.runAction(ctx, actionRepost, tg.Platform, "", ov, nil, nil, *repost)
+		default:
+			r = d.runHead(ctx, tg.Platform, tg.FinalText, ov, imgs, imetas, head)
+		}
 		d.enqueueFanout(ctx, post.ID, r.Status, r.SignedEventJSON, r.PendingRelays)
 		if err := d.Store.AppendTargetAttempt(tg.ID, r.Status, r.Error, r.RemoteID, r.RemoteURL, r.LatencyMS, r.RequestJSON, r.ResponseJSON, r.Relays, r.SignedEventJSON); err != nil {
 			return err

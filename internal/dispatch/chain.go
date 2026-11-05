@@ -175,6 +175,13 @@ func pick(imgs []Img, idx []int) []Img {
 // head (segment 0) isn't success, the whole chain is re-posted from scratch.
 // No store writes — returns the updated outcome.
 func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag, postID string) chainOutcome {
+	return d.resumeSegmentsHead(ctx, tg, ov, imgs, imetas, postID, nil)
+}
+
+// resumeSegmentsHead is resumeSegments with the chain's head action: when the
+// head (segment 0) has to be re-posted, it is posted per head (reply/quote of
+// the interaction's source) rather than as a plain post. nil = plain head.
+func (d *Dispatcher) resumeSegmentsHead(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag, postID string, head *headSpec) chainOutcome {
 	segs := append([]store.Segment(nil), tg.Segments...)
 	card := ov.LinkCard
 	ov.LinkCard = nil
@@ -238,7 +245,12 @@ func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Ove
 		if card != nil && i == card.Segment {
 			segOv.LinkCard = card
 		}
-		r := d.runPlatform(ctx, tg.Platform, segs[i].Text, segOv, segImgs, segImetas, replyTo)
+		var r TargetResult
+		if i == 0 {
+			r = d.runHead(ctx, tg.Platform, segs[i].Text, segOv, segImgs, segImetas, head)
+		} else {
+			r = d.runPlatform(ctx, tg.Platform, segs[i].Text, segOv, segImgs, segImetas, replyTo)
+		}
 		segs[i] = store.Segment{Ordinal: i, Text: segs[i].Text, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID, Status: r.Status, Error: r.Error, Images: segs[i].Images}
 		d.enqueueFanout(ctx, postID, r.Status, r.SignedEventJSON, r.PendingRelays)
 		if i == 0 {
@@ -257,8 +269,8 @@ func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Ove
 }
 
 // resumeChain resumes a partial threaded target and persists the result.
-func (d *Dispatcher) resumeChain(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag, postID string) error {
-	out := d.resumeSegments(ctx, tg, ov, imgs, imetas, postID)
+func (d *Dispatcher) resumeChain(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag, postID string, head *headSpec) error {
+	out := d.resumeSegmentsHead(ctx, tg, ov, imgs, imetas, postID, head)
 	return d.Store.UpdateTargetSegments(tg.ID, out.Segments, out.Status, out.HeadRemoteID, out.HeadRemoteURL, out.LatencyMS, out.Error)
 }
 
