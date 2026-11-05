@@ -488,6 +488,9 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      # The first start after an upgrade migrates the database before it
+      # listens.
+      start_period: 60s
 ```
 
 ### Database upgrades and backups
@@ -504,6 +507,40 @@ An older image refuses to start on a database that a newer image has already
 migrated (`database schema is newer than this build supports`), instead of
 writing data the newer schema doesn't expect. Run the newer image again, or
 restore the backup.
+
+### Upgrading from 1.x to 2.0
+
+2.0 replaces the HTTP API with `/v1` and moves publishing onto a durable
+engine. No environment variable was removed or renamed. What to do:
+
+1. **Move every API caller to `/v1` first** (n8n included): `/publish`,
+   `/upload-media` and `/api/*` answer `410 Gone` in 2.0. See
+   [Migrating from the pre-1.0 API](#migrating-from-the-pre-10-api).
+   Existing tokens keep working with `posts:write media:write`.
+2. **Move the public feed consumer** to `GET /v1/public/feed` (same token,
+   same body; `limit` must now be 1 to 100). If a reverse proxy routes the
+   feed path specially, change the path there too.
+3. **Give the container 30 seconds to stop** (`stop_grace_period: 30s`,
+   `docker stop -t 30`), and a healthcheck `start_period` long enough for
+   the first start's migrations (60 s is plenty for a personal archive).
+4. **Have room for a full copy of the database**: before migrating, the
+   first start writes `publisher.db.pre-v1.bak` next to it.
+5. **Upgrade:** stop the old container, start the new image, and watch the
+   log for `applied database migration` (versions 1 to 8) and
+   `drafts: converted to /v1`. Drafts' attachments that aren't on the
+   `BLOSSOM_URL` server are dropped from them, each with a log line.
+6. **Check:** `/v1/accounts` lists one account per configured platform,
+   History shows your old posts, and a test post goes out.
+7. **Log alerts:** the per-publish fields (`relays_succeeded`, …) are gone;
+   alert on `engine: item not sent` with `give_up = true` (see
+   [Logging](#logging)).
+
+To roll back, stop the container, replace `publisher.db` with
+`publisher.db.pre-v1.bak` (and delete `publisher.db-wal` and
+`publisher.db-shm`), then run the 1.x image. Never run 1.x on the upgraded
+database: 1.x has no schema check and would write to tables it doesn't
+know. Posts made on 2.0 after the upgrade are lost from History by a
+rollback (they stay on the platforms).
 
 ### Build from source
 
