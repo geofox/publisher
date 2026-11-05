@@ -7,7 +7,6 @@ import (
 	"image/color"
 	"image/png"
 	"mime/multipart"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +142,8 @@ func TestV1CreatePostValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	long := strings.Repeat("a", maxPostTextRunes+1)
+	manyParts := strings.Repeat("word ", 9000) // 45000 chars: over 100 Bluesky posts
+	img := e.upload("x")
 	cases := []struct {
 		name, body string
 		want       []string // pointer:code
@@ -150,7 +151,15 @@ func TestV1CreatePostValidation(t *testing.T) {
 		{"no targets", `{"content":{"text":"x"},"targets":[]}`, []string{"/targets:required"}},
 		{"no text", `{"content":{},"targets":[{"account":"` + bsky + `"}]}`, []string{"/content/text:required"}},
 		{"blank override", `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `","content":{"text":" "}}]}`,
-			[]string{"/targets/0/content/text:required"}},
+			[]string{"/targets/0/content/text:empty"}},
+		// With media too: the engine would have sent the shared text.
+		{"blank override with media", `{"content":{"text":"x","media":[{"id":"` + img + `"}]},"targets":[{"account":"` + bsky + `","content":{"text":""}}]}`,
+			[]string{"/targets/0/content/text:empty"}},
+		{"long option", `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `","options":{"reply_gate":"` + strings.Repeat("a", 501) + `"}}]}`,
+			[]string{"/targets/0/options/reply_gate:invalid_option"}},
+		// Pointers name the request's own fields, past a target that failed.
+		{"thread parts", `{"content":{"text":"x"},"targets":[{"account":"acc_nope"},{"account":"` + bsky + `","content":{"text":"` + manyParts + `"}}]}`,
+			[]string{"/targets/0/account:unknown_account", "/targets/1/content/text:too_many_parts"}},
 		{"unknown account", `{"content":{"text":"x"},"targets":[{"account":"acc_nope"}]}`, []string{"/targets/0/account:unknown_account"}},
 		{"disabled account", `{"content":{"text":"x"},"targets":[{"account":"` + masto + `"}]}`, []string{"/targets/0/account:account_disabled"}},
 		{"duplicate", `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `"},{"account":"` + bsky + `"}]}`,
@@ -166,7 +175,7 @@ func TestV1CreatePostValidation(t *testing.T) {
 		{"bad language", `{"content":{"text":"x","languages":["english!"]},"targets":[{"account":"` + bsky + `"}]}`,
 			[]string{"/content/languages/0:invalid_language"}},
 		{"too long", `{"content":{"text":"` + long + `"},"targets":[{"account":"` + bsky + `"}]}`,
-			[]string{"/content/text:too_long", "/targets/0:too_long"}},
+			[]string{"/content/text:too_long", "/content/text:too_many_parts"}},
 		{"past", `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `"}],"schedule":{"at":"2001-01-01T00:00:00Z"}}`,
 			[]string{"/schedule/at:in_past"}},
 		{"bad time", `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `"}],"schedule":{"at":"soon"}}`,
@@ -404,5 +413,86 @@ func TestV1CompressMedia(t *testing.T) {
 	if p.Errors[0].Pointer != "/preset" {
 		t.Fatalf("errors = %+v", p.Errors)
 	}
-	_ = http.StatusOK
+	// Its own limit, not the upload route's.
+	big := strings.Repeat("\x00", int(maxUploadRequestBytes+2<<20))
+	p = wantProblem(t, e.do(req{method: "POST", path: "/v1/media:compress?preset=small", body: big, badRequest: true,
+		header: map[string]string{"Content-Type": "image/png"}}), 413, codeTooLarge)
+	if p.Detail != "images are at most 64 MiB" {
+		t.Fatalf("detail = %q", p.Detail)
+	}
+}
+
+func TestV1MediaUploadPartsAndTypes(t *testing.T) {
+	e := newV1Env(t, true)
+	e.withEngine()
+	form := func(fields ...[2]string) (string, string) {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		for _, f := range fields {
+			if f[0] == "file" {
+				fw, _ := mw.CreateFormFile("file", "a.bin") // curl -F sends octet-stream
+				_, _ = fw.Write([]byte(f[1]))
+			} else {
+				_ = mw.WriteField(f[0], f[1])
+			}
+		}
+		_ = mw.Close()
+		return buf.String(), mw.FormDataContentType()
+	}
+	// alt after the file still counts.
+	body, ct := form([2]string{"file", string(pngBytes(t, 4, 4))}, [2]string{"alt", "late alt"})
+	r := e.do(req{method: "POST", path: "/v1/media", body: body, header: map[string]string{"Content-Type": ct}})
+	wantStatus(t, r, 201)
+	var m v1MediaObjectBody
+	r.json(&m)
+	if m.Alt != "late alt" || m.Mime != "image/png" {
+		t.Fatalf("media = %+v", m)
+	}
+	// A QuickTime file sent as octet-stream is known to be a video (here:
+	// no video runner, so 503, not 422).
+	mov := "\x00\x00\x00\x14ftypqt  \x00\x00\x00\x00qt  "
+	body, ct = form([2]string{"file", mov})
+	wantProblem(t, e.do(req{method: "POST", path: "/v1/media", body: body, badRequest: true,
+		header: map[string]string{"Content-Type": ct}}), 503, codeUnavailable)
+	// The content decides, not the declared type: markup is refused.
+	for _, c := range []struct{ ct, body string }{
+		{"image/svg+xml", `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`},
+		{"image/png", "<html><script>alert(1)</script></html>"},
+	} {
+		p := wantProblem(t, e.do(req{method: "POST", path: "/v1/media", body: c.body, badRequest: true,
+			header: map[string]string{"Content-Type": c.ct}}), 422, codeValidation)
+		if p.Errors[0].Code != "unsupported_type" {
+			t.Errorf("%s: errors = %+v", c.ct, p.Errors)
+		}
+	}
+	// Two files.
+	body, ct = form([2]string{"file", string(pngBytes(t, 2, 2))}, [2]string{"file", string(pngBytes(t, 2, 2))})
+	p := wantProblem(t, e.do(req{method: "POST", path: "/v1/media", body: body, badRequest: true,
+		header: map[string]string{"Content-Type": ct}}), 422, codeValidation)
+	if p.Errors[0].Code != "too_many" {
+		t.Fatalf("errors = %+v", p.Errors)
+	}
+}
+
+func TestSniffType(t *testing.T) {
+	ftyp := func(brand string) []byte { return []byte("\x00\x00\x00\x18ftyp" + brand + "\x00\x00\x00\x00") }
+	cases := []struct {
+		declared string
+		head     []byte
+		want     string
+	}{
+		{"application/octet-stream", ftyp("qt  "), "video/quicktime"},
+		{"", ftyp("heic"), "image/heic"},
+		{"", ftyp("mif1"), "image/heif"},
+		{"", ftyp("isom"), "video/mp4"},
+		{"image/png", ftyp("isom"), "video/mp4"},
+		{"video/x-matroska", []byte{0x1a, 0x45, 0xdf, 0xa3, 0x42, 0x82, 0x88, 'm', 'a', 't', 'r', 'o', 's', 'k', 'a'}, "video/webm"}, // EBML: the sniffer says webm
+		{"video/x-unknown", []byte("garbage"), "text/plain"},
+		{"image/svg+xml", []byte("<svg></svg>"), "text/plain"},
+	}
+	for _, c := range cases {
+		if got := sniffType(c.declared, c.head); got != c.want {
+			t.Errorf("sniffType(%q, %q) = %q, want %q", c.declared, c.head, got, c.want)
+		}
+	}
 }

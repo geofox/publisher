@@ -29,9 +29,6 @@ var migrations = []migration{
 	{version: 7, name: "media_objects", up: migrateMediaObjects},
 }
 
-// migrateEvents (v6) adds the event log behind GET /v1/events: one row per
-// state change, written in the transaction that makes the change, so a
-// client resuming with Last-Event-ID misses nothing.
 // migrateMediaObjects (v7) stores the media /v1 uploads, before any post
 // uses them: an image is ready at once, a video once processed.
 func migrateMediaObjects(ctx context.Context, tx execer) error {
@@ -58,6 +55,9 @@ CREATE INDEX idx_media_objects_owner ON media_objects(owner_id, created_at);`)
 	return err
 }
 
+// migrateEvents (v6) adds the event log behind GET /v1/events: one row per
+// state change, written in the transaction that makes the change, so a
+// client resuming with Last-Event-ID misses nothing.
 func migrateEvents(ctx context.Context, tx execer) error {
 	_, err := tx.ExecContext(ctx, `
 CREATE TABLE events (

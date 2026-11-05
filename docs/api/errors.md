@@ -139,6 +139,11 @@ configuration.
 refused or could not take the file. `detail` gives its reason. Retry later
 or check the media storage configuration.
 
+## insufficient_storage
+
+**507.** The server ran out of disk space while receiving an upload. Try
+again later; the server's owner needs to free space.
+
 ## internal
 
 **500.** The server failed. The error is logged; retrying with the same

@@ -433,7 +433,10 @@ paths:
         with the outcome, or `202` if it has not settled by then;
         `Preference-Applied` says the wait was honored. A scheduled post
         does not wait. Idempotent: send an `Idempotency-Key` so a retried
-        request can't post twice.
+        request can't post twice. While a request waits, a retry with its
+        key gets `409 idempotency_key_in_use`; `Prefer` is not part of the
+        request's identity, so a retry that adds a wait gets the first
+        answer back without waiting.
       security:
         - bearer: ["posts:write"]
         - session: []
@@ -694,9 +697,10 @@ paths:
       summary: Upload an image or a video
       description: |
         Needs `media:write`. Send `multipart/form-data` with a `file` part
-        (and optional `alt` and `preset` parts), or the file itself as the
+        (and optional `alt` and `preset` parts, in any order), or the file itself as the
         body with its `image/*` or `video/*` type and `alt` and `preset` in
-        the query. Images are stored in media storage at once: `201`,
+        the query. The type is read from the file's content (JPEG, PNG,
+        GIF, WebP, HEIC, or a video). Images are stored in media storage at once: `201`,
         `ready`. Videos are normalized in the background (`preset`:
         `1080p`, the default, `720p` or `480p`): `202`, `processing`; poll
         `GET /v1/media/{id}` until it is `ready` or `failed`. Images are at
@@ -782,6 +786,8 @@ paths:
         "502":
           $ref: "#/components/responses/Problem"
         "503":
+          $ref: "#/components/responses/Problem"
+        "507":
           $ref: "#/components/responses/Problem"
         default:
           $ref: "#/components/responses/Problem"
@@ -1272,7 +1278,7 @@ components:
         content:
           type: object
           additionalProperties: false
-          description: This account's overrides; a field left out or null inherits. `languages` [] sends none.
+          description: This account's overrides; a field left out or null inherits. `languages` [] sends none. `text` can't be blank (leave it out to use the shared text).
           properties:
             text:
               type: ["string", "null"]
@@ -1662,6 +1668,7 @@ components:
             - unreadable_upload
             - unavailable
             - upstream_failed
+            - insufficient_storage
             - internal
         errors:
           type: array

@@ -32,6 +32,7 @@ const (
 	codeUnreadableUpload     = "unreadable_upload"
 	codeUnavailable          = "unavailable"
 	codeUpstream             = "upstream_failed"
+	codeNoSpace              = "insufficient_storage"
 	codeInternal             = "internal"
 )
 
@@ -56,6 +57,7 @@ var v1Codes = map[string]string{
 	codeUnreadableUpload:     "Upload could not be read",
 	codeUnavailable:          "Service unavailable",
 	codeUpstream:             "Upstream service failed",
+	codeNoSpace:              "Insufficient storage",
 	codeInternal:             "Internal error",
 }
 

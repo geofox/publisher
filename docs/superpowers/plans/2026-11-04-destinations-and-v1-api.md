@@ -416,8 +416,24 @@ as they move.
 > - **Bounds**: 50 000 characters of text, 20 targets, 10 languages, 40
 >   media (one video, not mixed with images), 100 thread parts per
 >   account.
-> - **New error codes**: `unreadable_upload` (400) and `upstream_failed`
->   (502, media storage refused the file).
+> - **New error codes**: `unreadable_upload` (400), `upstream_failed`
+>   (502, media storage refused the file) and `insufficient_storage` (507).
+> - **Review fixes**: a blank per-account text is refused (the engine
+>   reads an empty override as "inherit", so it previewed empty and
+>   published the shared text); once a post is saved the answer is never a
+>   5xx (a retry with its key would post twice); multipart `alt`/`preset`
+>   count in any order; the upload's type comes from its content (ftyp
+>   brands for QuickTime and HEIC; SVG or markup labelled as an image is
+>   refused); storage and ffmpeg errors go to the log, not the caller;
+>   uploads hold slots (4 images in memory, 2 videos on disk) and only a
+>   video gets the 30-minute deadline; a full disk is `507
+>   insufficient_storage`; string options are capped at 500 characters;
+>   error pointers name the request's own fields; the video watcher keeps
+>   going through a database error.
+> - **Deferred from review**: ffprobe/ffmpeg run without
+>   `-protocol_whitelist file` (the legacy route too; hardening, not a
+>   known exploit); a job whose media object fails to save runs on
+>   unreferenced; Threads' own topic-tag rules are left to Threads.
 > - Pre-existing: `TestConcurrentWritersDontFailBusy` fails about one run
 >   in eight under `-race` on main too (a write waits out the 5 s
 >   `busy_timeout` under the race detector's slowdown).

@@ -87,7 +87,10 @@ func (a *API) refreshMedia(ctx context.Context, m *store.MediaObject) error {
 	case !ok:
 		m.Status, m.Error = store.MediaFailed, "processing was interrupted (the server restarted); upload the video again"
 	case j.State == videojob.StateError:
-		m.Status, m.Error = store.MediaFailed, j.Err
+		// The cause (ffprobe's words, paths, storage addresses) goes to the
+		// log, not to the caller.
+		slog.WarnContext(ctx, "v1: video processing failed", "media_id", m.ID, "job", m.JobID, "err", j.Err)
+		m.Status, m.Error = store.MediaFailed, "the video could not be processed: it may be unreadable, or media storage failed (the server log has details)"
 	case j.State == videojob.StateDone && j.Media != nil:
 		r := j.Media
 		m.Status, m.URL, m.SHA256, m.Mime, m.Dim, m.Blurhash = store.MediaReady, r.URL, r.SHA256, r.Mime, r.Dim, r.Blurhash
@@ -120,8 +123,10 @@ func (a *API) watchVideo(m store.MediaObject) {
 		case <-t.C:
 		}
 		if err := a.refreshMedia(ctx, &m); err != nil {
+			// A busy database is no reason to stop: the job's result is
+			// only kept for a while.
 			slog.Warn("v1: finish video media", "media_id", m.ID, "err", err)
-			return
+			continue
 		}
 		if m.Status != store.MediaProcessing {
 			return
@@ -199,44 +204,97 @@ func altProblem(alt string) string {
 	return ""
 }
 
-// upload is a file being received: its first bytes, to tell its type, and
-// the rest.
-type upload struct {
-	mime string
-	body *bufio.Reader
+// Upload bounds. Images are read into memory (the pipeline hashes and
+// measures them), so few are read at once; videos stream to disk, so few
+// are staged at once (each can be 1 GiB).
+var (
+	imageReadSem   = make(chan struct{}, 4)
+	videoUploadSem = make(chan struct{}, 2)
+)
+
+const (
+	imageUploadDeadline = 5 * time.Minute
+	videoUploadDeadline = 30 * time.Minute
+)
+
+// uploadImageTypes are the image types the pipeline and the destinations
+// handle (HEIC is converted to JPEG on the way in).
+var uploadImageTypes = map[string]bool{
+	"image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true,
+	"image/heic": true, "image/heif": true,
 }
 
-func sniffUpload(declared string, r io.Reader) upload {
-	br := bufio.NewReaderSize(r, 512)
-	head, _ := br.Peek(512)
-	mt, _, _ := mime.ParseMediaType(declared)
-	if mt == "" || mt == "application/octet-stream" {
-		mt = http.DetectContentType(head)
-		if i := strings.IndexByte(mt, ';'); i >= 0 {
-			mt = mt[:i]
-		}
+// uploadVideoTypes are the video types taken on the word of the client
+// when the bytes don't say (ffprobe checks them anyway).
+var uploadVideoTypes = map[string]bool{
+	"video/mp4": true, "video/quicktime": true, "video/webm": true, "video/x-matroska": true,
+}
+
+// sniffType names an upload's type from its first bytes. The content
+// decides, not the client: a declared type is used only for a video
+// container the sniffer can't name.
+func sniffType(declared string, head []byte) string {
+	if t := ftypType(head); t != "" {
+		return t
 	}
-	if !strings.HasPrefix(mt, "video/") && strings.HasPrefix(http.DetectContentType(head), "video/") {
-		mt = strings.SplitN(http.DetectContentType(head), ";", 2)[0]
+	dt, _, _ := mime.ParseMediaType(http.DetectContentType(head))
+	if uploadImageTypes[dt] || strings.HasPrefix(dt, "video/") {
+		return dt
 	}
-	return upload{mime: mt, body: br}
+	if mt, _, _ := mime.ParseMediaType(declared); uploadVideoTypes[mt] {
+		return mt
+	}
+	return dt
+}
+
+// ftypType names an ISO base media file (MP4, QuickTime, HEIF) by its
+// ftyp brand; http.DetectContentType knows only MP4 brands.
+func ftypType(head []byte) string {
+	if len(head) < 12 || string(head[4:8]) != "ftyp" {
+		return ""
+	}
+	switch string(head[8:12]) {
+	case "heic", "heix", "heim", "heis", "hevc", "hevx":
+		return "image/heic"
+	case "mif1", "msf1":
+		return "image/heif"
+	case "avif", "avis":
+		return "image/avif" // not taken: the pipeline can't decode it
+	case "qt  ":
+		return "video/quicktime"
+	}
+	return "video/mp4"
+}
+
+// staged is the file of an upload, received: an image's bytes, or a
+// video in a temporary file.
+type staged struct {
+	mime    string
+	data    []byte
+	path    string
+	release func() // frees the slot the upload holds
+}
+
+func (s *staged) cleanup() {
+	if s.path != "" {
+		os.Remove(s.path)
+	}
+	if s.release != nil {
+		s.release()
+	}
 }
 
 // v1UploadMedia stores an image or starts processing a video. The file is
 // a multipart "file" part (with optional "alt" and, for a video, "preset"
-// parts) or the whole body, with its type as Content-Type and alt and
-// preset in the query.
+// parts, in any order) or the whole body, with alt and preset in the
+// query.
 func (a *API) v1UploadMedia(w http.ResponseWriter, r *http.Request) {
 	if a.Store == nil {
 		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "no database")
 		return
 	}
-	// The server's timeouts are for ordinary requests; an upload of a
-	// large video needs minutes.
 	rc := http.NewResponseController(w)
-	deadline := time.Now().Add(30 * time.Minute)
-	_ = rc.SetReadDeadline(deadline)
-	_ = rc.SetWriteDeadline(deadline.Add(time.Minute))
+	_ = rc.SetReadDeadline(time.Now().Add(imageUploadDeadline))
 	if r.ContentLength > maxVideoUploadBytes {
 		problem(w, r, http.StatusRequestEntityTooLarge, codeTooLarge, "uploads are at most 1 GiB")
 		return
@@ -244,29 +302,42 @@ func (a *API) v1UploadMedia(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxVideoUploadBytes)
 	q := r.URL.Query()
 	alt, preset := q.Get("alt"), q.Get("preset")
+	if preset != "" && !transcode.IsVideoPreset(preset) {
+		invalid(w, r, []fieldError{{Parameter: "preset", Code: "invalid", Detail: "one of " + strings.Join(transcode.VideoPresetNames, ", ")}})
+		return
+	}
+	var file *staged
+	defer func() {
+		if file != nil {
+			file.cleanup()
+		}
+	}()
 	ct, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	var file *upload
-	var mr *multipart.Reader
 	switch {
 	case ct == "multipart/form-data":
-		mr = multipart.NewReader(r.Body, params["boundary"])
-		for file == nil {
+		mr := multipart.NewReader(r.Body, params["boundary"])
+		for {
 			part, err := mr.NextPart()
 			if err == io.EOF {
 				break
 			}
 			if err != nil {
-				a.uploadReadProblem(w, r, err)
+				a.uploadReadProblem(w, r, err, "uploads are at most 1 GiB")
 				return
 			}
 			switch part.FormName() {
 			case "file":
-				up := sniffUpload(part.Header.Get("Content-Type"), part)
-				file = &up
+				if file != nil {
+					invalid(w, r, []fieldError{{Pointer: "/file", Code: "too_many", Detail: "one file per upload"}})
+					return
+				}
+				if file = a.receiveUpload(w, r, part.Header.Get("Content-Type"), part); file == nil {
+					return
+				}
 			case "alt", "preset":
 				b, err := io.ReadAll(io.LimitReader(part, 64<<10))
 				if err != nil {
-					a.uploadReadProblem(w, r, err)
+					a.uploadReadProblem(w, r, err, "uploads are at most 1 GiB")
 					return
 				}
 				if part.FormName() == "alt" {
@@ -283,50 +354,40 @@ func (a *API) v1UploadMedia(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case strings.HasPrefix(ct, "image/"), strings.HasPrefix(ct, "video/"), ct == "application/octet-stream":
-		up := sniffUpload(ct, r.Body)
-		file = &up
+		if file = a.receiveUpload(w, r, ct, r.Body); file == nil {
+			return
+		}
 	default:
 		problem(w, r, http.StatusUnsupportedMediaType, codeUnsupportedMediaType,
 			"send multipart/form-data with a file part, or the file itself with its image/* or video/* type")
 		return
 	}
+	var errs []fieldError
 	if msg := altProblem(alt); msg != "" {
-		invalid(w, r, []fieldError{{Pointer: "/alt", Code: "invalid", Detail: msg}})
+		errs = append(errs, fieldError{Pointer: "/alt", Code: "invalid", Detail: msg})
+	}
+	if preset != "" && !transcode.IsVideoPreset(preset) {
+		errs = append(errs, fieldError{Pointer: "/preset", Code: "invalid", Detail: "one of " + strings.Join(transcode.VideoPresetNames, ", ")})
+	}
+	if len(errs) > 0 {
+		invalid(w, r, errs)
 		return
 	}
 	pr, _ := principalFrom(r.Context())
-	if strings.HasPrefix(file.mime, "video/") {
-		a.uploadVideo(w, r, pr.OwnerID, file, alt, preset)
+	if file.path != "" {
+		a.startVideo(w, r, pr.OwnerID, file, alt, preset)
 		return
 	}
-	if !strings.HasPrefix(file.mime, "image/") {
-		invalid(w, r, []fieldError{{Pointer: "/file", Code: "unsupported_type", Detail: "an image or a video, not " + file.mime}})
-		return
-	}
-	body, err := io.ReadAll(io.LimitReader(file.body, maxUploadRequestBytes+1))
-	if err != nil {
-		a.uploadReadProblem(w, r, err)
-		return
-	}
-	if int64(len(body)) > maxUploadRequestBytes {
-		problem(w, r, http.StatusRequestEntityTooLarge, codeTooLarge, "images are at most 64 MiB")
-		return
-	}
-	if mr != nil {
-		_, _ = io.Copy(io.Discard, r.Body) // the rest of the form
-	}
-	if a.media == nil {
-		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "media storage is not configured")
-		return
-	}
-	res, err := a.media.Process(r.Context(), body, file.mime)
+	res, err := a.media.Process(r.Context(), file.data, file.mime)
 	if err != nil {
 		slog.WarnContext(r.Context(), "v1: store image", "err", err)
 		if strings.Contains(err.Error(), "heic convert") {
 			invalid(w, r, []fieldError{{Pointer: "/file", Code: "unreadable", Detail: "the HEIC image could not be converted"}})
 			return
 		}
-		problem(w, r, http.StatusBadGateway, codeUpstream, "media storage refused the file: "+err.Error())
+		// The cause (an internal address, storage's own words) goes to
+		// the log, not to the caller.
+		problem(w, r, http.StatusBadGateway, codeUpstream, "media storage refused the file or could not be reached; the server log has details")
 		return
 	}
 	m := &store.MediaObject{OwnerID: pr.OwnerID, Status: store.MediaReady, URL: res.URL, SHA256: res.SHA256, Mime: res.Mime,
@@ -340,44 +401,103 @@ func (a *API) v1UploadMedia(w http.ResponseWriter, r *http.Request) {
 	writeV1(w, http.StatusCreated, a.v1MediaBody(m))
 }
 
-func (a *API) uploadVideo(w http.ResponseWriter, r *http.Request, owner string, file *upload, alt, preset string) {
-	if a.VideoJobs == nil {
-		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "video processing is not available (ffmpeg is missing)")
-		return
+// receiveUpload reads the file: an image into memory, a video to a
+// temporary file. On a problem it answers it and returns nil.
+func (a *API) receiveUpload(w http.ResponseWriter, r *http.Request, declared string, body io.Reader) *staged {
+	br := bufio.NewReaderSize(body, 512)
+	head, _ := br.Peek(512)
+	mt := sniffType(declared, head)
+	switch {
+	case uploadImageTypes[mt]:
+		if a.media == nil {
+			problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "media storage is not configured")
+			return nil
+		}
+		select {
+		case imageReadSem <- struct{}{}:
+		case <-r.Context().Done():
+			problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "the request ended")
+			return nil
+		}
+		f := &staged{mime: mt, release: func() { <-imageReadSem }}
+		data, err := io.ReadAll(io.LimitReader(br, maxUploadRequestBytes+1))
+		if err != nil {
+			f.cleanup()
+			a.uploadReadProblem(w, r, err, "uploads are at most 1 GiB")
+			return nil
+		}
+		if int64(len(data)) > maxUploadRequestBytes {
+			f.cleanup()
+			problem(w, r, http.StatusRequestEntityTooLarge, codeTooLarge, "images are at most 64 MiB")
+			return nil
+		}
+		f.data = data
+		return f
+	case strings.HasPrefix(mt, "video/"):
+		if a.VideoJobs == nil {
+			problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "video processing is not available (ffmpeg is missing)")
+			return nil
+		}
+		busy := func() *staged {
+			w.Header().Set("Retry-After", "60")
+			problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "the video queue is full; try again when a video has finished")
+			return nil
+		}
+		if a.VideoJobs.Full() {
+			return busy()
+		}
+		// A slot is held while the file is received, so parallel uploads
+		// can't fill the disk before the queue turns them away.
+		select {
+		case videoUploadSem <- struct{}{}:
+		default:
+			return busy()
+		}
+		f := &staged{mime: mt, release: func() { <-videoUploadSem }}
+		// The server's timeouts are for ordinary requests; a large video
+		// needs minutes.
+		rc := http.NewResponseController(w)
+		deadline := time.Now().Add(videoUploadDeadline)
+		_ = rc.SetReadDeadline(deadline)
+		_ = rc.SetWriteDeadline(deadline.Add(time.Minute))
+		tmp, err := os.CreateTemp(a.videoWorkdir(), "upload-*.video")
+		if err != nil {
+			f.cleanup()
+			slog.ErrorContext(r.Context(), "v1: stage video", "err", err)
+			problem(w, r, http.StatusInternalServerError, codeInternal, "staging the upload failed")
+			return nil
+		}
+		f.path = tmp.Name()
+		_, err = io.Copy(tmp, br)
+		if cerr := tmp.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			f.cleanup()
+			var pe *fs.PathError
+			if errors.As(err, &pe) && (pe.Op == "write" || pe.Op == "close") {
+				slog.ErrorContext(r.Context(), "v1: stage video", "err", err)
+				problem(w, r, http.StatusInsufficientStorage, codeNoSpace, "the server has no room for the upload")
+				return nil
+			}
+			a.uploadReadProblem(w, r, err, "uploads are at most 1 GiB")
+			return nil
+		}
+		return f
 	}
+	invalid(w, r, []fieldError{{Pointer: "/file", Code: "unsupported_type",
+		Detail: "a JPEG, PNG, GIF, WebP or HEIC image, or a video; not " + mt}})
+	return nil
+}
+
+// startVideo hands a received video to the video runner and records it.
+func (a *API) startVideo(w http.ResponseWriter, r *http.Request, owner string, file *staged, alt, preset string) {
 	if preset == "" {
 		preset = "1080p"
 	}
-	if !transcode.IsVideoPreset(preset) {
-		invalid(w, r, []fieldError{{Pointer: "/preset", Code: "invalid", Detail: "one of " + strings.Join(transcode.VideoPresetNames, ", ")}})
-		return
-	}
-	if a.VideoJobs.Full() {
-		w.Header().Set("Retry-After", "60")
-		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "the video queue is full; try again when a video has finished")
-		return
-	}
-	tmp, err := os.CreateTemp(a.videoWorkdir(), "upload-*.video")
-	if err != nil {
-		slog.ErrorContext(r.Context(), "v1: stage video", "err", err)
-		problem(w, r, http.StatusInternalServerError, codeInternal, "staging the upload failed")
-		return
-	}
-	_, err = io.Copy(tmp, file.body)
-	tmp.Close()
-	if err != nil {
-		os.Remove(tmp.Name())
-		var pe *fs.PathError
-		if errors.As(err, &pe) && pe.Op == "write" {
-			slog.ErrorContext(r.Context(), "v1: stage video", "err", err)
-			problem(w, r, http.StatusInsufficientStorage, codeInternal, "the server ran out of room for the upload")
-			return
-		}
-		a.uploadReadProblem(w, r, err)
-		return
-	}
-	_, _ = io.Copy(io.Discard, r.Body)
-	jobID, err := a.VideoJobs.Submit(context.WithoutCancel(r.Context()), tmp.Name(), preset)
+	path := file.path
+	file.path = "" // the runner owns the file now, and removes it
+	jobID, err := a.VideoJobs.Submit(context.WithoutCancel(r.Context()), path, preset)
 	if err != nil {
 		w.Header().Set("Retry-After", "60")
 		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "the video queue is full; try again when a video has finished")
@@ -385,7 +505,9 @@ func (a *API) uploadVideo(w http.ResponseWriter, r *http.Request, owner string, 
 	}
 	m := &store.MediaObject{OwnerID: owner, Status: store.MediaProcessing, Mime: file.mime, Alt: alt, JobID: jobID}
 	if err := a.Store.CreateMediaObject(r.Context(), m); err != nil {
-		slog.ErrorContext(r.Context(), "v1: save media", "err", err)
+		// The job runs on with nothing pointing at it; its file in media
+		// storage is unreferenced, as an abandoned upload's would be.
+		slog.ErrorContext(r.Context(), "v1: save media", "err", err, "job", jobID)
 		problem(w, r, http.StatusInternalServerError, codeInternal, "saving the media failed")
 		return
 	}
@@ -394,10 +516,10 @@ func (a *API) uploadVideo(w http.ResponseWriter, r *http.Request, owner string, 
 	writeV1(w, http.StatusAccepted, a.v1MediaBody(m))
 }
 
-func (a *API) uploadReadProblem(w http.ResponseWriter, r *http.Request, err error) {
+func (a *API) uploadReadProblem(w http.ResponseWriter, r *http.Request, err error, limit string) {
 	var mbe *http.MaxBytesError
 	if errors.As(err, &mbe) {
-		problem(w, r, http.StatusRequestEntityTooLarge, codeTooLarge, "uploads are at most 1 GiB")
+		problem(w, r, http.StatusRequestEntityTooLarge, codeTooLarge, limit)
 		return
 	}
 	problem(w, r, http.StatusBadRequest, codeUnreadableUpload, "the upload could not be read: "+err.Error())
@@ -406,13 +528,41 @@ func (a *API) uploadReadProblem(w http.ResponseWriter, r *http.Request, err erro
 // v1CompressMedia re-encodes an image with a preset and answers the bytes;
 // nothing is stored. "convert" turns HEIC into JPEG.
 func (a *API) v1CompressMedia(w http.ResponseWriter, r *http.Request) {
+	const limit = "images are at most 64 MiB"
+	if r.ContentLength > maxUploadRequestBytes+1<<20 {
+		problem(w, r, http.StatusRequestEntityTooLarge, codeTooLarge, limit)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadRequestBytes+1<<20)
 	ct, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	preset := r.URL.Query().Get("preset")
-	var file *upload
+	if ct != "multipart/form-data" && !strings.HasPrefix(ct, "image/") && ct != "application/octet-stream" {
+		problem(w, r, http.StatusUnsupportedMediaType, codeUnsupportedMediaType,
+			"send multipart/form-data with a file part, or the image itself with its image/* type")
+		return
+	}
+	// The slot bounds the bodies held in memory as well as the work.
+	select {
+	case compressSem <- struct{}{}:
+		defer func() { <-compressSem }()
+	case <-r.Context().Done():
+		return
+	}
+	var mt string
 	var body []byte
-	switch {
-	case ct == "multipart/form-data":
+	read := func(declared string, rd io.Reader) bool {
+		br := bufio.NewReaderSize(rd, 512)
+		head, _ := br.Peek(512)
+		mt = sniffType(declared, head)
+		b, err := io.ReadAll(br)
+		if err != nil {
+			a.uploadReadProblem(w, r, err, limit)
+			return false
+		}
+		body = b
+		return true
+	}
+	if ct == "multipart/form-data" {
 		mr := multipart.NewReader(r.Body, params["boundary"])
 		for {
 			part, err := mr.NextPart()
@@ -420,18 +570,14 @@ func (a *API) v1CompressMedia(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			if err != nil {
-				a.uploadReadProblem(w, r, err)
+				a.uploadReadProblem(w, r, err, limit)
 				return
 			}
 			switch part.FormName() {
 			case "file":
-				up := sniffUpload(part.Header.Get("Content-Type"), part)
-				b, err := io.ReadAll(up.body)
-				if err != nil {
-					a.uploadReadProblem(w, r, err)
+				if !read(part.Header.Get("Content-Type"), part) {
 					return
 				}
-				file, body = &up, b
 			case "preset":
 				b, _ := io.ReadAll(io.LimitReader(part, 256))
 				preset = string(b)
@@ -439,22 +585,15 @@ func (a *API) v1CompressMedia(w http.ResponseWriter, r *http.Request) {
 				_, _ = io.Copy(io.Discard, part)
 			}
 		}
-	case strings.HasPrefix(ct, "image/"), ct == "application/octet-stream":
-		up := sniffUpload(ct, r.Body)
-		b, err := io.ReadAll(up.body)
-		if err != nil {
-			a.uploadReadProblem(w, r, err)
-			return
-		}
-		file, body = &up, b
-	default:
-		problem(w, r, http.StatusUnsupportedMediaType, codeUnsupportedMediaType,
-			"send multipart/form-data with a file part, or the image itself with its image/* type")
+	} else if !read(ct, r.Body) {
 		return
 	}
 	var errs []fieldError
-	if file == nil {
+	switch {
+	case body == nil:
 		errs = append(errs, fieldError{Pointer: "/file", Code: "required", Detail: "send the image as a multipart part named file"})
+	case !uploadImageTypes[mt]:
+		errs = append(errs, fieldError{Pointer: "/file", Code: "unsupported_type", Detail: "a JPEG, PNG, GIF, WebP or HEIC image; not " + mt})
 	}
 	params2, ok := transcode.PresetParams(preset)
 	if !ok {
@@ -464,13 +603,7 @@ func (a *API) v1CompressMedia(w http.ResponseWriter, r *http.Request) {
 		invalid(w, r, errs)
 		return
 	}
-	select {
-	case compressSem <- struct{}{}:
-		defer func() { <-compressSem }()
-	case <-r.Context().Done():
-		return
-	}
-	res, err := transcode.Image(body, file.mime, params2)
+	res, err := transcode.Image(body, mt, params2)
 	if err != nil || !res.Changed {
 		detail := "the image could not be re-encoded (not decodable, or over 100 megapixels)"
 		if err != nil {

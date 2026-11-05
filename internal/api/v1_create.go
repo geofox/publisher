@@ -36,6 +36,7 @@ const (
 	maxPostLanguages = 10
 	maxThreadParts   = 100
 	maxPreferWait    = 60 // seconds
+	maxOptionRunes   = 500
 )
 
 type v1CreatePostReq struct {
@@ -87,12 +88,15 @@ type createPlan struct {
 	at      *time.Time
 	targets []plannedTarget
 	media   []*store.MediaObject // the post's media, in order
+	// mediaReq is each media's index in the request.
+	mediaReq []int
 }
 
 type plannedTarget struct {
 	account store.Account
 	caps    destination.Capabilities
 	text    string
+	textPtr string // where text came from, for errors
 	ov      dispatch.Overrides
 	// warnings are notes about request fields the account ignores.
 	warnings []string
@@ -204,6 +208,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 				images++
 			}
 			plan.media = append(plan.media, m)
+			plan.mediaReq = append(plan.mediaReq, j)
 			plan.spec.MediaRecords = append(plan.spec.MediaRecords, mediaRecord(m, len(plan.spec.MediaRecords), alt))
 		}
 		switch {
@@ -259,13 +264,18 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 		seenAcct[ac.ID], seenType[ac.Type] = true, true
 		caps := a.caps(ctx, ac.Type)
 		name := drv.Manifest().Name
-		pt := plannedTarget{account: ac, caps: caps, text: text}
+		pt := plannedTarget{account: ac, caps: caps, text: text, textPtr: "/content/text"}
 		ov := dispatch.Overrides{}
 		cw, sensitive, langs := req.Content.ContentWarning, req.Content.Sensitive, req.Content.Languages
 		if c := t.Content; c != nil {
 			if c.Text != nil {
-				pt.text, ov.Text = *c.Text, *c.Text
-				if utf8.RuneCountInString(*c.Text) > maxPostTextRunes {
+				// The engine reads an empty override as "inherit", so a
+				// blank one would preview empty and publish the shared text.
+				pt.text, ov.Text, pt.textPtr = *c.Text, *c.Text, ptr+"/content/text"
+				switch {
+				case strings.TrimSpace(*c.Text) == "":
+					add(ptr+"/content/text", "empty", "leave text out (or null) to post the shared text")
+				case utf8.RuneCountInString(*c.Text) > maxPostTextRunes:
 					add(ptr+"/content/text", "too_long", "at most 50000 characters")
 				}
 			}
@@ -303,24 +313,20 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 			}
 		}
 		a.planOptions(drv.Manifest(), caps, t.Options, ptr+"/options", &ov, add)
-		if strings.TrimSpace(pt.text) == "" && len(req.Content.Media) == 0 {
-			switch {
-			case ov.Text != "" || (t.Content != nil && t.Content.Text != nil):
-				add(ptr+"/content/text", "required", "a post needs text or media")
-			case !sharedEmpty:
-				sharedEmpty = true
-				add("/content/text", "required", "a post needs text or media")
-			}
+		if strings.TrimSpace(pt.text) == "" && len(req.Content.Media) == 0 && ov.Text == "" && !sharedEmpty {
+			sharedEmpty = true
+			add("/content/text", "required", "a post needs text or media")
 		}
 		for j, m := range plan.media {
+			mptr := "/content/media/" + strconv.Itoa(plan.mediaReq[j])
 			if strings.HasPrefix(m.Mime, "video/") {
 				if fail, warns := dispatch.VideoCheck(name, caps.Media, m.SizeBytes, m.DurationSecs); fail != "" {
-					add(ptr+"/account", "media_unsupported", "media "+strconv.Itoa(j)+": "+fail)
+					add(mptr, "media_unsupported", "for "+ac.ID+": "+fail)
 				} else {
 					pt.warnings = append(pt.warnings, warns...)
 				}
 			} else if !caps.Media.Images.Supported {
-				add(ptr+"/account", "media_unsupported", name+" does not take images")
+				add(mptr, "media_unsupported", "for "+ac.ID+": "+name+" does not take images")
 				break
 			}
 		}
@@ -349,11 +355,12 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 	}
 
 	// The planner's split must stay a reasonable thread.
-	for i, pt := range plan.targets {
+	// (Planned without the link card: a card only shortens the text.)
+	for _, pt := range plan.targets {
 		cp := dispatch.PlanTarget(pt.caps, pt.text, nil, make([]int, len(plan.media)), plan.spec.Number)
 		if len(cp.Segs) > maxThreadParts {
-			add("/targets/"+strconv.Itoa(i), "too_long", "the text makes "+strconv.Itoa(len(cp.Segs))+
-				" thread parts here; at most 100")
+			add(pt.textPtr, "too_many_parts", "the text makes "+strconv.Itoa(len(cp.Segs))+
+				" thread parts on "+pt.account.ID+"; at most 100")
 		}
 	}
 	plan.spec.MasterText = text
@@ -392,6 +399,10 @@ func (a *API) planOptions(m destination.Manifest, caps destination.Capabilities,
 		}
 		if errs := destination.ValidateOptions([]destination.OptionSpec{spec}, map[string]any{k: v}); len(errs) > 0 {
 			add(p, "invalid_option", strings.TrimPrefix(errs[0], k+": "))
+			continue
+		}
+		if str, ok := v.(string); ok && utf8.RuneCountInString(str) > maxOptionRunes {
+			add(p, "invalid_option", "at most 500 characters")
 			continue
 		}
 		if k == "reply_gate" {
@@ -476,7 +487,14 @@ func (a *API) v1CreatePost(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusCreated
 		}
 	}
-	a.reloadPost(w, r, p.ID, status)
+	// The post is saved: whatever happens now, the answer must not be a
+	// 5xx, or the client would retry its Idempotency-Key and post twice.
+	if cur, err := a.Store.GetPost(p.ID); err == nil {
+		p = cur
+	} else {
+		slog.WarnContext(r.Context(), "v1: reload created post", "post_id", p.ID, "err", err)
+	}
+	writeV1(w, status, v1Post(*p, true))
 }
 
 // preferWait reads a wait preference (RFC 7240 §4.3) from Prefer headers,
