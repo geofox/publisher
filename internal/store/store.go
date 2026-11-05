@@ -20,7 +20,11 @@ func Open(path string) (*Store, error) {
 	}
 	dsn := "file:" + path +
 		"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)" +
-		"&_pragma=temp_store(MEMORY)&_pragma=foreign_keys(ON)"
+		"&_pragma=temp_store(MEMORY)&_pragma=foreign_keys(ON)" +
+		// A transaction that reads and then writes must hold the write lock
+		// from the start: under WAL a deferred one that upgrades fails with
+		// SQLITE_BUSY at once instead of waiting out busy_timeout.
+		"&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err

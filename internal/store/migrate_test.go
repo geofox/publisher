@@ -198,6 +198,13 @@ func mustExec(t *testing.T, db *sql.DB, q string, args ...any) {
 	}
 }
 
+// movedByV4 are baseline columns migration 4 moved into target_items and
+// item_deliveries.
+var movedByV4 = map[string]bool{
+	"post_targets.signed_event_json": true, "post_targets.segments_json": true,
+	"target_relays.gave_up_at": true, "target_relays.retry_count": true,
+}
+
 func TestOpenUpgradesLegacyDatabase(t *testing.T) {
 	for _, upTo := range []int{0, 5, len(baselineColumns)} {
 		t.Run(fmt.Sprintf("columns=%d", upTo), func(t *testing.T) {
@@ -211,6 +218,9 @@ func TestOpenUpgradesLegacyDatabase(t *testing.T) {
 			defer s.Close()
 
 			for _, c := range baselineColumns {
+				if movedByV4[c.table+"."+c.column] {
+					continue
+				}
 				if !columns(t, s.sql, c.table)[c.column] {
 					t.Errorf("column %s.%s missing after upgrade", c.table, c.column)
 				}

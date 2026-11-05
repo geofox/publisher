@@ -1,0 +1,230 @@
+package store
+
+import (
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// v2DB builds a database at schema v2 holding the four shapes v4 must carry
+// over: a threaded Bluesky target (segments_json with a legacy CID), a
+// single Mastodon post, a scheduled post, and a single Nostr post with a
+// failed relay and a pending fan-out row.
+func v2DB(t *testing.T, path string) {
+	t.Helper()
+	db, err := openWith(t, path, migrations[:2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	at := now.Add(time.Hour)
+	mustExec(t, db, `INSERT INTO posts (id, created_at, master_text, platforms, source, status) VALUES
+		('thread', ?, 'long', '["bluesky","mastodon"]', 'web', 'partial'),
+		('nostr', ?, 'hi', '["nostr"]', 'web', 'partial')`, now, now)
+	mustExec(t, db, `INSERT INTO posts (id, created_at, master_text, platforms, source, status, scheduled_at)
+		VALUES ('sched', ?, 'later', '["threads"]', 'web', 'scheduled', ?)`, now, at)
+	mustExec(t, db, `INSERT INTO media (post_id, ordinal, blossom_url, sha256, mime, dim, blurhash, size_bytes, alt) VALUES
+		('thread', 0, 'https://b/0', 'h0', 'image/png', '', '', 1, ''), ('thread', 1, 'https://b/1', 'h1', 'image/png', '', '', 1, '')`)
+
+	mustExec(t, db, `INSERT INTO post_targets (id, post_id, platform, final_text, fields_json, status, remote_id, remote_url,
+		latency_ms, attempt_count, last_attempt_at, segments_json, error_class) VALUES
+		(1, 'thread', 'bluesky', 'long', '{"langs":["en"]}', 'partial', 'at://0', 'https://bsky/0', 120, 1, ?,
+		 '[{"ordinal":0,"text":"one","remote_id":"at://0","remote_url":"https://bsky/0","cid":"cid0","status":"success","images":[0]},
+		   {"ordinal":1,"text":"two","status":"failed","error":"boom","images":[1]}]', 'transient')`, now)
+	mustExec(t, db, `INSERT INTO post_targets (id, post_id, platform, final_text, status, remote_id, remote_url, attempt_count, last_attempt_at)
+		VALUES (2, 'thread', 'mastodon', 'long', 'success', '99', 'https://m/99', 1, ?)`, now)
+	mustExec(t, db, `INSERT INTO post_targets (id, post_id, platform, final_text, status, segments_json)
+		VALUES (3, 'sched', 'threads', 'later', 'scheduled',
+		 '[{"ordinal":0,"text":"a","status":"pending"},{"ordinal":1,"text":"b","status":"pending"}]')`)
+	mustExec(t, db, `INSERT INTO post_targets (id, post_id, platform, final_text, status, remote_id, remote_url,
+		attempt_count, last_attempt_at, signed_event_json)
+		VALUES (4, 'nostr', 'nostr', 'hi', 'partial', 'ev1', 'https://njump/ev1', 1, ?, '{"id":"ev1","sig":"s"}')`, now)
+	mustExec(t, db, `INSERT INTO target_attempts (target_id, attempt_no, status, error, latency_ms, attempted_at) VALUES
+		(1, 1, 'partial', 'boom', 120, ?), (2, 1, 'success', '', 80, ?), (4, 1, 'partial', '', 300, ?)`, now, now, now)
+	mustExec(t, db, `INSERT INTO target_relays (target_id, relay_url, status, message, attempted_at, retry_count) VALUES
+		(4, 'wss://a', 'ok', '', ?, 0), (4, 'wss://b', 'failed', 'timeout', ?, 2)`, now, now)
+	mustExec(t, db, `INSERT INTO nostr_fanout (post_id, signed_event_json, relay_url, next_attempt_at, created_at)
+		VALUES ('nostr', '{"id":"ev1","sig":"s"}', 'wss://c', ?, ?)`, now, now)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMigrateTargetItemsCarriesEverything(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.db")
+	v2DB(t, path)
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// Every type in history got an env account, and every target points at it.
+	accts, err := s.Accounts(ctx, DefaultOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byType := map[string]string{}
+	for _, a := range accts {
+		byType[a.Type] = a.ID
+	}
+	for _, typ := range []string{"bluesky", "mastodon", "threads", "nostr"} {
+		if !strings.HasPrefix(byType[typ], "acc_") {
+			t.Fatalf("no env account for %s: %+v", typ, accts)
+		}
+	}
+
+	thread, err := s.GetPost("thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bsky, masto := thread.Targets[0], thread.Targets[1]
+	if bsky.AccountID != byType["bluesky"] || masto.AccountID != byType["mastodon"] {
+		t.Fatalf("account ids: %q %q", bsky.AccountID, masto.AccountID)
+	}
+	// The thread's segments became items, and the /api view is unchanged.
+	if len(bsky.Items) != 2 || len(bsky.Segments) != 2 {
+		t.Fatalf("thread items %d segments %d", len(bsky.Items), len(bsky.Segments))
+	}
+	i0, i1 := bsky.Items[0], bsky.Items[1]
+	if i0.Text != "one" || i0.Status != ItemPublished || i0.RemoteID != "at://0" || string(i0.Ref) != `{"cid":"cid0"}` ||
+		len(i0.Media) != 1 || i0.Media[0] != 0 || i0.PublishedAt == nil || i0.IdemKey == "" {
+		t.Errorf("item 0 = %+v", i0)
+	}
+	if i1.Text != "two" || i1.Status != ItemFailed || i1.Error != "boom" || i1.ErrorClass != "transient" || i1.Media[0] != 1 {
+		t.Errorf("item 1 = %+v", i1)
+	}
+	if bsky.Segments[0].Status != "success" || bsky.Segments[1].Status != "failed" || bsky.RemoteURL != "https://bsky/0" {
+		t.Errorf("segments view = %+v, remote %q", bsky.Segments, bsky.RemoteURL)
+	}
+	if bsky.FieldsJSON != `{"langs":["en"]}` || bsky.LatencyMS != 120 || bsky.ErrorClass != "transient" || len(bsky.Attempts) != 1 {
+		t.Errorf("target fields = %+v", bsky)
+	}
+	// A single post is a one-item target carrying its own media.
+	if len(masto.Items) != 1 || masto.Items[0].Status != ItemPublished || masto.RemoteID != "99" ||
+		len(masto.Items[0].Media) != 2 || masto.Segments != nil {
+		t.Errorf("single target = %+v items %+v", masto, masto.Items)
+	}
+
+	sched, _ := s.GetPost("sched")
+	if st := sched.Targets[0]; st.Status != "scheduled" || len(st.Items) != 2 || st.Items[0].Status != ItemPlanned ||
+		st.Segments[1].Status != "pending" {
+		t.Errorf("scheduled target = %+v items %+v", st, st.Items)
+	}
+	// Planned items are due when the engine should claim them, and every
+	// item keeps the key the dispatcher derived for it.
+	for _, it := range sched.Targets[0].Items {
+		if it.NextAttemptAt == nil || !it.NextAttemptAt.Equal(*sched.ScheduledAt) {
+			t.Errorf("scheduled item %d due %v, want %v", it.Ordinal, it.NextAttemptAt, sched.ScheduledAt)
+		}
+		if it.IdemKey != ItemKey("sched", "threads", it.Ordinal) {
+			t.Errorf("scheduled item %d key %q", it.Ordinal, it.IdemKey)
+		}
+	}
+
+	nostr, _ := s.GetPost("nostr")
+	nt := nostr.Targets[0]
+	if len(nt.Relays) != 2 || nt.Relays[1].URL != "wss://b" || nt.Relays[1].Status != "failed" || nt.Relays[1].RetryCount != 2 {
+		t.Errorf("relays = %+v", nt.Relays)
+	}
+	if nt.SignedEventJSON != `{"id":"ev1","sig":"s"}` || nt.Items[0].Status != ItemPartial {
+		t.Errorf("nostr target = %+v", nt)
+	}
+	// Attempts of single-item targets and fan-out rows point at their item.
+	var attemptItem, fanoutItem int64
+	if err := s.sql.QueryRow(`SELECT item_id FROM target_attempts WHERE target_id = 4`).Scan(&attemptItem); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.sql.QueryRow(`SELECT item_id FROM nostr_fanout`).Scan(&fanoutItem); err != nil {
+		t.Fatal(err)
+	}
+	if attemptItem != nt.Items[0].ID || fanoutItem != nt.Items[0].ID {
+		t.Errorf("attempt item %d, fan-out item %d, want %d", attemptItem, fanoutItem, nt.Items[0].ID)
+	}
+	var threadAttemptItem *int64
+	_ = s.sql.QueryRow(`SELECT item_id FROM target_attempts WHERE target_id = 1`).Scan(&threadAttemptItem)
+	if threadAttemptItem != nil {
+		t.Errorf("a thread's attempt spans items; item_id = %d, want NULL", *threadAttemptItem)
+	}
+
+	// The relay retry and resume paths work on the migrated rows.
+	if err := s.UpdateRelayStatus(4, "wss://b", "ok", ""); err != nil {
+		t.Fatal(err)
+	}
+	nostr, _ = s.GetPost("nostr")
+	if nostr.Status != "success" || nostr.Targets[0].Status != "success" || nostr.Targets[0].Items[0].Status != ItemPublished {
+		t.Errorf("after relay retry: post %q target %q item %q", nostr.Status, nostr.Targets[0].Status, nostr.Targets[0].Items[0].Status)
+	}
+	segs := bsky.Segments
+	segs[1].RemoteID, segs[1].RemoteURL, segs[1].Status, segs[1].Error = "at://1", "https://bsky/1", "success", ""
+	if err := s.UpdateTargetSegments(1, segs, "success", "at://0", "https://bsky/0", 50, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ = s.GetPost("thread")
+	if got := thread.Targets[0]; got.Status != "success" || got.Items[1].Status != ItemPublished ||
+		got.Items[1].AttemptCount != 1 || got.Items[0].AttemptCount != 0 || thread.Status != "success" {
+		t.Errorf("after resume: post %q target %+v items %+v", thread.Status, got, got.Items)
+	}
+}
+
+// Startup seeding enables configured types, disables the rest and keeps ids.
+func TestSeedEnvAccounts(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	first, err := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{"bluesky", "Bluesky"}, {"nostr", "Nostr"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || first["bluesky"].Label != "Bluesky" || !first["bluesky"].Enabled {
+		t.Fatalf("first seed = %+v", first)
+	}
+	second, err := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{"nostr", "Nostr"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || second["nostr"].ID != first["nostr"].ID {
+		t.Fatalf("second seed = %+v; ids must be stable", second)
+	}
+	all, _ := s.Accounts(ctx, DefaultOwner)
+	for _, a := range all {
+		if a.Type == "bluesky" && a.Enabled {
+			t.Errorf("an unconfigured type must be disabled, not deleted: %+v", a)
+		}
+	}
+	third, _ := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{"bluesky", "Bluesky"}})
+	if third["bluesky"].ID != first["bluesky"].ID {
+		t.Errorf("re-enabled account must keep its id")
+	}
+}
+
+// An attempt recorded against a thread (one that could not run, such as a
+// ref-less interaction) must not overwrite its live head.
+func TestRecordAttemptLeavesThreadItems(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	p := &Post{ID: "p", CreatedAt: time.Now().UTC(), Platforms: []string{"bluesky"}, Source: "web", Status: "partial",
+		Targets: []Target{{Platform: "bluesky", Status: "partial", Segments: []Segment{
+			{Ordinal: 0, Text: "a", RemoteID: "at://0", Status: "success"}, {Ordinal: 1, Text: "b", Status: "failed"}}}}}
+	if err := s.SavePost(p); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetPost("p")
+	if err := s.RecordAttempt(got.Targets[0].ID, AttemptResult{Status: "failed", Error: "cannot retry", ErrorClass: "invalid"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetPost("p")
+	tg := got.Targets[0]
+	if tg.Status != "failed" || tg.Items[0].Status != ItemPublished || tg.Items[0].RemoteID != "at://0" || len(tg.Attempts) != 1 {
+		t.Fatalf("target %q items %+v attempts %d", tg.Status, tg.Items, len(tg.Attempts))
+	}
+}

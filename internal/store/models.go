@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -39,8 +40,13 @@ type Post struct {
 	Interaction    *Interaction `json:"interaction,omitempty"`
 }
 
+// Target is one account a post publishes to. Its items are the posts it
+// makes (one, or one per thread part); RemoteID, RemoteURL, Relays,
+// Segments and SignedEventJSON are the /api view of those items (see
+// targetView).
 type Target struct {
 	ID              int64        `json:"id"`
+	AccountID       string       `json:"account_id,omitempty"`
 	Platform        string       `json:"platform"`
 	FinalText       string       `json:"final_text"`
 	FieldsJSON      string       `json:"fields_json"`
@@ -56,6 +62,7 @@ type Target struct {
 	Relays          []RelayState `json:"relays,omitempty"`
 	Segments        []Segment    `json:"segments,omitempty"`
 	SignedEventJSON string       `json:"-"` // nostr only; never sent to the client
+	Items           []Item       `json:"-"`
 }
 
 type Attempt struct {
@@ -101,48 +108,23 @@ type Segment struct {
 	RemoteID  string `json:"remote_id,omitempty"`
 	RemoteURL string `json:"remote_url,omitempty"`
 	// Ref is the destination's private reference data for the segment
-	// (destination.ItemRef.Data), needed to reply to it. It is stored but
-	// never sent to API clients (for Nostr it is the signed event, kept off
-	// the wire like Target.SignedEventJSON); see marshalSegments.
+	// (destination.ItemRef.Data), needed to reply to it. It is stored with
+	// the item but never sent to API clients (for Nostr it is the signed
+	// event, kept off the wire like Target.SignedEventJSON).
 	Ref json.RawMessage `json:"-"`
 	// CID is the Bluesky record CID of segments written before Ref existed.
-	// Read only: dispatch turns it into the Bluesky driver's Ref.
+	// Only the v4 migration reads it (into the item's ref).
 	CID    string `json:"cid,omitempty"`
 	Status string `json:"status"` // success | failed | pending
 	Error  string `json:"error,omitempty"`
 	Images []int  `json:"images,omitempty"` // attachment indices this post carries (placement plan)
 }
 
-// storedSegment is a Segment as segments_json holds it: with its Ref, which
-// the API form leaves out.
+// storedSegment is a Segment as pre-v4 segments_json held it: with its Ref.
+// Only the v4 migration reads it.
 type storedSegment struct {
 	Segment
 	Ref json.RawMessage `json:"ref,omitempty"`
-}
-
-func marshalSegments(segs []Segment) ([]byte, error) {
-	out := make([]storedSegment, len(segs))
-	for i, sg := range segs {
-		out[i] = storedSegment{Segment: sg, Ref: sg.Ref}
-	}
-	return json.Marshal(out)
-}
-
-func unmarshalSegments(b []byte, segs *[]Segment) error {
-	var in []storedSegment
-	if err := json.Unmarshal(b, &in); err != nil {
-		return err
-	}
-	if in == nil {
-		*segs = nil
-		return nil
-	}
-	*segs = make([]Segment, len(in))
-	for i, st := range in {
-		st.Segment.Ref = st.Ref
-		(*segs)[i] = st.Segment
-	}
-	return nil
 }
 
 func (s *Store) SavePost(p *Post) error {
@@ -177,40 +159,65 @@ func (s *Store) SavePost(p *Post) error {
 			return err
 		}
 	}
+	ctx := context.Background()
+	now := time.Now().UTC()
 	for _, tg := range p.Targets {
-		segJSON := ""
-		if len(tg.Segments) > 0 {
-			b, mErr := marshalSegments(tg.Segments)
-			if mErr != nil {
-				return mErr
+		accountID := tg.AccountID
+		if accountID == "" {
+			if accountID, err = envAccountFor(ctx, tx, DefaultOwner, tg.Platform); err != nil {
+				return err
 			}
-			segJSON = string(b)
 		}
 		res, err := tx.Exec(
-			`INSERT INTO post_targets(post_id,platform,final_text,fields_json,status,remote_id,remote_url,latency_ms,attempt_count,last_attempt_at,signed_event_json,segments_json,error_class)
-			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			p.ID, tg.Platform, tg.FinalText, tg.FieldsJSON, tg.Status, tg.RemoteID, tg.RemoteURL,
-			tg.LatencyMS, len(tg.Attempts), time.Now().UTC(), tg.SignedEventJSON, segJSON, nullStr(tg.ErrorClass),
+			`INSERT INTO post_targets(post_id,account_id,platform,final_text,fields_json,status,latency_ms,attempt_count,last_attempt_at,error_class)
+			 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+			p.ID, accountID, tg.Platform, tg.FinalText, tg.FieldsJSON, tg.Status,
+			tg.LatencyMS, len(tg.Attempts), now, nullStr(tg.ErrorClass),
 		)
 		if err != nil {
 			return err
 		}
 		tid, _ := res.LastInsertId()
-		for _, rl := range tg.Relays {
-			if _, err = tx.Exec(
-				`INSERT INTO target_relays(target_id,relay_url,status,message,attempted_at)
-				 VALUES(?,?,?,?,?)
-				 ON CONFLICT(target_id,relay_url) DO UPDATE SET status=excluded.status, message=excluded.message, attempted_at=excluded.attempted_at`,
-				tid, rl.URL, rl.Status, rl.Message, time.Now().UTC(),
-			); err != nil {
+		items := tg.Items
+		if items == nil {
+			items = itemsOf(tg, len(p.Media))
+		}
+		var headID int64
+		for i, it := range items {
+			if it.IdemKey == "" {
+				it.IdemKey = ItemKey(p.ID, tg.Platform, it.Ordinal)
+			}
+			if it.NextAttemptAt == nil && it.Status == ItemPlanned && p.Status != "missed" {
+				// A planned item is due at its post's time, or now.
+				due := now
+				if p.ScheduledAt != nil {
+					due = p.ScheduledAt.UTC()
+				}
+				it.NextAttemptAt = &due
+			}
+			if it.PublishedAt == nil && (it.Status == ItemPublished || it.Status == ItemPartial) {
+				it.PublishedAt = &now
+			}
+			id, err := insertItemID(ctx, tx, tid, it)
+			if err != nil {
 				return err
 			}
+			if err := upsertDeliveries(ctx, tx, id, it.Deliveries, now); err != nil {
+				return err
+			}
+			if i == 0 {
+				headID = id
+			}
+		}
+		var attemptItem any // a single post's attempts are its item's; a thread's span items
+		if len(items) == 1 {
+			attemptItem = headID
 		}
 		for _, at := range tg.Attempts {
 			if _, err = tx.Exec(
-				`INSERT INTO target_attempts(target_id,attempt_no,status,error,latency_ms,remote_id,request_json,response_json,attempted_at,error_class)
-				 VALUES(?,?,?,?,?,?,?,?,?,?)`,
-				tid, at.AttemptNo, at.Status, at.Error, at.LatencyMS, at.RemoteID, Scrub(at.RequestJSON), Scrub(at.ResponseJSON), at.AttemptedAt, nullStr(at.ErrorClass),
+				`INSERT INTO target_attempts(target_id,attempt_no,status,error,latency_ms,remote_id,request_json,response_json,attempted_at,error_class,item_id)
+				 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+				tid, at.AttemptNo, at.Status, at.Error, at.LatencyMS, at.RemoteID, Scrub(at.RequestJSON), Scrub(at.ResponseJSON), at.AttemptedAt, nullStr(at.ErrorClass), attemptItem,
 			); err != nil {
 				return err
 			}
@@ -258,19 +265,20 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		return nil, err
 	}
 
-	trows, err := s.sql.Query(`SELECT id,platform,final_text,fields_json,status,remote_id,remote_url,latency_ms,attempt_count,last_attempt_at,gave_up_at,signed_event_json,segments_json,COALESCE(error_class,'') FROM post_targets WHERE post_id=? ORDER BY id`, id)
+	trows, err := s.sql.Query(`SELECT id,account_id,platform,final_text,fields_json,status,latency_ms,attempt_count,last_attempt_at,gave_up_at,COALESCE(error_class,'') FROM post_targets WHERE post_id=? ORDER BY id`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer trows.Close()
 	for trows.Next() {
 		var tg Target
-		var fields, rid, rurl, sej, segs sql.NullString
+		var fields, ftext sql.NullString
 		var la, gu sql.NullTime
-		if err := trows.Scan(&tg.ID, &tg.Platform, &tg.FinalText, &fields, &tg.Status, &rid, &rurl, &tg.LatencyMS, &tg.AttemptCount, &la, &gu, &sej, &segs, &tg.ErrorClass); err != nil {
+		var lat sql.NullInt64
+		if err := trows.Scan(&tg.ID, &tg.AccountID, &tg.Platform, &ftext, &fields, &tg.Status, &lat, &tg.AttemptCount, &la, &gu, &tg.ErrorClass); err != nil {
 			return nil, err
 		}
-		tg.FieldsJSON, tg.RemoteID, tg.RemoteURL, tg.SignedEventJSON = fields.String, rid.String, rurl.String, sej.String
+		tg.FieldsJSON, tg.FinalText, tg.LatencyMS = fields.String, ftext.String, int(lat.Int64)
 		if la.Valid {
 			tg.LastAttempt = la.Time.UTC()
 		}
@@ -278,15 +286,18 @@ func (s *Store) GetPost(id string) (*Post, error) {
 			t := gu.Time.UTC()
 			tg.GaveUpAt = &t
 		}
-		if segs.String != "" {
-			if err := unmarshalSegments([]byte(segs.String), &tg.Segments); err != nil {
-				return nil, err
-			}
-		}
 		p.Targets = append(p.Targets, tg)
 	}
 	if err := trows.Err(); err != nil {
 		return nil, err
+	}
+	trows.Close()
+	for i := range p.Targets {
+		items, err := s.loadItems(p.Targets[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		targetView(&p.Targets[i], items)
 	}
 	for i := range p.Targets {
 		arows, err := s.sql.Query(`SELECT attempt_no,status,error,latency_ms,remote_id,request_json,response_json,attempted_at,COALESCE(error_class,'') FROM target_attempts WHERE target_id=? ORDER BY attempt_no`, p.Targets[i].ID)
@@ -309,41 +320,13 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		}
 		arows.Close()
 	}
-	for i := range p.Targets {
-		rrows, err := s.sql.Query(`SELECT relay_url,status,message,gave_up_at,retry_count,attempted_at FROM target_relays WHERE target_id=? ORDER BY id`, p.Targets[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		for rrows.Next() {
-			var rs RelayState
-			var msg sql.NullString
-			var rgu, rat sql.NullTime
-			if err := rrows.Scan(&rs.URL, &rs.Status, &msg, &rgu, &rs.RetryCount, &rat); err != nil {
-				rrows.Close()
-				return nil, err
-			}
-			rs.Message = msg.String
-			if rgu.Valid {
-				t := rgu.Time.UTC()
-				rs.GaveUpAt = &t
-			}
-			if rat.Valid {
-				rs.AttemptedAt = rat.Time.UTC()
-			}
-			p.Targets[i].Relays = append(p.Targets[i].Relays, rs)
-		}
-		if err := rrows.Err(); err != nil {
-			rrows.Close()
-			return nil, err
-		}
-		rrows.Close()
-	}
 	return p, nil
 }
 
 // rowQuerier is satisfied by both *sql.DB and *sql.Tx.
 type rowQuerier interface {
 	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
 	Exec(query string, args ...any) (sql.Result, error)
 }
 
@@ -381,11 +364,13 @@ func recomputeStatus(q rowQuerier, postID string) error {
 	return err
 }
 
-// recomputeTargetStatus derives a target's status from its relay rows
-// (skipped rows ignored): success = all attempted ok, failed = none ok,
-// partial = some ok. No-op for targets without relay rows (non-Nostr).
+// recomputeTargetStatus derives a single-item target's status from its
+// item's endpoint rows (skipped rows ignored): success = all attempted ok,
+// failed = none ok, partial = some ok. The item follows. No-op for targets
+// without endpoint rows (non-Nostr).
 func recomputeTargetStatus(q rowQuerier, targetID int64) error {
-	rows, err := q.Query(`SELECT status FROM target_relays WHERE target_id=?`, targetID)
+	rows, err := q.Query(`SELECT d.status FROM item_deliveries d JOIN target_items ti ON ti.id = d.item_id
+		WHERE ti.target_id=? AND ti.ordinal=0`, targetID)
 	if err != nil {
 		return err
 	}
@@ -411,6 +396,16 @@ func recomputeTargetStatus(q rowQuerier, targetID int64) error {
 	if !seen {
 		return nil // non-nostr target: leave status untouched
 	}
+	// A thread with a part still unpublished keeps its status: the head's
+	// relays alone can't make it a success.
+	var unsent int
+	if err := q.QueryRow(`SELECT COUNT(*) FROM target_items WHERE target_id=? AND ordinal>0 AND status<>?`,
+		targetID, ItemPublished).Scan(&unsent); err != nil {
+		return err
+	}
+	if unsent > 0 {
+		return nil
+	}
 	// All-skipped (e.g. only an unreachable .onion) → nothing was delivered → failed.
 	status := "partial"
 	switch {
@@ -419,7 +414,12 @@ func recomputeTargetStatus(q rowQuerier, targetID int64) error {
 	case ok == attempted:
 		status = "success"
 	}
-	_, err = q.Exec(`UPDATE post_targets SET status=? WHERE id=?`, status, targetID)
+	if _, err = q.Exec(`UPDATE post_targets SET status=? WHERE id=?`, status, targetID); err != nil {
+		return err
+	}
+	// A thread's head stays as it was: its other items decide the target.
+	_, err = q.Exec(`UPDATE target_items SET status=? WHERE target_id=? AND ordinal=0
+		AND (SELECT COUNT(*) FROM target_items x WHERE x.target_id=?) = 1`, itemStatusOf(status), targetID, targetID)
 	return err
 }
 
@@ -433,11 +433,11 @@ func (s *Store) UpdateRelayStatus(targetID int64, relayURL, status, message stri
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec(
-		`UPDATE target_relays
+		`UPDATE item_deliveries
 		    SET status=?, message=?, attempted_at=?, retry_count = retry_count + 1,
 		        gave_up_at = CASE WHEN ?='ok' THEN NULL ELSE gave_up_at END
-		  WHERE target_id=? AND relay_url=?`,
-		status, message, time.Now().UTC(), status, targetID, relayURL,
+		  WHERE endpoint=? AND item_id=(SELECT id FROM target_items WHERE target_id=? AND ordinal=0)`,
+		status, message, time.Now().UTC(), status, relayURL, targetID,
 	); err != nil {
 		return err
 	}
@@ -486,43 +486,78 @@ func (s *Store) RecordAttempt(targetID int64, at AttemptResult) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	ctx := context.Background()
 	now := time.Now().UTC()
 	var n int
 	if err := tx.QueryRow(`SELECT attempt_count FROM post_targets WHERE id=?`, targetID).Scan(&n); err != nil {
 		return err
 	}
 	n++
+	// The attempt is the item's when the target is a single post. A thread's
+	// items are written by UpdateTargetSegments; an attempt recorded here
+	// for a thread (one that could not run) leaves them as they are.
+	var itemID int64
+	var nItems int
+	if err := tx.QueryRow(`SELECT MIN(id), COUNT(*) FROM target_items WHERE target_id=?`, targetID).Scan(&itemID, &nItems); err != nil {
+		return err
+	}
+	var attemptItem any
+	if nItems == 1 {
+		attemptItem = itemID
+	}
 	if _, err := tx.Exec(
-		`INSERT INTO target_attempts(target_id,attempt_no,status,error,latency_ms,remote_id,request_json,response_json,attempted_at,error_class)
-		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		targetID, n, at.Status, at.Error, at.LatencyMS, at.RemoteID, Scrub(at.RequestJSON), Scrub(at.ResponseJSON), now, nullStr(at.ErrorClass),
+		`INSERT INTO target_attempts(target_id,attempt_no,status,error,latency_ms,remote_id,request_json,response_json,attempted_at,error_class,item_id)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		targetID, n, at.Status, at.Error, at.LatencyMS, at.RemoteID, Scrub(at.RequestJSON), Scrub(at.ResponseJSON), now, nullStr(at.ErrorClass), attemptItem,
 	); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(
 		`UPDATE post_targets
-		    SET status=?, remote_id=?, remote_url=?, latency_ms=?, attempt_count=?, last_attempt_at=?, error_class=?,
+		    SET status=?, latency_ms=?, attempt_count=?, last_attempt_at=?, error_class=?,
 		        gave_up_at = CASE WHEN ?='success' THEN NULL ELSE gave_up_at END
 		  WHERE id=?`,
-		at.Status, at.RemoteID, at.RemoteURL, at.LatencyMS, n, now, nullStr(at.ErrorClass), at.Status, targetID,
+		at.Status, at.LatencyMS, n, now, nullStr(at.ErrorClass), at.Status, targetID,
+	); err != nil {
+		return err
+	}
+	if nItems != 1 {
+		return commitWithStatus(tx, targetID)
+	}
+	st := itemStatusOf(at.Status)
+	var published any
+	if st == ItemPublished || st == ItemPartial {
+		published = now
+	}
+	if _, err := tx.Exec(
+		`UPDATE target_items
+		    SET status=?, remote_id=?, remote_url=?, error=?, error_class=?, attempt_count=attempt_count+1,
+		        published_at=COALESCE(published_at, ?)
+		  WHERE id=?`,
+		st, nullStr(at.RemoteID), nullStr(at.RemoteURL), nullStr(at.Error), nullStr(at.ErrorClass), published, itemID,
 	); err != nil {
 		return err
 	}
 	if len(at.Relays) > 0 { // nostr: refresh the signed event + per-relay rows
-		if _, err := tx.Exec(`UPDATE post_targets SET signed_event_json=? WHERE id=?`, at.SignedEventJSON, targetID); err != nil {
+		if _, err := tx.Exec(`UPDATE target_items SET ref_json=? WHERE id=?`, nullStr(at.SignedEventJSON), itemID); err != nil {
 			return err
 		}
-		for _, rl := range at.Relays {
-			if _, err := tx.Exec(
-				`INSERT INTO target_relays(target_id,relay_url,status,message,attempted_at)
-				 VALUES(?,?,?,?,?)
-				 ON CONFLICT(target_id,relay_url) DO UPDATE SET status=excluded.status, message=excluded.message, attempted_at=excluded.attempted_at`,
-				targetID, rl.URL, rl.Status, rl.Message, now,
-			); err != nil {
-				return err
-			}
+		if err := upsertDeliveries(ctx, tx, itemID, at.Relays, now); err != nil {
+			return err
 		}
 	}
+	var postID string
+	if err := tx.QueryRow(`SELECT post_id FROM post_targets WHERE id=?`, targetID).Scan(&postID); err != nil {
+		return err
+	}
+	if err := recomputeStatus(tx, postID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// commitWithStatus recomputes the target's post status and commits.
+func commitWithStatus(tx *sql.Tx, targetID int64) error {
 	var postID string
 	if err := tx.QueryRow(`SELECT post_id FROM post_targets WHERE id=?`, targetID).Scan(&postID); err != nil {
 		return err
@@ -552,13 +587,11 @@ func (s *Store) UpdateTargetSegments(targetID int64, segments []Segment, status,
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	segJSON, err := marshalSegments(segments)
-	if err != nil {
-		return err
-	}
+	ctx := context.Background()
 	now := time.Now().UTC()
 	var n int
-	if err := tx.QueryRow(`SELECT attempt_count FROM post_targets WHERE id=?`, targetID).Scan(&n); err != nil {
+	var postID, platform string
+	if err := tx.QueryRow(`SELECT attempt_count, post_id, platform FROM post_targets WHERE id=?`, targetID).Scan(&n, &postID, &platform); err != nil {
 		return err
 	}
 	n++
@@ -571,16 +604,48 @@ func (s *Store) UpdateTargetSegments(targetID int64, segments []Segment, status,
 	}
 	if _, err := tx.Exec(
 		`UPDATE post_targets
-		    SET status=?, remote_id=?, remote_url=?, latency_ms=?, attempt_count=?, last_attempt_at=?, segments_json=?, error_class=?,
+		    SET status=?, latency_ms=?, attempt_count=?, last_attempt_at=?, error_class=?,
 		        gave_up_at = CASE WHEN ?='success' THEN NULL ELSE gave_up_at END
 		  WHERE id=?`,
-		status, headRemoteID, headRemoteURL, latencyMS, n, now, string(segJSON), nullStr(errClass), status, targetID,
+		status, latencyMS, n, now, nullStr(errClass), status, targetID,
 	); err != nil {
 		return err
 	}
-	var postID string
-	if err := tx.QueryRow(`SELECT post_id FROM post_targets WHERE id=?`, targetID).Scan(&postID); err != nil {
-		return err
+	// The item that stopped the chain carries the failure's class.
+	stop := -1
+	for i, sg := range segments {
+		if sg.RemoteID == "" && sg.Error != "" {
+			stop = i
+			break
+		}
+	}
+	for i, sg := range segments {
+		it := Item{Ordinal: sg.Ordinal, Text: sg.Text, Media: sg.Images, Status: itemStatusOf(sg.Status),
+			RemoteID: sg.RemoteID, RemoteURL: sg.RemoteURL, Ref: sg.Ref, Error: sg.Error}
+		if i == stop {
+			it.ErrorClass = errClass
+		}
+		var published any
+		if it.Status == ItemPublished || it.Status == ItemPartial {
+			published = now
+		}
+		content, _ := json.Marshal(itemContent{Text: it.Text, Media: it.Media})
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO target_items (target_id, ordinal, content_json, status, idem_key, remote_id, remote_url, ref_json,
+			   error_class, error, attempt_count, published_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+			 ON CONFLICT (target_id, ordinal) DO UPDATE SET
+			   content_json=excluded.content_json, status=excluded.status, remote_id=excluded.remote_id,
+			   remote_url=excluded.remote_url, ref_json=excluded.ref_json, error_class=excluded.error_class,
+			   error=excluded.error,
+			   attempt_count = CASE WHEN target_items.remote_id IS NULL AND excluded.status <> 'planned'
+			                        THEN target_items.attempt_count + 1 ELSE target_items.attempt_count END,
+			   published_at=COALESCE(target_items.published_at, excluded.published_at)`,
+			targetID, it.Ordinal, string(content), it.Status, ItemKey(postID, platform, it.Ordinal), nullStr(it.RemoteID), nullStr(it.RemoteURL),
+			nullStr(string(it.Ref)), nullStr(it.ErrorClass), nullStr(Scrub(it.Error)), published,
+		); err != nil {
+			return err
+		}
 	}
 	if err := recomputeStatus(tx, postID); err != nil {
 		return err
@@ -659,6 +724,11 @@ func (s *Store) MarkMissed(id string) error {
 	if _, err := tx.Exec(`UPDATE post_targets SET status='missed' WHERE post_id=? AND status='scheduled'`, id); err != nil {
 		return err
 	}
+	// A missed post waits for the owner: its items are no longer due.
+	if _, err := tx.Exec(`UPDATE target_items SET next_attempt_at=NULL WHERE status='planned'
+		AND target_id IN (SELECT id FROM post_targets WHERE post_id=?)`, id); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -676,14 +746,24 @@ func (s *Store) ResetSendingToScheduled() (int, error) {
 
 // RescheduleScheduled changes a pending post's time; ErrNotPending otherwise.
 func (s *Store) RescheduleScheduled(id string, at time.Time) error {
-	res, err := s.sql.Exec(`UPDATE posts SET scheduled_at=? WHERE id=? AND status='scheduled'`, at.UTC(), id)
+	tx, err := s.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(`UPDATE posts SET scheduled_at=? WHERE id=? AND status='scheduled'`, at.UTC(), id)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotPending
 	}
-	return nil
+	// The post's planned items move with it.
+	if _, err := tx.Exec(`UPDATE target_items SET next_attempt_at=? WHERE status='planned'
+		AND target_id IN (SELECT id FROM post_targets WHERE post_id=?)`, at.UTC(), id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // CancelScheduled deletes a pending post (and its rows); ErrNotPending otherwise.
@@ -705,10 +785,17 @@ func (s *Store) CancelScheduled(id string) error {
 	}
 	// FK has no ON DELETE CASCADE + foreign_keys=ON → delete children first.
 	sub := `(SELECT id FROM post_targets WHERE post_id=?)`
-	if _, err := tx.Exec(`DELETE FROM target_relays WHERE target_id IN `+sub, id); err != nil {
+	items := `(SELECT id FROM target_items WHERE target_id IN ` + sub + `)`
+	if _, err := tx.Exec(`DELETE FROM item_deliveries WHERE item_id IN `+items, id); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM target_attempts WHERE target_id IN `+sub, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE nostr_fanout SET item_id=NULL WHERE item_id IN `+items, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM target_items WHERE target_id IN `+sub, id); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM post_targets WHERE post_id=?`, id); err != nil {
@@ -763,8 +850,9 @@ func (s *Store) MarkTargetGaveUp(targetID int64, at time.Time) (bool, error) {
 // Returns true iff this call set it.
 func (s *Store) MarkRelayGaveUp(targetID int64, relayURL string, at time.Time) (bool, error) {
 	res, err := s.sql.Exec(
-		`UPDATE target_relays SET gave_up_at=? WHERE target_id=? AND relay_url=? AND gave_up_at IS NULL`,
-		at.UTC(), targetID, relayURL)
+		`UPDATE item_deliveries SET gave_up_at=?
+		  WHERE endpoint=? AND gave_up_at IS NULL AND item_id=(SELECT id FROM target_items WHERE target_id=? AND ordinal=0)`,
+		at.UTC(), relayURL, targetID)
 	if err != nil {
 		return false, err
 	}

@@ -84,7 +84,9 @@ func (s *Store) PublicFeed(limit int) ([]Post, error) {
 	}
 
 	for i := range out {
-		trows, err := s.sql.Query(`SELECT platform, status, remote_url, fields_json FROM post_targets WHERE post_id=? ORDER BY id`, out[i].ID)
+		trows, err := s.sql.Query(`SELECT pt.platform, pt.status,
+			(SELECT ti.remote_url FROM target_items ti WHERE ti.target_id = pt.id AND ti.ordinal = 0), pt.fields_json
+			FROM post_targets pt WHERE pt.post_id=? ORDER BY pt.id`, out[i].ID)
 		if err != nil {
 			return nil, err
 		}
