@@ -158,9 +158,15 @@ func TestMigrateTargetItemsCarriesEverything(t *testing.T) {
 	if nostr.Status != "success" || nostr.Targets[0].Status != "success" || nostr.Targets[0].Items[0].Status != ItemPublished {
 		t.Errorf("after relay retry: post %q target %q item %q", nostr.Status, nostr.Targets[0].Status, nostr.Targets[0].Items[0].Status)
 	}
-	segs := bsky.Segments
-	segs[1].RemoteID, segs[1].RemoteURL, segs[1].Status, segs[1].Error = "at://1", "https://bsky/1", "success", ""
-	if err := s.UpdateTargetSegments(1, segs, "success", "at://0", "https://bsky/0", 50, "", ""); err != nil {
+	// The engine resumes the migrated thread at its failed part.
+	if n, err := s.MarkDue(ctx, "thread", []int64{1}, time.Now()); err != nil || n != 1 {
+		t.Fatalf("mark due = %d, %v", n, err)
+	}
+	c, err := s.ClaimItem(ctx, time.Now(), ClaimFilter{TargetID: 1})
+	if err != nil || c == nil || c.Ordinal != 1 || c.Attempts != 0 {
+		t.Fatalf("claim = %+v, %v", c, err)
+	}
+	if _, err := s.RecordItemResult(ctx, ItemResult{Claim: *c, Status: ItemPublished, RemoteID: "at://1", RemoteURL: "https://bsky/1"}); err != nil {
 		t.Fatal(err)
 	}
 	thread, _ = s.GetPost("thread")
@@ -201,30 +207,5 @@ func TestSeedEnvAccounts(t *testing.T) {
 	third, _ := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{"bluesky", "Bluesky"}})
 	if third["bluesky"].ID != first["bluesky"].ID {
 		t.Errorf("re-enabled account must keep its id")
-	}
-}
-
-// An attempt recorded against a thread (one that could not run, such as a
-// ref-less interaction) must not overwrite its live head.
-func TestRecordAttemptLeavesThreadItems(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	p := &Post{ID: "p", CreatedAt: time.Now().UTC(), Platforms: []string{"bluesky"}, Source: "web", Status: "partial",
-		Targets: []Target{{Platform: "bluesky", Status: "partial", Segments: []Segment{
-			{Ordinal: 0, Text: "a", RemoteID: "at://0", Status: "success"}, {Ordinal: 1, Text: "b", Status: "failed"}}}}}
-	if err := s.SavePost(p); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := s.GetPost("p")
-	if err := s.RecordAttempt(got.Targets[0].ID, AttemptResult{Status: "failed", Error: "cannot retry", ErrorClass: "invalid"}); err != nil {
-		t.Fatal(err)
-	}
-	got, _ = s.GetPost("p")
-	tg := got.Targets[0]
-	if tg.Status != "failed" || tg.Items[0].Status != ItemPublished || tg.Items[0].RemoteID != "at://0" || len(tg.Attempts) != 1 {
-		t.Fatalf("target %q items %+v attempts %d", tg.Status, tg.Items, len(tg.Attempts))
 	}
 }

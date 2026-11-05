@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/progress"
@@ -23,7 +23,9 @@ type TargetResult struct {
 	Error    string
 	// ErrorClass is the destination.ErrorClass of a failure ("" on success):
 	// it tells the retrier whether repeating the attempt can help.
-	ErrorClass   string
+	ErrorClass string
+	// RetryAfter is the wait a rate-limited destination asked for.
+	RetryAfter   time.Duration
 	RemoteID     string
 	RemoteURL    string
 	RefData      json.RawMessage // destination.ItemRef.Data (Bluesky CID, Nostr signed event)
@@ -147,6 +149,19 @@ type Dispatcher struct {
 	Unfurler Unfurler     // may be nil; attachLinkCard guards it
 	Notify   PostNotifier // may be nil; notify() guards it
 	Alerter  Notifier     // may be nil; alertFailure guards it
+
+	// Policy decides automatic retries of failed items.
+	Policy RetryPolicy
+	// Workers is how many items the background engine sends at once
+	// (default 4); ScheduleGrace is how late a scheduled post may still go
+	// out (0: any lateness); PollInterval is how often an idle worker looks
+	// for due items (default 2s). Clock replaces time.Now in tests.
+	Workers       int
+	ScheduleGrace time.Duration
+	PollInterval  time.Duration
+	Clock         func() time.Time
+
+	eng engine
 }
 
 // enqueueFanout records async relay deliveries for a freshly-published Nostr
@@ -189,16 +204,18 @@ func (d *Dispatcher) alertFailure(ctx context.Context, p *store.Post) {
 	}
 }
 
-// anyAutoRetryable reports whether the Retrier will try any of the post's
-// unfinished targets again, by the same class rule it applies.
-func (d *Dispatcher) anyAutoRetryable(ctx context.Context, p *store.Post) bool {
+// anyAutoRetryable reports whether the engine will try any of the post's
+// unfinished targets again: an item has a retry time and its target hasn't
+// given up.
+func (d *Dispatcher) anyAutoRetryable(_ context.Context, p *store.Post) bool {
 	for _, t := range p.Targets {
-		if t.Status != "failed" && t.Status != "partial" {
+		if (t.Status != "failed" && t.Status != "partial") || t.GaveUpAt != nil {
 			continue
 		}
-		caps, _ := d.Caps(ctx, t.Platform)
-		if destination.ErrorClass(t.ErrorClass).Retryable(caps.Idempotent) {
-			return true
+		for _, it := range t.Items {
+			if (it.Status == store.ItemFailed || it.Status == store.ItemUnknown) && it.NextAttemptAt != nil {
+				return true
+			}
 		}
 	}
 	return false
@@ -238,19 +255,4 @@ func mapStatus(s string) string {
 	default:
 		return progress.StatusFailed
 	}
-}
-
-// platformDetail renders the per-platform detail line: a thread counter when the
-// outcome has multiple segments, else empty.
-func platformDetail(o chainOutcome) string {
-	if n := len(o.Segments); n > 1 {
-		done := 0
-		for _, sg := range o.Segments {
-			if sg.Status == "success" {
-				done++
-			}
-		}
-		return "thread " + strconv.Itoa(done) + "/" + strconv.Itoa(n)
-	}
-	return ""
 }

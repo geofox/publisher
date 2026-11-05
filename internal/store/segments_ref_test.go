@@ -34,13 +34,5 @@ func TestSegmentRefStoredButNotSerialized(t *testing.T) {
 	if strings.Contains(string(b), "secret-ish") {
 		t.Fatalf("API form leaks the segment ref: %s", b)
 	}
-	// UpdateTargetSegments keeps it too.
-	segs := got.Targets[0].Segments
-	if err := st.UpdateTargetSegments(got.Targets[0].ID, segs, "success", "", "", 0, "", ""); err != nil {
-		t.Fatal(err)
-	}
-	got, _ = st.GetPost("p1")
-	if s := string(got.Targets[0].Segments[0].Ref); s != string(ref) {
-		t.Fatalf("ref lost on update: %q", s)
-	}
+
 }

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -8,20 +9,16 @@ import (
 )
 
 func TestGaveUpColumnsAndLastAttemptLoad(t *testing.T) {
-	st := openTestStore(t) // existing same-package helper (store_test.go-style)
+	st := openTestStore(t)
+	// A target saved with an attempt has last_attempt_at set.
 	p := &Post{
 		ID: "p-gaveup", CreatedAt: time.Now().UTC(), MasterText: "x",
 		Platforms: []string{"bluesky"}, Source: "test", Status: "failed",
-		Targets: []Target{{Platform: "bluesky", Status: "failed"}},
+		Targets: []Target{{Platform: "bluesky", Status: "failed",
+			Attempts: []Attempt{{AttemptNo: 1, Status: "failed", Error: "boom", AttemptedAt: time.Now().UTC()}}}},
 	}
 	if err := st.SavePost(p); err != nil {
 		t.Fatalf("SavePost: %v", err)
-	}
-	// Record an attempt so last_attempt_at is set.
-	got, _ := st.GetPost("p-gaveup")
-	tid := got.Targets[0].ID
-	if err := st.AppendTargetAttempt(tid, "failed", "boom", "", "", 5, "", "", nil, ""); err != nil {
-		t.Fatalf("AppendTargetAttempt: %v", err)
 	}
 	got, err := st.GetPost("p-gaveup")
 	if err != nil {
@@ -88,37 +85,22 @@ func TestPostsNeedingRetryAndMarkGaveUp(t *testing.T) {
 	}
 }
 
-func TestSuccessClearsGaveUpAndRelayRetryCount(t *testing.T) {
+func TestRelayRetryCount(t *testing.T) {
 	st := openTestStore(t)
-	p := &Post{ID: "p-clear", CreatedAt: time.Now().UTC(), MasterText: "x",
-		Platforms: []string{"bluesky"}, Source: "test", Status: "failed",
-		Targets: []Target{{Platform: "bluesky", Status: "failed"}}}
+	p := &Post{ID: "p-relay", CreatedAt: time.Now().UTC(), MasterText: "x",
+		Platforms: []string{"nostr"}, Source: "test", Status: "partial",
+		Targets: []Target{{Platform: "nostr", Status: "partial", SignedEventJSON: "{}",
+			Relays: []RelayState{{URL: "wss://r1", Status: "failed"}, {URL: "wss://r2", Status: "ok"}}}}}
 	if err := st.SavePost(p); err != nil {
 		t.Fatalf("SavePost: %v", err)
 	}
-	gp, _ := st.GetPost("p-clear")
+	gp, _ := st.GetPost("p-relay")
 	tid := gp.Targets[0].ID
-	if _, err := st.MarkTargetGaveUp(tid, time.Now().UTC()); err != nil {
-		t.Fatalf("MarkTargetGaveUp: %v", err)
-	}
-	// A successful later attempt clears the give-up flag.
-	if err := st.AppendTargetAttempt(tid, "success", "", "rid", "https://x/1", 10, "", "", nil, ""); err != nil {
-		t.Fatalf("AppendTargetAttempt: %v", err)
-	}
-	gp, _ = st.GetPost("p-clear")
-	if gp.Targets[0].GaveUpAt != nil {
-		t.Error("a successful attempt must clear gave_up_at")
-	}
-
 	// Relay retry_count bumps on UpdateRelayStatus.
-	if err := st.AppendTargetAttempt(tid, "failed", "x", "", "", 1, "", "",
-		[]RelayState{{URL: "wss://r1", Status: "failed"}}, "{}"); err != nil {
-		t.Fatalf("seed relay: %v", err)
-	}
 	if err := st.UpdateRelayStatus(tid, "wss://r1", "failed", "still down"); err != nil {
 		t.Fatalf("UpdateRelayStatus: %v", err)
 	}
-	gp, _ = st.GetPost("p-clear")
+	gp, _ = st.GetPost("p-relay")
 	var rc int
 	for _, r := range gp.Targets[0].Relays {
 		if r.URL == "wss://r1" {
@@ -161,12 +143,15 @@ func TestAttentionFilterAndCount(t *testing.T) {
 	}
 }
 
-func TestAppendTargetAttemptAndRecompute(t *testing.T) {
+// A manual retry of a given-up target clears the flag, and the successful
+// attempt it records is appended, scrubbed, and settles the post.
+func TestManualRetryClearsGaveUpAndRecordsSuccess(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	ctx := context.Background()
 
 	rec := &Post{
 		ID: "p1", CreatedAt: time.Now().UTC(), Platforms: []string{"mastodon"}, Source: "web", Status: "failed",
@@ -181,12 +166,24 @@ func TestAppendTargetAttemptAndRecompute(t *testing.T) {
 		t.Fatal(err)
 	}
 	tid := got.Targets[0].ID
-
-	if err := db.AppendTargetAttempt(tid, "success", "", "st1", "https://m/1", 42,
-		`{"Authorization":"Bearer SECRET"}`, `{"ok":true}`, nil, ""); err != nil {
+	if _, err := db.MarkTargetGaveUp(tid, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.RecomputeStatus("p1"); err != nil {
+
+	now := time.Now().UTC()
+	if n, err := db.MarkDue(ctx, "p1", []int64{tid}, now); err != nil || n != 1 {
+		t.Fatalf("MarkDue = %d, %v; want 1", n, err)
+	}
+	if got, _ = db.GetPost("p1"); got.Targets[0].GaveUpAt != nil {
+		t.Error("a manual retry must clear gave_up_at")
+	}
+	c, err := db.ClaimItem(ctx, now, ClaimFilter{TargetID: tid})
+	if err != nil || c == nil {
+		t.Fatalf("ClaimItem = %v, %v", c, err)
+	}
+	if _, err := db.RecordItemResult(ctx, ItemResult{Claim: *c, Status: ItemPublished, RemoteID: "st1",
+		RemoteURL: "https://m/1", LatencyMS: 42, RequestJSON: `{"Authorization":"Bearer SECRET"}`,
+		ResponseJSON: `{"ok":true}`, At: now}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -200,6 +197,9 @@ func TestAppendTargetAttemptAndRecompute(t *testing.T) {
 	tg := got.Targets[0]
 	if tg.Status != "success" || tg.RemoteID != "st1" || tg.RemoteURL != "https://m/1" || tg.AttemptCount != 2 {
 		t.Errorf("target not updated: %+v", tg)
+	}
+	if tg.GaveUpAt != nil {
+		t.Error("gave_up_at must stay clear after success")
 	}
 	if len(tg.Attempts) != 2 || tg.Attempts[1].AttemptNo != 2 || tg.Attempts[1].Status != "success" {
 		t.Errorf("attempt history wrong: %+v", tg.Attempts)

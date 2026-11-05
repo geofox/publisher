@@ -69,6 +69,7 @@ type Config struct {
 
 	// Auto-retry / Retrier settings.
 	AutoRetryEnabled     bool
+	PublishWorkers       int // items the engine sends at once
 	AutoRetryMaxAttempts int
 	AutoRetryBaseDelay   time.Duration
 	AutoRetryMaxDelay    time.Duration
@@ -152,6 +153,9 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("SCHEDULE_GRACE: %w", err)
 	}
 	c.AutoRetryEnabled = getBool("AUTO_RETRY_ENABLED", true)
+	if c.PublishWorkers, err = strconv.Atoi(getEnv("PUBLISH_WORKERS", "4")); err != nil || c.PublishWorkers < 1 {
+		return c, fmt.Errorf("PUBLISH_WORKERS must be a positive integer")
+	}
 	if c.AutoRetryMaxAttempts, err = strconv.Atoi(getEnv("AUTO_RETRY_MAX_ATTEMPTS", "6")); err != nil {
 		return c, fmt.Errorf("AUTO_RETRY_MAX_ATTEMPTS: %w", err)
 	}

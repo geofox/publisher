@@ -75,6 +75,7 @@ func run() error {
 		Accounts: fakeAccounts(rec),
 		Store:    st,
 		Fetcher:  mp,
+		Policy:   dispatch.RetryPolicy{Enabled: true, MaxAttempts: 6, Base: 2 * time.Minute, Max: time.Hour},
 	}
 	a := api.New(nil, mp)
 	a.Store = st
@@ -92,11 +93,13 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go d.Run(ctx)
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(sctx)
+		_ = d.Shutdown(sctx)
 	}()
 	slog.Info("e2e harness listening", "url", base, "db", dir)
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {

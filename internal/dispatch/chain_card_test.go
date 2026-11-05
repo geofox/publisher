@@ -30,7 +30,7 @@ func (f *fakeUnfurler) Thumb(_ context.Context, _ string) ([]byte, string, error
 func TestPostAttachesCardAndStripsTrailingURL(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	uf := &fakeUnfurler{card: &unfurl.Card{URI: "https://x.com/a", Title: "T", Description: "D"}}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f}), Unfurler: uf}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f}), Unfurler: uf}
 	rec := d.Post(context.Background(), PostSpec{
 		MasterText: "hello https://x.com/a", Platforms: []string{"bluesky"},
 	})
@@ -58,7 +58,7 @@ func TestPostAttachesCardAndStripsTrailingURL(t *testing.T) {
 func TestPostUnfurlFailureFallsBackToPlainLink(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	uf := &fakeUnfurler{err: context.DeadlineExceeded}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f}), Unfurler: uf}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f}), Unfurler: uf}
 	rec := d.Post(context.Background(), PostSpec{
 		MasterText: "hello https://x.com/a", Platforms: []string{"bluesky"},
 	})
@@ -73,7 +73,7 @@ func TestPostUnfurlFailureFallsBackToPlainLink(t *testing.T) {
 func TestPostImagesWinOverCard(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	uf := &fakeUnfurler{card: &unfurl.Card{URI: "https://x.com/a", Title: "T"}}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f}), Unfurler: uf}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f}), Unfurler: uf}
 	d.Post(context.Background(), PostSpec{
 		MasterText: "hello https://x.com/a", Platforms: []string{"bluesky"},
 		Images: []Img{{Bytes: []byte("i"), Mime: "image/png"}},
@@ -89,7 +89,7 @@ func TestPostImagesWinOverCard(t *testing.T) {
 func TestThreadedCardOnLastSegmentOnly(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	uf := &fakeUnfurler{card: &unfurl.Card{URI: "https://x.com/a", Title: "T"}}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f}), Unfurler: uf}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f}), Unfurler: uf}
 	long := strings.Repeat("word ", 120) + "\nhttps://x.com/a"
 	d.Post(context.Background(), PostSpec{MasterText: long, Platforms: []string{"bluesky"}, Number: true})
 	if len(f.calls) < 2 {
@@ -146,7 +146,7 @@ func TestPostScrubsInjectedLinkCard(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	// No Unfurler wired: attachLinkCard is a no-op, so an injected card would
 	// survive to the adapter without the boundary scrub.
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f})}
 	rec := d.Post(context.Background(), PostSpec{
 		MasterText: "hello https://x.com/a", Platforms: []string{"bluesky"},
 		Overrides: map[string]Overrides{"bluesky": {LinkCard: &unfurl.Card{URI: "https://x.com/a", Title: "Crafted"}}},
@@ -161,7 +161,7 @@ func TestPostScrubsInjectedLinkCard(t *testing.T) {
 
 func TestInteractScrubsInjectedLinkCard(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f})}
 	rec := d.Interact(context.Background(), InteractSpec{
 		Action: "reply", SourcePlatform: "bluesky",
 		Ref:       InteractRef{URI: "at://src", CID: "c1"},
@@ -205,7 +205,7 @@ func TestMultiPlatformCardStripsBlueskyOnly(t *testing.T) {
 	bsky := &fakeBsky{failAt: -1}
 	masto := &fakeMastoChain{}
 	uf := &fakeUnfurler{card: &unfurl.Card{URI: "https://x.com/a", Title: "T"}}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: bsky, Mastodon: masto}), Unfurler: uf}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: bsky, Mastodon: masto}), Unfurler: uf}
 	d.Post(context.Background(), PostSpec{
 		MasterText: "hello https://x.com/a",
 		Platforms:  []string{"bluesky", "mastodon"},

@@ -168,18 +168,22 @@ func (s *Store) SavePost(p *Post) error {
 				return err
 			}
 		}
+		var lastAttempt any // a target planned and not yet sent has none
+		if len(tg.Attempts) > 0 {
+			lastAttempt = now
+		}
 		res, err := tx.Exec(
 			`INSERT INTO post_targets(post_id,account_id,platform,final_text,fields_json,status,latency_ms,attempt_count,last_attempt_at,error_class)
 			 VALUES(?,?,?,?,?,?,?,?,?,?)`,
 			p.ID, accountID, tg.Platform, tg.FinalText, tg.FieldsJSON, tg.Status,
-			tg.LatencyMS, len(tg.Attempts), now, nullStr(tg.ErrorClass),
+			tg.LatencyMS, len(tg.Attempts), lastAttempt, nullStr(tg.ErrorClass),
 		)
 		if err != nil {
 			return err
 		}
 		tid, _ := res.LastInsertId()
-		items := tg.Items
-		if items == nil {
+		items, derived := tg.Items, tg.Items == nil
+		if derived {
 			items = itemsOf(tg, len(p.Media))
 		}
 		var headID int64
@@ -187,8 +191,9 @@ func (s *Store) SavePost(p *Post) error {
 			if it.IdemKey == "" {
 				it.IdemKey = ItemKey(p.ID, tg.Platform, it.Ordinal)
 			}
-			if it.NextAttemptAt == nil && it.Status == ItemPlanned && p.Status != "missed" {
-				// A planned item is due at its post's time, or now.
+			// Planned items the caller passed carry their own due time (nil:
+			// not until a retry). Derived ones are due at the post's time, or now.
+			if derived && it.NextAttemptAt == nil && it.Status == ItemPlanned && p.Status != "missed" {
 				due := now
 				if p.ScheduledAt != nil {
 					due = p.ScheduledAt.UTC()
@@ -336,7 +341,7 @@ func recomputeStatus(q rowQuerier, postID string) error {
 		return err
 	}
 	defer rows.Close()
-	total, succ, fail := 0, 0, 0
+	total, succ, fail, open := 0, 0, 0, 0
 	for rows.Next() {
 		var st string
 		if err := rows.Scan(&st); err != nil {
@@ -348,6 +353,8 @@ func recomputeStatus(q rowQuerier, postID string) error {
 			succ++
 		case "failed":
 			fail++
+		case "sending", "scheduled", "pending":
+			open++ // still to be sent
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -355,6 +362,8 @@ func recomputeStatus(q rowQuerier, postID string) error {
 	}
 	status := "partial"
 	switch {
+	case open > 0:
+		status = "sending"
 	case total == 0 || fail == total:
 		status = "failed"
 	case succ == total:
@@ -454,208 +463,12 @@ func (s *Store) UpdateRelayStatus(targetID int64, relayURL, status, message stri
 	return tx.Commit()
 }
 
-// AttemptResult is one publish attempt at a target, as RecordAttempt stores it.
-type AttemptResult struct {
-	Status, Error, ErrorClass string
-	RemoteID, RemoteURL       string
-	LatencyMS                 int
-	RequestJSON, ResponseJSON string
-	// Relays and SignedEventJSON replace the target's endpoint rows and
-	// redelivery data when Relays is non-empty (Nostr).
-	Relays          []RelayState
-	SignedEventJSON string
-}
-
-// AppendTargetAttempt is RecordAttempt with positional arguments and no
-// error class.
-func (s *Store) AppendTargetAttempt(targetID int64, status, errMsg, remoteID, remoteURL string, latencyMS int, requestJSON, responseJSON string, relays []RelayState, signedEventJSON string) error {
-	return s.RecordAttempt(targetID, AttemptResult{Status: status, Error: errMsg, RemoteID: remoteID, RemoteURL: remoteURL,
-		LatencyMS: latencyMS, RequestJSON: requestJSON, ResponseJSON: responseJSON, Relays: relays, SignedEventJSON: signedEventJSON})
-}
-
-// RecordAttempt records a retry: inserts a new target_attempts row
-// (attempt_no = current+1, request/response scrubbed) and updates the target's
-// latest state. For a Nostr whole-platform retry (relays non-empty) it also
-// refreshes the signed event and per-relay rows, so the archive can't drift
-// into showing a green target above stale failed relays or rebroadcasting a
-// superseded event. Recomputes the post's overall status in the same transaction.
-func (s *Store) RecordAttempt(targetID int64, at AttemptResult) error {
-	tx, err := s.sql.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	ctx := context.Background()
-	now := time.Now().UTC()
-	var n int
-	if err := tx.QueryRow(`SELECT attempt_count FROM post_targets WHERE id=?`, targetID).Scan(&n); err != nil {
-		return err
-	}
-	n++
-	// The attempt is the item's when the target is a single post. A thread's
-	// items are written by UpdateTargetSegments; an attempt recorded here
-	// for a thread (one that could not run) leaves them as they are.
-	var itemID int64
-	var nItems int
-	if err := tx.QueryRow(`SELECT MIN(id), COUNT(*) FROM target_items WHERE target_id=?`, targetID).Scan(&itemID, &nItems); err != nil {
-		return err
-	}
-	var attemptItem any
-	if nItems == 1 {
-		attemptItem = itemID
-	}
-	if _, err := tx.Exec(
-		`INSERT INTO target_attempts(target_id,attempt_no,status,error,latency_ms,remote_id,request_json,response_json,attempted_at,error_class,item_id)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		targetID, n, at.Status, at.Error, at.LatencyMS, at.RemoteID, Scrub(at.RequestJSON), Scrub(at.ResponseJSON), now, nullStr(at.ErrorClass), attemptItem,
-	); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(
-		`UPDATE post_targets
-		    SET status=?, latency_ms=?, attempt_count=?, last_attempt_at=?, error_class=?,
-		        gave_up_at = CASE WHEN ?='success' THEN NULL ELSE gave_up_at END
-		  WHERE id=?`,
-		at.Status, at.LatencyMS, n, now, nullStr(at.ErrorClass), at.Status, targetID,
-	); err != nil {
-		return err
-	}
-	if nItems != 1 {
-		return commitWithStatus(tx, targetID)
-	}
-	st := itemStatusOf(at.Status)
-	var published any
-	if st == ItemPublished || st == ItemPartial {
-		published = now
-	}
-	if _, err := tx.Exec(
-		`UPDATE target_items
-		    SET status=?, remote_id=?, remote_url=?, error=?, error_class=?, attempt_count=attempt_count+1,
-		        published_at=COALESCE(published_at, ?)
-		  WHERE id=?`,
-		st, nullStr(at.RemoteID), nullStr(at.RemoteURL), nullStr(at.Error), nullStr(at.ErrorClass), published, itemID,
-	); err != nil {
-		return err
-	}
-	if len(at.Relays) > 0 { // nostr: refresh the signed event + per-relay rows
-		if _, err := tx.Exec(`UPDATE target_items SET ref_json=? WHERE id=?`, nullStr(at.SignedEventJSON), itemID); err != nil {
-			return err
-		}
-		if err := upsertDeliveries(ctx, tx, itemID, at.Relays, now); err != nil {
-			return err
-		}
-	}
-	var postID string
-	if err := tx.QueryRow(`SELECT post_id FROM post_targets WHERE id=?`, targetID).Scan(&postID); err != nil {
-		return err
-	}
-	if err := recomputeStatus(tx, postID); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// commitWithStatus recomputes the target's post status and commits.
-func commitWithStatus(tx *sql.Tx, targetID int64) error {
-	var postID string
-	if err := tx.QueryRow(`SELECT post_id FROM post_targets WHERE id=?`, targetID).Scan(&postID); err != nil {
-		return err
-	}
-	if err := recomputeStatus(tx, postID); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 // nullStr stores "" as NULL.
 func nullStr(s string) any {
 	if s == "" {
 		return nil
 	}
 	return s
-}
-
-// UpdateTargetSegments overwrites a threaded target's segment chain + status
-// (used when resuming a partial thread), records a new attempt, and recomputes
-// the post's aggregate status. Mirrors RecordAttempt's bookkeeping. errClass
-// is the destination.ErrorClass of the failure that stopped the chain.
-func (s *Store) UpdateTargetSegments(targetID int64, segments []Segment, status, headRemoteID, headRemoteURL string, latencyMS int, errMsg, errClass string) error {
-	tx, err := s.sql.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	ctx := context.Background()
-	now := time.Now().UTC()
-	var n int
-	var postID, platform string
-	if err := tx.QueryRow(`SELECT attempt_count, post_id, platform FROM post_targets WHERE id=?`, targetID).Scan(&n, &postID, &platform); err != nil {
-		return err
-	}
-	n++
-	if _, err := tx.Exec(
-		`INSERT INTO target_attempts(target_id,attempt_no,status,error,latency_ms,remote_id,request_json,response_json,attempted_at,error_class)
-		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		targetID, n, status, errMsg, latencyMS, headRemoteID, "", "", now, nullStr(errClass),
-	); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(
-		`UPDATE post_targets
-		    SET status=?, latency_ms=?, attempt_count=?, last_attempt_at=?, error_class=?,
-		        gave_up_at = CASE WHEN ?='success' THEN NULL ELSE gave_up_at END
-		  WHERE id=?`,
-		status, latencyMS, n, now, nullStr(errClass), status, targetID,
-	); err != nil {
-		return err
-	}
-	// The item that stopped the chain carries the failure's class.
-	stop := -1
-	for i, sg := range segments {
-		if sg.RemoteID == "" && sg.Error != "" {
-			stop = i
-			break
-		}
-	}
-	for i, sg := range segments {
-		it := Item{Ordinal: sg.Ordinal, Text: sg.Text, Media: sg.Images, Status: itemStatusOf(sg.Status),
-			RemoteID: sg.RemoteID, RemoteURL: sg.RemoteURL, Ref: sg.Ref, Error: sg.Error}
-		if i == stop {
-			it.ErrorClass = errClass
-		}
-		var published any
-		if it.Status == ItemPublished || it.Status == ItemPartial {
-			published = now
-		}
-		content, _ := json.Marshal(itemContent{Text: it.Text, Media: it.Media})
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO target_items (target_id, ordinal, content_json, status, idem_key, remote_id, remote_url, ref_json,
-			   error_class, error, attempt_count, published_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-			 ON CONFLICT (target_id, ordinal) DO UPDATE SET
-			   content_json=excluded.content_json, status=excluded.status, remote_id=excluded.remote_id,
-			   remote_url=excluded.remote_url, ref_json=excluded.ref_json, error_class=excluded.error_class,
-			   error=excluded.error,
-			   attempt_count = CASE WHEN target_items.remote_id IS NULL AND excluded.status <> 'planned'
-			                        THEN target_items.attempt_count + 1 ELSE target_items.attempt_count END,
-			   published_at=COALESCE(target_items.published_at, excluded.published_at)`,
-			targetID, it.Ordinal, string(content), it.Status, ItemKey(postID, platform, it.Ordinal), nullStr(it.RemoteID), nullStr(it.RemoteURL),
-			nullStr(string(it.Ref)), nullStr(it.ErrorClass), nullStr(Scrub(it.Error)), published,
-		); err != nil {
-			return err
-		}
-	}
-	if err := recomputeStatus(tx, postID); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// RecomputeStatus recomputes a post's overall status from its targets.
-func (s *Store) RecomputeStatus(postID string) error {
-	return recomputeStatus(s.sql, postID)
 }
 
 // ErrNotPending is returned by cancel/reschedule when a post is not 'scheduled'.
@@ -679,72 +492,8 @@ func (s *Store) HidePost(id string) error {
 	return nil
 }
 
-// DueScheduledPosts returns IDs of scheduled posts whose time has arrived.
-func (s *Store) DueScheduledPosts(now time.Time) ([]string, error) {
-	rows, err := s.sql.Query(
-		`SELECT id FROM posts WHERE status='scheduled' AND scheduled_at <= ? ORDER BY scheduled_at`, now.UTC())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
-// ClaimScheduled atomically flips scheduled→sending. Returns true iff this call
-// won the row (guards double-fire).
-func (s *Store) ClaimScheduled(id string) (bool, error) {
-	res, err := s.sql.Exec(`UPDATE posts SET status='sending' WHERE id=? AND status='scheduled'`, id)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n == 1, nil
-}
-
-// MarkMissed marks the post and its still-scheduled targets as missed.
-func (s *Store) MarkMissed(id string) error {
-	tx, err := s.sql.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	// Only the worker calls this, after ClaimScheduled flipped the post to
-	// 'sending'; guard on that so a stray call can't clobber a posted record.
-	if _, err := tx.Exec(`UPDATE posts SET status='missed' WHERE id=? AND status='sending'`, id); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`UPDATE post_targets SET status='missed' WHERE post_id=? AND status='scheduled'`, id); err != nil {
-		return err
-	}
-	// A missed post waits for the owner: its items are no longer due.
-	if _, err := tx.Exec(`UPDATE target_items SET next_attempt_at=NULL WHERE status='planned'
-		AND target_id IN (SELECT id FROM post_targets WHERE post_id=?)`, id); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// ResetSendingToScheduled reverts crash-leftover 'sending' rows to 'scheduled'.
-// Safe only at startup, before the worker runs (the worker is the sole writer of
-// 'sending').
-func (s *Store) ResetSendingToScheduled() (int, error) {
-	res, err := s.sql.Exec(`UPDATE posts SET status='scheduled' WHERE status='sending'`)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
-}
-
-// RescheduleScheduled changes a pending post's time; ErrNotPending otherwise.
+// RescheduleScheduled changes a pending post's time, and its planned items'
+// with it; ErrNotPending otherwise.
 func (s *Store) RescheduleScheduled(id string, at time.Time) error {
 	tx, err := s.sql.Begin()
 	if err != nil {
@@ -758,9 +507,8 @@ func (s *Store) RescheduleScheduled(id string, at time.Time) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotPending
 	}
-	// The post's planned items move with it.
-	if _, err := tx.Exec(`UPDATE target_items SET next_attempt_at=? WHERE status='planned'
-		AND target_id IN (SELECT id FROM post_targets WHERE post_id=?)`, at.UTC(), id); err != nil {
+	if _, err := tx.Exec(`UPDATE target_items SET next_attempt_at=?
+		WHERE status='planned' AND target_id IN (SELECT id FROM post_targets WHERE post_id=?)`, at.UTC(), id); err != nil {
 		return err
 	}
 	return tx.Commit()

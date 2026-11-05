@@ -10,8 +10,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/geofox/publisher/internal/api"
@@ -130,6 +134,10 @@ func main() {
 		Fetcher:  mp,
 		Notify:   feed.NewWebhook(cfg.FeedWebhookURL, cfg.FeedWebhookToken),
 		Unfurler: uf,
+		Policy: dispatch.RetryPolicy{Enabled: cfg.AutoRetryEnabled, MaxAttempts: cfg.AutoRetryMaxAttempts,
+			Base: cfg.AutoRetryBaseDelay, Max: cfg.AutoRetryMaxDelay},
+		Workers:       cfg.PublishWorkers,
+		ScheduleGrace: cfg.ScheduleGrace,
 	}
 	a := api.New(np, mp)
 	a.Store = st
@@ -197,7 +205,19 @@ func main() {
 		Mastodon: resolve.MastodonAdapter{C: mc},
 		Nostr:    resolve.NostrAdapter{P: np},
 	}
+	// SIGTERM/SIGINT start a graceful stop: readiness fails, new work stops
+	// being claimed, and what is in flight finishes.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+	var draining atomic.Bool
 	a.Ready = readinessChecks(cfg, st, a.VideoWorkdir)
+	a.Ready.Local = append(a.Ready.Local, health.Check{Name: "accepting_work", Critical: true,
+		Run: func(context.Context) error {
+			if draining.Load() {
+				return health.Fail("shutting down", nil)
+			}
+			return nil
+		}})
 	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
 	d.Alerter = notifier
 	if cfg.OIDCEnabled() {
@@ -222,7 +242,12 @@ func main() {
 		go func() {
 			t := time.NewTicker(time.Hour)
 			defer t.Stop()
-			for range t.C {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
 				if n, err := st.SweepExpiredSessions(); err != nil {
 					slog.Warn("session sweep failed", "err", err)
 				} else if n > 0 {
@@ -236,23 +261,29 @@ func main() {
 	}
 	if cfg.ThreadsToken != "" {
 		mgr := threads.NewTokenManager(st, tc, notifier, cfg.ThreadsToken)
-		go mgr.Start(context.Background())
+		go mgr.Start(ctx)
 	}
-	go dispatch.NewScheduler(d, notifier, cfg.ScheduleGrace).Start(context.Background())
+	// The engine first recovers what a stopped process left in flight, then
+	// claims due items (scheduled posts, retries) in the background.
+	go d.Run(ctx)
+	// Relay-level retries and the Nostr fan-out queue re-send already
+	// signed events (relays dedupe them), so stopping mid-pass is safe.
 	go dispatch.NewRetrier(d, notifier,
 		cfg.AutoRetryEnabled, cfg.AutoRetryMaxAttempts,
 		cfg.AutoRetryBaseDelay, cfg.AutoRetryMaxDelay, cfg.RetrierTick,
-	).Start(context.Background())
+	).Start(ctx)
 	go dispatch.NewFanout(d, cfg.NostrPrimaryFanout,
 		cfg.AutoRetryMaxAttempts, cfg.AutoRetryBaseDelay, cfg.AutoRetryMaxDelay,
 		cfg.FanoutTick,
-	).Start(context.Background())
+	).Start(ctx)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      a.Routes(),
 		ReadTimeout:  60 * time.Second,
 		WriteTimeout: 120 * time.Second,
 	}
+	served := make(chan error, 1)
+	go func() { served <- srv.ListenAndServe() }()
 	slog.Info("publisher starting",
 		"port", cfg.Port,
 		"pubkey", cfg.OwnerPubkey.Hex(),
@@ -261,10 +292,47 @@ func main() {
 		"pow_default", cfg.POWDifficultyDefault,
 		"pow_max", cfg.POWDifficultyMax,
 	)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		slog.Error("server failed", "err", err)
-		os.Exit(1)
+	select {
+	case err := <-served:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("server failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	case <-ctx.Done():
 	}
+	stop() // a second signal kills the process
+	gracefulStop(&draining, srv, d)
+}
+
+// shutdownGrace bounds a graceful stop. Docker's default stop timeout is
+// 10 s, so the compose example sets stop_grace_period: 30s.
+const shutdownGrace = 25 * time.Second
+
+// gracefulStop fails readiness, stops accepting requests and lets the ones
+// in flight finish, and waits for the items being published. Whatever is
+// still sending when the grace runs out is recovered on the next start.
+func gracefulStop(draining *atomic.Bool, srv *http.Server, d *dispatch.Dispatcher) {
+	slog.Info("shutting down", "grace", shutdownGrace.String())
+	draining.Store(true)
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := srv.Shutdown(ctx); err != nil {
+			slog.Warn("http shutdown incomplete", "err", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := d.Shutdown(ctx); err != nil {
+			slog.Warn("publishing still in flight at exit; it is recovered on the next start", "err", err)
+		}
+	}()
+	wg.Wait()
+	slog.Info("stopped")
 }
 
 // readinessChecks builds the /readyz checks. Local checks run on every probe;

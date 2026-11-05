@@ -24,10 +24,13 @@ const (
 
 // Item is one target_items row.
 type Item struct {
-	ID            int64
-	Ordinal       int
-	Text          string
-	Media         []int // indices into the post's media
+	ID      int64
+	Ordinal int
+	Text    string
+	Media   []int // indices into the post's media
+	// Attach is media the item carries beyond the post's own: a quote
+	// reproduction's re-hosted source media (Ordinal = the source index).
+	Attach        []Media
 	Status        string
 	IdemKey       string
 	RemoteID      string
@@ -51,8 +54,9 @@ func ItemKey(postID, typ string, ordinal int) string {
 
 // itemContent is target_items.content_json.
 type itemContent struct {
-	Text  string `json:"text"`
-	Media []int  `json:"media,omitempty"`
+	Text   string  `json:"text"`
+	Media  []int   `json:"media,omitempty"`
+	Attach []Media `json:"attach,omitempty"`
 }
 
 // itemStatusOf maps the target and segment vocabulary (success, pending,
@@ -93,7 +97,7 @@ func insertItem(ctx context.Context, x itemExec, targetID int64, it Item) error 
 }
 
 func insertItemID(ctx context.Context, x itemExec, targetID int64, it Item) (int64, error) {
-	content, _ := json.Marshal(itemContent{Text: it.Text, Media: it.Media})
+	content, _ := json.Marshal(itemContent{Text: it.Text, Media: it.Media, Attach: it.Attach})
 	if it.IdemKey == "" {
 		it.IdemKey = newID()
 	}
@@ -129,7 +133,7 @@ func (s *Store) loadItems(targetID int64) ([]Item, error) {
 		}
 		var c itemContent
 		_ = json.Unmarshal([]byte(content), &c)
-		it.Text, it.Media = c.Text, c.Media
+		it.Text, it.Media, it.Attach = c.Text, c.Media, c.Attach
 		if ref != "" {
 			it.Ref = json.RawMessage(ref)
 		}

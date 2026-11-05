@@ -21,6 +21,28 @@ func openDispatchStore(t *testing.T) *store.Store {
 	return db
 }
 
+// retryingDispatcher is an engine with the default retry policy whose
+// clock reads now.
+func retryingDispatcher(st *store.Store, al Notifier, now time.Time) *Dispatcher {
+	return &Dispatcher{Store: st, Alerter: al, Clock: func() time.Time { return now },
+		Policy: RetryPolicy{Enabled: true, MaxAttempts: 6, Base: 2 * time.Minute, Max: time.Hour}}
+}
+
+// seedTarget saves a one-target post whose target already has n failed
+// attempts (made now), with optional relay states and a signed event.
+func seedTarget(t *testing.T, st *store.Store, id, plat, status string, n int, relays []store.RelayState, signed string) {
+	t.Helper()
+	tg := store.Target{Platform: plat, Status: status, Relays: relays, SignedEventJSON: signed}
+	for i := 1; i <= n; i++ {
+		tg.Attempts = append(tg.Attempts, store.Attempt{AttemptNo: i, Status: status, Error: "boom", AttemptedAt: time.Now().UTC()})
+	}
+	p := &store.Post{ID: id, CreatedAt: time.Now().UTC(), MasterText: "hi", Platforms: []string{plat},
+		Source: "test", Status: status, Targets: []store.Target{tg}}
+	if err := st.SavePost(p); err != nil {
+		t.Fatalf("SavePost: %v", err)
+	}
+}
+
 // fakeAlerter records Alert calls.
 type fakeAlerter struct{ calls, bodies []string }
 
@@ -33,25 +55,14 @@ func (f *fakeAlerter) Alert(_ context.Context, summary, body string) error {
 func TestRetrierRetriesDueFailedTarget(t *testing.T) {
 	st := openDispatchStore(t)
 	// A failed bluesky target, one attempt made 10 minutes ago → due (base 2m).
-	p := &store.Post{ID: "r1", CreatedAt: time.Now().UTC(), MasterText: "hi",
-		Platforms: []string{"bluesky"}, Source: "test", Status: "failed",
-		Targets: []store.Target{{Platform: "bluesky", Status: "failed"}}}
-	if err := st.SavePost(p); err != nil {
-		t.Fatalf("SavePost: %v", err)
-	}
+	seedTarget(t, st, "r1", "bluesky", "failed", 1, nil, "")
+
+	// No platform adapters → the retry fails too, but is attempted.
+	d := retryingDispatcher(st, &fakeAlerter{}, time.Now().UTC().Add(10*time.Minute))
+	d.passes(context.Background())
+	d.runDue(context.Background())
+
 	gp, _ := st.GetPost("r1")
-	tid := gp.Targets[0].ID
-	_ = st.AppendTargetAttempt(tid, "failed", "boom", "", "", 1, "", "", nil, "")
-
-	d := &Dispatcher{Store: st} // no platform adapters → runPlatform returns failed
-	now := time.Now().UTC().Add(10 * time.Minute)
-	r := &Retrier{disp: d, notifier: &fakeAlerter{}, enabled: true,
-		maxAttempts: 6, base: 2 * time.Minute, max: time.Hour,
-		now: func() time.Time { return now }}
-
-	r.runDue(context.Background())
-
-	gp, _ = st.GetPost("r1")
 	if gp.Targets[0].AttemptCount < 2 {
 		t.Errorf("expected a retry attempt (count>=2), got %d", gp.Targets[0].AttemptCount)
 	}
@@ -59,21 +70,12 @@ func TestRetrierRetriesDueFailedTarget(t *testing.T) {
 
 func TestRetrierSkipsNotDue(t *testing.T) {
 	st := openDispatchStore(t)
-	p := &store.Post{ID: "r2", CreatedAt: time.Now().UTC(), MasterText: "hi",
-		Platforms: []string{"bluesky"}, Source: "test", Status: "failed",
-		Targets: []store.Target{{Platform: "bluesky", Status: "failed"}}}
-	_ = st.SavePost(p)
-	gp, _ := st.GetPost("r2")
-	tid := gp.Targets[0].ID
-	_ = st.AppendTargetAttempt(tid, "failed", "boom", "", "", 1, "", "", nil, "")
+	seedTarget(t, st, "r2", "bluesky", "failed", 1, nil, "")
 
-	d := &Dispatcher{Store: st}
-	now := time.Now().UTC().Add(30 * time.Second) // < base 2m → not due
-	r := &Retrier{disp: d, notifier: &fakeAlerter{}, enabled: true,
-		maxAttempts: 6, base: 2 * time.Minute, max: time.Hour,
-		now: func() time.Time { return now }}
-	r.runDue(context.Background())
-	gp, _ = st.GetPost("r2")
+	d := retryingDispatcher(st, &fakeAlerter{}, time.Now().UTC().Add(30*time.Second)) // < base 2m → not due
+	d.passes(context.Background())
+	d.runDue(context.Background())
+	gp, _ := st.GetPost("r2")
 	if gp.Targets[0].AttemptCount != 1 {
 		t.Errorf("not-due target must not be retried, count=%d", gp.Targets[0].AttemptCount)
 	}
@@ -81,24 +83,14 @@ func TestRetrierSkipsNotDue(t *testing.T) {
 
 func TestRetrierGivesUpAndAlertsOnce(t *testing.T) {
 	st := openDispatchStore(t)
-	p := &store.Post{ID: "g1", CreatedAt: time.Now().UTC(), MasterText: "hi",
-		Platforms: []string{"bluesky"}, Source: "test", Status: "failed",
-		Targets: []store.Target{{Platform: "bluesky", Status: "failed"}}}
-	_ = st.SavePost(p)
-	gp, _ := st.GetPost("g1")
-	tid := gp.Targets[0].ID
-	// Drive attempt_count up to the cap (6) — all failures.
-	for i := 0; i < 6; i++ {
-		_ = st.AppendTargetAttempt(tid, "failed", "boom", "", "", 1, "", "", nil, "")
-	}
+	// attempt_count already at the cap (6) — all failures.
+	seedTarget(t, st, "g1", "bluesky", "failed", 6, nil, "")
 	al := &fakeAlerter{}
-	d := &Dispatcher{Store: st}
-	now := time.Now().UTC().Add(2 * time.Hour) // well past any backoff
-	r := &Retrier{disp: d, notifier: al, enabled: true, maxAttempts: 6,
-		base: 2 * time.Minute, max: time.Hour, now: func() time.Time { return now }}
+	d := retryingDispatcher(st, al, time.Now().UTC().Add(2*time.Hour)) // well past any backoff
+	r := struct{ runDue func(context.Context) }{func(ctx context.Context) { d.passes(ctx); d.runDue(ctx) }}
 
 	r.runDue(context.Background()) // crosses the cap → gives up + alerts
-	gp, _ = st.GetPost("g1")
+	gp, _ := st.GetPost("g1")
 	if gp.Targets[0].GaveUpAt == nil {
 		t.Fatal("target should be marked given up at the cap")
 	}
@@ -113,19 +105,12 @@ func TestRetrierGivesUpAndAlertsOnce(t *testing.T) {
 
 func TestRetrierRelayLevelRetry(t *testing.T) {
 	st := openDispatchStore(t)
-	p := &store.Post{ID: "rl1", CreatedAt: time.Now().UTC(), MasterText: "hi",
-		Platforms: []string{"nostr"}, Source: "test", Status: "partial",
-		Targets: []store.Target{{Platform: "nostr", Status: "partial"}}}
-	_ = st.SavePost(p)
-	gp, _ := st.GetPost("rl1")
-	tid := gp.Targets[0].ID
 	// One relay ok, one failed → target partial; store a signed event so
 	// RetryRelay has something to rebroadcast.
-	_ = st.AppendTargetAttempt(tid, "partial", "", "", "", 1, "", "",
-		[]store.RelayState{
-			{URL: "wss://ok", Status: "ok"},
-			{URL: "wss://down", Status: "failed"},
-		}, `{"id":"abc"}`)
+	seedTarget(t, st, "rl1", "nostr", "partial", 1, []store.RelayState{
+		{URL: "wss://ok", Status: "ok"},
+		{URL: "wss://down", Status: "failed"},
+	}, `{"id":"abc"}`)
 
 	// fakeNostr lets RetryRelay "succeed" without a network.
 	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fakeRebroadcaster{ok: true}}), Store: st}
@@ -134,7 +119,7 @@ func TestRetrierRelayLevelRetry(t *testing.T) {
 		base: 2 * time.Minute, max: time.Hour, now: func() time.Time { return now }}
 	r.runDue(context.Background())
 
-	gp, _ = st.GetPost("rl1")
+	gp, _ := st.GetPost("rl1")
 	for _, rl := range gp.Targets[0].Relays {
 		if rl.URL == "wss://down" && rl.Status != "ok" {
 			t.Errorf("down relay should have been rebroadcast to ok, got %q", rl.Status)
@@ -144,20 +129,13 @@ func TestRetrierRelayLevelRetry(t *testing.T) {
 
 func TestRetrierRelayLevelSkipsNotDue(t *testing.T) {
 	st := openDispatchStore(t)
-	p := &store.Post{ID: "rl2", CreatedAt: time.Now().UTC(), MasterText: "hi",
-		Platforms: []string{"nostr"}, Source: "test", Status: "partial",
-		Targets: []store.Target{{Platform: "nostr", Status: "partial"}}}
-	_ = st.SavePost(p)
-	gp, _ := st.GetPost("rl2")
-	tid := gp.Targets[0].ID
 	// Capture t0 right before seeding so we can place now() reliably within the
-	// 2-minute backoff window regardless of how long AppendTargetAttempt takes.
+	// 2-minute backoff window regardless of how long seeding takes.
 	t0 := time.Now().UTC()
-	_ = st.AppendTargetAttempt(tid, "partial", "", "", "", 1, "", "",
-		[]store.RelayState{
-			{URL: "wss://ok2", Status: "ok"},
-			{URL: "wss://down2", Status: "failed"},
-		}, `{"id":"xyz"}`)
+	seedTarget(t, st, "rl2", "nostr", "partial", 1, []store.RelayState{
+		{URL: "wss://ok2", Status: "ok"},
+		{URL: "wss://down2", Status: "failed"},
+	}, `{"id":"xyz"}`)
 
 	// fakeRebroadcaster{ok:true}: if the down relay were (wrongly) retried it
 	// would flip to "ok"; the assertion that it stays "failed" proves the gate.
@@ -168,7 +146,7 @@ func TestRetrierRelayLevelSkipsNotDue(t *testing.T) {
 		base: 2 * time.Minute, max: time.Hour, now: func() time.Time { return now }}
 	r.runDue(context.Background())
 
-	gp, _ = st.GetPost("rl2")
+	gp, _ := st.GetPost("rl2")
 	for _, rl := range gp.Targets[0].Relays {
 		if rl.URL == "wss://down2" && rl.Status != "failed" {
 			t.Errorf("not-due relay must not be retried, got status %q", rl.Status)

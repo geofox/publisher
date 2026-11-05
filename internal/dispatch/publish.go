@@ -2,11 +2,9 @@ package dispatch
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -31,10 +29,16 @@ type item struct {
 	imgs   []Img
 	thread *destination.ThreadRef // segment k+1 replies to segment k
 	head   *headSpec              // only on a thread's first item
-	// postID and ordinal make the idempotency key: stable across every
-	// attempt to publish this item, distinct between items.
+	// postID and ordinal name the item; idemKey is its idempotency key
+	// (store.ItemKey when unset), stable across every attempt.
 	postID  string
 	ordinal int
+	idemKey string
+	// prepared is what a Preparer built for the item on an earlier attempt;
+	// itemID is the claimed item that a new preparation is persisted to
+	// before the first send.
+	prepared json.RawMessage
+	itemID   int64
 }
 
 // account returns the account a post names, or a classified error.
@@ -84,6 +88,9 @@ func (d *Dispatcher) publishItem(ctx context.Context, name string, it item) Targ
 		var req destination.PublishRequest
 		req, err = d.request(ctx, acct, name, it)
 		if err == nil {
+			req.Prepared, err = d.prepare(ctx, acct, req, it)
+		}
+		if err == nil {
 			res, err = acct.Publish(ctx, req)
 		}
 	}
@@ -91,6 +98,31 @@ func (d *Dispatcher) publishItem(ctx context.Context, name string, it item) Targ
 	r.LatencyMS = int(time.Since(start).Milliseconds())
 	metrics.RecordPublish(name, r.Status, time.Since(start))
 	return r
+}
+
+// prepare returns the item as a Preparer built it: from an earlier attempt,
+// or built now and persisted to the item before anything is sent, so a
+// retry (even after a crash) sends the same thing. Nothing for other
+// accounts.
+func (d *Dispatcher) prepare(ctx context.Context, acct destination.Account, req destination.PublishRequest, it item) (json.RawMessage, error) {
+	p, ok := acct.(destination.Preparer)
+	if !ok {
+		return nil, nil
+	}
+	if len(it.prepared) > 0 {
+		return it.prepared, nil
+	}
+	prep, err := p.Prepare(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if it.itemID != 0 && d.Store != nil {
+		if err := d.Store.SetItemRef(ctx, it.itemID, prep); err != nil {
+			// Unsaved, a retry would build a different item: don't send.
+			return nil, &destination.Error{Class: destination.ClassTransient, Err: fmt.Errorf("save prepared item: %w", err)}
+		}
+	}
+	return prep, nil
 }
 
 // repost natively reposts an external post.
@@ -170,8 +202,13 @@ func (d *Dispatcher) request(ctx context.Context, acct destination.Account, name
 			req.ReplyTo = &src
 		}
 	}
-	if caps.Idempotent == destination.IdempotentKey && it.postID != "" {
-		req.IdempotencyKey = idempotencyKey(it.postID, name, it.ordinal)
+	if caps.Idempotent == destination.IdempotentKey {
+		switch {
+		case it.idemKey != "":
+			req.IdempotencyKey = it.idemKey
+		case it.postID != "":
+			req.IdempotencyKey = store.ItemKey(it.postID, name, it.ordinal)
+		}
 	}
 	return req, nil
 }
@@ -226,14 +263,6 @@ func legacyOptions(m destination.Manifest, ov Overrides) map[string]any {
 	return out
 }
 
-// idempotencyKey is the key sent with every attempt at one item. It is
-// derived, not random, so a retry after a crash or a lost response repeats
-// the same key and the server drops the duplicate.
-func idempotencyKey(postID, name string, ordinal int) string {
-	sum := sha256.Sum256([]byte("publisher\x00" + postID + "\x00" + name + "\x00" + strconv.Itoa(ordinal)))
-	return hex.EncodeToString(sum[:16])
-}
-
 // sourceRef converts the composer's resolved source into the contract's.
 func sourceRef(name string, r InteractRef) destination.SourceRef {
 	return destination.SourceRef{
@@ -272,7 +301,11 @@ func normalize(name string, acct destination.Account, res destination.PublishRes
 			r.Status = "partial"
 		}
 		r.Error = err.Error()
-		r.ErrorClass = string(destination.ClassOf(err))
+		if e := destination.Classify(err); e != nil {
+			r.ErrorClass, r.RetryAfter = string(e.Class), e.RetryAfter
+		} else {
+			r.ErrorClass = string(destination.ClassOf(err))
+		}
 	}
 	return r
 }

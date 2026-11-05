@@ -118,8 +118,25 @@ func New(cfg Config) *Publisher {
 // It returns PublishResult even on partial relay failure — the caller
 // decides how to interpret the relay results slice.
 func (p *Publisher) Publish(ctx context.Context, in PublishInput) (PublishResult, error) {
+	ev, err := p.Sign(ctx, in)
+	if err != nil {
+		return PublishResult{}, err
+	}
+	return p.Broadcast(ctx, ev), nil
+}
+
+// SignedEvent is an event ready to broadcast, with how it was mined.
+type SignedEvent struct {
+	Event   gonostr.Event
+	POW     int
+	MinedMS int64
+}
+
+// Sign builds, optionally mines, and signs the event for in, without
+// sending it.
+func (p *Publisher) Sign(ctx context.Context, in PublishInput) (SignedEvent, error) {
 	if strings.TrimSpace(in.Text) == "" && requiresText(in.Kind) {
-		return PublishResult{}, ErrInvalidInput
+		return SignedEvent{}, ErrInvalidInput
 	}
 	kind := in.Kind
 	if kind == 0 {
@@ -168,15 +185,22 @@ func (p *Publisher) Publish(ctx context.Context, in PublishInput) (PublishResult
 		start := time.Now()
 		nonce, err := nip13.DoWork(wctx, event, pow)
 		if err != nil {
-			return PublishResult{}, fmt.Errorf("mining: %w", err)
+			return SignedEvent{}, fmt.Errorf("mining: %w", err)
 		}
 		event.Tags = append(event.Tags, nonce)
 		minedMS = time.Since(start).Milliseconds()
 	}
 	if err := event.Sign(p.cfg.NSEC); err != nil {
-		return PublishResult{}, fmt.Errorf("sign: %w", err)
+		return SignedEvent{}, fmt.Errorf("sign: %w", err)
 	}
+	return SignedEvent{Event: event, POW: pow, MinedMS: minedMS}, nil
+}
 
+// Broadcast sends a signed event to the owner's write relays (or the
+// primary set, in fan-out mode) and reports each relay's answer. Sending
+// the same event again is harmless: relays dedupe by event id.
+func (p *Publisher) Broadcast(ctx context.Context, se SignedEvent) PublishResult {
+	event, kind := se.Event, int(se.Event.Kind)
 	relays, err := p.resolveRelays(ctx, p.cfg.OwnerPubkey)
 	if err != nil || len(relays) == 0 {
 		slog.Warn("relay resolution fell back", "err", err)
@@ -220,17 +244,17 @@ func (p *Publisher) Publish(ctx context.Context, in PublishInput) (PublishResult
 		hints = hints[:3]
 	}
 
-	signed, _ := json.Marshal(event) // event is signed above; Event is JSON-safe
+	signed, _ := json.Marshal(event) // event is signed; Event is JSON-safe
 	return PublishResult{
 		EventID:       event.ID.Hex(),
 		Nevent:        nip19.EncodeNevent(event.ID, hints, p.cfg.OwnerPubkey),
 		SignedEvent:   string(signed),
 		Kind:          kind,
-		POW:           pow,
-		MinedMS:       minedMS,
+		POW:           se.POW,
+		MinedMS:       se.MinedMS,
 		Relays:        results,
 		PendingRelays: pending,
-	}, nil
+	}
 }
 
 // publishToRelays fans out via the pool. PublishMany returns a channel that's

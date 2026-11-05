@@ -61,34 +61,6 @@ func mkScheduled(t *testing.T, db *Store, id string, at time.Time) {
 	}
 }
 
-func TestDueAndClaim(t *testing.T) {
-	db, _ := Open(filepath.Join(t.TempDir(), "t.db"))
-	defer db.Close()
-	now := time.Now().UTC()
-	mkScheduled(t, db, "due", now.Add(-time.Minute))
-	mkScheduled(t, db, "future", now.Add(time.Hour))
-
-	due, err := db.DueScheduledPosts(now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(due) != 1 || due[0] != "due" {
-		t.Fatalf("due = %v, want [due]", due)
-	}
-	ok, err := db.ClaimScheduled("due")
-	if err != nil || !ok {
-		t.Fatalf("first claim = %v,%v want true", ok, err)
-	}
-	ok, _ = db.ClaimScheduled("due")
-	if ok {
-		t.Error("second claim should fail (already sending)")
-	}
-	due, _ = db.DueScheduledPosts(now)
-	if len(due) != 0 {
-		t.Errorf("claimed post still due: %v", due)
-	}
-}
-
 func TestCancelReschedule(t *testing.T) {
 	db, _ := Open(filepath.Join(t.TempDir(), "t.db"))
 	defer db.Close()
@@ -112,43 +84,14 @@ func TestCancelReschedule(t *testing.T) {
 	}
 
 	mkScheduled(t, db, "live", now.Add(time.Hour))
-	_, _ = db.ClaimScheduled("live") // → sending
+	if _, err := db.sql.Exec(`UPDATE posts SET status='sending' WHERE id='live'`); err != nil { // claimed
+		t.Fatal(err)
+	}
 	if err := db.CancelScheduled("live"); err != ErrNotPending {
 		t.Errorf("cancel non-pending = %v, want ErrNotPending", err)
 	}
 	if err := db.RescheduleScheduled("live", newAt); err != ErrNotPending {
 		t.Errorf("reschedule non-pending = %v, want ErrNotPending", err)
-	}
-}
-
-func TestMarkMissedAndResetSending(t *testing.T) {
-	db, _ := Open(filepath.Join(t.TempDir(), "t.db"))
-	defer db.Close()
-	now := time.Now().UTC()
-	mkScheduled(t, db, "m", now.Add(-5*time.Hour))
-	_, _ = db.ClaimScheduled("m") // → sending
-	if err := db.MarkMissed("m"); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := db.GetPost("m")
-	if got.Status != "missed" || got.Targets[0].Status != "missed" {
-		t.Errorf("missed: post=%q target=%q", got.Status, got.Targets[0].Status)
-	}
-
-	mkScheduled(t, db, "stuck", now.Add(time.Hour))
-	_, _ = db.ClaimScheduled("stuck") // → sending (simulate crash mid-send)
-	n, err := db.ResetSendingToScheduled()
-	if err != nil || n != 1 {
-		t.Fatalf("reset = %d,%v want 1", n, err)
-	}
-	got, _ = db.GetPost("stuck")
-	if got.Status != "scheduled" {
-		t.Errorf("reset status = %q, want scheduled", got.Status)
-	}
-	// Reset must touch only 'sending' rows — the missed post stays missed.
-	gm, _ := db.GetPost("m")
-	if gm.Status != "missed" {
-		t.Errorf("reset clobbered missed post: %q", gm.Status)
 	}
 }
 

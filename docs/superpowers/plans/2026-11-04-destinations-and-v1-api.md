@@ -213,6 +213,50 @@ as they move.
 >   point at its item.
 > - The migration runner's retry limit for concurrent starters was 3; with
 >   four migrations it could run out, so it is now one per migration.
+>
+> PR 2b differences from Tasks 2.3 and 2.4:
+>
+> - **"Publish now" drives its post inline.** The post is saved whole first
+>   (every item planned, with its key), then the request's goroutine claims
+>   and sends that post's items, so `/api/post` and `/api/interact` keep
+>   their response shape. (`/publish` signs a Nostr note directly and
+>   doesn't use the dispatcher; PR 4 removes it.) Background workers (`Run`,
+>   `PUBLISH_WORKERS`, default 4) claim everything else: scheduled posts,
+>   retries, items recovered at startup. They skip posts being driven inline.
+> - **Progress stays in memory.** The inline drive feeds the existing
+>   `progress.Registry`. The `events` table and SSE from the database come
+>   with the `/v1` API (PR 3), which is where SSE is redesigned.
+> - **Loops.** The Scheduler is gone: a scheduled post's items are due at
+>   its time, and a pass marks posts past the grace window `missed`. Item
+>   retries are decided when a failure is recorded (`RetryPolicy`). The
+>   relay-level Retrier and the Nostr fan-out queue keep their own tickers;
+>   both only re-send already-signed events, which relays dedupe.
+> - **Unknown outcomes.** An item left `sending` at startup is retried when
+>   the destination drops repeats (Mastodon within its key's hour, Nostr
+>   always). Otherwise it becomes `unknown`, its target gives up, and an
+>   alert says "may have been posted". There is no `:resolve` endpoint yet:
+>   that is `/v1` (PR 3); a retry by hand covers it until then.
+> - **Exactly-once.** Mastodon sends the item's key, derived as before so
+>   migrated items keep theirs. Nostr implements `destination.Preparer`: the
+>   signed event is saved to the item before the first send and re-sent on
+>   every attempt, so Nostr is now `natural`. The Bluesky `rkey` and the
+>   Threads container id are deferred: neither platform's behaviour on a
+>   repeat is verified yet, so both stay `none` (an unknown outcome stops
+>   for the owner).
+> - **Rate limits** wait at least `RetryAfter`, and count against the
+>   attempt cap, so a platform that keeps answering 429 still gives up.
+> - **A thread's attempts are per item** (each `target_attempts` row has
+>   its `item_id`). The target's `attempt_count` is its most-tried item's.
+> - **Alerts.** A post's first run alerts as before when it doesn't fully
+>   succeed. A retry alerts only when the retries give up, and recovery
+>   alerts for each item that may have been posted.
+> - **The crash e2e is a Go test.** The harness deletes its database on
+>   exit, so the kill-and-restart case is
+>   `TestCrashBetweenThreadItemsCompletesWithoutDuplicate`: a fake platform
+>   that drops repeated keys, with the process stopped after sending part 2
+>   of a thread and before recording it.
+> - Threads planned before media placement was recorded (no item names any
+>   media) get the old front-fill placement when they are retried.
 
 ## Task 2.1: Migration v3 — owners and accounts
 

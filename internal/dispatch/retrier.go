@@ -8,9 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/logging"
-	"github.com/geofox/publisher/internal/metrics"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -36,12 +34,13 @@ func backoff(attempt int, base, max time.Duration) time.Duration {
 	return d
 }
 
-// Retrier re-drives failed/partial deliveries with exponential backoff and
-// gives up after a cap. It reuses Dispatcher.Retry / RetryRelay. A single
-// in-process actor; the running guard prevents overlapping ticks.
+// Retrier re-sends failed relay deliveries of live Nostr notes with
+// exponential backoff, and gives up after a cap. (Failed items themselves
+// are retried by the engine; see RetryPolicy.) A single in-process actor;
+// the running guard prevents overlapping ticks.
 type Retrier struct {
 	disp        *Dispatcher
-	notifier    Notifier // reuses the scheduler's Notifier interface (Alert)
+	notifier    Notifier
 	enabled     bool
 	maxAttempts int
 	base, max   time.Duration
@@ -91,20 +90,6 @@ func (r *Retrier) runDue(ctx context.Context) {
 	}
 }
 
-// retryablePlatform mirrors Dispatcher.Retry's predicate minus 'missed':
-// failed targets (any platform) and threaded partials. Nostr single-post
-// partials are handled at the relay level (Task 9), not here.
-func retryablePlatform(t store.Target) bool {
-	return t.Status == "failed" || (t.Status == "partial" && len(t.Segments) > 1)
-}
-
-func (r *Retrier) targetDue(t store.Target, now time.Time) bool {
-	if t.LastAttempt.IsZero() {
-		return true
-	}
-	return !now.Before(t.LastAttempt.Add(backoff(t.AttemptCount, r.base, r.max)))
-}
-
 func (r *Retrier) processPost(ctx context.Context, id string) {
 	ctx = logging.With(ctx, "post_id", id)
 	post, err := r.disp.Store.GetPost(id)
@@ -113,41 +98,11 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 		return
 	}
 	now := r.now()
-	var due []string       // platforms to retry this pass
-	var exhausted []string // platforms that just hit the cap
-	var hopeless []string  // platforms whose last failure a retry can't fix
-	for _, t := range post.Targets {
-		if !retryablePlatform(t) || t.GaveUpAt != nil {
-			continue
-		}
-		if cls := destination.ErrorClass(t.ErrorClass); !r.classRetryable(ctx, t, now) {
-			if set, err := r.disp.Store.MarkTargetGaveUp(t.ID, now); err != nil {
-				slog.ErrorContext(ctx, "retrier: mark gave-up failed", "platform", t.Platform, "err", err)
-			} else if set {
-				hopeless = append(hopeless, t.Platform+" ("+string(cls)+")")
-				metrics.IncRetryExhausted(t.Platform)
-			}
-			continue
-		}
-		if t.AttemptCount >= r.maxAttempts {
-			if set, err := r.disp.Store.MarkTargetGaveUp(t.ID, now); err != nil {
-				slog.ErrorContext(ctx, "retrier: mark gave-up failed", "platform", t.Platform, "err", err)
-			} else if set {
-				exhausted = append(exhausted, t.Platform)
-				metrics.IncRetryExhausted(t.Platform)
-			}
-			continue
-		}
-		if r.targetDue(t, now) {
-			due = append(due, t.Platform)
-		}
-	}
-	var exhaustedRelays []string
+	var exhausted []string
 	for _, t := range post.Targets {
 		// Only single-post partials with endpoint rows (Nostr relays) use
-		// endpoint-level retry; threaded and failed targets are covered by
-		// the platform path above.
-		if len(t.Relays) == 0 || t.Status != "partial" || len(t.Segments) > 1 {
+		// endpoint-level retry; threads and failed items are the engine's.
+		if len(t.Relays) == 0 || t.Status != "partial" || len(t.Items) > 1 {
 			continue
 		}
 		for _, rl := range t.Relays {
@@ -159,7 +114,7 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 				if set, err := r.disp.Store.MarkRelayGaveUp(t.ID, rl.URL, now); err != nil {
 					slog.ErrorContext(ctx, "retrier: mark relay gave-up failed", "relay", rl.URL, "err", err)
 				} else if set {
-					exhaustedRelays = append(exhaustedRelays, rl.URL)
+					exhausted = append(exhausted, rl.URL)
 				}
 				continue
 			}
@@ -173,77 +128,14 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 			}
 		}
 	}
-
-	if len(due) > 0 {
-		if _, err := r.disp.Retry(ctx, id, due); err != nil {
-			slog.ErrorContext(ctx, "retrier: retry failed", "platforms", due, "err", err)
-		} else {
-			for _, p := range due {
-				metrics.RecordRetry(p)
-			}
-			slog.InfoContext(ctx, "retrier: re-drove targets", "platforms", due)
-		}
-	}
-	if len(exhausted) > 0 || len(exhaustedRelays) > 0 {
-		r.alertGaveUp(ctx, id, exhausted, exhaustedRelays)
-	}
-	if len(hopeless) > 0 {
-		r.alertNotRetried(ctx, id, hopeless)
+	if len(exhausted) > 0 {
+		r.alertGaveUp(ctx, id, exhausted)
 	}
 }
 
 // keyMargin is how long before the server forgets an idempotency key the
-// Retrier stops relying on it (clock skew, a slow request).
+// engine stops relying on it (clock skew, a slow request).
 const keyMargin = 5 * time.Minute
-
-// classRetryable reports whether an automatic retry can help the target's
-// last failure: not for auth, invalid or rejected failures, and not for an
-// unknown outcome unless the destination drops repeats (the first attempt
-// may have published). A failure recorded before classes existed ("") is
-// retried as before.
-//
-// A destination that drops repeats by key only remembers the key for a
-// while: once an attempt that may have published is older than that, a
-// retry could duplicate it, whatever the last failure was.
-func (r *Retrier) classRetryable(ctx context.Context, t store.Target, now time.Time) bool {
-	cls := destination.ErrorClass(t.ErrorClass)
-	if cls == "" {
-		return true
-	}
-	caps, _ := r.disp.Caps(ctx, t.Platform)
-	if !cls.Retryable(caps.Idempotent) {
-		return false
-	}
-	return !keyExpired(t, caps, now)
-}
-
-// keyExpired reports whether an earlier attempt at t may have published and
-// the server has since forgotten its idempotency key.
-func keyExpired(t store.Target, caps destination.Capabilities, now time.Time) bool {
-	if caps.Idempotent != destination.IdempotentKey || caps.IdempotencyKeyTTLSecs <= 0 {
-		return false
-	}
-	window := time.Duration(caps.IdempotencyKeyTTLSecs)*time.Second - keyMargin
-	for _, a := range t.Attempts {
-		if destination.ErrorClass(a.ErrorClass) == destination.ClassUnknownOutcome && now.Sub(a.AttemptedAt) > window {
-			return true
-		}
-	}
-	return false
-}
-
-// alertNotRetried fires one alert for targets the retrier won't repeat.
-func (r *Retrier) alertNotRetried(ctx context.Context, postID string, targets []string) {
-	if r.notifier == nil {
-		return
-	}
-	body := "post " + postID + " will not be retried automatically on " + strings.Join(targets, ", ") +
-		": the failure would repeat (auth, invalid, rejected) or the post may already be live (unknown_outcome). " +
-		"Check the target, fix the cause, then retry manually."
-	if err := r.notifier.Alert(ctx, "Publisher: delivery needs attention", body); err != nil {
-		slog.ErrorContext(ctx, "retrier: not-retried alert failed", "err", err)
-	}
-}
 
 // relayDue checks whether the relay's next retry is due. Uses AttemptedAt +
 // backoff(RetryCount+1) so the first retry is after base*2^(RetryCount) wait.
@@ -254,22 +146,12 @@ func (r *Retrier) relayDue(rl store.RelayState, now time.Time) bool {
 	return !now.Before(rl.AttemptedAt.Add(backoff(rl.RetryCount+1, r.base, r.max)))
 }
 
-// alertGaveUp fires one operational alert summarizing newly given-up targets.
-func (r *Retrier) alertGaveUp(ctx context.Context, postID string, platforms, relays []string) {
+// alertGaveUp fires one operational alert summarizing newly given-up relays.
+func (r *Retrier) alertGaveUp(ctx context.Context, postID string, relays []string) {
 	if r.notifier == nil {
 		return
 	}
-	parts := ""
-	if len(platforms) > 0 {
-		parts += "platforms " + strings.Join(platforms, ", ")
-	}
-	if len(relays) > 0 {
-		if parts != "" {
-			parts += "; "
-		}
-		parts += strings.Join(relays, ", ") + " relays"
-	}
-	body := "post " + postID + " gave up on " + parts + " after " +
+	body := "post " + postID + " gave up on " + strings.Join(relays, ", ") + " relays after " +
 		strconv.Itoa(r.maxAttempts) + " attempts; manual retry still available"
 	if err := r.notifier.Alert(ctx, "Publisher: auto-retry exhausted", body); err != nil {
 		slog.ErrorContext(ctx, "retrier: give-up alert failed", "err", err)

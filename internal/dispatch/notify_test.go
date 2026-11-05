@@ -16,7 +16,7 @@ func (r *recordingNotifier) PostPublished(_ context.Context, p *store.Post) {
 
 func TestPostNotifiesOnImmediatePublish(t *testing.T) {
 	rn := &recordingNotifier{}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fakeNostr{}}), Notify: rn}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: fakeNostr{}}), Notify: rn}
 	rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"nostr"}, Source: "web"})
 	if len(rn.posts) != 1 || rn.posts[0].ID != rec.ID {
 		t.Fatalf("PostPublished calls = %d, want 1 with id %s", len(rn.posts), rec.ID)
@@ -25,7 +25,7 @@ func TestPostNotifiesOnImmediatePublish(t *testing.T) {
 
 func TestInteractNotifies(t *testing.T) {
 	rn := &recordingNotifier{}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fakeNostr{}}), Notify: rn}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: fakeNostr{}}), Notify: rn}
 	rec := d.Interact(context.Background(), InteractSpec{
 		Action: "quote", SourcePlatform: "nostr", Text: "nice",
 		Ref: InteractRef{EventID: "e1", Author: "a1"},

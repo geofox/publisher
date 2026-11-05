@@ -73,6 +73,15 @@ type Redeliverer interface {
 	Redeliver(ctx context.Context, ref ItemRef, endpoint string) Delivery
 }
 
+// Preparer is implemented by destinations whose items can be built before
+// they are sent, so every attempt sends the same thing (Nostr: the signed
+// event, which relays dedupe by id). The core persists what Prepare returns
+// before the first send and passes it back as PublishRequest.Prepared on
+// every attempt; such a destination's Capabilities.Idempotent is "natural".
+type Preparer interface {
+	Prepare(ctx context.Context, req PublishRequest) (json.RawMessage, error)
+}
+
 // PublishRequest is one item to publish.
 type PublishRequest struct {
 	Kind Kind `json:"kind"`
@@ -104,6 +113,9 @@ type PublishRequest struct {
 	// Drivers whose Capabilities.Idempotent is "key" send it so the server
 	// can drop a repeat.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// Prepared is what the account's Prepare returned for this item, when
+	// it is a Preparer. Publish sends it instead of building the item again.
+	Prepared json.RawMessage `json:"prepared,omitempty"`
 }
 
 // Body is an article's formatted body.
