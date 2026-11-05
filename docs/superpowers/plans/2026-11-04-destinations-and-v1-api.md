@@ -597,6 +597,40 @@ as they move.
 >   its window is released as `unknown` again by the duplicate guard (use
 >   `:resolve`); the History hides Retry while an item is unknown.
 
+> **4b.** The composer is on `/v1`.
+> - **Media.** An image uploads to `POST /v1/media` when attached (again
+>   after a compress preset, through `/v1/media:compress`); Post waits
+>   for uploads and names media by id, with the alt text in the post, so
+>   editing alt needs no call. A video goes to `POST /v1/media` with its
+>   preset and is polled with `GET /v1/media/{id}` (stage and progress).
+> - **Placement is new on `/v1`:** `content.media[].part` puts a media on
+>   a `---` part of the text (clamped per account, as before; refused on
+>   replies and quotes).
+> - **Drafts in between.** Until drafts move to `/v1` (4c), the old draft
+>   routes answer each attachment with a `media_id`: `Store.AdoptMedia`
+>   finds or makes a ready media object for the same file (by URL and
+>   hash). Only references named by their SHA-256 on an http(s) URL are
+>   adopted (old drafts' references came through the client); another one
+>   shows "can't be posted: attach it again". A posted draft is deleted by
+>   the client (the old route) after the post is saved.
+> - **Posting.** `POST /v1/posts` with an `Idempotency-Key`; resubmitting
+>   the same body after an answer was lost reuses the key, so it isn't
+>   posted twice. Platforms without an account are refused before sending.
+>   Options map onto the manifests' options; Mastodon's CW, sensitive and
+>   language and Bluesky's languages go as the target's content.
+> - **Interactions.** `/v1/resolve` for the Interact tab; replies and
+>   quotes post with `reply_to`/`quote`, reposts with `repost`. A reply
+>   goes only to the source's network (the other targets are locked; the
+>   old app sent copies). The "try anyway" override is gone: `/v1` refuses
+>   an action the post doesn't allow, so the action is disabled with the
+>   reason.
+> - **Preview** uses `/v1/posts:preview` for the focused account, with the
+>   text it will post (so a reply's or copy's split shows without
+>   resolving the source again) and the uploaded media.
+> - **Progress** follows the post (`follow.js`, shared with History): its
+>   event stream wakes a re-read until it stops publishing. The result
+>   modal and `results.js` are gone.
+
 ## Task 4.1: Composer and history on `/v1`
 
 - [ ] Destinations/accounts/capabilities from `/v1`; option panels from

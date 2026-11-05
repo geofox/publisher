@@ -106,3 +106,27 @@ func (s *Store) SetMediaAlt(ctx context.Context, owner, id, alt string) error {
 	}
 	return nil
 }
+
+// AdoptMedia returns a ready media object for a file already in media
+// storage (a draft's attachment), creating one when the owner has none for
+// that file. The web composer posts a draft's media by id this way; drafts
+// on /v1 hold media ids themselves.
+func (s *Store) AdoptMedia(ctx context.Context, owner string, m Media) (*MediaObject, error) {
+	var id string
+	err := s.sql.QueryRowContext(ctx, `SELECT id FROM media_objects
+		WHERE owner_id = ? AND status = ? AND url = ? AND sha256 = ? ORDER BY created_at LIMIT 1`,
+		owner, MediaReady, m.BlossomURL, m.SHA256).Scan(&id)
+	switch {
+	case err == nil:
+		return s.MediaObject(ctx, owner, id)
+	case !errors.Is(err, sql.ErrNoRows):
+		return nil, err
+	}
+	mo := &MediaObject{OwnerID: owner, Status: MediaReady, URL: m.BlossomURL, SHA256: m.SHA256, Mime: m.Mime,
+		Dim: m.Dim, Blurhash: m.Blurhash, SizeBytes: m.SizeBytes, DurationSecs: m.DurationSecs,
+		PosterURL: m.PosterURL, Alt: m.Alt}
+	if err := s.CreateMediaObject(ctx, mo); err != nil {
+		return nil, err
+	}
+	return mo, nil
+}

@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	neturl "net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -77,7 +80,7 @@ func (a *API) handleCreateDraft(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, d)
+	a.writeDraft(w, r, d)
 }
 
 // buildDraftFromRequest parses a multipart request, processes any newly
@@ -177,7 +180,7 @@ func (a *API) handleGetDraft(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, d)
+	a.writeDraft(w, r, d)
 }
 
 func (a *API) handleUpdateDraft(w http.ResponseWriter, r *http.Request) {
@@ -203,7 +206,7 @@ func (a *API) handleUpdateDraft(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, d)
+	a.writeDraft(w, r, d)
 }
 
 func (a *API) handleDeleteDraft(w http.ResponseWriter, r *http.Request) {
@@ -287,5 +290,51 @@ func (a *API) handleTranslateDraft(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, d)
+	a.writeDraft(w, r, d)
+}
+
+// draftMediaOut is a draft attachment as the web composer reads it: with
+// the id of a media object for the same file, so a loaded draft's media
+// can be posted through POST /v1/posts. Drafts move to /v1 (holding media
+// ids themselves) next; until then the id is found or made on each read.
+type draftMediaOut struct {
+	store.Media
+	MediaID string `json:"media_id,omitempty"`
+}
+
+type draftOut struct {
+	*store.Draft
+	Media []draftMediaOut `json:"media,omitempty"`
+}
+
+var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// adoptable is whether a draft attachment looks like a file in media
+// storage: an http(s) URL named by its SHA-256 (Blossom's addressing).
+// Old drafts' references came through the client, so nothing else is
+// turned into a media object.
+func adoptable(m store.Media) bool {
+	u, err := neturl.Parse(m.BlossomURL)
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil &&
+		sha256Hex.MatchString(m.SHA256) && strings.Contains(u.Path, m.SHA256)
+}
+
+func (a *API) writeDraft(w http.ResponseWriter, r *http.Request, d *store.Draft) {
+	out := draftOut{Draft: d, Media: make([]draftMediaOut, 0, len(d.Media))}
+	owner := store.DefaultOwner
+	if pr, ok := principalFrom(r.Context()); ok && pr.OwnerID != "" {
+		owner = pr.OwnerID
+	}
+	for _, m := range d.Media {
+		mo := draftMediaOut{Media: m}
+		if adoptable(m) {
+			if obj, err := a.Store.AdoptMedia(r.Context(), owner, m); err == nil {
+				mo.MediaID = obj.ID
+			} else {
+				slog.WarnContext(r.Context(), "drafts: media object for an attachment", "draft_id", d.ID, "err", err)
+			}
+		}
+		out.Media = append(out.Media, mo)
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }

@@ -1,9 +1,10 @@
 "use strict";
-import { el, $, gcount, wcount, flash, confirmModal, META, ORDER } from "./common.js";
-import { state, effectiveText, postedText, buildSpec, buildInteractSpec, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen, masterParts } from "./state.js";
+import { el, $, gcount, wcount, flash, confirmModal, META, ORDER, v1, problemError } from "./common.js";
+import { state, effectiveText, postedText, v1PostBody, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen, masterParts } from "./state.js";
 import { renderPreview, mediaMax, previewMedia } from "./preview.js";
 import { openDetail } from "./history.js";
-import { resultRow } from "./results.js";
+import { accountFor } from "./accounts.js";
+import { followPost } from "./follow.js";
 import { brandTile, icon, PLATFORM_META } from "./brands.js";
 
 // autoGrow sizes a textarea to its content (up to its CSS max-height, then it
@@ -37,7 +38,7 @@ function counterClass(n, limit) {
 // Auto-threading estimate (client-side, mirrors Go dispatch + the design's
 // splitThread: word-boundary wrap reserving room for a " n/n" suffix). Used for
 // the live thread badge, banner, and the review sheet's segments; the live
-// preview pane still fetches the authoritative split from /api/thread-preview.
+// preview pane still fetches the authoritative split from /v1/posts:preview.
 // ---------------------------------------------------------------------------
 
 // bskyCardText strips a trailing URL for the Bluesky effective-text estimate,
@@ -166,6 +167,8 @@ function renderChips() {
   for (const p of ORDER) {
     const on = state.platforms.has(p);
     const locked = it != null && p === it.platform;
+    // A reply goes only to the source's network.
+    const barred = it != null && it.action === "reply" && !locked;
     const meta = PLATFORM_META[p] || {};
     const tc = targetCount(p);
     const ti = threadInfoFor(p);
@@ -175,9 +178,10 @@ function renderChips() {
     if (on && ti.threaded) top.append(threadBadge(p));
 
     const row = el("div", {
-      class: "target-row p-" + p + (on ? "" : " off") + (locked ? " locked" : ""),
+      class: "target-row p-" + p + (on ? "" : " off") + (locked ? " locked" : "") + (barred ? " barred" : ""),
+      title: barred ? "A reply goes only to " + META[it.platform].label : null,
       onclick: () => {
-        if (locked) return; // source platform stays selected in interaction mode
+        if (locked || barred) return; // source platform stays selected in interaction mode
         on ? state.platforms.delete(p) : state.platforms.add(p);
         if (!state.platforms.has(state.focus)) state.focus = p;
         renderChips(); renderCards(); renderPreview();
@@ -420,14 +424,14 @@ function openThreadSheet(p) {
 // ---------------------------------------------------------------------------
 
 // startInteraction puts Compose into interaction mode for a resolved source post
-// (src is a /api/resolve SourceRef) and switches to the Compose tab. action is
-// "reply" | "quote".
+// (src is a resolved source, see interact.js) and switches to the Compose tab.
+// action is "reply" | "quote".
 export function startInteraction(src, action) {
   const begin = () => {
     state.interaction = {
       action, platform: src.platform, ref: src.ref,
       sourcePreview: src.preview, sourceURL: src.preview.web_url, sourceAuthor: src.preview.author_handle,
-      caps: src.caps, force: false,
+      caps: src.caps,
       // restored on exit; preserve the pre-interaction selection across a nested
       // re-entry (starting a new interaction while already in one).
       prevPlatforms: state.interaction && state.interaction.prevPlatforms
@@ -526,7 +530,7 @@ export function loadDraft(input) {
     state.images = (input.media || []).map(m => ({
       blossom_url: m.blossom_url, sha256: m.sha256, mime: m.mime,
       dim: m.dim, blurhash: m.blurhash, size_bytes: m.size_bytes, alt: m.alt || "",
-      ordinal: m.ordinal, file: null,
+      ordinal: m.ordinal, file: null, media_id: m.media_id || "",
       duration_secs: m.duration_secs || 0,
       video: /^video\//.test(m.mime || ""),
       poster_url: m.poster_url || "",
@@ -591,19 +595,17 @@ function renderSrcBanner() {
     host.append(g);
   }
   const foot = el("div", { class: "srcb-foot" });
+  const plat = (META[it.platform] && META[it.platform].label) || it.platform;
   foot.append(el("span", { class: "srcb-hint muted",
-    text: it.platform.charAt(0).toUpperCase() + it.platform.slice(1) +
-      " gets a native " + it.action + "; toggle other targets to also post a copy there." }));
+    text: it.action === "quote"
+      ? plat + " gets a native quote; toggle other targets to also post a copy there."
+      : "A reply goes only to " + plat + "; quote the post to share it elsewhere." }));
   if (it.sourceURL) foot.append(el("a", { class: "srcb-link", href: it.sourceURL, target: "_blank", rel: "noopener", text: "open original ↗" }));
   host.append(foot);
+  // The action is offered only when allowed (interact.js); a note it came
+  // with (a quote that may be shown as a link) is shown here.
   const cap = it.caps && it.caps[it.action];
-  if (cap && !cap.allowed) {
-    const cb = el("input", { type: "checkbox", onchange: (e) => { it.force = e.target.checked; } });
-    cb.checked = !!it.force;
-    host.append(el("label", { class: "srcb-force" }, cb,
-      el("span", { text: " " + (cap.reason || "blocked") + " — try anyway" +
-        (it.platform === "bluesky" ? " (Bluesky may silently drop it)" : "") })));
-  }
+  if (cap && cap.reason) host.append(el("div", { class: "srcb-note muted", text: cap.reason }));
 }
 
 // ---------------------------------------------------------------------------
@@ -692,7 +694,7 @@ function overrideCard(p) {
 function lbl(t, input) { return el("label", {}, el("span", { class: "fl", text: t }), input); }
 
 // langField builds the per-platform language widget. When the operator has
-// configured 2+ languages (USER_LANGUAGES env, surfaced via /api/config →
+// configured 2+ languages (USER_LANGUAGES env, surfaced via /v1/instance →
 // state.userLanguages), it's a dropdown of those codes; with 0 or 1 it's a
 // static muted line — the value is still set (via defaultOv) just not editable.
 // onChange receives the new code; renderPreview re-runs after a pick.
@@ -747,7 +749,15 @@ function fieldsFor(p, ov) {
 // Images
 // ---------------------------------------------------------------------------
 
-// compressFile sends a File through POST /api/media/compress and returns the
+// v1Form sends a multipart form to /v1 and answers its JSON, or throws the
+// problem it answers with (see common.js problemError).
+async function v1Form(path, fd, signal) {
+  const r = await fetch(path, { method: "POST", body: fd, credentials: "same-origin", signal });
+  if (!r.ok) throw problemError(r.status, await r.json().catch(() => null));
+  return r;
+}
+
+// compressFile sends a File through POST /v1/media:compress and returns the
 // re-encoded JPEG as a new File. Used by the per-attachment presets and the
 // HEIC attach-time auto-conversion. Aborts any in-flight request for the same
 // attachment (rapid preset switching must not pile up server transcodes).
@@ -759,18 +769,43 @@ async function compressFile(img, file, preset) {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("preset", preset);
-    const r = await fetch("/api/media/compress", { method: "POST", body: fd, credentials: "same-origin", signal: ctl.signal });
-    if (!r.ok) {
-      let msg = "HTTP " + r.status;
-      try { msg = (await r.json()).error || msg; } catch { /* body not json */ }
-      throw new Error(msg);
-    }
+    const r = await v1Form("/v1/media:compress", fd, ctl.signal);
     const blob = await r.blob();
     const stem = (file.name || "image").replace(/\.[^.]+$/, "");
     return new File([blob], stem + ".jpg", { type: blob.type || "image/jpeg" });
   } finally {
     if (img._compressAbort === ctl) img._compressAbort = null;
   }
+}
+
+// uploadImage stores an attachment's current file through POST /v1/media,
+// once per file (a preset pick makes a new file, uploaded again), so a post
+// names it by id. The upload starts at attach time; Post waits for it. The
+// alt text goes with the post, not the upload, so editing it needs no call.
+function uploadImage(img) {
+  const file = img.file;
+  if (!file) return Promise.resolve();
+  if (img._uploadFor === file) return img._upload || Promise.resolve();
+  if (img._uploadAbort) img._uploadAbort.abort();
+  const ctl = new AbortController();
+  Object.assign(img, { _uploadFor: file, _uploadAbort: ctl, media_id: "", remote_url: "", upload_error: "" });
+  const fd = new FormData();
+  fd.append("file", file);
+  const run = v1Form("/v1/media", fd, ctl.signal).then(r => r.json()).then(m => {
+    if (img._uploadFor !== file) return;
+    Object.assign(img, { media_id: m.id, remote_url: m.url || "", sha256: m.sha256 || "", blurhash: m.blurhash || "",
+      mime: m.mime || img.mime, dim: m.dim || img.dim, size_bytes: m.size_bytes || img.size_bytes });
+    renderPreview(); // the server preview can plan it now
+  }).catch(err => {
+    if (img._uploadFor !== file || err.name === "AbortError") return;
+    img._uploadFor = null; // a retry uploads again
+    img.upload_error = err.message || "upload failed";
+    renderImages();
+  }).finally(() => {
+    if (img._uploadAbort === ctl) { img._upload = null; img._uploadAbort = null; }
+  });
+  img._upload = run;
+  return run;
 }
 
 function fmtBytes(n) {
@@ -812,44 +847,46 @@ function startVideoUpload(entry) {
   const gen = imagesGen;
   const xhr = new XMLHttpRequest();
   entry._xhr = xhr;
-  xhr.open("POST", "/api/media/video?preset=" + encodeURIComponent(entry._preset || "1080p"));
+  // XHR, not fetch: only XHR reports upload progress.
+  xhr.open("POST", "/v1/media");
   xhr.upload.onprogress = e => {
     if (e.lengthComputable) { entry.pct = e.loaded / e.total; updateVideoProgress(entry); }
   };
   xhr.onerror = () => failVideo(entry, gen, "upload failed");
   xhr.onload = () => {
     if (gen !== imagesGen) return;
-    if (xhr.status !== 202) {
-      let msg = "HTTP " + xhr.status;
-      try { msg = JSON.parse(xhr.responseText).error || msg; } catch { /* not json */ }
-      failVideo(entry, gen, msg);
+    let m = null;
+    try { m = JSON.parse(xhr.responseText); } catch { /* not json */ }
+    if (xhr.status !== 202 && xhr.status !== 201) {
+      failVideo(entry, gen, problemError(xhr.status, m).message);
       return;
     }
-    const jobId = JSON.parse(xhr.responseText).job_id;
     entry._xhr = null;
     entry.phase = "queued"; entry.pct = 0; renderImages();
+    const done = media => {
+      clearInterval(entry._jobTimer); entry._jobTimer = null;
+      Object.assign(entry, { phase: "ready", pct: 1, media_id: media.id, blossom_url: media.url, remote_url: media.url,
+        sha256: media.sha256, mime: media.mime, dim: media.dim, size_bytes: media.size_bytes,
+        duration_secs: media.duration_secs || 0, url: media.url, poster_url: media.poster_url || "" });
+      entry._file = null;
+      renderImages();
+    };
+    if (m.status === "ready") { done(m); return; }
+    // GET /v1/media/{id} says how far processing is: its stage (queued,
+    // transcoding, uploading to media storage) and progress, until the video
+    // is ready or failed.
     entry._jobTimer = setInterval(async () => {
       if (gen !== imagesGen) { clearInterval(entry._jobTimer); return; }
       try {
-        const r = await fetch("/api/media/video/" + jobId, { credentials: "same-origin" });
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
-        if (j.state === "error") throw new Error(j.error || "transcode failed");
-        const prevPhase = entry.phase;
-        const prevPct = entry.pct;
-        entry.phase = j.state === "uploading" ? "storing" : j.state;
-        entry.pct = j.pct || 0;
-        if (j.state === "done") {
-          clearInterval(entry._jobTimer); entry._jobTimer = null;
-          const m = j.media;
-          Object.assign(entry, { phase: "ready", pct: 1, blossom_url: m.url, sha256: m.sha256,
-            mime: m.mime, dim: m.dim, size_bytes: m.size, duration_secs: m.duration_secs || 0,
-            url: m.url, poster_url: m.poster_url || "" });
-          entry._file = null;
-          renderImages();
-        } else if (entry.phase !== prevPhase || entry.pct !== prevPct) {
-          updateVideoProgress(entry);
-        }
+        const cur = await v1("/v1/media/" + encodeURIComponent(m.id));
+        if (gen !== imagesGen || !entry._jobTimer) return;
+        if (cur.status === "failed") throw new Error(cur.error || "processing failed");
+        if (cur.status === "ready") { done(cur); return; }
+        const prevPhase = entry.phase, prevPct = entry.pct;
+        const stage = (cur.processing && cur.processing.stage) || "queued";
+        entry.phase = stage === "uploading" ? "storing" : stage;
+        entry.pct = (cur.processing && cur.processing.progress) || 0;
+        if (entry.phase !== prevPhase || entry.pct !== prevPct) updateVideoProgress(entry);
       } catch (err) {
         clearInterval(entry._jobTimer); entry._jobTimer = null;
         failVideo(entry, gen, err.message);
@@ -857,6 +894,7 @@ function startVideoUpload(entry) {
     }, 1000);
   };
   const fd = new FormData();
+  fd.append("preset", entry._preset || "1080p");
   fd.append("file", entry._file);
   xhr.send(fd);
 }
@@ -933,6 +971,7 @@ export function renderImages() {
             URL.revokeObjectURL(img.url);
             img.file = f; img.url = URL.createObjectURL(f); img.preset = v;
             img.size_bytes = f.size; img.mime = f.type; img.dim = "";
+            uploadImage(img);
             renderImages();
           } catch (err) {
             if (err.name === "AbortError") return; // superseded by a newer pick
@@ -948,6 +987,14 @@ export function renderImages() {
       kids.push(sel);
     } else if (img.size_bytes) {
       kids.push(el("div", { class: "imgsize", text: fmtBytes(img.size_bytes) }));
+    }
+    if (img.upload_error) {
+      kids.push(el("div", { class: "imgsize bad", text: "upload failed: " + img.upload_error }),
+        el("button", { class: "rm", type: "button", text: "retry upload",
+          onclick: () => { img.upload_error = ""; uploadImage(img); renderImages(); } }));
+    } else if (!img.file && !img.media_id) {
+      // A draft attachment the server couldn't turn into media to post.
+      kids.push(el("div", { class: "imgsize bad", text: "can't be posted: attach it again" }));
     }
     if (masterParts().length >= 2 && !state.interaction) {
       const sel = el("select", { class: "place-chip",
@@ -966,7 +1013,12 @@ export function renderImages() {
       kids.push(sel);
     }
     kids.push(el("button", { class: "rm", type: "button", text: "remove",
-      onclick: () => { if (img._compressAbort) img._compressAbort.abort(); URL.revokeObjectURL(img.url); state.images.splice(i, 1); renderImages(); } }));
+      onclick: () => {
+        if (img._compressAbort) img._compressAbort.abort();
+        if (img._uploadAbort) img._uploadAbort.abort();
+        if (img.file) URL.revokeObjectURL(img.url);
+        state.images.splice(i, 1); renderImages();
+      } }));
     c.append(el("div", { class: "thumb" }, ...kids));
   });
   const vp = $("#vidpreset"); if (vp) vp.hidden = state.images.some(i => i.video);
@@ -1058,83 +1110,94 @@ export function resetComposer() {
   renderPreview();
 }
 
+// The last submit that may not have reached the server: its body and its
+// Idempotency-Key. Posting the same body again reuses the key, so a post the
+// server did save (the answer was lost) isn't posted twice.
+let lastSend = null;
+
+// sendPost sends a POST /v1/posts body with an Idempotency-Key and answers
+// the post (202: saved; the workers send it).
+export async function sendPost(body) {
+  const json = JSON.stringify(body);
+  if (!lastSend || lastSend.json !== json) lastSend = { json, key: crypto.randomUUID() };
+  const key = lastSend.key;
+  let post;
+  try {
+    post = await v1("/v1/posts", { method: "POST", body, headers: { "Idempotency-Key": key } });
+  } catch (e) {
+    // An answer means the server decided (refused, or the key is in use):
+    // a changed body gets a new key anyway. Without one, keep the key.
+    if (e.status && e.status !== 409 && lastSend && lastSend.key === key) lastSend = null;
+    throw e;
+  }
+  if (lastSend && lastSend.key === key) lastSend = null;
+  return post;
+}
+
+// missingAccounts names the selected platforms with no account to post from.
+function missingAccounts() {
+  return ORDER.filter(p => state.platforms.has(p) && !accountFor(p)).map(p => META[p].label);
+}
+
+// mediaReady waits for the attachments' uploads; false (with a note) when
+// one failed or can't be posted.
+async function mediaReady() {
+  await Promise.all(state.images.map(i => (i.file && !i.media_id ? uploadImage(i) : null)));
+  const bad = state.images.filter(i => !i.video && !i.media_id);
+  if (bad.length) {
+    flash(bad.length === 1 ? "An image isn't uploaded: retry or remove it" : bad.length + " images aren't uploaded: retry or remove them");
+    renderImages();
+    return false;
+  }
+  return true;
+}
+
+// doPost posts (or schedules, or replies/quotes: v1PostBody reads the mode)
+// what the composer holds.
 async function doPost() {
   const btn = $("#submit");
-  const isScheduled = !!$("#schedat").value;
-  btn.disabled = true; btn.textContent = isScheduled ? "Scheduling…" : "Posting…";
-  const fd = new FormData();
-  fd.append("spec", JSON.stringify(buildSpec()));
-  // Only fresh images carry a File; already-uploaded ones (a restored/loaded
-  // draft) ride as blossom_url references in the spec and the server re-fetches
-  // their bytes. Appending a null file would send a junk "null" form value.
-  for (const img of state.images) if (img.file) fd.append("image", img.file);
-  try {
-    const r = await fetch("/api/post", { method: "POST", body: fd, credentials: "same-origin" });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
-    if (data.status === "scheduled" && data.scheduled_at) {
-      flash("Scheduled for " + new Date(data.scheduled_at).toLocaleString("fr-FR", { timeZone: "Europe/Paris" }));
-      $("#schedat").value = ""; updateSched();
-    } else if (data.post_id) {
-      setInflight(data.post_id);
-      openProgressModal(data.post_id);
-    } else {
-      showResultModal(data); // fallback if a full record came back (no registry)
-    }
-    // Drafts integration: if we just published a saved draft, clear the
-    // active-draft state and the recovery snapshot, then refresh the sidebar.
-    if (state.activeDraftId) {
-      state.activeDraftId = null;
-    }
-    state.dirty = false;
-    // Committed successfully → empty the composer so the posted text and images
-    // don't linger as if still unsent.
-    resetComposer();
-    import("./drafts_recovery.js").then(m => m.clearRecovery());
-    import("./drafts.js").then(m => m.loadDraftList && m.loadDraftList());
-  } catch (e) {
-    flash("Error: " + e.message);
-  } finally {
-    // Label from the field as it is now, not as it was: a successful schedule
-    // clears #schedat, and a stale "Schedule" label would sit on a button that
-    // now posts immediately.
-    btn.disabled = false; btn.textContent = $("#schedat").value ? "Schedule" : "Post";
-  }
-}
-
-async function doInteract() {
   const it = state.interaction;
-  const label = it.action === "quote" ? "Quote" : "Reply";
-  const btn = $("#submit");
-  btn.disabled = true; btn.textContent = label + "ing…";
-  const fd = new FormData();
-  fd.append("spec", JSON.stringify(buildInteractSpec()));
-  // Only fresh images carry a File; references ride in the spec (see doPost).
-  for (const img of state.images) if (img.file) fd.append("image", img.file);
+  const label = it ? (it.action === "quote" ? "Quote" : "Reply") : ($("#schedat").value ? "Schedule" : "Post");
+  btn.disabled = true;
+  btn.textContent = it ? label + "ing…" : $("#schedat").value ? "Scheduling…" : "Posting…";
   try {
-    const r = await fetch("/api/interact", { method: "POST", body: fd, credentials: "same-origin" });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
-    if (data.post_id) {
-      setInflight(data.post_id);
-      openProgressModal(data.post_id);
+    if (!(await mediaReady())) return;
+    const draftId = state.activeDraftId;
+    const post = await sendPost(v1PostBody());
+    if (post.status === "scheduled" && post.scheduled_at) {
+      flash("Scheduled for " + new Date(post.scheduled_at).toLocaleString("fr-FR", { timeZone: "Europe/Paris" }));
     } else {
-      showResultModal({ post_id: data.id, status: data.status, targets: data.targets }); // fallback
+      setInflight(post.id);
+      openProgressModal(post.id, post);
     }
-    exitInteraction(); // back to a normal composer after a successful interaction
+    // A posted draft is used up. (Drafts move to /v1 next; until then the
+    // old route deletes it.)
+    if (draftId) {
+      fetch("/api/drafts/" + encodeURIComponent(draftId), { method: "DELETE", credentials: "same-origin" })
+        .catch(() => {})
+        .finally(() => import("./drafts.js").then(m => m.loadDraftList && m.loadDraftList()));
+    }
+    state.activeDraftId = null;
+    state.dirty = false;
+    // Committed → empty the composer so the posted text and images don't
+    // linger as if still unsent (and leave a reply or quote).
+    if (it) exitInteraction(); else resetComposer();
+    import("./drafts_recovery.js").then(m => m.clearRecovery());
+    if (!draftId) import("./drafts.js").then(m => m.loadDraftList && m.loadDraftList());
   } catch (e) {
     flash("Error: " + e.message);
   } finally {
+    // Label from the composer as it is now: a commit leaves interaction mode
+    // and clears #schedat.
     btn.disabled = false;
-    // exitInteraction() (on success) already reset the label via renderInteractionUI;
-    // on error we stay in interaction mode, so restore the action label.
-    if (state.interaction) btn.textContent = label;
+    btn.textContent = state.interaction ? (state.interaction.action === "quote" ? "Quote" : "Reply")
+      : $("#schedat").value ? "Schedule" : "Post";
   }
 }
 
-// submit guards against posting over a platform's limit: if any selected platform
-// is over, confirm first (those targets may be cut/rejected — the rest still post).
-// Otherwise post immediately.
+// submit checks what the server would refuse or cut before posting: a video
+// still processing, a platform with no account, text over a platform's limit
+// (confirm: those targets may be cut or rejected, the rest still post).
 function submit() {
   if (state.images.some(i => i.video && i.phase !== "ready")) {
     flash(state.images.some(i => i.video && i.phase === "failed")
@@ -1142,17 +1205,10 @@ function submit() {
       : "Wait for the video to finish processing");
     return;
   }
-  if (state.interaction) {
-    const it = state.interaction;
-    const cap = it.caps && it.caps[it.action];
-    if (cap && !cap.allowed && !it.force) {
-      flash((cap.reason || "This action is blocked") + " — tick “try anyway” to override");
-      return;
-    }
-    doInteract();
-    return;
-  }
   if (state.platforms.size === 0) { flash("Select at least one platform."); return; }
+  const missing = missingAccounts();
+  if (missing.length) { flash("No account to post to " + missing.join(", ") + " is configured"); return; }
+  if (state.interaction) { doPost(); return; }
   const over = overLimitPlatforms();
   if (over.length) {
     const list = over.map(o => `${o.label} +${o.over}`).join(", ");
@@ -1168,14 +1224,43 @@ function submit() {
 }
 
 // ---------------------------------------------------------------------------
-// Progress modal — live SSE task tree for a dispatched post
+// Progress modal — a post's targets as they send
 // ---------------------------------------------------------------------------
 
-// openProgressModal renders the live task tree for postId by subscribing to the
-// SSE stream, re-rendering on each snapshot. On a terminal status it swaps the
-// footer to Done / "open in history". Closing only closes the stream — the post
-// continues server-side.
-export function openProgressModal(postId) {
+// progressClass maps a /v1 status onto the task tree's row classes.
+function progressClass(s) {
+  if (s === "published") return "success";
+  if (s === "ok" || s === "failed" || s === "partial" || s === "skipped") return s;
+  if (s === "publishing" || s === "sending") return "running";
+  if (s === "unknown" || s === "needs_attention") return "partial";
+  if (s === "canceled" || s === "missed") return "skipped";
+  return "queued";
+}
+
+// targetDetail is a target row's note: how far a thread got, or what went
+// wrong and whether it is retried.
+function targetDetail(t) {
+  const items = t.items || [];
+  const failed = items.find(it => it.status === "failed" || it.status === "unknown");
+  if (failed) {
+    const retry = failed.next_attempt_at && !t.gave_up_at ? " · retrying" : "";
+    if (failed.status === "unknown") return "may have been posted: check it in History";
+    return (failed.error || "failed") + retry;
+  }
+  if (items.length > 1) {
+    const sent = items.filter(it => it.status === "published").length;
+    return `${sent}/${items.length} posts`;
+  }
+  if (t.status === "canceled") return "canceled";
+  return "";
+}
+
+// openProgressModal shows a post's targets as they send: the post's events
+// (GET /v1/posts/{id}/events) wake a re-read until it stops publishing.
+// Closing only stops watching — the post goes on server-side. first is the
+// post as the create answered it, shown at once.
+export function openProgressModal(postId, first) {
+  const id = postId.startsWith("pst_") ? postId : "pst_" + postId;
   const bk = el("div", { class: "modal-bk" });
   const card = el("div", { class: "modal pmodal" });
   const title = el("p", { class: "pm-title" });
@@ -1185,37 +1270,39 @@ export function openProgressModal(postId) {
   bk.append(card);
   document.body.append(bk);
 
-  let es = null;
-  const close = () => { if (es) es.close(); es = null; clearInflight(); bk.remove(); };
+  let stop = null;
+  const close = () => { if (stop) stop(); stop = null; clearInflight(); bk.remove(); };
 
-  const render = (snap) => {
-    const terminal = snap.status !== "running" && snap.status !== "queued";
-    title.textContent = snap.status === "running" ? "Posting…"
-      : snap.status === "success" ? "✓ Posted"
-      : snap.status === "failed" ? "⚠ Posting failed" : "⚠ Posted with issues";
+  const render = (post) => {
+    const settled = post.status !== "publishing";
+    title.textContent = !settled ? "Posting…"
+      : post.status === "published" ? "✓ Posted"
+      : post.status === "failed" ? "⚠ Posting failed"
+      : post.status === "canceled" ? "⊘ Canceled" : "⚠ Posted with issues";
     tree.innerHTML = "";
-    for (const p of (snap.platforms || [])) {
-      tree.append(el("div", { class: "trow lvl1 st-" + p.status },
+    for (const t of (post.targets || [])) {
+      tree.append(el("div", { class: "trow lvl1 st-" + progressClass(t.status) },
         el("span", { class: "ic" }),
-        el("span", { text: (META[p.platform] && META[p.platform].label) || p.platform }),
-        el("span", { class: "meta", text: p.detail || "" })));
-      for (const rl of (p.relays || [])) {
-        tree.append(el("div", { class: "trow lvl2 st-" + rl.status },
+        el("span", { text: (META[t.type] && META[t.type].label) || t.type }),
+        el("span", { class: "meta", text: targetDetail(t) })));
+      const ds = (t.items && t.items[0] && t.items[0].deliveries) || [];
+      for (const d of ds) {
+        tree.append(el("div", { class: "trow lvl2 st-" + progressClass(d.status) },
           el("span", { class: "ic" }),
-          el("span", { text: rl.url.replace(/^wss?:\/\//, "") }),
-          el("span", { class: "meta", text: rl.message || "" })));
+          el("span", { text: d.endpoint.replace(/^wss?:\/\//, "") }),
+          el("span", { class: "meta", text: d.message || "" })));
       }
     }
     foot.innerHTML = "";
-    if (terminal) {
+    if (settled) {
       clearInflight();
-      if (snap.status !== "success") {
+      if (post.status !== "published") {
         foot.append(el("a", { class: "pm-link", href: "#", text: "Open in history ↗",
           onclick: (e) => {
             e.preventDefault();
             close();
             document.querySelector('.tab[data-view="history"]')?.click();
-            openDetail(snap.post_id || postId);
+            openDetail(post.id);
           } }));
       }
       foot.append(el("button", { class: "pm-btn primary", type: "button", text: "Done", onclick: close }));
@@ -1224,44 +1311,13 @@ export function openProgressModal(postId) {
     }
   };
 
-  es = new EventSource("/api/posts/" + encodeURIComponent(postId) + "/progress");
-  es.onmessage = (ev) => {
-    try {
-      const snap = JSON.parse(ev.data);
-      render(snap);
-      const terminal = snap.status !== "running" && snap.status !== "queued";
-      if (terminal && es) { es.close(); es = null; }
-    } catch {}
-  };
-  es.onerror = () => { /* no-op: genuine mid-flight network errors auto-reconnect */ };
-}
-
-// ---------------------------------------------------------------------------
-// Result modal — ported from the pre-module monolith, with switchTab replaced
-// by DOM click to avoid compose↔main import cycle
-// ---------------------------------------------------------------------------
-
-export function showResultModal(data) {
-  const bk = el("div", { class: "modal-bk" });
-  const close = () => bk.remove();
-  bk.addEventListener("click", e => { if (e.target === bk) close(); });
-  const goHistory = async () => {
-    close();
-    document.querySelector('.tab[data-view="history"]')?.click(); // main.js wires this to switchTab → loadHistory
-    await openDetail(data.post_id);
-    $("#hdetail").scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-  const tg = data.targets || [];
-  let ok = 0, fail = 0; for (const t of tg) { t.status === "success" ? ok++ : fail++; }
-  const card = el("div", { class: "modal", onclick: goHistory });
-  card.append(el("button", { class: "modal-x", type: "button", text: "×",
-    onclick: e => { e.stopPropagation(); close(); } }));
-  const scls = data.status === "success" ? "ok" : data.status === "failed" ? "bad" : "warn";
-  card.append(el("p", { class: "modal-title " + scls, text: `result · ${data.status} · ✓${ok} ✗${fail}` }));
-  for (const t of tg) card.append(resultRow(t, true));
-  card.append(el("p", { class: "modal-hint", text: fail ? "tap to open in history & retry ↗" : "tap to view in history ↗" }));
-  bk.append(card);
-  document.body.append(bk);
+  if (first && first.targets && first.targets.some(t => t.items)) render(first);
+  else { title.textContent = "Posting…"; foot.append(el("button", { class: "pm-btn", type: "button", text: "Close", onclick: close })); }
+  stop = followPost(id, {
+    onPost: render,
+    until: p => p.status !== "publishing",
+    onGone: close, // a post that's gone (deleted, or from before an upgrade)
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1299,6 +1355,7 @@ export function composeInit() {
     entry.url = URL.createObjectURL(entry.file);
     entry.id = crypto.randomUUID();
     state.images.push(entry);
+    uploadImage(entry);
     renderImages();
   });
   $("#schedat").addEventListener("input", updateSched);

@@ -179,7 +179,7 @@ export async function saveActiveDraft() {
       id: m.client_id || m.id || crypto.randomUUID(),
       blossom_url: m.blossom_url, sha256: m.sha256, mime: m.mime,
       dim: m.dim, blurhash: m.blurhash, size_bytes: m.size_bytes,
-      alt: m.alt || "", ordinal: m.ordinal, file: null,
+      alt: m.alt || "", ordinal: m.ordinal, file: null, media_id: m.media_id || "",
       url: m.blossom_url || "",
       duration_secs: m.duration_secs || 0,
       poster_url: m.poster_url || "",

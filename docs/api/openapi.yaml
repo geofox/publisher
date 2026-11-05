@@ -1731,6 +1731,14 @@ components:
               alt:
                 type: ["string", "null"]
                 description: Alt text for this post; null or absent uses the media object's.
+              part:
+                type: ["integer", "null"]
+                minimum: 0
+                maximum: 99
+                description: >-
+                  The part of the text (0-based; parts are split by lines of `---`) this media
+                  goes with; default 0. A part past the last is the last, counted in each
+                  account's own text. Not for a reply or quote (their media go with the first part).
         content_warning:
           type: ["string", "null"]
           maxLength: 1000
