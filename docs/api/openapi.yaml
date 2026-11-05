@@ -9,7 +9,7 @@ info:
     **Conventions**
 
     - JSON in and out, snake_case, RFC 3339 UTC timestamps, prefixed ids
-      (`acc_`, `tok_`, `pst_`, `tgt_`, `med_`, and later `drf_`).
+      (`acc_`, `tok_`, `pst_`, `tgt_`, `med_`, `drf_`).
     - Errors are RFC 9457 problem details (`application/problem+json`) with a
       stable `code`; see the [error catalogue](https://github.com/geofox/publisher/blob/main/docs/api/errors.md).
     - Lists take `?limit=` (1–200, default 50) and `?cursor=`, and answer
@@ -50,6 +50,8 @@ tags:
     description: Posts and what became of them on each account.
   - name: media
     description: Images and videos uploaded once and named by id in posts.
+  - name: drafts
+    description: Posts being written, saved to finish later.
   - name: events
     description: Server-sent event streams of what happens to posts.
   - name: tools
@@ -1369,6 +1371,260 @@ paths:
           $ref: "#/components/responses/Invalid"
         default:
           $ref: "#/components/responses/Problem"
+  /v1/drafts:
+    get:
+      operationId: listDrafts
+      tags: [drafts]
+      summary: The drafts, the most recently changed first
+      description: |
+        Needs `drafts:read`. `q` finds drafts whose text or title contains
+        it; each `tag` narrows to drafts with that tag (all of them).
+      security:
+        - bearer: ["drafts:read"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: q
+          in: query
+          description: Text to find in the draft's text or title.
+          schema:
+            type: string
+        - name: tag
+          in: query
+          description: A tag the draft has; repeat for several.
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+      responses:
+        "200":
+          description: A page of drafts.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DraftListItem"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadParameter"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        default:
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: createDraft
+      tags: [drafts]
+      summary: Save a draft
+      description: |
+        Needs `drafts:write`. `post` is a `POST /v1/posts` body as it stands:
+        nothing is required yet, but what is there must be within a post's
+        bounds and name your own media and accounts. A schedule may be in
+        the past (the post refuses it, not the draft). The title defaults to
+        the text's first line. Answers with the draft's `ETag`.
+      security:
+        - bearer: ["drafts:write"]
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DraftIn"
+      responses:
+        "201":
+          description: The draft.
+          headers:
+            ETag:
+              $ref: "#/components/headers/DraftETag"
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Draft"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/drafts/{id}:
+    parameters:
+      - $ref: "#/components/parameters/DraftID"
+    get:
+      operationId: getDraft
+      tags: [drafts]
+      summary: One draft, with its media objects
+      description: Needs `drafts:read`. The `ETag` is the draft's version, for `If-Match`.
+      security:
+        - bearer: ["drafts:read"]
+        - session: []
+      responses:
+        "200":
+          description: The draft.
+          headers:
+            ETag:
+              $ref: "#/components/headers/DraftETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Draft"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: updateDraft
+      tags: [drafts]
+      summary: Change a draft
+      description: |
+        Needs `drafts:write`. Each field sent replaces the draft's (`post`
+        as a whole). Send `If-Match` with the ETag you read: if the draft
+        changed since (another tab saved it), the answer is `412
+        precondition_failed` with the current `ETag`, and nothing changes.
+        Without `If-Match` (or with `*`) the change applies to whatever the
+        draft is.
+      security:
+        - bearer: ["drafts:write"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DraftIn"
+          application/merge-patch+json:
+            schema:
+              $ref: "#/components/schemas/DraftIn"
+      responses:
+        "200":
+          description: The draft after the change.
+          headers:
+            ETag:
+              $ref: "#/components/headers/DraftETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Draft"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+    delete:
+      operationId: deleteDraft
+      tags: [drafts]
+      summary: Delete a draft
+      description: |
+        Needs `drafts:write`. With `If-Match`, only the version you read (a
+        changed draft answers 412). Its media objects stay.
+      security:
+        - bearer: ["drafts:write"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "204":
+          description: Deleted.
+        "400":
+          $ref: "#/components/responses/BadParameter"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/drafts/{id}:translate:
+    parameters:
+      - $ref: "#/components/parameters/DraftID"
+    post:
+      operationId: translateDraft
+      tags: [drafts]
+      summary: Make a translated copy of a draft
+      description: |
+        Needs `drafts:write` and `posts:write` (it spends the DeepL quota).
+        A new draft: the same post with its text in `target_lang` and
+        `content.languages` set to it; per-account texts and languages are
+        left out, since they were for the original language. The original
+        stays. 503 when the server has no DeepL key.
+      security:
+        - bearer: ["drafts:write", "posts:write"]
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TranslateDraftIn"
+      responses:
+        "201":
+          description: The new draft.
+          headers:
+            ETag:
+              $ref: "#/components/headers/DraftETag"
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Draft"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "502":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
   /v1/posts/{id}/events:
     parameters:
       - $ref: "#/components/parameters/PostID"
@@ -1476,6 +1732,19 @@ components:
       schema:
         type: string
         examples: [acc_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c]
+    DraftID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples: [drf_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c]
+    IfMatch:
+      name: If-Match
+      in: header
+      description: The draft's ETag as you read it (`"3"`), or `*` for any version.
+      schema:
+        type: string
     PostID:
       name: id
       in: path
@@ -1512,7 +1781,25 @@ components:
       description: The previous page's `next_cursor`, unchanged.
       schema:
         type: string
+  headers:
+    DraftETag:
+      description: The draft's version, a strong ETag (`"3"`), for `If-Match`.
+      required: true
+      schema:
+        type: string
+        pattern: '^"[0-9]+"$'
   responses:
+    PreconditionFailed:
+      description: |
+        The resource changed since you read it (`precondition_failed`); the
+        `ETag` header is its current version.
+      headers:
+        ETag:
+          $ref: "#/components/headers/DraftETag"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     InvalidState:
       description: Not possible in the resource's current state (`invalid_state`).
       content:
@@ -1676,6 +1963,13 @@ components:
           $ref: "#/components/schemas/SourceIn"
         repost:
           $ref: "#/components/schemas/SourceIn"
+        draft:
+          type: string
+          pattern: "^drf_"
+          description: |
+            The draft this post is made from: deleted once the post is
+            saved. Needs `drafts:write` too (`not_permitted` otherwise);
+            `unknown_draft` when there is no such draft.
       example:
         content:
           text: "Hello from the API"
@@ -1688,6 +1982,112 @@ components:
             options: {visibility: unlisted}
             content: {content_warning: politics}
         threading: {numbering: true}
+    DraftIn:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          maxLength: 200
+          description: Defaults to the text's first line ("" too).
+        tags:
+          type: array
+          maxItems: 20
+          description: Lowercased, without a leading `#`, cut to 32 characters, without repeats.
+          items:
+            type: string
+            maxLength: 64
+        post:
+          $ref: "#/components/schemas/DraftPost"
+    DraftPost:
+      type: object
+      additionalProperties: false
+      description: A `POST /v1/posts` body in the making (PostCreate without its requirements, and without `draft`).
+      properties:
+        content:
+          $ref: "#/components/schemas/PostContentIn"
+        targets:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/TargetIn"
+        threading:
+          type: object
+          additionalProperties: false
+          properties:
+            numbering:
+              type: boolean
+        schedule:
+          type: object
+          additionalProperties: false
+          required: [at]
+          properties:
+            at:
+              type: string
+              format: date-time
+        reply_to:
+          $ref: "#/components/schemas/SourceIn"
+        quote:
+          $ref: "#/components/schemas/SourceIn"
+        repost:
+          $ref: "#/components/schemas/SourceIn"
+    Draft:
+      type: object
+      additionalProperties: false
+      required: [id, title, tags, post, media, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: "^drf_"
+        title:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        post:
+          $ref: "#/components/schemas/DraftPost"
+        media:
+          type: array
+          description: The media objects `post` names, in its order (any since deleted are left out).
+          items:
+            $ref: "#/components/schemas/MediaObject"
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+    DraftListItem:
+      type: object
+      additionalProperties: false
+      required: [id, title, preview, tags, media_url, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: "^drf_"
+        title:
+          type: string
+        preview:
+          type: string
+          description: The start of the text, on one line (at most 120 characters).
+        tags:
+          type: array
+          items:
+            type: string
+        media_url:
+          type: ["string", "null"]
+          description: The first media's URL (a video's poster), for a thumbnail.
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+    TranslateDraftIn:
+      type: object
+      additionalProperties: false
+      required: [target_lang]
+      properties:
+        target_lang:
+          type: string
+          description: An ISO 639-1 code from `GET /v1/instance` `translate_targets`.
     SourceIn:
       type: object
       additionalProperties: false
@@ -2529,6 +2929,7 @@ components:
             - idempotency_key_invalid
             - idempotency_key_in_use
             - idempotency_key_reused
+            - precondition_failed
             - unreadable_upload
             - unavailable
             - upstream_failed

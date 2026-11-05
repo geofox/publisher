@@ -49,6 +49,8 @@ type v1CreatePostReq struct {
 	ReplyTo *v1SourceIn `json:"reply_to"`
 	Quote   *v1SourceIn `json:"quote"`
 	Repost  *v1SourceIn `json:"repost"`
+	// Draft, when set, is deleted once the post is saved (posting a draft).
+	Draft *string `json:"draft"`
 }
 
 type v1CreateContent struct {
@@ -95,6 +97,7 @@ type v1CreateSchedule struct {
 type createPlan struct {
 	spec    dispatch.PostSpec
 	at      *time.Time
+	draftID string // the draft to delete once the post is saved
 	targets []plannedTarget
 	media   []*store.MediaObject // the post's media, in order
 	// mediaReq is each media's index in the request.
@@ -155,6 +158,24 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 		errs = append(errs, fieldError{Pointer: ptr, Code: code, Detail: detail})
 	}
 	plan := &createPlan{}
+
+	if req.Draft != nil {
+		pr, _ := principalFrom(ctx)
+		sid, ok := parseID(*req.Draft, prefixDraft)
+		switch {
+		case !pr.can(scopeDraftsWrite):
+			add("/draft", "not_permitted", "posting a draft needs the drafts:write scope")
+		case !ok:
+			add("/draft", "unknown_draft", "no such draft")
+		default:
+			if _, err := a.Store.GetV1Draft(ctx, owner, sid); errors.Is(err, store.ErrDraftNotFound) {
+				add("/draft", "unknown_draft", "no such draft")
+			} else if err != nil {
+				return nil, nil, err
+			}
+			plan.draftID = sid
+		}
+	}
 
 	// Shared content.
 	text := ""
@@ -535,6 +556,13 @@ func (a *API) v1CreatePost(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(r.Context(), "v1: save post", "err", err)
 		problem(w, r, http.StatusInternalServerError, codeInternal, "saving the post failed")
 		return
+	}
+	if plan.draftID != "" {
+		// The post is saved; a draft left behind is only clutter.
+		if err := a.Store.DeleteV1Draft(context.WithoutCancel(r.Context()), pr.OwnerID, plan.draftID, 0); err != nil &&
+			!errors.Is(err, store.ErrDraftNotFound) {
+			slog.WarnContext(r.Context(), "v1: delete posted draft", "draft_id", plan.draftID, "err", err)
+		}
 	}
 	w.Header().Set("Location", "/v1/posts/"+postID(p.ID))
 	wait, asked := preferWait(r.Header.Values("Prefer"))

@@ -96,6 +96,12 @@ func (a *API) v1Routes() []v1Route {
 		{Method: "POST", Path: "/v1/posts/{id}", Scope: scopePostsWrite, Actions: []string{"cancel", "retry", "resolve"}, Handler: a.v1PostAction},
 		{Method: "GET", Path: "/v1/posts/{id}/events", Scope: scopePostsRead, Handler: a.v1PostEvents},
 		{Method: "GET", Path: "/v1/events", Scope: scopePostsRead, Handler: a.v1Events},
+		{Method: "GET", Path: "/v1/drafts", Scope: scopeDraftsRead, Handler: a.v1ListDrafts},
+		{Method: "POST", Path: "/v1/drafts", Scope: scopeDraftsWrite, Handler: a.v1CreateDraft},
+		{Method: "GET", Path: "/v1/drafts/{id}", Scope: scopeDraftsRead, Handler: a.v1GetDraft},
+		{Method: "PATCH", Path: "/v1/drafts/{id}", Scope: scopeDraftsWrite, Handler: a.v1PatchDraft},
+		{Method: "DELETE", Path: "/v1/drafts/{id}", Scope: scopeDraftsWrite, Handler: a.v1DeleteDraft},
+		{Method: "POST", Path: "/v1/drafts/{id}", Scope: scopeDraftsWrite, Actions: []string{"translate"}, Handler: a.v1DraftAction},
 		// Not idempotent: a repeat upload stores the same content-addressed
 		// file again, under a new id.
 		{Method: "POST", Path: "/v1/media", Scope: scopeMediaWrite, Handler: a.v1UploadMedia},

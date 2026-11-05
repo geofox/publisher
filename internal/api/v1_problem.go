@@ -29,6 +29,7 @@ const (
 	codeIdemInvalid          = "idempotency_key_invalid"
 	codeIdemInUse            = "idempotency_key_in_use"
 	codeIdemReused           = "idempotency_key_reused"
+	codePreconditionFailed   = "precondition_failed"
 	codeUnreadableUpload     = "unreadable_upload"
 	codeUnavailable          = "unavailable"
 	codeUpstream             = "upstream_failed"
@@ -54,6 +55,7 @@ var v1Codes = map[string]string{
 	codeIdemInvalid:          "Invalid Idempotency-Key",
 	codeIdemInUse:            "Idempotency-Key in use",
 	codeIdemReused:           "Idempotency-Key reused",
+	codePreconditionFailed:   "Precondition failed",
 	codeUnreadableUpload:     "Upload could not be read",
 	codeUnavailable:          "Service unavailable",
 	codeUpstream:             "Upstream service failed",

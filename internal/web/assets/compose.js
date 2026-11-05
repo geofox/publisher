@@ -545,14 +545,18 @@ export function loadDraft(input) {
     // Hydrate media-placement anchors from the draft spec (id-keyed map).
     state.anchors = input.anchors || {};
     state.activeDraftId = input.id || null;
+    state.draftETag = input.etag || "";
     state.dirty = false;
+    const num = $("#threadnum"); if (num && input.number !== undefined) num.checked = !!input.number;
+    const sched = $("#schedat"); if (sched) sched.value = input.interaction ? "" : localInput(input.scheduled_at);
     const tab = document.querySelector('.tab[data-view="compose"]');
     if (tab) tab.click();
     const master = $("#master"); if (master) { master.value = state.master; autoGrow(master); }
     window.scrollTo({ top: 0, behavior: "smooth" });
     renderImages();
     renderInteractionUI(); // re-renders chips/cards/preview and hides the banner
-    flash("Draft loaded");
+    flash(input.notice || "Draft loaded");
+    if (input.onLoaded) input.onLoaded();
   };
 
   if (state.master.trim() || state.images.length || state.interaction) {
@@ -565,6 +569,15 @@ export function loadDraft(input) {
     return;
   }
   doLoad();
+}
+
+// localInput turns an RFC 3339 time into a datetime-local value (local
+// wall time, to the minute); "" for none or a bad one.
+function localInput(iso) {
+  const d = iso ? new Date(iso) : null;
+  if (!d || isNaN(d)) return "";
+  const pad = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 // renderInteractionUI re-renders the compose chrome for the current mode.
@@ -1152,7 +1165,7 @@ function missingAccounts() {
 
 // mediaReady waits for the attachments' uploads; false (with a note) when
 // one failed or can't be posted.
-async function mediaReady() {
+export async function mediaReady() {
   // A preset being applied makes a new file to upload first.
   await Promise.all(state.images.map(i => i._compressing && i._compressing.catch(() => {})));
   await Promise.all(state.images.map(i => (i.file && !i.media_id ? uploadImage(i) : null)));
@@ -1179,27 +1192,33 @@ async function doPost() {
   try {
     if (!(await mediaReady())) return;
     const draftId = state.activeDraftId;
-    const post = await sendPost(v1PostBody());
+    const body = v1PostBody();
+    // The server uses the draft up once the post is saved.
+    if (draftId) body.draft = draftId;
+    let post;
+    try {
+      post = await sendPost(body);
+    } catch (e) {
+      // Deleted meanwhile (another tab posted it): post without it.
+      const gone = e.problem && (e.problem.errors || []).some(fe => fe.pointer === "/draft");
+      if (!gone) throw e;
+      delete body.draft;
+      post = await sendPost(body);
+    }
     if (post.status === "scheduled" && post.scheduled_at) {
       flash("Scheduled for " + new Date(post.scheduled_at).toLocaleString("fr-FR", { timeZone: "Europe/Paris" }));
     } else {
       setInflight(post.id);
       openProgressModal(post.id, post);
     }
-    // A posted draft is used up. (Drafts move to /v1 next; until then the
-    // old route deletes it.)
-    if (draftId) {
-      fetch("/api/drafts/" + encodeURIComponent(draftId), { method: "DELETE", credentials: "same-origin" })
-        .catch(() => {})
-        .finally(() => import("./drafts.js").then(m => m.loadDraftList && m.loadDraftList()));
-    }
     state.activeDraftId = null;
+    state.draftETag = "";
     state.dirty = false;
     // Committed → empty the composer so the posted text and images don't
     // linger as if still unsent (and leave a reply or quote).
     if (it) exitInteraction(); else resetComposer();
     import("./drafts_recovery.js").then(m => m.clearRecovery());
-    if (!draftId) import("./drafts.js").then(m => m.loadDraftList && m.loadDraftList());
+    import("./drafts.js").then(m => m.loadDraftList && m.loadDraftList());
   } catch (e) {
     flash("Error: " + e.message);
   } finally {

@@ -68,8 +68,8 @@ func DeriveTitle(masterText string) string {
 		if t == "" {
 			continue
 		}
-		if len(t) > 80 {
-			t = t[:80]
+		if r := []rune(t); len(r) > 80 { // whole characters, not bytes
+			t = string(r[:80])
 		}
 		return t
 	}

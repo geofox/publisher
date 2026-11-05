@@ -27,6 +27,22 @@ var migrations = []migration{
 	{version: 5, name: "token_scopes_idempotency", up: migrateTokenScopesIdempotency},
 	{version: 6, name: "events", up: migrateEvents},
 	{version: 7, name: "media_objects", up: migrateMediaObjects},
+	{version: 8, name: "drafts_v1", up: migrateDraftsV1},
+}
+
+// migrateDraftsV1 (v8) gives drafts the /v1 shape: body_json holds the
+// draft as a POST /v1/posts body (media named by media object id), version
+// counts its writes (its ETag). A draft from before has no body until the
+// server converts it at start (api.ConvertOldDrafts): the conversion needs
+// the accounts and destinations, which a migration doesn't have. Adopting
+// those drafts' files as media objects looks them up by hash.
+func migrateDraftsV1(ctx context.Context, tx execer) error {
+	_, err := tx.ExecContext(ctx, `
+ALTER TABLE drafts ADD COLUMN body_json TEXT;
+ALTER TABLE drafts ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+CREATE INDEX idx_drafts_owner_updated ON drafts(owner_id, updated_at, id);
+CREATE INDEX idx_media_objects_sha ON media_objects(owner_id, sha256);`)
+	return err
 }
 
 // migrateMediaObjects (v7) stores the media /v1 uploads, before any post

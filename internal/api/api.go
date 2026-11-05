@@ -234,12 +234,6 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("POST /api/media/compress", a.handleCompressMedia)
 	mux.HandleFunc("POST /api/media/video", a.handleVideoUpload)
 	mux.HandleFunc("GET /api/media/video/{id}", a.handleVideoJob)
-	mux.HandleFunc("GET /api/drafts", a.handleListDrafts)
-	mux.HandleFunc("POST /api/drafts", a.handleCreateDraft)
-	mux.HandleFunc("GET /api/drafts/{id}", a.handleGetDraft)
-	mux.HandleFunc("PUT /api/drafts/{id}", a.handleUpdateDraft)
-	mux.HandleFunc("DELETE /api/drafts/{id}", a.handleDeleteDraft)
-	mux.HandleFunc("POST /api/drafts/{id}/translate", a.handleTranslateDraft)
 	// Token management + identity + auth routes (only when OIDC is enabled).
 	if a.authEnabled() {
 		mux.HandleFunc("GET /api/tokens", a.handleListTokens)
