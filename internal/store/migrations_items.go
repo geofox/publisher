@@ -172,6 +172,8 @@ func backfillTargetAccounts(ctx context.Context, tx execer) error {
 // legacyTarget is the part of a pre-v4 post_targets row that moves to items.
 type legacyTarget struct {
 	id                    int64
+	postID, platform      string
+	scheduledAt           sql.NullTime
 	finalText, status     string
 	remoteID, remoteURL   sql.NullString
 	signedEvent, segments sql.NullString
@@ -183,17 +185,18 @@ type legacyTarget struct {
 // backfillItems turns each target's segments, or the target itself when it
 // was a single post, into target_items rows.
 func backfillItems(ctx context.Context, tx execer) error {
-	rows, err := tx.QueryContext(ctx, `SELECT pt.id, COALESCE(pt.final_text, ''), pt.status, pt.remote_id, pt.remote_url,
+	rows, err := tx.QueryContext(ctx, `SELECT pt.id, pt.post_id, pt.platform, p.scheduled_at,
+		COALESCE(pt.final_text, ''), pt.status, pt.remote_id, pt.remote_url,
 		pt.signed_event_json, pt.segments_json, pt.error_class, pt.attempt_count, pt.last_attempt_at,
 		(SELECT COUNT(*) FROM media m WHERE m.post_id = pt.post_id)
-		FROM post_targets pt ORDER BY pt.id`)
+		FROM post_targets pt LEFT JOIN posts p ON p.id = pt.post_id ORDER BY pt.id`)
 	if err != nil {
 		return err
 	}
 	var targets []legacyTarget
 	for rows.Next() {
 		var t legacyTarget
-		if err := rows.Scan(&t.id, &t.finalText, &t.status, &t.remoteID, &t.remoteURL, &t.signedEvent, &t.segments,
+		if err := rows.Scan(&t.id, &t.postID, &t.platform, &t.scheduledAt, &t.finalText, &t.status, &t.remoteID, &t.remoteURL, &t.signedEvent, &t.segments,
 			&t.errorClass, &t.attempts, &t.lastAttempt, &t.mediaCount); err != nil {
 			rows.Close()
 			return err
@@ -217,8 +220,38 @@ func backfillItems(ctx context.Context, tx execer) error {
 	return nil
 }
 
-// legacyItems derives a pre-v4 target's items.
+// legacyItems derives a pre-v4 target's items, keyed as the dispatcher
+// keyed them (ItemKey), with planned items due when the engine should claim
+// them: a scheduled target's at its time, a missed one's never (until a
+// retry), any other's now (they wait for the item before them).
 func legacyItems(t legacyTarget) ([]Item, error) {
+	items, err := legacyItemsOf(t)
+	if err != nil {
+		return nil, err
+	}
+	var due *time.Time
+	switch {
+	case t.status == "missed":
+	case t.status == "scheduled" && t.scheduledAt.Valid:
+		at := t.scheduledAt.Time.UTC()
+		due = &at
+	default:
+		at := time.Now().UTC()
+		if t.lastAttempt.Valid {
+			at = t.lastAttempt.Time.UTC()
+		}
+		due = &at
+	}
+	for i := range items {
+		items[i].IdemKey = ItemKey(t.postID, t.platform, items[i].Ordinal)
+		if items[i].Status == ItemPlanned {
+			items[i].NextAttemptAt = due
+		}
+	}
+	return items, nil
+}
+
+func legacyItemsOf(t legacyTarget) ([]Item, error) {
 	var published *time.Time
 	if t.lastAttempt.Valid {
 		at := t.lastAttempt.Time.UTC()

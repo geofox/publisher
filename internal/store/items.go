@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"time"
 )
 
@@ -36,6 +39,14 @@ type Item struct {
 	NextAttemptAt *time.Time
 	PublishedAt   *time.Time
 	Deliveries    []RelayState
+}
+
+// ItemKey is the idempotency key of item ordinal of a post's target of type
+// typ. It is derived, not random, so the key a destination saw before an
+// upgrade is the key the item keeps after it.
+func ItemKey(postID, typ string, ordinal int) string {
+	sum := sha256.Sum256([]byte("publisher\x00" + postID + "\x00" + typ + "\x00" + strconv.Itoa(ordinal)))
+	return hex.EncodeToString(sum[:16])
 }
 
 // itemContent is target_items.content_json.

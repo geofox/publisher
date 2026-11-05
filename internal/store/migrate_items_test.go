@@ -114,6 +114,16 @@ func TestMigrateTargetItemsCarriesEverything(t *testing.T) {
 		st.Segments[1].Status != "pending" {
 		t.Errorf("scheduled target = %+v items %+v", st, st.Items)
 	}
+	// Planned items are due when the engine should claim them, and every
+	// item keeps the key the dispatcher derived for it.
+	for _, it := range sched.Targets[0].Items {
+		if it.NextAttemptAt == nil || !it.NextAttemptAt.Equal(*sched.ScheduledAt) {
+			t.Errorf("scheduled item %d due %v, want %v", it.Ordinal, it.NextAttemptAt, sched.ScheduledAt)
+		}
+		if it.IdemKey != ItemKey("sched", "threads", it.Ordinal) {
+			t.Errorf("scheduled item %d key %q", it.Ordinal, it.IdemKey)
+		}
+	}
 
 	nostr, _ := s.GetPost("nostr")
 	nt := nostr.Targets[0]
