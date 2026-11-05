@@ -189,6 +189,31 @@ as they move.
 
 # PR 2 — Accounts and the durable engine
 
+> **As built (2026-11-05): split in two.** PR 2a is the storage (Tasks 2.1
+> and 2.2); PR 2b is the engine and graceful shutdown (Tasks 2.3 and 2.4).
+> Each is deployable, and the storage change is reviewable on its own.
+>
+> PR 2a differences from the tasks below:
+>
+> - **Owner ids are on the data, not yet in every query.** v3 adds
+>   `owner_id` (default `own_default`) to posts, drafts, api_tokens and
+>   users. Store queries start filtering by owner with the `/v1` API (PR 3),
+>   whose auth is what produces an owner; with one owner today the filter
+>   would be a constant.
+> - **`content_json` on targets waits for PR 3.** The content model
+>   (shared content, overrides, options) is defined with the `/v1` request;
+>   targets keep `final_text` + `fields_json` until then. Items do get
+>   `content_json` (`{text, media}`).
+> - **`idempotency_keys` moves to PR 3**, with the API that uses it (its
+>   migration is v5 with the tokens change).
+> - **The `/api` shape is a view over items** (`targetView`): RemoteID,
+>   RemoteURL, Relays, Segments and SignedEventJSON come from the target's
+>   items, so the web app and the old routes don't change. A thread's
+>   attempts keep `item_id` NULL (one attempt spans items); a single post's
+>   point at its item.
+> - The migration runner's retry limit for concurrent starters was 3; with
+>   four migrations it could run out, so it is now one per migration.
+
 ## Task 2.1: Migration v3 — owners and accounts
 
 - [ ] `owners`, `accounts`; `owner_id` on `posts`, `drafts`, `api_tokens`,

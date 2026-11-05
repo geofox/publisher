@@ -78,7 +78,9 @@ func runMigrations(ctx context.Context, db *sql.DB, dbPath string, ms []migratio
 	// version while we take the backup, start over from the new version.
 	for attempt := 0; ; attempt++ {
 		err := migrateOnce(ctx, conn, dbPath, ms)
-		if errors.Is(err, errVersionMoved) && attempt < 3 {
+		// Each retry means another process applied at least one migration,
+		// so there can be at most len(ms) of them.
+		if errors.Is(err, errVersionMoved) && attempt < len(ms) {
 			continue
 		}
 		return err

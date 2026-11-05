@@ -22,6 +22,8 @@ import (
 var migrations = []migration{
 	{version: 1, name: "baseline", up: migrateBaseline},
 	{version: 2, name: "error_class", up: migrateErrorClass},
+	{version: 3, name: "owners_accounts", up: migrateOwnersAccounts, noForeignKeys: true},
+	{version: 4, name: "target_items", up: migrateTargetItems, noForeignKeys: true},
 }
 
 // migrateErrorClass records each failure's destination.ErrorClass, so the

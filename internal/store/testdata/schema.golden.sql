@@ -4,17 +4,39 @@ CREATE INDEX idx_draft_media_draft_id ON draft_media(draft_id);
 -- index idx_drafts_updated_at
 CREATE INDEX idx_drafts_updated_at ON drafts(updated_at DESC);
 
+-- index idx_item_deliveries_item
+CREATE INDEX idx_item_deliveries_item ON item_deliveries(item_id);
+
 -- index idx_nostr_fanout_due
 CREATE INDEX idx_nostr_fanout_due ON nostr_fanout(status, next_attempt_at);
 
 -- index idx_posts_created
 CREATE INDEX idx_posts_created ON posts(created_at DESC);
 
--- index idx_target_relays_target
-CREATE INDEX idx_target_relays_target ON target_relays(target_id);
+-- index idx_target_attempts_target
+CREATE INDEX idx_target_attempts_target ON target_attempts(target_id);
+
+-- index idx_target_items_due
+CREATE INDEX idx_target_items_due ON target_items(status, next_attempt_at);
 
 -- index idx_targets_post
 CREATE INDEX idx_targets_post ON post_targets(post_id);
+
+-- table accounts
+CREATE TABLE accounts (
+  id          TEXT PRIMARY KEY,
+  owner_id    TEXT NOT NULL REFERENCES owners(id),
+  type        TEXT NOT NULL,
+  label       TEXT NOT NULL,
+  handle      TEXT,
+  source      TEXT NOT NULL,
+  env_key     TEXT,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  created_at  TIMESTAMP NOT NULL,
+  updated_at  TIMESTAMP NOT NULL,
+  UNIQUE(owner_id, type, env_key)
+);
 
 -- table api_tokens
 CREATE TABLE api_tokens (
@@ -24,7 +46,7 @@ CREATE TABLE api_tokens (
   created_at   TIMESTAMP NOT NULL,
   last_used_at TIMESTAMP,
   revoked_at   TIMESTAMP
-);
+, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id));
 
 -- table draft_media
 CREATE TABLE draft_media (
@@ -49,6 +71,19 @@ CREATE TABLE drafts (
   master_text TEXT NOT NULL DEFAULT '',
   tags_json   TEXT NOT NULL DEFAULT '[]',
   spec_json   TEXT NOT NULL
+, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id));
+
+-- table item_deliveries
+CREATE TABLE item_deliveries (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id      INTEGER NOT NULL REFERENCES target_items(id),
+  endpoint     TEXT NOT NULL,
+  status       TEXT NOT NULL,
+  message      TEXT,
+  attempted_at TIMESTAMP NOT NULL,
+  retry_count  INTEGER NOT NULL DEFAULT 0,
+  gave_up_at   TIMESTAMP,
+  UNIQUE(item_id, endpoint)
 );
 
 -- table media
@@ -75,22 +110,29 @@ CREATE TABLE nostr_fanout (
   retry_count       INTEGER NOT NULL DEFAULT 0,
   next_attempt_at   TIMESTAMP NOT NULL,
   created_at        TIMESTAMP NOT NULL
+, item_id INTEGER REFERENCES target_items(id));
+
+-- table owners
+CREATE TABLE owners (
+  id         TEXT PRIMARY KEY,
+  created_at TIMESTAMP NOT NULL
 );
 
 -- table post_targets
-CREATE TABLE post_targets (
+CREATE TABLE "post_targets" (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   post_id         TEXT NOT NULL REFERENCES posts(id),
+  account_id      TEXT NOT NULL REFERENCES accounts(id),
   platform        TEXT NOT NULL,
   final_text      TEXT,
   fields_json     TEXT,
   status          TEXT NOT NULL,
-  remote_id       TEXT,
-  remote_url      TEXT,
+  error_class     TEXT,
   latency_ms      INTEGER,
   attempt_count   INTEGER NOT NULL DEFAULT 0,
-  last_attempt_at TIMESTAMP, signed_event_json TEXT, segments_json TEXT, gave_up_at TIMESTAMP, error_class TEXT,
-  UNIQUE(post_id, platform)
+  last_attempt_at TIMESTAMP,
+  gave_up_at      TIMESTAMP,
+  UNIQUE(post_id, account_id)
 );
 
 -- table posts
@@ -102,7 +144,7 @@ CREATE TABLE posts (
   delay_seconds INTEGER NOT NULL DEFAULT 0,
   source        TEXT NOT NULL,
   status        TEXT NOT NULL
-, scheduled_at TIMESTAMP, hidden INTEGER NOT NULL DEFAULT 0, interaction_json TEXT);
+, scheduled_at TIMESTAMP, hidden INTEGER NOT NULL DEFAULT 0, interaction_json TEXT, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id));
 
 -- table schema_migrations
 CREATE TABLE schema_migrations (
@@ -137,17 +179,25 @@ CREATE TABLE target_attempts (
   request_json  TEXT,
   response_json TEXT,
   attempted_at  TIMESTAMP NOT NULL
-, error_class TEXT);
+, error_class TEXT, item_id INTEGER REFERENCES target_items(id));
 
--- table target_relays
-CREATE TABLE target_relays (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  target_id    INTEGER NOT NULL REFERENCES post_targets(id),
-  relay_url    TEXT NOT NULL,
-  status       TEXT NOT NULL,
-  message      TEXT,
-  attempted_at TIMESTAMP NOT NULL, gave_up_at TIMESTAMP, retry_count INTEGER NOT NULL DEFAULT 0,
-  UNIQUE(target_id, relay_url)
+-- table target_items
+CREATE TABLE target_items (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_id       INTEGER NOT NULL REFERENCES post_targets(id),
+  ordinal         INTEGER NOT NULL,
+  content_json    TEXT NOT NULL,
+  status          TEXT NOT NULL,
+  idem_key        TEXT NOT NULL,
+  remote_id       TEXT,
+  remote_url      TEXT,
+  ref_json        TEXT,
+  error_class     TEXT,
+  error           TEXT,
+  attempt_count   INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMP,
+  published_at    TIMESTAMP,
+  UNIQUE(target_id, ordinal)
 );
 
 -- table threads_token
@@ -167,5 +217,5 @@ CREATE TABLE users (
   name         TEXT,
   created_at   TIMESTAMP NOT NULL,
   last_seen_at TIMESTAMP
-);
+, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id));
 

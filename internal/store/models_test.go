@@ -118,7 +118,7 @@ func TestSavePostWithSegments(t *testing.T) {
 	if len(segs) != 2 {
 		t.Fatalf("segments not round-tripped: %+v", segs)
 	}
-	if segs[0].CID != "cid0" || segs[0].Status != "success" || segs[1].Status != "failed" || segs[1].Error != "boom" {
+	if string(segs[0].Ref) != `{"cid":"cid0"}` || segs[0].Status != "success" || segs[1].Status != "failed" || segs[1].Error != "boom" {
 		t.Errorf("segment fields wrong: %+v", segs)
 	}
 }

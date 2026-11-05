@@ -92,9 +92,9 @@ func main() {
 	bc := bluesky.New(cfg.BlueskyPDSURL, cfg.BlueskyIdentifier, cfg.BlueskyAppPassword)
 	uf := unfurl.New()
 	drivers.Register()
-	// One account per destination type until accounts are stored (step 2,
-	// PR 2); a type whose credentials aren't configured has no account, so
-	// posting to it fails as "not configured" before any network call.
+	// One account per destination type, from env (step 4 adds more); a type
+	// whose credentials aren't configured has no account, so posting to it
+	// fails as "not configured" before any network call.
 	accounts := map[string]destination.Account{pubnostr.Type: &pubnostr.Account{P: np}}
 	if cfg.BlueskyAppPassword != "" {
 		accounts[bluesky.Type] = &bluesky.Account{C: bc}
@@ -104,6 +104,16 @@ func main() {
 	}
 	if cfg.ThreadsToken != "" {
 		accounts[threads.Type] = &threads.Account{C: tc}
+	}
+	// Each configured type is one env-sourced stored account with a stable
+	// id; unconfigured types' accounts are disabled (their history stays).
+	var seed []store.EnvAccount
+	for typ, acct := range accounts {
+		seed = append(seed, store.EnvAccount{Type: typ, Label: acct.Manifest().Name})
+	}
+	if _, err := st.SeedEnvAccounts(context.Background(), store.DefaultOwner, seed); err != nil {
+		slog.Error("seeding accounts failed", "err", err)
+		os.Exit(1)
 	}
 	d := &dispatch.Dispatcher{
 		Accounts: accounts,
