@@ -137,6 +137,9 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 // engine stops relying on it (clock skew, a slow request).
 const keyMargin = 5 * time.Minute
 
+// maxRetryAfter caps a server's requested wait before an automatic retry.
+const maxRetryAfter = 24 * time.Hour
+
 // relayDue checks whether the relay's next retry is due. Uses AttemptedAt +
 // backoff(RetryCount+1) so the first retry is after base*2^(RetryCount) wait.
 func (r *Retrier) relayDue(rl store.RelayState, now time.Time) bool {

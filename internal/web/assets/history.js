@@ -190,7 +190,10 @@ function renderList() {
     list.append(el("div", { class: "hgroup", text: label }));
     for (const p of arr) list.append(historyItem(p));
   };
-  if (hfilter === "all") { group("⏳ scheduled", pending); group("posted", posted); }
+  if (hfilter === "all") {
+    group(pending.some(p => p.status === "sending") ? "⏳ scheduled & sending" : "⏳ scheduled", pending);
+    group("posted", posted);
+  }
   else { for (const p of hposts) list.append(historyItem(p)); }
   if (!hdone) list.append(el("button", { class: "ghost sm hmore", type: "button", text: "load more",
     onclick: () => loadHistory(false) }));

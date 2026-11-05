@@ -88,7 +88,7 @@ func (a *Account) Publish(ctx context.Context, req destination.PublishRequest) (
 	var err error
 	if len(req.Prepared) > 0 {
 		var se SignedEvent
-		if se, err = a.prepared(req.Prepared); err != nil {
+		if se, err = a.prepared(req.Prepared, in.Kind); err != nil {
 			out.Status = destination.StatusFailed
 		} else {
 			out, err = a.result(a.P.Broadcast(ctx, se))
@@ -117,9 +117,9 @@ func (a *Account) Prepare(ctx context.Context, req destination.PublishRequest) (
 	return b, nil
 }
 
-// prepared decodes and checks a prepared event: it must be the owner's and
-// validly signed.
-func (a *Account) prepared(raw json.RawMessage) (SignedEvent, error) {
+// prepared decodes and checks a prepared event: it must be the owner's,
+// validly signed, and of the kind the item publishes.
+func (a *Account) prepared(raw json.RawMessage, kind int) (SignedEvent, error) {
 	var ev gonostr.Event
 	if err := json.Unmarshal(raw, &ev); err != nil {
 		return SignedEvent{}, destination.Invalidf("stored event: %w", err)
@@ -130,7 +130,26 @@ func (a *Account) prepared(raw json.RawMessage) (SignedEvent, error) {
 	if !ev.VerifySignature() {
 		return SignedEvent{}, destination.Invalidf("stored event has a bad signature")
 	}
-	return SignedEvent{Event: ev}, nil
+	if kind == 0 {
+		kind = 1
+	}
+	if int(ev.Kind) != kind {
+		return SignedEvent{}, destination.Invalidf("stored event is kind %d, not %d", ev.Kind, kind)
+	}
+	return SignedEvent{Event: ev, POW: minedPOW(ev)}, nil
+}
+
+// minedPOW is the NIP-13 difficulty an event was mined to, from its nonce
+// tag (["nonce", n, target]), or 0.
+func minedPOW(ev gonostr.Event) int {
+	for _, tg := range ev.Tags {
+		if len(tg) >= 3 && tg[0] == "nonce" {
+			if n, err := strconv.Atoi(tg[2]); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 // noteInput maps a request to a kind-1 note: imeta tags for the media, a

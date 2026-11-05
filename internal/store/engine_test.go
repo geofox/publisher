@@ -265,12 +265,12 @@ func TestSetItemRefNeedsTheClaim(t *testing.T) {
 	}
 }
 
-func TestFirstUnknownAttempt(t *testing.T) {
+func TestFirstUncertainAttempt(t *testing.T) {
 	s := openEngineStore(t)
 	now := time.Now().UTC()
 	plannedPost(t, s, "u", now, 1, "mastodon")
 	c := claim(t, s, now, ClaimFilter{})
-	if at, err := s.FirstUnknownAttempt(context.Background(), c.ItemID); err != nil || at != nil {
+	if at, err := s.FirstUncertainAttempt(context.Background(), c.ItemID); err != nil || at != nil {
 		t.Fatalf("before any attempt: %v, %v", at, err)
 	}
 	when := now.Add(-time.Hour)
@@ -278,7 +278,7 @@ func TestFirstUnknownAttempt(t *testing.T) {
 		ErrorClass: "unknown_outcome", NextAttemptAt: &now, At: when}); err != nil {
 		t.Fatal(err)
 	}
-	at, err := s.FirstUnknownAttempt(context.Background(), c.ItemID)
+	at, err := s.FirstUncertainAttempt(context.Background(), c.ItemID)
 	if err != nil || at == nil || !at.Equal(when) {
 		t.Fatalf("first unknown = %v, %v; want %v", at, err, when)
 	}

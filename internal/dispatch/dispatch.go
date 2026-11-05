@@ -186,22 +186,31 @@ func (d *Dispatcher) notify(ctx context.Context, p *store.Post) {
 
 // alertFailure fires an operational alert when a freshly recorded post did not
 // fully succeed. No-op when no alerter is wired or the post fully succeeded.
-func (d *Dispatcher) alertFailure(ctx context.Context, p *store.Post) {
-	if d.Alerter == nil || p == nil {
-		return
+func (d *Dispatcher) alertFailure(ctx context.Context, p *store.Post) bool {
+	if d.Alerter == nil || p == nil || (p.Status != "failed" && p.Status != "partial") {
+		return false
 	}
-	if p.Status == "failed" || p.Status == "partial" {
-		body := "post " + p.ID + " finished with status " + p.Status + "; "
-		if d.anyAutoRetryable(ctx, p) {
-			body += "auto-retry will attempt recovery"
-		} else {
-			body += "it will not be retried automatically: the failure would repeat (auth, invalid, rejected) " +
-				"or the post may already be live (unknown_outcome). Check the target, fix the cause, then retry manually."
-		}
-		if err := d.Alerter.Alert(ctx, "Publisher: post delivery "+p.Status, body); err != nil {
-			slog.ErrorContext(ctx, "alertFailure", "err", err)
+	var gaveUp []string
+	for _, t := range p.Targets {
+		if t.GaveUpAt != nil {
+			gaveUp = append(gaveUp, d.displayName(t.Platform))
 		}
 	}
+	const why = ": the failure would repeat (auth, invalid, rejected) " +
+		"or the post may already be live (unknown_outcome). Check the target, fix the cause, then retry manually."
+	body := "post " + p.ID + " finished with status " + p.Status + "; "
+	switch {
+	case !d.anyAutoRetryable(ctx, p):
+		body += "it will not be retried automatically" + why
+	case len(gaveUp) > 0:
+		body += "auto-retry will attempt recovery, but not on " + strings.Join(gaveUp, ", ") + why
+	default:
+		body += "auto-retry will attempt recovery"
+	}
+	if err := d.Alerter.Alert(ctx, "Publisher: post delivery "+p.Status, body); err != nil {
+		slog.ErrorContext(ctx, "alertFailure", "err", err)
+	}
+	return true
 }
 
 // anyAutoRetryable reports whether the engine will try any of the post's

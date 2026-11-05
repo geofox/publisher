@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -43,6 +44,7 @@ const (
 type engine struct {
 	mu       sync.Mutex
 	inline   map[string]int // posts being driven inline, by drive count
+	recover  sync.Once      // startup recovery
 	stopping bool
 	active   sync.WaitGroup // workers and inline drives
 	kickOnce sync.Once
@@ -105,6 +107,12 @@ func (d *Dispatcher) inlinePosts() []string {
 	return out
 }
 
+func (d *Dispatcher) isInline(postID string) bool {
+	d.eng.mu.Lock()
+	defer d.eng.mu.Unlock()
+	return d.eng.inline[postID] > 0
+}
+
 func (d *Dispatcher) isStopping() bool {
 	d.eng.mu.Lock()
 	defer d.eng.mu.Unlock()
@@ -119,7 +127,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		slog.Error("engine: no store; nothing will be published in the background")
 		return
 	}
-	d.recoverSending(ctx)
+	d.Recover(ctx)
 	d.passes(ctx)
 	n := d.Workers
 	if n <= 0 {
@@ -186,8 +194,9 @@ func (d *Dispatcher) worker(ctx context.Context) {
 		}
 		if c != nil {
 			// The item in hand finishes even when shutdown starts: cutting
-			// the request would leave its outcome unknown.
-			d.runClaim(context.WithoutCancel(ctx), c, nil, true)
+			// the request would leave its outcome unknown. A claim that
+			// raced the owner's own retry of the post is the owner's.
+			d.runClaim(context.WithoutCancel(ctx), c, nil, !d.isInline(c.PostID))
 			continue
 		}
 		timer.Reset(poll)
@@ -277,6 +286,15 @@ func (d *Dispatcher) scheduleUnscheduled(ctx context.Context, now time.Time) {
 	}
 }
 
+// Recover settles what a stopped process left sending, once per process.
+// Run calls it; call it first to settle before serving requests.
+func (d *Dispatcher) Recover(ctx context.Context) {
+	if d.Store == nil {
+		return
+	}
+	d.eng.recover.Do(func() { d.recoverSending(ctx) })
+}
+
 // recoverSending settles items a stopped process left sending. The send may
 // have published. An idempotent destination drops a repeat, so the item is
 // retried; any other is left unknown for the owner to check.
@@ -288,12 +306,19 @@ func (d *Dispatcher) recoverSending(ctx context.Context) {
 	}
 	now := d.now()
 	for _, si := range items {
-		res := store.ItemResult{Claim: si.Claim, Status: store.ItemUnknown, At: now,
+		// The attempt is dated when its send started, so the key window
+		// is measured from the send, not from this restart.
+		at := now
+		if !si.SentAt.IsZero() {
+			at = si.SentAt
+		}
+		res := store.ItemResult{Claim: si.Claim, Status: store.ItemUnknown, At: at,
 			ErrorClass: string(destination.ClassUnknownOutcome),
 			Error:      "the publisher stopped while this was being sent; it may have been posted"}
 		caps, _ := d.Caps(ctx, si.Platform)
-		retry := caps.Idempotent != destination.IdempotentNone
-		if retry && caps.Idempotent == destination.IdempotentKey && caps.IdempotencyKeyTTLSecs > 0 && !si.SentAt.IsZero() &&
+		mode := d.idempotency(ctx, si.Claim, caps)
+		retry := mode == destination.IdempotentKey || mode == destination.IdempotentNatural
+		if retry && mode == destination.IdempotentKey && caps.IdempotencyKeyTTLSecs > 0 && !si.SentAt.IsZero() &&
 			now.Sub(si.SentAt) > time.Duration(caps.IdempotencyKeyTTLSecs)*time.Second-keyMargin {
 			retry = false // the server has forgotten the key
 		}
@@ -326,8 +351,9 @@ func (d *Dispatcher) recoverSending(ctx context.Context) {
 // memMedia is media a caller already holds in memory (the request's
 // uploads), so an inline drive doesn't fetch it back from Blossom.
 type memMedia struct {
-	post   []Img // by post media index
-	source []Img // a quote's re-hosted source media, by source index
+	post   []Img                   // by post media index
+	source []Img                   // a quote's re-hosted source media, by source index
+	thumbs map[string]*unfurl.Card // link cards fetched at planning, by thumbnail URL
 }
 
 // drive publishes postID's due items now: targets in parallel, each
@@ -336,6 +362,10 @@ type memMedia struct {
 // is registered as driven inline, so no worker claims its items first, and
 // it runs even during shutdown (the next start sends what it saved).
 func (d *Dispatcher) drive(ctx context.Context, postID string, mm *memMedia, persist func() error) error {
+	// A send, once started, finishes and is recorded even if the request
+	// that asked for it goes away (a closed tab, a proxy timeout): a
+	// canceled record would leave the item sending until the next start.
+	ctx = context.WithoutCancel(ctx)
 	if !d.beginInline(postID) {
 		if persist != nil {
 			if err := persist(); err != nil {
@@ -423,9 +453,24 @@ func threadDetail(t store.Target) string {
 // runClaim publishes a claimed item and records the result. auto marks a
 // claim the engine made on its own (not a publish or retry the owner asked
 // for), which is released unsent when sending could duplicate a post.
-func (d *Dispatcher) runClaim(ctx context.Context, c *store.Claim, mm *memMedia, auto bool) string {
+func (d *Dispatcher) runClaim(ctx context.Context, c *store.Claim, mm *memMedia, auto bool) (status string) {
 	ctx = logging.With(ctx, "post_id", c.PostID)
 	now := d.now()
+	defer func() {
+		// A bug that panics on one item must not take the process down, nor
+		// (recovered as sending at the next start) do so again on every start.
+		if p := recover(); p != nil {
+			slog.ErrorContext(ctx, "engine: publish panicked; the target stops for the owner",
+				"platform", c.Platform, "ordinal", c.Ordinal, "panic", p, "stack", string(debug.Stack()))
+			res := store.ItemResult{Claim: *c, Status: store.ItemUnknown, GiveUp: true, At: d.now(),
+				ErrorClass: string(destination.ClassUnknownOutcome),
+				Error:      "internal error while sending; it may have been posted: check, then retry by hand"}
+			if out, err := d.Store.RecordItemResult(context.WithoutCancel(ctx), res); err == nil {
+				d.settled(ctx, c, out, "internal error")
+			}
+			status = store.ItemUnknown
+		}
+	}()
 	if auto && c.Attempts > 0 {
 		caps, _ := d.Caps(ctx, c.Platform)
 		if d.keyForgotten(ctx, *c, "", caps, now) {
@@ -466,16 +511,48 @@ func (d *Dispatcher) runClaim(ctx context.Context, c *store.Claim, mm *memMedia,
 		return res.Status
 	}
 	d.enqueueFanout(ctx, c.PostID, r.Status, r.SignedEventJSON, r.PendingRelays)
+	if out.PostBefore == "scheduled" {
+		metrics.IncSchedulerFire()
+	}
+	d.settled(ctx, c, out, dec.giveUp)
+	return res.Status
+}
+
+// settled follows up a recorded result: the post's end-of-run alert and
+// feed notice when this result ended its run, and an alert for a target
+// that gave up unless the end-of-run alert already names it.
+func (d *Dispatcher) settled(ctx context.Context, c *store.Claim, out store.Outcome, why string) {
+	alerted := false
+	if out.PostBefore == "sending" && out.PostAfter != "sending" {
+		alerted = d.finished(ctx, c.PostID)
+	}
 	if out.GaveUp {
 		metrics.IncRetryExhausted(c.Platform)
-		if c.Attempts > 0 { // a first attempt's failure is in the post's own alert
-			d.alertGaveUp(ctx, c.PostID, c.Platform, dec.giveUp)
+		if !alerted {
+			d.alertGaveUp(ctx, c.PostID, c.Platform, why)
 		}
 	}
-	if out.PostBefore == "sending" && out.PostAfter != "sending" {
-		d.finished(ctx, c.PostID)
+}
+
+// idempotency is how the destination dedupes a repeat of the claimed item.
+// A Nostr repost is signed anew on each attempt (it has no prepared event),
+// so a repeat of one is a second repost.
+func (d *Dispatcher) idempotency(ctx context.Context, c store.Claim, caps destination.Capabilities) destination.IdempotencyMode {
+	if caps.Idempotent != destination.IdempotentNatural || c.Ordinal != 0 {
+		return caps.Idempotent
 	}
-	return res.Status
+	post, err := d.Store.GetPost(c.PostID)
+	if err != nil {
+		return destination.IdempotentNone
+	}
+	for _, tg := range post.Targets {
+		if tg.ID == c.TargetID {
+			if _, repost, _, _ := interactionAction(post, tg); repost != nil {
+				return destination.IdempotentNone
+			}
+		}
+	}
+	return caps.Idempotent
 }
 
 // release gives a claim back unsent because an earlier attempt may have
@@ -491,30 +568,25 @@ func (d *Dispatcher) release(ctx context.Context, c *store.Claim, now time.Time)
 		slog.ErrorContext(ctx, "engine: release claim failed", "err", err)
 		return
 	}
-	if out.GaveUp {
-		metrics.IncRetryExhausted(c.Platform)
-		d.alertGaveUp(ctx, c.PostID, c.Platform, "idempotency key expired")
-	}
-	if out.PostBefore == "sending" && out.PostAfter != "sending" {
-		d.finished(ctx, c.PostID)
-	}
+	d.settled(ctx, c, out, "idempotency key expired")
 }
 
 // finished runs when a post stops sending: the feed is told, and a first
-// run that didn't fully succeed raises an alert (a retry's outcome is
-// alerted only when the retries give up).
-func (d *Dispatcher) finished(ctx context.Context, postID string) {
+// run that didn't fully succeed raises an alert naming the targets that
+// gave up (after that, a target's give-up is alerted on its own). It
+// reports whether it alerted.
+func (d *Dispatcher) finished(ctx context.Context, postID string) bool {
 	post, err := d.Store.GetPost(postID)
 	if err != nil {
-		return
+		return false
 	}
 	d.notify(ctx, post)
 	for _, t := range post.Targets {
 		if t.AttemptCount > 1 {
-			return
+			return false
 		}
 	}
-	d.alertFailure(ctx, post)
+	return d.alertFailure(ctx, post)
 }
 
 func findItem(post *store.Post, c *store.Claim) (*store.Target, *store.Item) {
@@ -554,6 +626,11 @@ func (d *Dispatcher) publishClaimed(ctx context.Context, post *store.Post, tg st
 	card := ov.LinkCard
 	ov.LinkCard = nil
 	if card != nil && card.Segment == it.Ordinal {
+		if mm != nil && len(card.ThumbData) == 0 {
+			if c := mm.thumbs[card.ThumbURL]; c != nil {
+				card.ThumbData, card.ThumbMime = c.ThumbData, c.ThumbMime
+			}
+		}
 		d.refetchThumb(ctx, card)
 		ov.LinkCard = card
 	}
@@ -696,7 +773,7 @@ func (d *Dispatcher) decide(ctx context.Context, c store.Claim, cls destination.
 		return decision{}
 	}
 	caps, _ := d.Caps(ctx, c.Platform)
-	if !cls.Retryable(caps.Idempotent) {
+	if !cls.Retryable(d.idempotency(ctx, c, caps)) {
 		return decision{giveUp: string(cls)}
 	}
 	if d.keyForgotten(ctx, c, cls, caps, now) {
@@ -707,7 +784,9 @@ func (d *Dispatcher) decide(ctx context.Context, c store.Claim, cls destination.
 	}
 	wait := backoff(attempts, d.Policy.Base, d.Policy.Max)
 	if cls == destination.ClassRateLimited && retryAfter > wait {
-		wait = retryAfter
+		// A server's wait is honored up to a day: past that it is more
+		// likely a bug than a plan, and the owner can still retry.
+		wait = min(retryAfter, maxRetryAfter)
 	}
 	next := now.Add(wait)
 	return decision{next: &next}
@@ -721,7 +800,7 @@ func (d *Dispatcher) keyForgotten(ctx context.Context, c store.Claim, cls destin
 		return false
 	}
 	window := time.Duration(caps.IdempotencyKeyTTLSecs)*time.Second - keyMargin
-	first, err := d.Store.FirstUnknownAttempt(ctx, c.ItemID)
+	first, err := d.Store.FirstUncertainAttempt(ctx, c.ItemID)
 	if err != nil {
 		return true // can't tell: don't risk a duplicate
 	}
@@ -745,9 +824,10 @@ func (d *Dispatcher) alertGaveUp(ctx context.Context, postID, platform, why stri
 	body := "post " + postID + " will not be retried automatically on " + d.displayName(platform) + " (" + why + "). "
 	if why == "attempts exhausted" {
 		body += "Manual retry is still available."
-	} else {
-		body += "The failure would repeat (auth, invalid, rejected) or the post may already be live (unknown_outcome). " +
-			"Check the target, fix the cause, then retry manually."
+		d.alert(ctx, "Publisher: auto-retry exhausted", body)
+		return
 	}
+	body += "The failure would repeat (auth, invalid, rejected) or the post may already be live (unknown_outcome). " +
+		"Check the target, fix the cause, then retry manually."
 	d.alert(ctx, "Publisher: delivery needs attention", body)
 }

@@ -165,6 +165,17 @@ func Load() (Config, error) {
 	if c.AutoRetryMaxDelay, err = time.ParseDuration(getEnv("AUTO_RETRY_MAX_DELAY", "1h")); err != nil {
 		return c, fmt.Errorf("AUTO_RETRY_MAX_DELAY: %w", err)
 	}
+	if c.ScheduleGrace <= 0 {
+		return c, fmt.Errorf("SCHEDULE_GRACE must be positive (a scheduled post later than this is marked missed)")
+	}
+	if c.AutoRetryEnabled {
+		if c.AutoRetryMaxAttempts < 1 {
+			return c, fmt.Errorf("AUTO_RETRY_MAX_ATTEMPTS must be at least 1; set AUTO_RETRY_ENABLED=false to turn retries off")
+		}
+		if c.AutoRetryBaseDelay <= 0 || c.AutoRetryMaxDelay < c.AutoRetryBaseDelay {
+			return c, fmt.Errorf("AUTO_RETRY_BASE_DELAY must be positive and AUTO_RETRY_MAX_DELAY at least as long")
+		}
+	}
 	if c.RetrierTick, err = time.ParseDuration(getEnv("RETRIER_TICK", "60s")); err != nil {
 		return c, fmt.Errorf("RETRIER_TICK: %w", err)
 	}

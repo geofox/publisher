@@ -187,17 +187,20 @@ request can time out, after a platform received a post but before the answer
 came back. What happens next depends on the platform:
 
 - **Mastodon** drops a repeat with the same idempotency key for an hour, so
-  the part is retried within that hour.
+  the part is retried within that hour, counted from the first attempt that
+  may have gone out (a server error counts: it can come after the post was
+  saved).
 - **Nostr** notes are signed and saved before the first send, and every
   attempt re-sends that same event. Relays dedupe it by id.
-- **Bluesky** and **Threads** can't drop a repeat, and neither can Mastodon
-  after the hour. The part is not retried: it is marked "may have been
+- **Bluesky**, **Threads** and Nostr reposts can't drop a repeat, and neither
+  can Mastodon after the hour. The part is not retried: it is marked "may have been
   posted", and an alert asks you to check the platform and retry by hand if
   it isn't there.
 
 When retries stop (the cap, or a failure that would repeat), the target is
 marked **given up** and an operational alert fires once (via
-`ALERT_WEBHOOK_URL`). Immediate-post failures also alert. The History tab
+`ALERT_WEBHOOK_URL`); a post's first-run alert names the targets that gave up.
+Immediate-post failures also alert. The History tab
 gains an **attention** filter (delivery failed/partial) with a live count from
 `GET /api/posts/attention/count`. Manual retry remains available on any
 target, including given-up ones.
@@ -205,8 +208,9 @@ target, including given-up ones.
 ### Stopping and restarting
 
 On `SIGTERM` (`docker stop`) the publisher stops gracefully. `/readyz`
-returns `503`, new requests are refused, and requests and parts being
-published finish, for up to 25 seconds. Docker's default stop timeout is 10
+returns `503` (`accepting_work: false`) for 3 seconds so load balancers stop
+sending traffic, then new connections are refused, and requests and parts
+being published finish, for up to 25 seconds in all. Docker's default stop timeout is 10
 seconds, so give the container 30 (`stop_grace_period: 30s` in compose,
 `docker stop -t 30`). Anything still being sent when the time runs out is
 handled on the next start as described above.
@@ -401,9 +405,9 @@ infrastructure and should be overridden.
 | `POW_DIFFICULTY_DEFAULT` | no | `16` | Default leading-zero-bit PoW target |
 | `POW_DIFFICULTY_MAX` | no | `28` | Hard cap on per-request PoW override |
 | `POW_TIMEOUT` | no | `30s` | Per-publish mining timeout |
-| `SCHEDULE_GRACE` | no | `2h` | Grace window for firing overdue scheduled posts |
+| `SCHEDULE_GRACE` | no | `2h` | Grace window for firing overdue scheduled posts (must be positive) |
 | `AUTO_RETRY_ENABLED` | no | `true` | Master switch for automatic retries (failed parts and relay deliveries) |
-| `AUTO_RETRY_MAX_ATTEMPTS` | no | `6` | Attempts per part (and per relay) before giving up |
+| `AUTO_RETRY_MAX_ATTEMPTS` | no | `6` | Attempts per part (and per relay) before giving up (at least 1; turn retries off with `AUTO_RETRY_ENABLED=false`) |
 | `AUTO_RETRY_BASE_DELAY` | no | `2m` | First backoff interval |
 | `AUTO_RETRY_MAX_DELAY` | no | `1h` | Backoff ceiling |
 | `RETRIER_TICK` | no | `60s` | Relay-retry loop cadence |

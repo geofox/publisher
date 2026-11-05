@@ -93,6 +93,7 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	d.Recover(ctx)
 	go d.Run(ctx)
 	go func() {
 		<-ctx.Done()

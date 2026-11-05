@@ -193,7 +193,7 @@ func (s *Store) RecordItemResult(ctx context.Context, r ItemResult) (Outcome, er
 	} else if _, err := tx.ExecContext(ctx, `INSERT INTO target_attempts (target_id, attempt_no, status, error, latency_ms, remote_id,
 		  request_json, response_json, attempted_at, error_class, item_id)
 		VALUES (?, (SELECT COALESCE(MAX(attempt_no), 0) + 1 FROM target_attempts WHERE target_id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.TargetID, r.TargetID, segmentStatusOf(r.Status), r.Error, r.LatencyMS, r.RemoteID,
+		r.TargetID, r.TargetID, segmentStatusOf(r.Status), Scrub(r.Error), r.LatencyMS, r.RemoteID,
 		Scrub(r.RequestJSON), Scrub(r.ResponseJSON), at, nullStr(r.ErrorClass), r.ItemID); err != nil {
 		return out, err
 	}
@@ -498,14 +498,18 @@ func (s *Store) ScheduleItemRetry(ctx context.Context, itemID int64, at time.Tim
 	return err
 }
 
-// FirstUnknownAttempt is when the item was first attempted with an unknown
-// outcome (the attempt may have published), or nil.
-func (s *Store) FirstUnknownAttempt(ctx context.Context, itemID int64) (*time.Time, error) {
+// FirstUncertainAttempt is when the item was first attempted with a
+// failure that may still have published, or nil: an unknown outcome, a
+// transient failure (a 5xx can come after the server committed), or an
+// unclassified failure from before error classes were recorded.
+func (s *Store) FirstUncertainAttempt(ctx context.Context, itemID int64) (*time.Time, error) {
 	var at sql.NullTime
 	// MIN over a TIMESTAMP column returns the stored text, which the driver
 	// can't scan as a time; ORDER BY + LIMIT keeps the column's type.
 	err := s.sql.QueryRowContext(ctx, `SELECT attempted_at FROM target_attempts
-		WHERE item_id = ? AND error_class = 'unknown_outcome' ORDER BY attempted_at LIMIT 1`, itemID).Scan(&at)
+		WHERE item_id = ? AND (error_class IN ('unknown_outcome', 'transient')
+		  OR (error_class IS NULL AND status NOT IN ('success', 'published')))
+		ORDER BY attempted_at LIMIT 1`, itemID).Scan(&at)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && !at.Valid) {
 		return nil, nil
 	}

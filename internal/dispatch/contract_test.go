@@ -351,7 +351,11 @@ func TestRetrierStopsWhenIdempotencyKeyExpires(t *testing.T) {
 		{"past the window", []destination.ErrorClass{destination.ClassUnknownOutcome}, 2 * time.Hour, false},
 		{"transient after an old unknown outcome",
 			[]destination.ErrorClass{destination.ClassUnknownOutcome, destination.ClassTransient}, 2 * time.Hour, false},
-		{"only transient failures", []destination.ErrorClass{destination.ClassTransient}, 2 * time.Hour, true},
+		// A 5xx can come after the server committed, so a transient failure
+		// starts the key window too.
+		{"transient within the window", []destination.ErrorClass{destination.ClassTransient}, 30 * time.Minute, true},
+		{"transient past the window", []destination.ErrorClass{destination.ClassTransient}, 2 * time.Hour, false},
+		{"rate limited past the window", []destination.ErrorClass{destination.ClassRateLimited}, 2 * time.Hour, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

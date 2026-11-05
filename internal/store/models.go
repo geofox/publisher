@@ -222,7 +222,7 @@ func (s *Store) SavePost(p *Post) error {
 			if _, err = tx.Exec(
 				`INSERT INTO target_attempts(target_id,attempt_no,status,error,latency_ms,remote_id,request_json,response_json,attempted_at,error_class,item_id)
 				 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-				tid, at.AttemptNo, at.Status, at.Error, at.LatencyMS, at.RemoteID, Scrub(at.RequestJSON), Scrub(at.ResponseJSON), at.AttemptedAt, nullStr(at.ErrorClass), attemptItem,
+				tid, at.AttemptNo, at.Status, Scrub(at.Error), at.LatencyMS, at.RemoteID, Scrub(at.RequestJSON), Scrub(at.ResponseJSON), at.AttemptedAt, nullStr(at.ErrorClass), attemptItem,
 			); err != nil {
 				return err
 			}

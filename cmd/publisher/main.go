@@ -265,6 +265,9 @@ func main() {
 	}
 	// The engine first recovers what a stopped process left in flight, then
 	// claims due items (scheduled posts, retries) in the background.
+	// Settle what a stopped process left sending before anything can claim:
+	// a request served first could otherwise be recovered mid-send.
+	d.Recover(ctx)
 	go d.Run(ctx)
 	// Relay-level retries and the Nostr fan-out queue re-send already
 	// signed events (relays dedupe them), so stopping mid-pass is safe.
@@ -309,6 +312,10 @@ func main() {
 // 10 s, so the compose example sets stop_grace_period: 30s.
 const shutdownGrace = 25 * time.Second
 
+// readinessDrain is how long a stopping process keeps serving, with
+// readiness failed, before it closes its listener.
+const readinessDrain = 3 * time.Second
+
 // gracefulStop fails readiness, stops accepting requests and lets the ones
 // in flight finish, and waits for the items being published. Whatever is
 // still sending when the grace runs out is recovered on the next start.
@@ -321,6 +328,12 @@ func gracefulStop(draining *atomic.Bool, srv *http.Server, d *dispatch.Dispatche
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		// Keep answering for a moment so probes see accepting_work=false
+		// before the listener closes.
+		select {
+		case <-time.After(readinessDrain):
+		case <-ctx.Done():
+		}
 		if err := srv.Shutdown(ctx); err != nil {
 			slog.Warn("http shutdown incomplete", "err", err)
 		}

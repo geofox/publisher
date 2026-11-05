@@ -9,6 +9,7 @@ import (
 
 	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/store"
+	"github.com/geofox/publisher/internal/unfurl"
 )
 
 // Creating a post plans it whole: every target's items (one per thread
@@ -119,8 +120,8 @@ func (d *Dispatcher) Post(ctx context.Context, spec PostSpec) *store.Post {
 func (d *Dispatcher) PostWithID(ctx context.Context, id string, spec PostSpec) *store.Post {
 	ctx = logging.With(ctx, "post_id", id)
 	now := d.now()
-	rec := d.planPost(ctx, id, spec, &now, "sending")
-	if err := d.drive(ctx, id, &memMedia{post: spec.Images}, func() error { return d.create(ctx, rec) }); err != nil {
+	rec, thumbs := d.planPostCards(ctx, id, spec, &now, "sending")
+	if err := d.drive(ctx, id, &memMedia{post: spec.Images, thumbs: thumbs}, func() error { return d.create(ctx, rec) }); err != nil {
 		return notSaved(rec, err)
 	}
 	return d.recorded(ctx, rec)
@@ -138,6 +139,14 @@ func (d *Dispatcher) recorded(ctx context.Context, rec *store.Post) *store.Post 
 
 // planPost plans a composed post's targets, due at due.
 func (d *Dispatcher) planPost(ctx context.Context, id string, spec PostSpec, due *time.Time, status string) *store.Post {
+	rec, _ := d.planPostCards(ctx, id, spec, due, status)
+	return rec
+}
+
+// planPostCards is planPost that also returns the link cards it fetched,
+// with their thumbnails' bytes (a stored card has none), so the first send
+// doesn't download them again.
+func (d *Dispatcher) planPostCards(ctx context.Context, id string, spec PostSpec, due *time.Time, status string) (*store.Post, map[string]*unfurl.Card) {
 	platforms := dedupStrings(spec.Platforms)
 	rec := &store.Post{
 		ID: id, CreatedAt: time.Now().UTC(), MasterText: spec.MasterText,
@@ -146,12 +155,18 @@ func (d *Dispatcher) planPost(ctx context.Context, id string, spec PostSpec, due
 	}
 	scrubLinkCards(spec.Overrides)
 	d.attachLinkCard(ctx, &spec)
+	thumbs := map[string]*unfurl.Card{}
+	for _, ov := range spec.Overrides {
+		if c := ov.LinkCard; c != nil && c.ThumbURL != "" && len(c.ThumbData) > 0 {
+			thumbs[c.ThumbURL] = c
+		}
+	}
 	n := mediaCount(spec.Images, spec.MediaRecords)
 	for _, plat := range platforms {
 		rec.Targets = append(rec.Targets, d.planTarget(ctx, id, plat, finalText(spec, plat), spec.Overrides[plat],
 			postMedia(n), spec.ImgParts, spec.Number, due, targetStatusFor(status)))
 	}
-	return rec
+	return rec, thumbs
 }
 
 func targetStatusFor(postStatus string) string {

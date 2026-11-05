@@ -221,7 +221,8 @@ func retryAfter(h http.Header) time.Duration {
 	}
 	if v := h.Get("Retry-After"); v != "" {
 		if s, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && s >= 0 {
-			return time.Duration(s) * time.Second
+			const maxSecs = 366 * 24 * 3600 // a larger value would overflow a Duration
+			return time.Duration(min(s, maxSecs)) * time.Second
 		}
 		if t, err := http.ParseTime(v); err == nil {
 			if d := time.Until(t); d > 0 {

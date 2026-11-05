@@ -93,3 +93,25 @@ func TestPreparedEventMustBeTheOwners(t *testing.T) {
 		t.Errorf("sent %d events", len(pool.ids))
 	}
 }
+
+// A stored event of another kind (a repost, say) is not sent for a note,
+// and a stored event reports the difficulty it was mined to.
+func TestPreparedEventKindAndPOW(t *testing.T) {
+	a := testAccount(&capturePool{})
+	sign := func(kind int, tags gonostr.Tags) json.RawMessage {
+		ev := gonostr.Event{PubKey: a.P.cfg.OwnerPubkey, CreatedAt: gonostr.Now(), Kind: gonostr.Kind(kind), Tags: tags, Content: "hello"}
+		if err := ev.Sign(a.P.cfg.NSEC); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(ev)
+		return b
+	}
+	req := destination.PublishRequest{Kind: destination.KindNote, Text: "hello", Prepared: sign(6, nil)}
+	if _, err := a.Publish(context.Background(), req); destination.ClassOf(err) != destination.ClassInvalid {
+		t.Errorf("a kind-6 event sent for a note: err %v", err)
+	}
+	se, err := a.prepared(sign(1, gonostr.Tags{{"nonce", "7", "12"}}), 1)
+	if err != nil || se.POW != 12 {
+		t.Errorf("prepared = %+v, %v; want POW 12", se.POW, err)
+	}
+}
