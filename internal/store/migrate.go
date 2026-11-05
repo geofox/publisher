@@ -208,6 +208,11 @@ func backupBeforeMigrate(ctx context.Context, conn *sql.Conn, dbPath string, cur
 		}
 		return errVersionMoved
 	}
+	// The copy holds what the database holds, credentials included.
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("pre-migration backup to %s: %w", dst, err)
+	}
 	if err := os.Rename(tmp, dst); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("pre-migration backup to %s: %w", dst, err)
@@ -255,11 +260,17 @@ func applyMigration(ctx context.Context, conn *sql.Conn, m migration) (err error
 		return err
 	}
 
+	var fkBefore map[string]int
+	if m.noForeignKeys {
+		if fkBefore, err = foreignKeyViolations(ctx, conn); err != nil {
+			return err
+		}
+	}
 	if err := m.up(ctx, conn); err != nil {
 		return err
 	}
 	if m.noForeignKeys {
-		if err := checkForeignKeys(ctx, conn); err != nil {
+		if err := checkForeignKeys(ctx, conn, fkBefore); err != nil {
 			return err
 		}
 	}
@@ -277,21 +288,41 @@ func applyMigration(ctx context.Context, conn *sql.Conn, m migration) (err error
 	return nil
 }
 
-func checkForeignKeys(ctx context.Context, conn *sql.Conn) error {
+// foreignKeyViolations counts the database's foreign key violations by
+// child and parent table.
+func foreignKeyViolations(ctx context.Context, conn *sql.Conn) (map[string]int, error) {
 	rows, err := conn.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var table, parent string
+		var rowid sql.NullInt64
+		var fkid int
+		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
+			return nil, fmt.Errorf("foreign key check: %w", err)
+		}
+		out[table+" references missing "+parent]++
+	}
+	return out, rows.Err()
+}
+
+// checkForeignKeys fails a migration that left a foreign key violation it
+// did not find. Violations already in the database (rows an older version
+// orphaned) are logged and left: failing on them would stop every start
+// over rows the migration never touched.
+func checkForeignKeys(ctx context.Context, conn *sql.Conn, before map[string]int) error {
+	after, err := foreignKeyViolations(ctx, conn)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	if rows.Next() {
-		var table string
-		var rowid sql.NullInt64
-		var parent string
-		var fkid int
-		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
-			return fmt.Errorf("foreign key violation (unreadable detail: %v)", err)
+	for k, n := range after {
+		if n > before[k] {
+			return fmt.Errorf("foreign key violation: %s", k)
 		}
-		return fmt.Errorf("foreign key violation: %s row %d references missing %s", table, rowid.Int64, parent)
+		slog.Warn("database has orphaned rows from before this upgrade", "violation", k, "rows", n)
 	}
-	return rows.Err()
+	return nil
 }

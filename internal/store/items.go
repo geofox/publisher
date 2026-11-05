@@ -101,7 +101,7 @@ func insertItemID(ctx context.Context, x itemExec, targetID int64, it Item) (int
 		remote_id, remote_url, ref_json, error_class, error, attempt_count, next_attempt_at, published_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		targetID, it.Ordinal, string(content), it.Status, it.IdemKey,
-		nullStr(it.RemoteID), nullStr(it.RemoteURL), nullStr(string(it.Ref)), nullStr(it.ErrorClass), nullStr(it.Error),
+		nullStr(it.RemoteID), nullStr(it.RemoteURL), nullStr(string(it.Ref)), nullStr(it.ErrorClass), nullStr(Scrub(it.Error)),
 		it.AttemptCount, it.NextAttemptAt, it.PublishedAt)
 	if err != nil {
 		return 0, err
@@ -217,6 +217,13 @@ func targetView(tg *Target, items []Item) {
 		for i, it := range items {
 			tg.Segments[i] = Segment{Ordinal: it.Ordinal, Text: it.Text, RemoteID: it.RemoteID, RemoteURL: it.RemoteURL,
 				Ref: it.Ref, Status: segmentStatusOf(it.Status), Error: it.Error, Images: it.Media}
+			// Bluesky parts recorded before Ref existed showed their CID.
+			var bsky struct {
+				CID string `json:"cid"`
+			}
+			if json.Unmarshal(it.Ref, &bsky) == nil {
+				tg.Segments[i].CID = bsky.CID
+			}
 		}
 	}
 }

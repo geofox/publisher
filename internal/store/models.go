@@ -184,6 +184,17 @@ func (s *Store) SavePost(p *Post) error {
 		}
 		var headID int64
 		for i, it := range items {
+			if it.IdemKey == "" {
+				it.IdemKey = ItemKey(p.ID, tg.Platform, it.Ordinal)
+			}
+			if it.NextAttemptAt == nil && it.Status == ItemPlanned && p.Status != "missed" {
+				// A planned item is due at its post's time, or now.
+				due := now
+				if p.ScheduledAt != nil {
+					due = p.ScheduledAt.UTC()
+				}
+				it.NextAttemptAt = &due
+			}
 			if it.PublishedAt == nil && (it.Status == ItemPublished || it.Status == ItemPartial) {
 				it.PublishedAt = &now
 			}
@@ -315,6 +326,7 @@ func (s *Store) GetPost(id string) (*Post, error) {
 // rowQuerier is satisfied by both *sql.DB and *sql.Tx.
 type rowQuerier interface {
 	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
 	Exec(query string, args ...any) (sql.Result, error)
 }
 
@@ -383,6 +395,16 @@ func recomputeTargetStatus(q rowQuerier, targetID int64) error {
 	}
 	if !seen {
 		return nil // non-nostr target: leave status untouched
+	}
+	// A thread with a part still unpublished keeps its status: the head's
+	// relays alone can't make it a success.
+	var unsent int
+	if err := q.QueryRow(`SELECT COUNT(*) FROM target_items WHERE target_id=? AND ordinal>0 AND status<>?`,
+		targetID, ItemPublished).Scan(&unsent); err != nil {
+		return err
+	}
+	if unsent > 0 {
+		return nil
 	}
 	// All-skipped (e.g. only an unreachable .onion) → nothing was delivered → failed.
 	status := "partial"
@@ -568,7 +590,8 @@ func (s *Store) UpdateTargetSegments(targetID int64, segments []Segment, status,
 	ctx := context.Background()
 	now := time.Now().UTC()
 	var n int
-	if err := tx.QueryRow(`SELECT attempt_count FROM post_targets WHERE id=?`, targetID).Scan(&n); err != nil {
+	var postID, platform string
+	if err := tx.QueryRow(`SELECT attempt_count, post_id, platform FROM post_targets WHERE id=?`, targetID).Scan(&n, &postID, &platform); err != nil {
 		return err
 	}
 	n++
@@ -618,15 +641,11 @@ func (s *Store) UpdateTargetSegments(targetID int64, segments []Segment, status,
 			   attempt_count = CASE WHEN target_items.remote_id IS NULL AND excluded.status <> 'planned'
 			                        THEN target_items.attempt_count + 1 ELSE target_items.attempt_count END,
 			   published_at=COALESCE(target_items.published_at, excluded.published_at)`,
-			targetID, it.Ordinal, string(content), it.Status, newID(), nullStr(it.RemoteID), nullStr(it.RemoteURL),
-			nullStr(string(it.Ref)), nullStr(it.ErrorClass), nullStr(it.Error), published,
+			targetID, it.Ordinal, string(content), it.Status, ItemKey(postID, platform, it.Ordinal), nullStr(it.RemoteID), nullStr(it.RemoteURL),
+			nullStr(string(it.Ref)), nullStr(it.ErrorClass), nullStr(Scrub(it.Error)), published,
 		); err != nil {
 			return err
 		}
-	}
-	var postID string
-	if err := tx.QueryRow(`SELECT post_id FROM post_targets WHERE id=?`, targetID).Scan(&postID); err != nil {
-		return err
 	}
 	if err := recomputeStatus(tx, postID); err != nil {
 		return err
@@ -705,6 +724,11 @@ func (s *Store) MarkMissed(id string) error {
 	if _, err := tx.Exec(`UPDATE post_targets SET status='missed' WHERE post_id=? AND status='scheduled'`, id); err != nil {
 		return err
 	}
+	// A missed post waits for the owner: its items are no longer due.
+	if _, err := tx.Exec(`UPDATE target_items SET next_attempt_at=NULL WHERE status='planned'
+		AND target_id IN (SELECT id FROM post_targets WHERE post_id=?)`, id); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -722,14 +746,24 @@ func (s *Store) ResetSendingToScheduled() (int, error) {
 
 // RescheduleScheduled changes a pending post's time; ErrNotPending otherwise.
 func (s *Store) RescheduleScheduled(id string, at time.Time) error {
-	res, err := s.sql.Exec(`UPDATE posts SET scheduled_at=? WHERE id=? AND status='scheduled'`, at.UTC(), id)
+	tx, err := s.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(`UPDATE posts SET scheduled_at=? WHERE id=? AND status='scheduled'`, at.UTC(), id)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotPending
 	}
-	return nil
+	// The post's planned items move with it.
+	if _, err := tx.Exec(`UPDATE target_items SET next_attempt_at=? WHERE status='planned'
+		AND target_id IN (SELECT id FROM post_targets WHERE post_id=?)`, at.UTC(), id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // CancelScheduled deletes a pending post (and its rows); ErrNotPending otherwise.

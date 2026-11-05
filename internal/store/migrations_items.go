@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -260,9 +261,22 @@ func legacyItemsOf(t legacyTarget) ([]Item, error) {
 	if t.segments.String != "" {
 		var segs []storedSegment
 		if err := json.Unmarshal([]byte(t.segments.String), &segs); err != nil {
-			return nil, err
+			// One unreadable thread must not stop the upgrade (and so every
+			// start after it): keep the target as a single item from its own
+			// columns, which hold the head's text and remote ids.
+			slog.Warn("migration: unreadable thread parts, keeping the target as one item",
+				"post_id", t.postID, "target_id", t.id, "err", err)
+			segs = nil
 		}
 		if len(segs) > 0 {
+			// The failure that stopped the chain belongs to the first unsent
+			// part with an error, else the first unsent part.
+			stop := -1
+			for i, sg := range segs {
+				if sg.RemoteID == "" && (stop < 0 || (sg.Error != "" && segs[stop].Error == "")) {
+					stop = i
+				}
+			}
 			items := make([]Item, 0, len(segs))
 			for i, sg := range segs {
 				sg.Segment.Ref = sg.Ref
@@ -275,8 +289,8 @@ func legacyItemsOf(t legacyTarget) ([]Item, error) {
 				if it.Status == ItemPublished || it.Status == ItemPartial {
 					it.PublishedAt = published
 				}
-				if i == len(segs)-1 || segs[i+1].RemoteID == "" {
-					it.ErrorClass = t.errorClass.String // the failure that stopped the chain
+				if i == stop {
+					it.ErrorClass = t.errorClass.String
 				}
 				items = append(items, it)
 			}
