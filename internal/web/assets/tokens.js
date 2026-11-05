@@ -1,5 +1,19 @@
 "use strict";
-import { el, api, flash, relTime, confirmModal } from "./common.js";
+import { el, v1, v1All, flash, relTime, confirmModal } from "./common.js";
+
+// API tokens on /v1/tokens: each with scopes and an optional expiry.
+
+// SCOPES are what the form offers, with what each allows. The two checked by
+// default are what an n8n or shell publisher needs.
+const SCOPES = [
+  ["posts:write", "publish and manage posts", true],
+  ["media:write", "upload media", true],
+  ["posts:read", "read history", false],
+  ["drafts:read", "read drafts", false],
+  ["drafts:write", "write drafts", false],
+  ["accounts:read", "see accounts", false],
+  ["admin", "everything, including tokens and relays", false],
+];
 
 // ---------------------------------------------------------------------------
 // Token list
@@ -11,8 +25,7 @@ async function loadTokens() {
   const wrap = document.getElementById("tokens-list");
   if (!wrap) return;
   try {
-    const data = await api("/api/tokens");
-    _tokens = data.tokens || [];
+    _tokens = await v1All("/v1/tokens?limit=100");
     renderTokenList(wrap, _tokens);
   } catch (e) {
     wrap.innerHTML = "";
@@ -38,11 +51,17 @@ function tokenRow(t) {
     ? el("span", { class: "meta", text: "used " + relTime(t.last_used_at) })
     : el("span", { class: "meta muted", text: "never used" });
 
-  const left = el("div", { class: "tok-info" }, name, created, lastUsed);
+  const scopes = el("span", { class: "tok-scopes-list", text: (t.scopes || []).join(" ") });
+  const expiry = t.expires_at && t.status === "active"
+    ? el("span", { class: "meta", text: "expires " + new Date(t.expires_at).toLocaleDateString() })
+    : null;
+  const left = el("div", { class: "tok-info" }, name, scopes, created, lastUsed, expiry);
 
   let right;
-  if (t.revoked) {
+  if (t.status === "revoked") {
     right = el("span", { class: "pill f tok-badge", text: "Revoked" });
+  } else if (t.status === "expired") {
+    right = el("span", { class: "pill off tok-badge", text: "Expired" });
   } else {
     const btn = el("button", {
       class: "ghost sm",
@@ -56,14 +75,9 @@ function tokenRow(t) {
         confirmText: "Revoke",
         onConfirm: async () => {
           try {
-            const r = await fetch("/api/tokens/" + encodeURIComponent(t.id), {
-              method: "DELETE",
-              credentials: "same-origin",
-            });
-            // 204 = success; 404 = already gone — either way, re-fetch
-            if (!r.ok && r.status !== 404) {
-              throw new Error("HTTP " + r.status);
-            }
+            // Revoking twice succeeds; a token already gone (404) is fine too.
+            await v1("/v1/tokens/" + encodeURIComponent(t.id), { method: "DELETE" })
+              .catch(e => { if (e.status !== 404) throw e; });
             flash("Token revoked");
             await loadTokens();
             return true;
@@ -89,6 +103,14 @@ function installNewTokenForm() {
   const nameInput = document.getElementById("tok-name-input");
   const createBtn = document.getElementById("tok-create-btn");
   if (!form || !nameInput || !createBtn) return;
+  const box = document.getElementById("tok-scopes");
+  if (box && !box.querySelector("input")) {
+    for (const [scope, what, on] of SCOPES) {
+      box.append(el("label", { title: what },
+        el("input", { type: "checkbox", value: scope, checked: on ? "" : false }),
+        el("span", { text: scope })));
+    }
+  }
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -98,13 +120,14 @@ function installNewTokenForm() {
     const prev = createBtn.textContent;
     createBtn.textContent = "Creating…";
     try {
-      const data = await api("/api/tokens", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
+      const scopes = [...document.querySelectorAll("#tok-scopes input:checked")].map(i => i.value);
+      if (!scopes.length) { flash("Pick at least one thing the token may do"); return; }
+      const body = { name, scopes };
+      const days = Number(document.getElementById("tok-expiry")?.value || 0);
+      if (days > 0) body.expires_at = new Date(Date.now() + days * 86400e3).toISOString().replace(/\.\d{3}Z$/, "Z");
+      const data = await v1("/v1/tokens", { method: "POST", body });
       nameInput.value = "";
-      showNewTokenSecret(data.token, data.name);
+      showNewTokenSecret(data.secret, data.name);
       await loadTokens();
     } catch (e) {
       flash("Create failed: " + e.message);
@@ -178,9 +201,9 @@ export function tokensShow() {
 
 export async function loadUserChip() {
   try {
-    const r = await fetch("/api/me", { credentials: "same-origin" });
-    if (!r.ok) return; // 401 or OIDC disabled — render nothing
-    const u = await r.json();
+    const me = await v1("/v1/me");
+    const u = me.user; // a browser session; absent behind the proxy
+    if (!u) return;
     const display = u.name || u.email || u.subject;
     if (!display) return;
     mountUserChip(display);

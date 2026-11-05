@@ -350,6 +350,7 @@ func TestV1Conformance(t *testing.T) {
 	e.seedPost("pub", "success", "bluesky")
 	e.seedScheduled("sch", time.Now().Add(time.Hour), "bluesky")
 	e.seedPost("fail", "failed", "mastodon")
+	unknownPath, unknownTarget := e.seedUnknown("unk", "bluesky")
 	e.withEngine()
 	e.api.Resolve = sourcesResolver{}
 	e.api.Translator = v1FakeTranslator{}
@@ -390,6 +391,8 @@ func TestV1Conformance(t *testing.T) {
 		{"PATCH /v1/posts/{id}", req{method: "PATCH", path: "/v1/posts/pst_sch", body: `{"schedule":{"at":"2099-01-01T09:00:00Z"}}`}, 200},
 		{"POST /v1/posts/{id}:cancel", req{method: "POST", path: "/v1/posts/pst_sch:cancel"}, 200},
 		{"POST /v1/posts/{id}:retry", req{method: "POST", path: "/v1/posts/pst_fail:retry"}, 202},
+		{"POST /v1/posts/{id}:resolve", req{method: "POST", path: unknownPath + ":resolve",
+			body: `{"target":"` + unknownTarget + `","ordinal":1,"outcome":"not_published"}`}, 200},
 		{"GET /v1/posts/{id}/events", req{method: "GET", path: "/v1/posts/pst_pub/events"}, 200},
 		{"GET /v1/events", req{method: "GET", path: "/v1/events?after=0", ctx: stream}, 200},
 		{"POST /v1/translate", req{method: "POST", path: "/v1/translate", body: `{"text":"hi","target_lang":"fr"}`}, 200},

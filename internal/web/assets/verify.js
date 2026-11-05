@@ -1,6 +1,7 @@
 "use strict";
-// verify.js — the "verify" tab: submit an event/URL to /api/verify and render
-// the tri-state verdict.
+// verify.js — the "verify" tab: submit an event/URL to POST /v1/verify and
+// render the tri-state verdict.
+import { v1 } from "./common.js";
 
 function byId(id) { return document.getElementById(id); }
 
@@ -62,14 +63,10 @@ async function submitVerify() {
   if (!input) { out.innerHTML = `<div class="vcard">enter an event or URL</div>`; return; }
   out.innerHTML = `<div class="vcard muted">verifying…</div>`;
   try {
-    const resp = await fetch("/api/verify", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input, expected: byId("vexpected").value.trim() }),
-    });
-    const v = await resp.json();
-    out.innerHTML = renderVerdict(v);
+    const body = { input };
+    const expected = byId("vexpected").value.trim();
+    if (expected) body.expected = expected;
+    out.innerHTML = renderVerdict(await v1("/v1/verify", { method: "POST", body }));
   } catch (e) {
     out.innerHTML = `<div class="vcard verr">request failed: ${escapeHTML(e.message)}</div>`;
   }

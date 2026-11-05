@@ -51,7 +51,7 @@ test("schedules a post for later and cancels it from History", async ({ page, fa
   await expect(item.locator(".sched-when")).toContainText("scheduled");
   await item.click();
   await page.locator("#hdetail").getByRole("button", { name: "cancel" }).click();
-  await expect(page.getByText("cancelled")).toBeVisible();
+  await expect(page.getByText("canceled", { exact: true })).toBeVisible();
   await expect(page.locator(".hitem", { hasText: m })).toHaveCount(0);
 
   // Nothing was ever sent.

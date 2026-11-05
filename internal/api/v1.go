@@ -93,7 +93,7 @@ func (a *API) v1Routes() []v1Route {
 		{Method: "POST", Path: "/v1/resolve", Scope: scopePostsWrite, Handler: a.v1Resolve},
 		{Method: "GET", Path: "/v1/posts/{id}", Scope: scopePostsRead, Handler: a.v1GetPost},
 		{Method: "PATCH", Path: "/v1/posts/{id}", Scope: scopePostsWrite, Handler: a.v1PatchPost},
-		{Method: "POST", Path: "/v1/posts/{id}", Scope: scopePostsWrite, Actions: []string{"cancel", "retry"}, Handler: a.v1PostAction},
+		{Method: "POST", Path: "/v1/posts/{id}", Scope: scopePostsWrite, Actions: []string{"cancel", "retry", "resolve"}, Handler: a.v1PostAction},
 		{Method: "GET", Path: "/v1/posts/{id}/events", Scope: scopePostsRead, Handler: a.v1PostEvents},
 		{Method: "GET", Path: "/v1/events", Scope: scopePostsRead, Handler: a.v1Events},
 		// Not idempotent: a repeat upload stores the same content-addressed

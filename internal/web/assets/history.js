@@ -1,211 +1,179 @@
 "use strict";
-import { el, $, api, flash, relTime, shortID, shortRef, META, ORDER, confirmModal } from "./common.js";
+import { el, $, v1, flash, relTime, shortID, shortRef, META, ORDER, confirmModal } from "./common.js";
 import { state } from "./state.js";
 import { loadDraft } from "./compose.js";
 import { brandTile } from "./brands.js";
 
+// The History tab, on /v1/posts. A post has one target per account; a
+// target has its items (one, or one per thread part), and a Nostr item its
+// relay deliveries.
+
 // ---------------------------------------------------------------------------
-// Shared result-row primitives (also imported by compose.js for the result modal)
+// Words
 // ---------------------------------------------------------------------------
 
-export function tgPending(s) { return s === "scheduled" || s === "sending" || s === "missed"; }
-export function tgBadge(s) {
-  if (s === "success") return { cls: "s", mark: "✓" };
-  if (s === "partial") return { cls: "p", mark: "⚠" };
-  if (s === "missed")  return { cls: "q", mark: "⏰" };
-  if (s === "scheduled" || s === "sending") return { cls: "q", mark: "⏳" };
+// pendingStatus: still to go out (missed counts: it never went).
+function pendingStatus(s) { return s === "scheduled" || s === "publishing" || s === "missed"; }
+function isPendingPost(p) { return p.status === "scheduled" || p.status === "publishing"; }
+
+function badge(s) {
+  if (s === "published") return { cls: "s", mark: "✓" };
+  if (s === "partial" || s === "needs_attention") return { cls: "p", mark: "⚠" };
+  if (s === "missed") return { cls: "q", mark: "⏰" };
+  if (s === "scheduled" || s === "publishing" || s === "planned" || s === "sending") return { cls: "q", mark: "⏳" };
+  if (s === "canceled") return { cls: "p", mark: "⊘" };
+  if (s === "unknown") return { cls: "p", mark: "?" };
   return { cls: "f", mark: "✗" };
 }
 
-// segmentChain renders a threaded post's per-segment delivery list. When the
-// target is "partial", a Resume button re-posts only the missing segments.
-function segmentChain(post, t) {
-  if (!t.segments || !t.segments.length) return null;
-  const wrap = el("div", { class: "seg-chain" });
-  for (const s of t.segments) {
-    const row = el("div", { class: "seg-row" + (s.status === "failed" ? " seg-failed" : "") });
-    row.append(el("span", { class: "seg-n", text: `${s.ordinal + 1}.` }));
-    const body = el("span", { class: "seg-text", text: s.text });
-    if (s.remote_url) {
-      const a = el("a", { href: s.remote_url, target: "_blank", rel: "noopener", text: "↗" });
-      row.append(body, a);
-    } else {
-      row.append(body);
-    }
-    if (s.error) row.append(el("span", { class: "seg-err", text: s.error }));
-    wrap.append(row);
-  }
-  if (t.status === "partial") {
-    const plat = t.platform;
-    const btn = el("button", { class: "ghost sm", type: "button", text: "Resume" });
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      try {
-        const rr = await fetch(`/api/posts/${encodeURIComponent(post.id)}/retry`, {
-          method: "POST", credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ platforms: [plat] }),
-        });
-        const np = await rr.json(); if (!rr.ok) throw new Error(np.error || ("HTTP " + rr.status));
-        const st = targetStatus(np, plat);
-        renderDetail(np);
-        refreshAttentionBadge();
-        flash(`${plat}: resume ${st === "success" ? "succeeded ✓" : "still failing ✗"}`);
-      } catch (e) {
-        btn.disabled = false;
-        flash("Resume error: " + e.message);
-      }
-    });
-    wrap.append(btn);
-  }
-  return wrap;
-}
+// classWords says what an error class means for the owner.
+const classWords = {
+  transient: "a temporary problem; it is retried",
+  rate_limited: "rate limited; it is retried later",
+  auth: "the account's sign-in was refused; check its credentials",
+  invalid: "the network refused this content; it won't be retried",
+  rejected: "the network rejected it; it won't be retried",
+  unknown_outcome: "it may have been posted: the server stopped while sending",
+};
+function classLine(c) { return c && classWords[c] ? classWords[c] : ""; }
 
-// relayBlock renders a nostr target's per-relay delivery. retryFn(relayUrl, btn)
-// is optional; when provided, failed relays get a [↻] button (history detail only).
-export function relayBlock(t, retryFn) {
-  if (t.platform !== "nostr" || !t.relays || !t.relays.length) return null;
-  const attempted = t.relays.filter(r => r.status !== "skipped").length;
-  const ok = t.relays.filter(r => r.status === "ok").length;
-  const wrap = el("div", { class: "relays" });
-  wrap.append(el("div", { class: "relays-head", text: `${ok}/${attempted} relays` }));
-  for (const r of t.relays) {
-    const mark = r.status === "ok" ? "✓" : r.status === "failed" ? "✗" : "·";
-    const cls = r.status === "ok" ? "rok" : r.status === "failed" ? "rfail" : "rskip";
-    const row = el("div", { class: "relay " + cls },
-      el("span", { class: "rmark", text: mark }),
-      el("span", { class: "rurl", text: r.url.replace(/^wss?:\/\//, "") }),
-      r.status === "skipped" ? el("span", { class: "rnote", text: "skipped · no Tor" }) : null,
-      r.status === "failed" && r.message ? el("span", { class: "rnote", text: r.message }) : null,
-    );
-    if (retryFn && r.status === "failed") {
-      row.append(el("button", { class: "retry sm", type: "button", text: "↻",
-        onclick: ev => { ev.stopPropagation(); retryFn(r.url, ev.target); } }));
-    }
-    wrap.append(row);
-  }
-  return wrap;
-}
-
-// retryStatusLine renders the auto-retry state for a target in the detail pane.
-function retryStatusLine(t, maxAttempts = 6) {
-  if (t.gave_up_at) {
-    return el("div", { class: "retry-status gaveup",
-      text: `⚠ gave up after ${t.attempt_count || maxAttempts} attempts` });
-  }
-  if ((t.status === "failed" || t.status === "partial") && (t.attempt_count || 0) < maxAttempts) {
-    return el("div", { class: "retry-status pending",
-      text: `↻ retrying (${t.attempt_count || 0}/${maxAttempts})` });
-  }
-  return null;
-}
-
-// resultRow renders one platform outcome line shared by the modal and detail.
-// stop=true keeps the success link from bubbling (used inside the clickable modal).
-export function resultRow(t, stop) {
-  let mid;
-  if (t.status === "success" || t.status === "partial") {
-    if (t.remote_url) mid = el("a", { class: "lnk grow", href: t.remote_url, target: "_blank", rel: "noopener",
-      text: "view ↗", onclick: stop ? (e => e.stopPropagation()) : null });
-    else mid = el("span", { class: "mono-ref grow", text: t.remote_id ? "id " + shortRef(t.remote_id) : "ok" });
-  } else if (t.status === "scheduled" || t.status === "sending") {
-    mid = el("span", { class: "muted grow", text: "⏳ pending" });
-  } else if (t.status === "missed") {
-    mid = el("span", { class: "muted grow", text: "⏰ not sent (missed)" });
-  } else {
-    mid = el("span", { class: "bad grow", text: t.error || "failed" });
-  }
-  const b = tgBadge(t.status);
-  const row = el("div", { class: "res" },
-    brandTile(t.platform, { size: 22, r: 6 }),
-    el("span", { class: "bdg " + b.cls, text: `${t.platform} ${b.mark}` }),
-    mid,
-    el("span", { class: "meta", text: t.latency_ms ? t.latency_ms + "ms" : "" }),
-  );
-  const relays = relayBlock(t, null); // read-only in modal
-  const rs = retryStatusLine(t);
-  const children = [row];
-  if (rs) children.push(rs);
-  if (relays) children.push(relays);
-  return children.length > 1 ? el("div", { class: "res-wrap" }, ...children) : row;
-}
-
-// interactionBadge renders "↩ replied to / ❝ quoted / 🔁 reposted <author>" with a
-// link to the source, for posts created via the Interact tab. Returns null for
-// normal posts.
-function interactionBadge(post) {
-  const i = post.interaction;
-  if (!i) return null;
-  const verb = i.action === "reply" ? "↩ replied to" : i.action === "quote" ? "❝ quoted" : "🔁 reposted";
-  const who = i.source_author || i.source_platform || "source";
-  const link = i.source_url
-    ? el("a", { href: i.source_url, target: "_blank", rel: "noopener", text: who })
-    : el("span", { text: who });
-  return el("div", { class: "hist-interaction" }, el("span", { text: verb + " " }), link);
-}
+const typeName = t => (META[t] && META[t].label) || t;
 
 // ---------------------------------------------------------------------------
-// List state
+// Live updates after a retry or a resolve
 // ---------------------------------------------------------------------------
 
-let hfilter = "all", hquery = "", hoffset = 0, hlimit = 50, hdone = false, hposts = [];
-let hloading = false;
+// followPost re-reads the post as its events arrive (GET
+// /v1/posts/{id}/events), until it has nothing left to send. One stream at
+// a time: the detail pane shows one post.
+let follow = null;
+function followPost(id) {
+  if (follow) follow.close();
+  const es = new EventSource("/v1/posts/" + encodeURIComponent(id) + "/events");
+  let timer = null;
+  const refresh = () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      if ($("#hdetail").dataset.id !== id) { es.close(); return; }
+      try { renderDetail(await v1("/v1/posts/" + encodeURIComponent(id))); } catch { /* keep what is shown */ }
+    }, 250);
+  };
+  const stop = () => { es.close(); if (follow === es) follow = null; refresh(); refreshAttentionBadge(); patchListItem(id); };
+  for (const t of ["post.updated", "item.sending", "item.published", "item.partial", "item.failed",
+    "item.unknown", "item.canceled", "delivery.updated"]) es.addEventListener(t, refresh);
+  // The stream ends when the post settles; without the close, EventSource
+  // would reconnect every few seconds.
+  es.addEventListener("post.completed", stop);
+  es.onerror = () => { if (es.readyState === EventSource.CLOSED) stop(); };
+  setTimeout(() => { if (follow === es) stop(); }, 5 * 60 * 1000);
+  follow = es;
+}
+
+// patchListItem redraws one list row from the server, if it is shown.
+async function patchListItem(id) {
+  const node = $(`.hitem[data-id="${id}"]`);
+  if (!node) return;
+  try {
+    const p = await v1("/v1/posts/" + encodeURIComponent(id));
+    const i = hposts.findIndex(x => x.id === id);
+    if (i >= 0) hposts[i] = p;
+    node.replaceWith(historyItem(p, node.classList.contains("active")));
+  } catch { /* leave it */ }
+}
+
+// act runs a post action from a button, shows the post it answers with, and
+// follows it while it sends.
+async function act(btn, busyText, run, done, reload = false) {
+  const prev = btn.textContent;
+  btn.disabled = true; btn.textContent = busyText;
+  try {
+    const post = await run();
+    renderDetail(post);
+    if (reload) loadHistory(true); // the post may have left the filter
+    else { refreshAttentionBadge(); patchListItem(post.id); }
+    if (done) flash(done);
+    if (post.status === "publishing") followPost(post.id);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = prev;
+    flash(e.message);
+  }
+}
+
+const postPath = id => "/v1/posts/" + encodeURIComponent(id);
+
+// ---------------------------------------------------------------------------
+// List
+// ---------------------------------------------------------------------------
+
+// Each filter button's /v1 statuses. "failed" includes the posts that need
+// the owner; "attention" is only those.
+const FILTERS = {
+  all: "",
+  scheduled: "scheduled,publishing",
+  failed: "failed,partial,missed,needs_attention",
+  attention: "needs_attention",
+  sent: "published",
+};
+
+let hfilter = "all", hquery = "", hcursor = null, hdone = false, hposts = [];
+let hloading = false, hgen = 0;
+const hlimit = 50;
 
 async function refreshAttentionBadge() {
-  const badge = document.querySelector("#hseg .attn-badge");
-  if (!badge) return;
+  const b = document.querySelector("#hseg .attn-badge");
+  if (!b) return;
   try {
-    const { count } = await api("/api/posts/attention/count");
-    if (count > 0) { badge.textContent = String(count); badge.hidden = false; }
-    else { badge.hidden = true; }
-  } catch { badge.hidden = true; }
+    const page = await v1("/v1/posts?status=needs_attention&limit=100");
+    const n = page.data.length;
+    if (n > 0) { b.textContent = page.next_cursor ? "100+" : String(n); b.hidden = false; }
+    else b.hidden = true;
+  } catch { b.hidden = true; }
 }
 
 export async function loadHistory(reset = true) {
-  if (hloading) return;
+  if (hloading && !reset) return;
+  const gen = ++hgen; // a newer load (filter or search changed) wins
   hloading = true;
-  if (reset) { hoffset = 0; hdone = false; hposts = []; }
   try {
-    const qs = `?status=${encodeURIComponent(hfilter)}&q=${encodeURIComponent(hquery)}&limit=${hlimit}&offset=${hoffset}`;
-    const page = await api("/api/posts" + qs).catch(e => { flash("History: " + e.message); return []; });
-    if (page.length < hlimit) hdone = true;
-    hposts = reset ? page : hposts.concat(page);
-    hoffset += page.length;
+    const qs = new URLSearchParams({ limit: String(hlimit) });
+    if (FILTERS[hfilter]) qs.set("status", FILTERS[hfilter]);
+    if (hquery) qs.set("q", hquery);
+    if (!reset && hcursor) qs.set("cursor", hcursor);
+    let page;
+    try { page = await v1("/v1/posts?" + qs); }
+    catch (e) { if (gen === hgen) flash("History: " + e.message); return; }
+    if (gen !== hgen) return;
+    hposts = reset ? page.data : hposts.concat(page.data);
+    hcursor = page.next_cursor || null;
+    hdone = !hcursor;
     renderList();
     refreshAttentionBadge();
   } finally {
-    hloading = false;
+    if (gen === hgen) hloading = false;
   }
 }
 
 function renderList() {
   const list = $("#hlist"); list.innerHTML = "";
   if (!hposts.length) { list.append(el("p", { class: "muted", text: "No posts." })); return; }
-  // Scheduled/posted split: pending first, each group under a subheader (only in 'all').
-  // Use isPendingPost (scheduled|sending only) so 'missed' falls into the posted group.
-  const pending = hposts.filter(p => isPendingPost(p));
-  const posted  = hposts.filter(p => !isPendingPost(p));
+  const active = $("#hdetail").dataset.id;
   const group = (label, arr) => {
     if (!arr.length) return;
     list.append(el("div", { class: "hgroup", text: label }));
-    for (const p of arr) list.append(historyItem(p));
+    for (const p of arr) list.append(historyItem(p, p.id === active));
   };
   if (hfilter === "all") {
-    group(pending.some(p => p.status === "sending") ? "⏳ scheduled & sending" : "⏳ scheduled", pending);
-    group("posted", posted);
+    const pending = hposts.filter(isPendingPost);
+    group(pending.some(p => p.status === "publishing") ? "⏳ scheduled & sending" : "⏳ scheduled", pending);
+    group("posted", hposts.filter(p => !isPendingPost(p)));
+  } else {
+    for (const p of hposts) list.append(historyItem(p, p.id === active));
   }
-  else { for (const p of hposts) list.append(historyItem(p)); }
   if (!hdone) list.append(el("button", { class: "ghost sm hmore", type: "button", text: "load more",
     onclick: () => loadHistory(false) }));
 }
 
-// ---------------------------------------------------------------------------
-// List item
-// ---------------------------------------------------------------------------
-
-function isPendingPost(p) { return p.status === "scheduled" || p.status === "sending"; }
-
-// confirmHide soft-deletes a terminal post (kept in the archive, removed from the list).
+// confirmHide hides a settled post: it stays in the archive, off this list.
 function confirmHide(p) {
   confirmModal({
     title: "Hide this post?",
@@ -213,13 +181,13 @@ function confirmHide(p) {
     confirmText: "Hide",
     onConfirm: async () => {
       try {
-        const r = await fetch(`/api/posts/${encodeURIComponent(p.id)}/hide`, { method: "POST", credentials: "same-origin" });
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        // Optimistic: drop just this row (no full refetch → instant, no stale cache).
+        await v1(postPath(p.id), { method: "PATCH", body: { hidden: true } });
         const node = $(`.hitem[data-id="${p.id}"]`);
         if (node) node.remove();
+        hposts = hposts.filter(x => x.id !== p.id);
         const det = $("#hdetail");
-        if (det && det.dataset.id === p.id) det.innerHTML = "";
+        if (det && det.dataset.id === p.id) { det.innerHTML = ""; delete det.dataset.id; }
+        refreshAttentionBadge();
         flash("Post hidden");
         return true;
       } catch (e) { flash("Hide failed: " + e.message); return false; }
@@ -236,49 +204,63 @@ function schedLine(post) {
   return null;
 }
 
-function historyItem(p) {
-  // Per-platform pills, color-coded by outcome: green ✓ success, red ✗ failed,
-  // amber for targeted-but-other, grey for platforms this post didn't target.
-  const byPlat = {}; let ok = 0, fail = 0, pend = 0;
-  for (const t of (p.targets || [])) {
-    byPlat[t.platform] = t.status;
-    if (t.status === "success") ok++;
-    else if (tgPending(t.status)) pend++;
+// interactionBadge: "↩ replied to / ❝ quoted / 🔁 reposted <author>", linking
+// the original.
+function interactionBadge(post) {
+  const i = post.interaction;
+  if (!i) return null;
+  const verb = i.action === "reply" ? "↩ replied to" : i.action === "quote" ? "❝ quoted" : "🔁 reposted";
+  const who = i.author || i.platform || "source";
+  const link = i.url
+    ? el("a", { href: i.url, target: "_blank", rel: "noopener", text: who })
+    : el("span", { text: who });
+  return el("div", { class: "hist-interaction" }, el("span", { text: verb + " " }), link);
+}
+
+function historyItem(p, active) {
+  // One pill per type, colored by its targets' outcome; grey for the types
+  // this post didn't go to.
+  const byType = {};
+  let ok = 0, fail = 0, pend = 0;
+  for (const t of p.targets) {
+    byType[t.type] = t.status;
+    if (t.status === "published") ok++;
+    else if (pendingStatus(t.status)) pend++;
     else fail++;
   }
-  const sel = new Set(p.platforms || []);
   const badges = el("div", { class: "badges" });
-  for (const plat of ORDER) {
+  const types = [...ORDER, ...Object.keys(byType).filter(t => !ORDER.includes(t))];
+  for (const type of types) {
     let cls = "pill off", mark = "";
-    if (sel.has(plat)) {
-      const st = byPlat[plat];
-      if (st === "success") { cls = "pill s"; mark = " ✓"; }
+    if (type in byType) {
+      const st = byType[type];
+      if (st === "published") { cls = "pill s"; mark = " ✓"; }
       else if (st === "failed") { cls = "pill f"; mark = " ✗"; }
-      else if (tgPending(st)) { cls = "pill q"; mark = st === "missed" ? " ⏰" : " ⏳"; }
+      else if (pendingStatus(st)) { cls = "pill q"; mark = st === "missed" ? " ⏰" : " ⏳"; }
       else { cls = "pill p"; }
     }
-    badges.append(el("span", { class: cls, text: META[plat].label + mark }));
+    badges.append(el("span", { class: cls, text: typeName(type) + mark }));
   }
-  // Show the actual fire time once published (fired_at = latest attempt); fall
-  // back to created_at for pending/never-fired posts.
-  const ts = p.fired_at || p.created_at;
+  // A scheduled post that has fired is dated by its time; others by when
+  // they were made.
+  const ts = (p.status !== "scheduled" && p.scheduled_at) || p.created_at;
   const when = el("div", { class: "when" },
     el("span", { title: new Date(ts).toLocaleString(), text: relTime(ts) }),
     el("span", { class: "dot", text: "·" }), el("span", { text: p.source }),
-    el("span", { class: "dot", text: "·" }), el("span", { text: "#" + shortID(p.id) }),
+    el("span", { class: "dot", text: "·" }), el("span", { text: "#" + shortID(p.id.replace(/^pst_/, "")) }),
   );
   if (ok) when.append(el("span", { class: "dot", text: "·" }), el("span", { class: "ok tot", text: "✓" + ok }));
   if (fail) when.append(el("span", { class: "dot", text: "·" }), el("span", { class: "bad tot", text: "✗" + fail }));
   if (pend) when.append(el("span", { class: "dot", text: "·" }), el("span", { class: "muted tot", text: "⏳" + pend }));
-  const sl = schedLine(p);
-  const listIb = interactionBadge(p);
-  const item = el("div", { class: "hitem", "data-id": p.id, onclick: () => openDetail(p.id) },
+  if (p.status === "needs_attention") {
+    when.append(el("span", { class: "dot", text: "·" }), el("span", { class: "warn tot", text: "needs you" }));
+  }
+  const item = el("div", { class: "hitem" + (active ? " active" : ""), "data-id": p.id, onclick: () => openDetail(p.id) },
     when,
-    listIb,
-    el("div", { class: "txt", text: (p.master_text || "").slice(0, 160) }),
-    sl,
+    interactionBadge(p),
+    el("div", { class: "txt", text: (p.content.text || "").slice(0, 160) }),
+    schedLine(p),
     badges);
-  // Past (non-pending) posts can be hidden from the list; pending posts use cancel.
   if (!isPendingPost(p)) {
     item.append(el("button", { class: "hide-x", type: "button", title: "Hide from list", text: "✕",
       onclick: e => { e.stopPropagation(); confirmHide(p); } }));
@@ -287,78 +269,41 @@ function historyItem(p) {
 }
 
 // ---------------------------------------------------------------------------
-// Detail pane
+// Detail
 // ---------------------------------------------------------------------------
 
-function targetStatus(post, plat) {
-  for (const t of (post.targets || [])) if (t.platform === plat) return t.status;
-  return "?";
-}
-
-function schedControls(post, refresh) {
+function schedControls(post) {
+  if (post.status === "publishing") {
+    const stop = el("button", { class: "ghost sm", type: "button", text: "stop sending",
+      onclick: () => act(stop, "…", () => v1(postPath(post.id) + ":cancel", { method: "POST" }), "stopped", true) });
+    return el("div", { class: "sched-ctrls" }, stop);
+  }
   if (post.status !== "scheduled") return null;
   const cancel = el("button", { class: "ghost sm", type: "button", text: "cancel",
-    onclick: async () => {
-      const r = await fetch(`/api/posts/${encodeURIComponent(post.id)}/cancel`, { method: "POST", credentials: "same-origin" });
-      if (!r.ok) { flash("cancel failed"); return; }
-      flash("cancelled"); refresh();
-    } });
+    onclick: () => act(cancel, "…", () => v1(postPath(post.id) + ":cancel", { method: "POST" }), "canceled", true) });
   const change = el("button", { class: "ghost sm", type: "button", text: "change time",
-    onclick: async () => {
+    onclick: () => {
       const v = prompt("New time (YYYY-MM-DDTHH:MM, Paris):");
       if (!v) return;
       const d = new Date(v);
       if (isNaN(d.getTime())) { flash("Invalid date — use YYYY-MM-DDTHH:MM"); return; }
-      const r = await fetch(`/api/posts/${encodeURIComponent(post.id)}/reschedule`, {
-        method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scheduled_at: d.toISOString() }) });
-      if (!r.ok) { flash("reschedule failed"); return; }
-      flash("rescheduled"); refresh();
+      act(change, "…", () => v1(postPath(post.id), { method: "PATCH", body: { schedule: { at: d.toISOString() } } }), "rescheduled", true);
     } });
   return el("div", { class: "sched-ctrls" }, cancel, change);
 }
 
-async function relayRetry(postID, relayURL, btn) {
-  btn.disabled = true; btn.textContent = "…";
-  try {
-    const r = await fetch(`/api/posts/${encodeURIComponent(postID)}/relay-retry`, {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ platform: "nostr", relay: relayURL }),
-    });
-    const post = await r.json();
-    if (!r.ok) throw new Error(post.error || ("HTTP " + r.status));
-    renderDetail(post);
-    refreshAttentionBadge();
-    document.querySelectorAll(".hitem").forEach(e => e.classList.toggle("active", e.dataset.id === postID));
-    const host = relayURL.replace(/^wss?:\/\//, "");
-    const nt = (post.targets || []).find(t => t.platform === "nostr");
-    const rs = nt && (nt.relays || []).find(r => r.url === relayURL);
-    flash(`${host}: ${rs ? rs.status : targetStatus(post, "nostr")}`);
-  } catch (e) { btn.disabled = false; btn.textContent = "↻"; flash("Relay retry error: " + e.message); }
-}
-
-// translateSelect builds the small inline dropdown next to the "text" header in
-// the detail view. Picking a target fires POST /api/translate and hands the
-// result off to compose.loadDraft (which confirms before replacing any in-
-// progress draft). Reset to the placeholder on completion so the same row can
-// trigger another translation.
+// translateSelect: pick a language, and the post's text, translated, opens
+// in Compose (which asks before replacing work in progress).
 function translateSelect(sourceText) {
   const sel = el("select", { class: "translate-sel", "aria-label": "Translate post" });
   sel.append(el("option", { value: "", text: "translate to…" }));
-  for (const code of state.translateTargets) {
-    sel.append(el("option", { value: code, text: "→ " + code }));
-  }
-  sel.addEventListener("change", async (e) => {
+  for (const code of state.translateTargets) sel.append(el("option", { value: code, text: "→ " + code }));
+  sel.addEventListener("change", async e => {
     const target = e.target.value;
     if (!target) return;
     sel.disabled = true;
     try {
-      const data = await api("/api/translate", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: sourceText, target_lang: target }),
-      });
+      const data = await v1("/v1/translate", { method: "POST", body: { text: sourceText, target_lang: target } });
       loadDraft({ text: data.text, lang: target });
     } catch (err) {
       flash("Translation failed: " + err.message);
@@ -370,105 +315,184 @@ function translateSelect(sourceText) {
   return sel;
 }
 
+// retryable: what :retry would send for this target.
+function retryable(t) {
+  return t.status === "failed" || t.status === "missed" || t.status === "canceled" ||
+    (t.status === "partial" && (t.items || []).length > 1);
+}
+
+// resolveControls asks the owner about an item whose outcome is unknown.
+function resolveControls(post, t, it) {
+  const later = (t.items || []).some(x => x.ordinal > it.ordinal && (x.status === "planned" || x.status === "failed"));
+  const yes = el("button", { class: "ghost sm", type: "button", text: "It was posted",
+    onclick: ev => {
+      ev.stopPropagation();
+      const ask = later
+        ? "Paste the post's URL. The rest of the thread goes on under it."
+        : "Paste the post's URL (optional).";
+      const url = prompt(ask, "");
+      if (url === null) return;
+      const body = { target: t.id, ordinal: it.ordinal, outcome: "published" };
+      if (url.trim()) body.url = url.trim();
+      act(yes, "…", () => v1(postPath(post.id) + ":resolve", { method: "POST", body }), "recorded as posted");
+    } });
+  const no = el("button", { class: "ghost sm", type: "button", text: "It wasn't: send it again",
+    onclick: ev => {
+      ev.stopPropagation();
+      act(no, "…", () => v1(postPath(post.id) + ":resolve", { method: "POST",
+        body: { target: t.id, ordinal: it.ordinal, outcome: "not_published" } }), "sending again");
+    } });
+  return el("div", { class: "resolve" },
+    el("span", { class: "muted", text: `Check ${typeName(t.type)}: did this part go out?` }), yes, no);
+}
+
+// itemChain lists a target's items: each part of a thread, and any item
+// whose outcome is unknown even when it stands alone.
+function itemChain(post, t) {
+  const items = t.items || [];
+  if (items.length < 2 && !items.some(it => it.status === "unknown")) return null;
+  const wrap = el("div", { class: "seg-chain" });
+  for (const it of items) {
+    const bad = it.status === "failed" || it.status === "unknown";
+    const row = el("div", { class: "seg-row" + (bad ? " seg-failed" : "") });
+    const b = badge(it.status);
+    row.append(el("span", { class: "seg-n", text: `${it.ordinal + 1}.` }),
+      el("span", { class: "seg-text", text: it.text }),
+      el("span", { class: "bdg " + b.cls, title: it.status, text: b.mark }));
+    if (it.url) row.append(el("a", { href: it.url, target: "_blank", rel: "noopener", text: "↗" }));
+    if (it.error || it.error_class) {
+      row.append(el("span", { class: "seg-err", text: [it.error, classLine(it.error_class)].filter(Boolean).join(" — ") }));
+    }
+    wrap.append(row);
+    if (it.status === "unknown") wrap.append(resolveControls(post, t, it));
+  }
+  return wrap;
+}
+
+// deliveryBlock: a Nostr item's relays, with a retry for each failed one.
+function deliveryBlock(post, t) {
+  const it = (t.items || [])[0];
+  const ds = (it && it.deliveries) || [];
+  if (!ds.length) return null;
+  const attempted = ds.filter(d => d.status !== "skipped").length;
+  const ok = ds.filter(d => d.status === "ok").length;
+  const wrap = el("div", { class: "relays" });
+  wrap.append(el("div", { class: "relays-head", text: `${ok}/${attempted} relays` }));
+  for (const d of ds) {
+    const mark = d.status === "ok" ? "✓" : d.status === "failed" ? "✗" : "·";
+    const cls = d.status === "ok" ? "rok" : d.status === "failed" ? "rfail" : "rskip";
+    const row = el("div", { class: "relay " + cls },
+      el("span", { class: "rmark", text: mark }),
+      el("span", { class: "rurl", text: d.endpoint.replace(/^wss?:\/\//, "") }),
+      d.status === "skipped" ? el("span", { class: "rnote", text: "skipped · no Tor" }) : null,
+      d.status === "failed" && d.message ? el("span", { class: "rnote", text: d.message }) : null,
+    );
+    if (d.status === "failed") {
+      const btn = el("button", { class: "retry sm", type: "button", text: "↻",
+        onclick: ev => {
+          ev.stopPropagation();
+          act(btn, "…", () => v1(postPath(post.id) + ":retry", { method: "POST",
+            body: { deliveries: [{ target: t.id, endpoint: d.endpoint }] } }), d.endpoint.replace(/^wss?:\/\//, "") + ": retrying");
+        } });
+      row.append(btn);
+    }
+    wrap.append(row);
+  }
+  return wrap;
+}
+
+function targetRow(post, t) {
+  const items = t.items || [];
+  const attempts = t.attempts || [];
+  const last = attempts.length ? attempts[attempts.length - 1] : null;
+  const failedItem = items.find(it => it.status === "failed" || it.status === "unknown");
+  let mid;
+  if (t.status === "published" || t.status === "partial") {
+    const url = items[0] && items[0].url;
+    const rid = items[0] && items[0].remote_id;
+    mid = url
+      ? el("a", { class: "lnk grow", href: url, target: "_blank", rel: "noopener", text: (rid ? shortRef(rid) : "view") + " ↗" })
+      : el("span", { class: "mono-ref grow", text: rid ? "id " + shortRef(rid) : "ok" });
+  } else if (t.status === "scheduled" || t.status === "publishing") {
+    mid = el("span", { class: "muted grow", text: "⏳ pending" });
+  } else if (t.status === "missed") {
+    mid = el("span", { class: "muted grow", text: "⏰ not sent (missed)" });
+  } else if (t.status === "canceled") {
+    mid = el("span", { class: "muted grow", text: "⊘ canceled" });
+  } else {
+    const err = (failedItem && failedItem.error) || (last && last.error) || "failed";
+    mid = el("span", { class: "bad grow", text: err });
+  }
+  const meta = el("span", { class: "meta",
+    text: (attempts.length ? `${attempts.length}×` : "") + (last && last.latency_ms ? ` · ${last.latency_ms}ms` : "") +
+      (last ? ` · ${new Date(last.attempted_at).toLocaleTimeString()}` : "") });
+  const b = badge(t.status);
+  const row = el("div", { class: "res" },
+    brandTile(t.type, { size: 22, r: 6 }),
+    el("span", { class: "bdg " + b.cls, text: `${typeName(t.type)} ${b.mark}` }),
+    mid, meta);
+  if (retryable(t) && !items.some(it => it.status === "unknown")) {
+    const btn = el("button", { class: "retry", type: "button", text: t.status === "partial" ? "Resume" : "Retry",
+      onclick: ev => {
+        ev.stopPropagation();
+        act(btn, "Retrying…", () => v1(postPath(post.id) + ":retry", { method: "POST", body: { targets: [t.id] } }),
+          typeName(t.type) + ": retrying");
+      } });
+    row.append(btn);
+  }
+  const out = [row];
+  const why = classLine(t.error_class || (failedItem && failedItem.error_class));
+  if (why && t.status !== "published") out.push(el("div", { class: "retry-status" + (t.gave_up_at ? " gaveup" : " pending"), text: why }));
+  if (t.gave_up_at && t.status !== "published" && t.status !== "canceled") {
+    out.push(el("div", { class: "retry-status gaveup", text: `⚠ automatic retries stopped after ${attempts.length} attempts` }));
+  }
+  const chain = itemChain(post, t);
+  if (chain) out.push(chain);
+  if (items.length === 1 && items[0].text && items[0].text !== post.content.text) {
+    out.push(el("div", { class: "dtext alt", text: items[0].text }));
+  }
+  const relays = deliveryBlock(post, t);
+  if (relays) out.push(relays);
+  return out;
+}
+
 function renderDetail(post) {
   const d = $("#hdetail"); d.innerHTML = ""; d.dataset.id = post.id;
-  const tg = post.targets || [];
-  let ok = 0, fail = 0, pend = 0; for (const t of tg) { if (t.status === "success") ok++; else if (tgPending(t.status)) pend++; else fail++; }
-  const scls = post.status === "success" ? "ok" : post.status === "failed" ? "bad" : "warn";
-
-  // ← back button: dismisses detail slide-over on mobile (desktop ignores via CSS)
+  const tg = post.targets;
+  let ok = 0, fail = 0, pend = 0;
+  for (const t of tg) { if (t.status === "published") ok++; else if (pendingStatus(t.status)) pend++; else fail++; }
+  const scls = post.status === "published" ? "ok" : post.status === "failed" ? "bad" : "warn";
   const backBtn = el("button", { class: "ghost sm detail-back", type: "button", text: "← back",
     onclick: () => { const h = $("#history"); if (h) h.classList.remove("detail-open"); } });
-
   d.append(el("div", { class: "sec-head" },
     backBtn,
-    el("span", { class: "lbl " + scls, text: "result · " + post.status }),
-    el("span", { class: "metaline", text: `✓${ok} ✗${fail}${pend ? " ⏳" + pend : ""} · ${tg.length} target${tg.length === 1 ? "" : "s"} · #${shortID(post.id)}` }),
+    el("span", { class: "lbl " + scls, text: "result · " + post.status.replace("_", " ") }),
+    el("span", { class: "metaline", text: `✓${ok} ✗${fail}${pend ? " ⏳" + pend : ""} · ${tg.length} target${tg.length === 1 ? "" : "s"} · #${shortID(post.id.replace(/^pst_/, ""))}` }),
   ));
   const sl = schedLine(post);
   if (sl) d.append(sl);
-  const sc = schedControls(post, () => loadHistory(true));
+  const sc = schedControls(post);
   if (sc) d.append(sc);
   const ib = interactionBadge(post);
   if (ib) d.append(ib);
 
-  if (post.master_text) {
+  const text = post.content.text;
+  if (text) {
     const head = el("div", { class: "sec-head" }, el("span", { class: "lbl", text: "text" }));
-    if (state.translateTargets && state.translateTargets.length) {
-      head.append(translateSelect(post.master_text));
-    }
-    d.append(head);
-    d.append(el("div", { class: "dtext", text: post.master_text }));
+    if (state.translateTargets && state.translateTargets.length) head.append(translateSelect(text));
+    d.append(head, el("div", { class: "dtext", text }));
   }
-
-  if (post.media && post.media.length) {
+  if (post.content.media.length) {
     const m = el("div", { class: "dmedia" });
-    for (const im of post.media) {
+    for (const im of post.content.media) {
+      const video = (im.mime || "").startsWith("video/");
       m.append(el("figure", {},
-        el("img", { src: im.blossom_url || "", alt: im.alt || "", loading: "lazy" }),
+        el("img", { src: (video ? im.poster_url : im.url) || "", alt: im.alt || "", loading: "lazy" }),
         im.alt ? el("figcaption", { text: im.alt }) : null));
     }
     d.append(m);
   }
-
-  for (const t of tg) {
-    const last = (t.attempts && t.attempts.length) ? t.attempts[t.attempts.length - 1] : null;
-    const tries = t.attempt_count || (t.attempts ? t.attempts.length : 1);
-    const lat = t.latency_ms || (last && last.latency_ms) || 0;
-    let mid;
-    if (t.status === "success") {
-      if (t.remote_url) mid = el("a", { class: "lnk grow", href: t.remote_url, target: "_blank", rel: "noopener",
-        text: (t.remote_id ? shortRef(t.remote_id) : "view") + " ↗" });
-      else mid = el("span", { class: "mono-ref grow", text: t.remote_id ? "id " + shortRef(t.remote_id) : "ok" });
-    } else if (t.status === "scheduled" || t.status === "sending") {
-      mid = el("span", { class: "muted grow", text: "⏳ pending" });
-    } else if (t.status === "missed") {
-      mid = el("span", { class: "muted grow", text: "⏰ not sent (missed)" });
-    } else {
-      mid = el("span", { class: "bad grow", text: (last && last.error) || "failed" });
-    }
-    const meta = el("span", { class: "meta",
-      text: (tries ? `${tries}×` : "") + (lat ? ` · ${lat}ms` : "") + (last && last.attempted_at ? ` · ${new Date(last.attempted_at).toLocaleTimeString()}` : "") });
-    const b = tgBadge(t.status);
-    const row = el("div", { class: "res" },
-      el("span", { class: "bdg " + b.cls, text: `${t.platform} ${b.mark}` }),
-      mid, meta);
-    if (t.status === "failed" || t.status === "missed") {
-      const plat = t.platform;
-      row.append(el("button", {
-        class: "retry", type: "button", text: "Retry",
-        onclick: async ev => {
-          ev.stopPropagation();
-          const btn = ev.target; btn.disabled = true; btn.textContent = "Retrying…";
-          try {
-            const rr = await fetch(`/api/posts/${encodeURIComponent(post.id)}/retry`, {
-              method: "POST", credentials: "same-origin",
-              headers: { "Content-Type": "application/json" }, body: JSON.stringify({ platforms: [plat] }),
-            });
-            const np = await rr.json(); if (!rr.ok) throw new Error(np.error || ("HTTP " + rr.status));
-            const st = targetStatus(np, plat);
-            renderDetail(np);
-            refreshAttentionBadge();
-            flash(`${plat}: retry ${st === "success" ? "succeeded ✓" : "still failing ✗"}`);
-          } catch (e) { btn.disabled = false; btn.textContent = "Retry"; flash("Retry error: " + e.message); }
-        },
-      }));
-    }
-    d.append(row);
-    const chain = segmentChain(post, t);
-    if (chain) d.append(chain);
-    if (t.final_text && t.final_text !== post.master_text) {
-      d.append(el("div", { class: "dtext alt", text: t.final_text }));
-    }
-    const relays = relayBlock(t, (relayURL, btn) => relayRetry(post.id, relayURL, btn));
-    if (relays) d.append(relays);
-    if (last && (last.request_json || last.response_json)) {
-      const v = el("div", { class: "verbose", hidden: true, text: `→ ${last.request_json || ""}\n← ${last.response_json || ""}` });
-      const vb = el("button", { class: "reset", type: "button", text: "verbose ▸",
-        onclick: () => { v.hidden = !v.hidden; vb.textContent = v.hidden ? "verbose ▸" : "verbose ▾"; } });
-      d.append(vb, v);
-    }
-  }
+  for (const t of tg) d.append(...targetRow(post, t));
 }
 
 // ---------------------------------------------------------------------------
@@ -476,12 +500,14 @@ function renderDetail(post) {
 // ---------------------------------------------------------------------------
 
 export async function openDetail(id) {
+  if (!id.startsWith("pst_")) id = "pst_" + id; // the composer's results still carry store ids
   $("#history").classList.add("detail-open"); // mobile slide-over
   const d = $("#hdetail"); d.innerHTML = "Loading…";
   try {
-    const post = await api("/api/posts/" + encodeURIComponent(id));
+    const post = await v1(postPath(id));
     renderDetail(post);
     document.querySelectorAll(".hitem").forEach(e => e.classList.toggle("active", e.dataset.id === id));
+    if (post.status === "publishing") followPost(id);
   } catch (e) {
     d.innerHTML = "";
     d.append(el("div", { class: "err", text: "Error: " + e.message }));
@@ -491,7 +517,6 @@ export async function openDetail(id) {
 }
 
 export function historyInit() {
-  // segment buttons (rendered in index.html as #hseg button[data-status])
   document.querySelectorAll("#hseg button").forEach(b =>
     b.addEventListener("click", () => {
       hfilter = b.dataset.status;

@@ -61,7 +61,7 @@ export async function openApp(page: Page) {
   await expect(page.locator("#chips .target-row")).toHaveCount(4);
 }
 
-export async function switchTab(page: Page, view: "compose" | "history" | "tools" | "verify" | "interact") {
+export async function switchTab(page: Page, view: "compose" | "history" | "tools" | "verify" | "interact" | "tokens") {
   await page.locator(`.tab[data-view="${view}"]`).click();
   await expect(page.locator(`section#${view}`)).toBeVisible();
 }

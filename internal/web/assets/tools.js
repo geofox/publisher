@@ -1,5 +1,17 @@
 "use strict";
-import { el, $, flash } from "./common.js";
+import { el, $, flash, v1 } from "./common.js";
+import { loadAccounts, accountFor } from "./accounts.js";
+
+// Relay sync for the Nostr account, on /v1/accounts/{id}/nostr/relays.
+
+// relaysPath is the Nostr account's relays resource; it throws when there
+// is no Nostr account.
+async function relaysPath() {
+  await loadAccounts();
+  const a = accountFor("nostr");
+  if (!a) throw new Error("no Nostr account is configured");
+  return "/v1/accounts/" + encodeURIComponent(a.id) + "/nostr/relays";
+}
 
 // ---------------------------------------------------------------------------
 // Sync busy serialization
@@ -20,9 +32,8 @@ async function loadSyncRelays() {
   setSyncBusy(true);
   const c = $("#syncrelays"); c.innerHTML = "Loading…";
   try {
-    const r = await fetch("/api/sync/relays", { credentials: "same-origin" });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    const d = await v1(await relaysPath());
+    syncSecondary = d.secondary || [];
     c.innerHTML = "";
 
     const nip65Count = (d.nip65 || []).length;
@@ -56,35 +67,33 @@ async function loadSyncRelays() {
 
     details.append(body);
     c.append(details);
+    if (d.nip65_error) c.append(el("div", { class: "rmsg", text: "Your relay list (NIP-65) couldn't be read: " + d.nip65_error }));
   } catch (e) { c.innerHTML = ""; c.append(el("div", { class: "err", text: "Error: " + e.message })); }
   finally { setSyncBusy(false); }
 }
 
-async function addSyncRelay(url) {
-  url = (url || "").trim();
-  if (!url) return;
+// The custom relays as last read; adding or removing one replaces the list.
+let syncSecondary = [];
+
+async function putSecondary(list, what) {
   try {
-    const r = await fetch("/api/sync/relays", { method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    await v1(await relaysPath(), { method: "PUT", body: { secondary: list } });
     loadSyncRelays();
-  } catch (e) { flash("Add relay: " + e.message); }
+  } catch (e) { flash(what + ": " + e.message); }
 }
 
-async function removeSyncRelay(url) {
-  try {
-    const r = await fetch("/api/sync/relays", { method: "DELETE", credentials: "same-origin",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
-    if (!r.ok) { const d = await r.json(); throw new Error(d.error || ("HTTP " + r.status)); }
-    loadSyncRelays();
-  } catch (e) { flash("Remove relay: " + e.message); }
+function addSyncRelay(url) {
+  url = (url || "").trim();
+  if (!url) return;
+  putSecondary([...syncSecondary, url], "Add relay");
+}
+
+function removeSyncRelay(url) {
+  putSecondary(syncSecondary.filter(u => u !== url), "Remove relay");
 }
 
 async function fetchSyncTargets() {
-  const r = await fetch("/api/sync/targets", { credentials: "same-origin" });
-  const d = await r.json();
-  if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+  const d = await v1(await relaysPath());
   return d.targets || [];
 }
 
@@ -137,10 +146,7 @@ async function runSyncLive(label, fetchOne) {
 function syncScan() {
   return runSyncLive("scanning", async (url, entry) => {
     try {
-      const r = await fetch("/api/sync/scan", { method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ relays: [url] }) });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+      const d = await v1(await relaysPath() + ":scan", { method: "POST", body: { relays: [url] } });
       const res = (d.relays && d.relays[0]) || { status: "error", message: "no result" };
       updateSyncRow(entry, res.status === "ok",
         res.status === "ok" ? `↓${res.missing_at_home}  ↑${res.missing_at_relay}` : res.status, res.message);
@@ -151,10 +157,7 @@ function syncScan() {
 function syncApply(direction) {
   return runSyncLive(direction, async (url, entry) => {
     try {
-      const r = await fetch("/api/sync/apply", { method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ direction, relays: [url] }) });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+      const d = await v1(await relaysPath() + ":sync", { method: "POST", body: { direction, relays: [url] } });
       const res = (d.results && d.results[0]) || { status: "error", message: "no result" };
       let meta;
       if (res.status === "ok") meta = `published ${res.published}`;

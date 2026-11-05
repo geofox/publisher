@@ -90,6 +90,8 @@ can be `unrecognized`, `not_supported` (Threads), `not_configured` or
 server); `not_allowed` and `missing_source_account` concern the action
 and its targets. The tools add `unsupported_language` (translate) and
 `unknown_relay` (relay sync: a relay that isn't one of the account's).
+Resolving an unknown item (`:resolve`) adds `unknown_item`, and for its
+`url` `not_found` (no such post) and `not_own` (another account's post).
 
 ## invalid_parameter
 

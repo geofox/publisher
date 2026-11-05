@@ -63,6 +63,22 @@ func (d *Dispatcher) Caps(ctx context.Context, name string) (destination.Capabil
 	return destination.Capabilities{}, false
 }
 
+// CanLocate reports whether the named account can look its own posts up
+// by URL (destination.Locator).
+func (d *Dispatcher) CanLocate(name string) bool {
+	_, ok := d.Accounts[name].(destination.Locator)
+	return ok
+}
+
+// Locate finds one of the named account's own posts by its URL.
+func (d *Dispatcher) Locate(ctx context.Context, name, url string) (destination.ItemRef, error) {
+	l, ok := d.Accounts[name].(destination.Locator)
+	if !ok {
+		return destination.ItemRef{}, errors.New("dispatch: " + name + " can't look posts up")
+	}
+	return l.Locate(ctx, url)
+}
+
 // displayName is the destination's human name for messages ("Bluesky").
 func (d *Dispatcher) displayName(name string) string {
 	if a, ok := d.Accounts[name]; ok && a != nil {

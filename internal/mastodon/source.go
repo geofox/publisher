@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/geofox/publisher/internal/destination"
 	"html"
@@ -18,6 +19,7 @@ import (
 
 type SourceStatus struct {
 	LocalID          string
+	AuthorID         string // the author's account id on this instance
 	AuthorName       string
 	AuthorAcct       string
 	TextPlain        string
@@ -34,6 +36,9 @@ type SourceMedia struct {
 	URL, Alt string
 	Video    bool
 }
+
+// ErrStatusNotFound: the instance's search found no status at the URL.
+var ErrStatusNotFound = errors.New("post not found or not federated to this instance yet")
 
 var reTag = regexp.MustCompile(`<[^>]+>`)
 
@@ -54,7 +59,7 @@ func (c *Client) ResolveStatus(ctx context.Context, postURL string) (*SourceStat
 		return nil, fmt.Errorf("search: %w", err)
 	}
 	if len(search.Statuses) == 0 {
-		return nil, fmt.Errorf("post not found or not federated to this instance yet")
+		return nil, ErrStatusNotFound
 	}
 	id := search.Statuses[0].ID
 
@@ -65,6 +70,7 @@ func (c *Client) ResolveStatus(ctx context.Context, postURL string) (*SourceStat
 		URL        string    `json:"url"`
 		CreatedAt  time.Time `json:"created_at"`
 		Account    struct {
+			ID          string `json:"id"`
 			DisplayName string `json:"display_name"`
 			Acct        string `json:"acct"`
 		} `json:"account"`
@@ -81,7 +87,7 @@ func (c *Client) ResolveStatus(ctx context.Context, postURL string) (*SourceStat
 		return nil, fmt.Errorf("get status: %w", err)
 	}
 	out := &SourceStatus{
-		LocalID: st.ID, AuthorName: st.Account.DisplayName, AuthorAcct: st.Account.Acct,
+		LocalID: st.ID, AuthorID: st.Account.ID, AuthorName: st.Account.DisplayName, AuthorAcct: st.Account.Acct,
 		TextPlain: deHTML(st.Content), CreatedAt: st.CreatedAt, WebURL: st.URL,
 		Visibility: st.Visibility, QuoteCurrentUser: st.QuoteApproval.CurrentUser,
 	}
@@ -198,6 +204,20 @@ func (c *Client) Profile(ctx context.Context) (handle, displayName, avatar strin
 		h = "@" + h
 	}
 	return h, a.DisplayName, a.Avatar, nil
+}
+
+// OwnAccountID is the authenticated account's id on its instance.
+func (c *Client) OwnAccountID(ctx context.Context) (string, error) {
+	var a struct {
+		ID string `json:"id"`
+	}
+	if err := c.getJSON(ctx, "/api/v1/accounts/verify_credentials", nil, &a); err != nil {
+		return "", err
+	}
+	if a.ID == "" {
+		return "", errors.New("verify_credentials: no account id")
+	}
+	return a.ID, nil
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, params url.Values, out any) error {
