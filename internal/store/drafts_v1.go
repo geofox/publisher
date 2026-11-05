@@ -20,7 +20,10 @@ type V1Draft struct {
 	Tags      []string
 	Text      string
 	Body      string
-	Version   int64
+	// FirstMediaID is the post's first media id, read by ListV1Drafts
+	// (which reads neither Body nor all of Text).
+	FirstMediaID string
+	Version      int64
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -44,6 +47,16 @@ func (s *Store) CreateV1Draft(ctx context.Context, d *V1Draft) error {
 	_, err := s.sql.ExecContext(ctx, `INSERT INTO drafts (id, owner_id, created_at, updated_at, title, master_text,
 		  tags_json, spec_json, body_json, version) VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, 1)`,
 		d.ID, d.OwnerID, now, now, d.Title, d.Text, string(tags), d.Body)
+	return err
+}
+
+// RestoreV1Draft puts back a draft deleted a moment ago (a post that used
+// it up failed to save), as it was.
+func (s *Store) RestoreV1Draft(ctx context.Context, d *V1Draft) error {
+	tags, _ := json.Marshal(NormalizeTags(d.Tags))
+	_, err := s.sql.ExecContext(ctx, `INSERT INTO drafts (id, owner_id, created_at, updated_at, title, master_text,
+		  tags_json, spec_json, body_json, version) VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)`,
+		d.ID, d.OwnerID, d.CreatedAt.UTC(), d.UpdatedAt.UTC(), d.Title, d.Text, string(tags), d.Body, d.Version)
 	return err
 }
 
@@ -139,7 +152,8 @@ type V1DraftQuery struct {
 	BeforeID   string
 }
 
-// ListV1Drafts returns a page of the owner's drafts.
+// ListV1Drafts returns a page of the owner's drafts: without their bodies
+// (FirstMediaID instead) and with the text's first 500 characters only.
 func (s *Store) ListV1Drafts(ctx context.Context, q V1DraftQuery) ([]V1Draft, error) {
 	where := []string{"owner_id = ?", "body_json IS NOT NULL"}
 	args := []any{q.OwnerID}
@@ -161,7 +175,9 @@ func (s *Store) ListV1Drafts(ctx context.Context, q V1DraftQuery) ([]V1Draft, er
 		q.Limit = 50
 	}
 	args = append(args, q.Limit)
-	rows, err := s.sql.QueryContext(ctx, `SELECT `+v1DraftCols+` FROM drafts WHERE `+strings.Join(where, " AND ")+
+	rows, err := s.sql.QueryContext(ctx, `SELECT id, owner_id, title, tags_json, substr(master_text, 1, 500),
+		COALESCE(json_extract(body_json, '$.content.media[0].id'), ''), version, created_at, updated_at
+		FROM drafts WHERE `+strings.Join(where, " AND ")+
 		` ORDER BY updated_at DESC, id DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("ListV1Drafts: %w", err)
@@ -169,10 +185,11 @@ func (s *Store) ListV1Drafts(ctx context.Context, q V1DraftQuery) ([]V1Draft, er
 	defer rows.Close()
 	out := []V1Draft{}
 	for rows.Next() {
-		d, err := scanV1Draft(rows)
+		d, err := scanV1Draft(rows) // FirstMediaID in Body's place
 		if err != nil {
 			return nil, err
 		}
+		d.FirstMediaID, d.Body = d.Body, ""
 		out = append(out, *d)
 	}
 	return out, rows.Err()

@@ -175,3 +175,29 @@ test("saving over a draft changed in another tab asks first", async ({ page, con
   expect(list.data[0].preview).toBe(`Version three ${m}`);
   await other.close();
 });
+
+test("a scheduled draft reopens scheduled, and New clears it", async ({ page }) => {
+  const m = marker("draftsched");
+  await openApp(page);
+  await page.locator("#master").fill(`Later ${m}`);
+  const later = await page.evaluate(() => {
+    const d = new Date(Date.now() + 2 * 24 * 3600 * 1000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  });
+  await page.locator("#schedat").fill(later);
+  await page.locator("#draft-save").click();
+  await expect(page.locator("#draft-list .draft-row", { hasText: m })).toBeVisible();
+
+  await page.reload();
+  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await page.locator("#draft-list .draft-row", { hasText: m }).click();
+  await expect(page.locator("#schedat")).toHaveValue(later);
+  await expect(page.locator("#submit")).toHaveText("Schedule");
+  await expect(page.locator("#schedclear")).toBeVisible();
+
+  await page.locator("#draft-new").click();
+  await expect(page.locator("#schedat")).toHaveValue("");
+  await expect(page.locator("#submit")).toHaveText("Post");
+  await expect(page.locator("#master")).toHaveValue("");
+});

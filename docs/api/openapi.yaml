@@ -1501,12 +1501,14 @@ paths:
       tags: [drafts]
       summary: Change a draft
       description: |
-        Needs `drafts:write`. Each field sent replaces the draft's (`post`
-        as a whole). Send `If-Match` with the ETag you read: if the draft
-        changed since (another tab saved it), the answer is `412
+        Needs `drafts:write`. Each field sent replaces the draft's: `post`
+        as a whole (this is not a merge patch); a field left out or null is
+        kept. Send `If-Match` with the ETag you read: if the draft changed
+        since (another tab saved it), the answer is `412
         precondition_failed` with the current `ETag`, and nothing changes.
-        Without `If-Match` (or with `*`) the change applies to whatever the
-        draft is.
+        Without `If-Match` (or with `*`) the change applies to the draft as
+        the server reads it, and is still refused (412) if another write
+        lands in between.
       security:
         - bearer: ["drafts:write"]
         - session: []
@@ -1516,9 +1518,6 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: "#/components/schemas/DraftIn"
-          application/merge-patch+json:
             schema:
               $ref: "#/components/schemas/DraftIn"
       responses:
@@ -1967,9 +1966,12 @@ components:
           type: string
           pattern: "^drf_"
           description: |
-            The draft this post is made from: deleted once the post is
-            saved. Needs `drafts:write` too (`not_permitted` otherwise);
-            `unknown_draft` when there is no such draft.
+            The draft this post is made from: it is used up (deleted) as
+            the post is saved, so posting it twice makes one post. Needs
+            `drafts:write` too (`not_permitted` otherwise); `unknown_draft`
+            when there is no such draft (or it was just posted),
+            `draft_changed` when it was saved again after this request
+            read it.
       example:
         content:
           text: "Hello from the API"

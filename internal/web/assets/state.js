@@ -34,6 +34,7 @@ export const state = {
   activeDraftId: null, // id of the draft currently loaded into Compose, or null
   draftETag: "",       // its version as last read or saved, for If-Match
   dirty: false,        // true when in-memory spec differs from last saved state
+  edits: 0,            // counts edits (markDirty), so a save knows if more came meanwhile
   anchors: {},         // image id → 0-based part index (keyed by stable image id)
 };
 ORDER.forEach(p => { state.ov[p] = defaultOv(p); });

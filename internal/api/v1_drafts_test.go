@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,9 @@ func TestV1DraftLifecycle(t *testing.T) {
 	r = e.do(req{method: "PATCH", path: "/v1/drafts/" + d.ID, header: map[string]string{"If-Match": "nonsense"},
 		body: `{"title":"x"}`, badRequest: true})
 	wantProblem(t, r, 400, codeInvalidParameter)
+	r = e.do(req{method: "PATCH", path: "/v1/drafts/" + d.ID, header: map[string]string{"If-Match": `W/"2"`},
+		body: `{"title":"x"}`})
+	wantProblem(t, r, 400, codeInvalidParameter) // If-Match compares strongly
 
 	// A title given is kept when the text changes; "" goes back to the text's.
 	r = e.do(req{method: "PATCH", path: "/v1/drafts/" + d.ID, body: `{"title":"Mine"}`})
@@ -111,6 +115,21 @@ func TestV1DraftValidation(t *testing.T) {
 	p := wantProblem(t, r, 422, codeValidation)
 	for _, want := range []string{"/title", "/tags/0", "/post/content/media/0/id", "/post/targets/0/account", "/post",
 		"/post/schedule/at", "/post/draft"} {
+		found := false
+		for _, fe := range p.Errors {
+			found = found || fe.Pointer == want
+		}
+		if !found {
+			t.Errorf("no error at %s: %+v", want, p.Errors)
+		}
+	}
+	// What the post would refuse anyway is refused now.
+	bsky := e.acct("bluesky")
+	r = e.do(req{method: "POST", path: "/v1/drafts", badRequest: true, body: `{"post":{"targets":[{"account":"` + bsky +
+		`","options":{"bogus":1,"disable_quotes":"yes"},"content":{"text":"  "}}],"schedule":{}}}`})
+	p = wantProblem(t, r, 422, codeValidation)
+	for _, want := range []string{"/post/targets/0/options/bogus", "/post/targets/0/options/disable_quotes",
+		"/post/targets/0/content/text", "/post/schedule/at"} {
 		found := false
 		for _, fe := range p.Errors {
 			found = found || fe.Pointer == want
@@ -162,6 +181,7 @@ func TestV1DraftList(t *testing.T) {
 		t.Fatalf("page 2 = %+v", p2)
 	}
 	wantProblem(t, e.do(req{method: "GET", path: "/v1/drafts?cursor=bogus"}), 400, codeInvalidCursor)
+	wantProblem(t, e.do(req{method: "GET", path: "/v1/drafts" + "?tag=a" + strings.Repeat("&tag=x", 20)}), 400, codeInvalidParameter)
 }
 
 func TestV1PostConsumesDraft(t *testing.T) {
@@ -191,6 +211,27 @@ func TestV1PostConsumesDraft(t *testing.T) {
 	r = e.do(req{method: "POST", path: "/v1/posts", body: withDraft})
 	wantStatus(t, r, 202)
 	wantProblem(t, e.do(req{method: "GET", path: "/v1/drafts/" + d.ID}), 404, codeNotFound)
+	// Posting it again (a double click, another tab) makes no second post.
+	r = e.do(req{method: "POST", path: "/v1/posts", body: withDraft})
+	p = wantProblem(t, r, 422, codeValidation)
+	if p.Errors[0].Code != "unknown_draft" || e.countPosts() != 1 {
+		t.Fatalf("second post: %+v, %d posts", p.Errors, e.countPosts())
+	}
+
+	// A draft saved again after the post read it is kept, and nothing posts.
+	d2, _ := e.newDraft(`{"post":` + body + `}`)
+	if err := e.st.UpdateV1Draft(context.Background(), &store.V1Draft{ID: d2.ID[4:], OwnerID: store.DefaultOwner,
+		Text: "edited", Body: body}, 0); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := e.st.GetV1Draft(context.Background(), store.DefaultOwner, d2.ID[4:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.Version-- // as the request read it
+	if err := e.st.DeleteV1Draft(context.Background(), store.DefaultOwner, stale.ID, stale.Version); !errors.Is(err, store.ErrDraftConflict) {
+		t.Fatalf("stale take: %v", err)
+	}
 }
 
 func TestV1TranslateDraft(t *testing.T) {
@@ -204,6 +245,9 @@ func TestV1TranslateDraft(t *testing.T) {
 	e.api.Translator = v1FakeTranslator{}
 	tok := e.token("drafts:write")
 	wantProblem(t, e.do(req{method: "POST", path: "/v1/drafts/" + d.ID + ":translate", auth: tok, body: `{"target_lang":"fr"}`}),
+		403, codeInsufficientScope)
+	// The same answer for a draft that doesn't exist: no probing.
+	wantProblem(t, e.do(req{method: "POST", path: "/v1/drafts/drf_none:translate", auth: tok, body: `{"target_lang":"fr"}`}),
 		403, codeInsufficientScope)
 	wantProblem(t, e.do(req{method: "POST", path: "/v1/drafts/" + d.ID + ":translate", body: `{"target_lang":"xx"}`}), 422, codeValidation)
 	wantProblem(t, e.do(req{method: "POST", path: "/v1/drafts/" + d.ID + ":frobnicate", body: `{}`, undocumented: true}), 404, codeNotFound)
@@ -251,7 +295,9 @@ func TestConvertOldDrafts(t *testing.T) {
 		CreatedAt: time.Now(), UpdatedAt: time.Now(), Media: []store.Media{
 			{Ordinal: 0, BlossomURL: "https://blossom.test/" + sha + ".png", SHA256: sha, Mime: "image/png", Alt: "a", ClientID: "c1"},
 			{Ordinal: 1, BlossomURL: "https://elsewhere.test/" + sha, SHA256: sha, Mime: "image/png", ClientID: "cx"},
-			{Ordinal: 2, BlossomURL: "https://blossom.test/" + sha + ".png", SHA256: sha, Mime: "image/png", Alt: "b", ClientID: "c2"},
+			{Ordinal: 2, BlossomURL: "https://blossom.test/" + sha + ".png", SHA256: sha, Mime: "image/png", Alt: "b", ClientID: "c2",
+				PosterURL: "https://tracker.example/x.jpg", Dim: "<b>", Blurhash: "bad hash"},
+			{Ordinal: 3, BlossomURL: "https://blossom.test/" + sha, SHA256: sha, Mime: "text/html", ClientID: "c3"},
 		}}
 	if err := e.st.CreateDraft(old); err != nil {
 		t.Fatal(err)
@@ -282,12 +328,18 @@ func TestConvertOldDrafts(t *testing.T) {
 	if err := json.Unmarshal(d.Post, &p); err != nil {
 		t.Fatal(err)
 	}
-	if d.Title != "Old one" || d.Tags[0] != "t" || *p.Content.Text != "one\n---\ntwo" {
+	if d.Title != "one" || d.Tags[0] != "t" || *p.Content.Text != "one\n---\ntwo" {
 		t.Fatalf("draft = %+v %s", d, d.Post)
 	}
 	if len(p.Content.Media) != 2 || p.Content.Media[0].ID == p.Content.Media[1].ID || p.Content.Media[0].Part != nil ||
 		p.Content.Media[1].Part == nil || *p.Content.Media[1].Part != 1 || *p.Content.Media[1].Alt != "b" {
 		t.Fatalf("media = %s", d.Post)
+	}
+	// What the old routes took from the client is checked: no outside
+	// poster, no made-up dimensions; an unknown type is dropped.
+	mo, err := e.st.MediaObject(context.Background(), store.DefaultOwner, p.Content.Media[1].ID)
+	if err != nil || mo.PosterURL != "" || mo.Dim != "" || mo.Blurhash != "" {
+		t.Fatalf("adopted object = %+v, %v", mo, err)
 	}
 	if len(p.Targets) != 2 || p.Targets[0].Account != e.acct("bluesky") || p.Targets[1].Account != e.acct("mastodon") {
 		t.Fatalf("targets = %s", d.Post)

@@ -45,8 +45,8 @@ func NormalizeTags(in []string) []string {
 		if strings.HasPrefix(t, "#") {
 			t = t[1:]
 		}
-		if len(t) > 32 {
-			t = t[:32]
+		if r := []rune(t); len(r) > 32 { // whole characters
+			t = string(r[:32])
 		}
 		if t == "" {
 			continue

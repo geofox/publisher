@@ -99,6 +99,12 @@ func (a *API) convertOldDraft(ctx context.Context, od store.OldDraft) error {
 				"draft_id", od.ID, "ordinal", m.Ordinal)
 			continue
 		}
+		m, ok := adoptedMeta(m, blossom)
+		if !ok {
+			slog.WarnContext(ctx, "drafts: convert: attachment of an unknown type, dropped",
+				"draft_id", od.ID, "ordinal", m.Ordinal)
+			continue
+		}
 		obj, err := a.Store.AdoptMedia(ctx, od.OwnerID, m, given)
 		if err != nil {
 			return err
@@ -149,7 +155,9 @@ func (a *API) convertOldDraft(ctx context.Context, od store.OldDraft) error {
 		at := sp.ScheduledAt
 		req.Schedule = &v1CreateSchedule{At: &at}
 	}
-	return a.Store.ConvertDraft(ctx, od.ID, od.Title, text, marshalPost(&req))
+	// The old routes never took a title: theirs was derived (cut at 80
+	// bytes); derived again, it follows the text.
+	return a.Store.ConvertDraft(ctx, od.ID, store.DeriveTitle(text), text, marshalPost(&req))
 }
 
 // oldOverrides turns a type's old override fields into a target's options
@@ -241,3 +249,53 @@ func adoptable(m store.Media, blossom string) bool {
 }
 
 var blossomExt = regexp.MustCompile(`^\.[a-z0-9]{1,5}$`)
+
+// adoptedMeta checks the rest of an old attachment's description, which
+// the old routes took from the client as it came: a poster only from this
+// server's media storage (a post publishes it), a known media type, sane
+// dimensions and sizes. ok=false: a type no post could carry.
+func adoptedMeta(m store.Media, blossom string) (store.Media, bool) {
+	if !adoptableMime[m.Mime] {
+		return m, false
+	}
+	if m.PosterURL != "" && !onBlossom(m.PosterURL, blossom) {
+		m.PosterURL = ""
+	}
+	if !dimPattern.MatchString(m.Dim) {
+		m.Dim = ""
+	}
+	if !blurhashPattern.MatchString(m.Blurhash) {
+		m.Blurhash = ""
+	}
+	m.SizeBytes = max(m.SizeBytes, 0)
+	m.DurationSecs = min(max(m.DurationSecs, 0), 24*3600)
+	return m, true
+}
+
+var (
+	adoptableMime = map[string]bool{"image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true,
+		"image/heic": true, "image/heif": true, "image/avif": true, "video/mp4": true, "video/quicktime": true, "video/webm": true}
+	dimPattern      = regexp.MustCompile(`^[1-9][0-9]{0,4}x[1-9][0-9]{0,4}$`)
+	blurhashPattern = regexp.MustCompile(`^[0-9A-Za-z#$%*+,\-.:;=?@\[\]^_{|}~]{6,100}$`)
+)
+
+// onBlossom is whether u is a file in this server's media storage: on the
+// Blossom origin at /<sha256>[.ext] (whichever hash).
+func onBlossom(u, blossom string) bool {
+	pu, err := neturl.Parse(u)
+	if err != nil {
+		return false
+	}
+	sha := strings.TrimPrefix(pu.Path, strings.TrimRight(blossomPath(blossom), "/")+"/")
+	if i := strings.IndexByte(sha, '.'); i >= 0 {
+		sha = sha[:i]
+	}
+	return sha256Hex.MatchString(sha) && adoptable(store.Media{BlossomURL: u, SHA256: sha}, blossom)
+}
+
+func blossomPath(blossom string) string {
+	if b, err := neturl.Parse(blossom); err == nil {
+		return b.Path
+	}
+	return ""
+}

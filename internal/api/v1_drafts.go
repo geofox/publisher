@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/translate"
 )
@@ -60,13 +62,14 @@ type v1DraftListItem struct {
 func draftETag(version int64) string { return `"` + strconv.FormatInt(version, 10) + `"` }
 
 // ifMatch reads If-Match: 0 when absent or "*" (any version), the version
-// it names, or ok=false for a value this server never sent.
+// it names, or ok=false for a value this server never sent (a weak tag or
+// a list included).
 func ifMatch(r *http.Request) (version int64, ok bool) {
 	v := strings.TrimSpace(r.Header.Get("If-Match"))
 	if v == "" || v == "*" {
 		return 0, true
 	}
-	v = strings.TrimPrefix(v, "W/")
+	// If-Match compares strongly (RFC 9110 §13.1.1): a weak tag never matches.
 	n, err := strconv.ParseInt(strings.Trim(v, `"`), 10, 64)
 	if err != nil || n < 1 || !strings.HasPrefix(v, `"`) || !strings.HasSuffix(v, `"`) {
 		return 0, false
@@ -175,34 +178,46 @@ func (a *API) checkDraft(ctx context.Context, owner string, in *v1DraftIn) ([]fi
 		if err != nil {
 			return nil, err
 		}
-		known := map[string]bool{}
+		known := map[string]store.Account{}
 		for _, ac := range accts {
-			known[ac.ID] = true
+			known[ac.ID] = ac
 		}
-		seen := map[string]bool{}
+		seen, seenType := map[string]bool{}, map[string]bool{}
 		for i, t := range p.Targets {
 			ptr := "/post/targets/" + strconv.Itoa(i)
+			ac, ok := known[t.Account]
 			switch {
-			case !known[t.Account]:
+			case !ok:
 				add(ptr+"/account", "unknown_account", "no account "+t.Account+"; list them with GET /v1/accounts")
 			case seen[t.Account]:
 				add(ptr+"/account", "duplicate", "this account is already a target")
+			case seenType[ac.Type]:
+				add(ptr+"/account", "duplicate_type", "one account per destination type for now")
 			}
-			seen[t.Account] = true
-			for k, v := range t.Options {
-				op := ptr + "/options/" + jsonPointerToken(k)
-				switch val := v.(type) {
-				case nil, bool, float64:
-				case string:
-					if utf8.RuneCountInString(val) > maxOptionRunes {
-						add(op, "invalid_option", "at most 500 characters")
+			seen[t.Account], seenType[ac.Type] = true, ok
+			// Options as the post checks them, against the account's
+			// destination; without one, only their shape.
+			if drv, registered := destination.Lookup(ac.Type); ok && registered {
+				a.planOptions(drv.Manifest(), a.caps(ctx, ac.Type), t.Options, ptr+"/options", &dispatch.Overrides{}, add)
+			} else {
+				for k, v := range t.Options {
+					op := ptr + "/options/" + jsonPointerToken(k)
+					switch val := v.(type) {
+					case nil, bool, float64:
+					case string:
+						if utf8.RuneCountInString(val) > maxOptionRunes {
+							add(op, "invalid_option", "at most 500 characters")
+						}
+					default:
+						add(op, "invalid_option", "a string, number, boolean or null")
 					}
-				default:
-					add(op, "invalid_option", "a string, number, boolean or null")
 				}
 			}
 			if c := t.Content; c != nil {
 				checkText(ptr+"/content/text", c.Text)
+				if c.Text != nil && strings.TrimSpace(*c.Text) == "" {
+					add(ptr+"/content/text", "empty", "leave text out to use the shared text")
+				}
 				checkCW(ptr+"/content/content_warning", c.ContentWarning)
 				checkLangs(ptr+"/content/languages", c.Languages)
 			}
@@ -213,7 +228,9 @@ func (a *API) checkDraft(ctx context.Context, owner string, in *v1DraftIn) ([]fi
 	} else if src != nil && len(src.URL) > maxSourceURL {
 		add("/post", "too_long", "the source URL is at most 2048 characters")
 	}
-	if s := p.Schedule; s != nil && s.At != nil {
+	if s := p.Schedule; s != nil && s.At == nil {
+		add("/post/schedule/at", "required", "a time; leave schedule out for none")
+	} else if s != nil {
 		if _, err := time.Parse(time.RFC3339, strings.ToUpper(*s.At)); err != nil {
 			add("/post/schedule/at", "invalid_time", "an RFC 3339 time, such as 2027-01-01T09:00:00Z")
 		}
@@ -328,6 +345,11 @@ func (a *API) v1ListDrafts(w http.ResponseWriter, r *http.Request) {
 	}
 	pr, _ := principalFrom(r.Context())
 	q := r.URL.Query()
+	if len(q["tag"]) > maxDraftTags {
+		problem(w, r, http.StatusBadRequest, codeInvalidParameter, "at most 20 tags",
+			fieldError{Parameter: "tag", Code: "too_many", Detail: "at most 20 tags"})
+		return
+	}
 	dq := store.V1DraftQuery{OwnerID: pr.OwnerID, Text: q.Get("q"), Tags: q["tag"], Limit: limit + 1}
 	if after != nil {
 		sid, ok := parseID(after.ID, prefixDraft)
@@ -359,9 +381,8 @@ func (a *API) v1ListDrafts(w http.ResponseWriter, r *http.Request) {
 			preview = string(r[:120])
 		}
 		it.Preview = preview
-		var p v1CreatePostReq
-		if json.Unmarshal([]byte(d.Body), &p) == nil && len(p.Content.Media) > 0 {
-			if m, err := a.Store.MediaObject(r.Context(), pr.OwnerID, p.Content.Media[0].ID); err == nil {
+		if d.FirstMediaID != "" {
+			if m, err := a.Store.MediaObject(r.Context(), pr.OwnerID, d.FirstMediaID); err == nil {
 				u := m.URL
 				if strings.HasPrefix(m.Mime, "video/") {
 					u = m.PosterURL
@@ -487,6 +508,7 @@ func (a *API) v1PatchDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	switch err := a.Store.UpdateV1Draft(r.Context(), d, want); {
 	case errors.Is(err, store.ErrDraftConflict):
+		a.setCurrentETag(r.Context(), w, d.OwnerID, d.ID)
 		problem(w, r, http.StatusPreconditionFailed, codePreconditionFailed, "the draft changed while saving; read it again")
 		return
 	case errors.Is(err, store.ErrDraftNotFound):
@@ -500,6 +522,13 @@ func (a *API) v1PatchDraft(w http.ResponseWriter, r *http.Request) {
 	a.writeDraftV1(w, r, http.StatusOK, d)
 }
 
+// setCurrentETag sets the draft's ETag as it now is (a 412 tells it).
+func (a *API) setCurrentETag(ctx context.Context, w http.ResponseWriter, owner, id string) {
+	if cur, err := a.Store.GetV1Draft(ctx, owner, id); err == nil {
+		w.Header().Set("ETag", draftETag(cur.Version))
+	}
+}
+
 func (a *API) v1DeleteDraft(w http.ResponseWriter, r *http.Request) {
 	d, ok := a.v1OwnDraft(w, r)
 	if !ok {
@@ -511,6 +540,7 @@ func (a *API) v1DeleteDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	switch err := a.Store.DeleteV1Draft(r.Context(), d.OwnerID, d.ID, want); {
 	case errors.Is(err, store.ErrDraftConflict):
+		a.setCurrentETag(r.Context(), w, d.OwnerID, d.ID)
 		problem(w, r, http.StatusPreconditionFailed, codePreconditionFailed, "the draft changed; read it again")
 		return
 	case errors.Is(err, store.ErrDraftNotFound):
@@ -553,13 +583,13 @@ func (a *API) v1TranslateDraft(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	src, ok := a.v1OwnDraft(w, r)
-	if !ok {
-		return
-	}
 	// Translating spends the DeepL quota, as POST /v1/translate does.
 	if pr, _ := principalFrom(r.Context()); !pr.can(scopePostsWrite) {
 		problem(w, r, http.StatusForbidden, codeInsufficientScope, "translating needs the posts:write scope too")
+		return
+	}
+	src, ok := a.v1OwnDraft(w, r)
+	if !ok {
 		return
 	}
 	if a.Translator == nil {

@@ -1,6 +1,6 @@
 "use strict";
-import { state, v1PostBody, defaultOv, clearImages } from "./state.js";
-import { loadDraft, markDirty, mediaReady, newKey } from "./compose.js";
+import { state, v1PostBody, clearImages } from "./state.js";
+import { loadDraft, markDirty, mediaReady, newKey, resetComposer, rerenderComposer } from "./compose.js";
 import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
 import { flash, el, v1, problemError, confirmModal, ORDER } from "./common.js";
 import { accountByID, loadAccounts } from "./accounts.js";
@@ -154,7 +154,7 @@ async function sourceInteraction(post, platforms) {
         action, platform: src.platform,
         sourcePreview: src.preview, sourceURL: src.preview.web_url, sourceAuthor: src.preview.author_handle,
         sourceInput: url, caps: src.caps,
-        prevPlatforms: new Set(ORDER),
+        prevPlatforms: new Set(platforms.length ? platforms : ORDER),
       },
     };
   } catch (e) {
@@ -165,12 +165,13 @@ async function sourceInteraction(post, platforms) {
 
 // specFromDraft turns a /v1 draft into what the composer's loadDraft reads.
 async function specFromDraft(d, etag) {
-  await loadAccounts().catch(() => {});
+  const accountsRead = await loadAccounts().then(() => true, () => false);
   const post = d.post || {}, c = post.content || {};
   const platforms = [], overrides = {};
+  let skipped = 0;
   for (const t of post.targets || []) {
     const a = accountByID(t.account);
-    if (!a || !ORDER.includes(a.type) || platforms.includes(a.type)) continue;
+    if (!a || !ORDER.includes(a.type) || platforms.includes(a.type)) { skipped++; continue; }
     platforms.push(a.type);
     overrides[a.type] = ovFromTarget(a.type, t);
   }
@@ -191,6 +192,9 @@ async function specFromDraft(d, etag) {
   }
   const { interaction, lost } = await sourceInteraction(post, platforms);
   const notes = [];
+  if (!accountsRead && (post.targets || []).length) {
+    notes.push("The accounts couldn't be read: check where this goes before saving or posting");
+  } else if (skipped) notes.push(skipped + " of the draft's accounts aren't available here and were left out");
   if (missing) notes.push(missing + " attachment(s) were deleted and left out");
   if (lost) notes.push(lost);
   return {
@@ -204,9 +208,17 @@ async function specFromDraft(d, etag) {
   };
 }
 
-// showDraft loads a /v1 draft into the composer.
-async function showDraft(d, etag, notice) {
+// showDraft loads a /v1 draft into the composer. The spec is built first
+// (it may resolve a source post); the composer changes only once it is
+// ready, and only if still wanted (current: a newer open didn't start).
+async function showDraft(d, etag, notice, current = () => true) {
   const spec = await specFromDraft(d, etag);
+  if (!current()) return;
+  // What was in Compose was confirmed away (or saved): replace it as is.
+  state.dirty = false;
+  state.master = "";
+  clearImages();
+  state.interaction = null;
   if (notice && !spec.notice) spec.notice = notice;
   spec.onLoaded = () => {
     renderTagChips(d.tags || []);
@@ -220,17 +232,16 @@ async function showDraft(d, etag, notice) {
   loadDraft(spec);
 }
 
+let openSeq = 0;
+
 async function openDraft(id) {
   if (state.dirty && !confirm("Discard unsaved changes and load this draft?")) return;
+  const seq = ++openSeq;
   try {
     const { data, etag } = await draftCall(draftPath(id));
-    // The confirm above covers what's in Compose.
-    state.dirty = false;
-    state.master = "";
-    clearImages();
-    state.interaction = null;
-    await showDraft(data, etag);
+    await showDraft(data, etag, "", () => seq === openSeq);
   } catch (e) {
+    if (seq !== openSeq) return;
     if (e.status === 404) { flash("That draft is gone"); loadDraftList(); return; }
     alert("Failed to load draft: " + e.message);
   }
@@ -253,8 +264,8 @@ function draftBody() {
 
 let saving = null;
 
-export function saveActiveDraft() {
-  if (!saving) saving = doSave().finally(() => { saving = null; });
+export function saveActiveDraft(opts) {
+  if (!saving) saving = doSave(opts).finally(() => { saving = null; });
   return saving;
 }
 
@@ -271,6 +282,7 @@ async function doSave({ overwrite = false } = {}) {
   try {
     if (!(await mediaReady())) { setStatus("error", "not saved: an attachment isn't uploaded"); return; }
     const body = draftBody();
+    const edits = state.edits; // what this save holds
     let res;
     if (state.activeDraftId) {
       try {
@@ -290,8 +302,12 @@ async function doSave({ overwrite = false } = {}) {
     if (!res) res = await draftCall("/v1/drafts", { method: "POST", body });
     state.activeDraftId = res.data.id;
     state.draftETag = res.etag;
-    state.dirty = false;
-    setStatus("saved", "saved just now");
+    if (state.edits === edits) {
+      state.dirty = false;
+      setStatus("saved", "saved just now");
+    } else {
+      setStatus("dirty", "unsaved changes"); // edited while saving
+    }
     snapshot(); // clears recovery (since activeDraftId is now set)
     loadDraftList();
     refreshActiveControls();
@@ -310,7 +326,7 @@ function conflictModal() {
     title: "This draft changed in another tab",
     body: "It was saved somewhere else after you opened it. Overwrite it with what's here, or cancel and open it from the list to see the other version (your edits here would be lost).",
     confirmText: "Overwrite",
-    onConfirm: async () => { await doSave({ overwrite: true }); return true; },
+    onConfirm: async () => { await saveActiveDraft({ overwrite: true }); return true; },
   });
 }
 
@@ -319,18 +335,21 @@ export function newDraft() {
     const choice = confirm("You have unsaved changes. OK to discard and start a new draft? (Cancel to keep editing.)");
     if (!choice) return;
   }
-  // reset state
-  state.master = "";
+  clearComposer();
+}
+
+// clearComposer empties Compose for a new draft: text, media, settings,
+// schedule, numbering, targets and tags.
+function clearComposer() {
+  openSeq++; // a draft still opening must not land afterwards
   state.activeDraftId = null;
   state.draftETag = "";
   state.dirty = false;
-  clearImages();
-  state.interaction = null;
-  // reset overrides to defaults — iterate state.ov keys for safety
-  for (const p of Object.keys(state.ov)) state.ov[p] = defaultOv(p);
-  // best-effort UI refresh
-  const ta = document.getElementById("master") || document.getElementById("m");
-  if (ta) ta.value = "";
+  state.anchors = {};
+  state.platforms = new Set(ORDER);
+  resetComposer();
+  const num = document.getElementById("threadnum"); if (num) num.checked = true;
+  rerenderComposer();
   renderTagChips([]);
   setStatus("", "");
   loadDraftList();
@@ -448,20 +467,6 @@ export function installDraftsSidebar() {
   loadDraftList();
 }
 
-function clearComposer() {
-  state.activeDraftId = null;
-  state.draftETag = "";
-  state.dirty = false;
-  state.master = "";
-  clearImages();
-  const ta = document.getElementById("master") || document.getElementById("m");
-  if (ta) ta.value = "";
-  renderTagChips([]);
-  setStatus("", "");
-  loadDraftList();
-  refreshActiveControls();
-}
-
 export async function deleteActiveDraft() {
   if (!state.activeDraftId) return;
   if (!confirm("Delete this draft? This cannot be undone.")) return;
@@ -478,6 +483,7 @@ export async function deleteActiveDraft() {
     clearComposer();
   } catch (e) {
     setStatus("error", "delete failed");
+    flash("Draft not deleted: " + e.message);
     console.warn("deleteActiveDraft:", e);
   }
 }
@@ -507,10 +513,6 @@ export function populateTranslateMenu() {
       const { data, etag } = await draftCall(draftPath(state.activeDraftId) + ":translate", {
         method: "POST", body: { target_lang: target },
       });
-      state.dirty = false;
-      state.master = "";
-      clearImages();
-      state.interaction = null;
       await showDraft(data, etag, "Translated → new draft");
       loadDraftList();
     } catch (e) {

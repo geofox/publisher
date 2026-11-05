@@ -649,6 +649,69 @@ as they move.
 >   the single-post card; relay deliveries of a Nostr thread's later parts
 >   aren't in the modal (History has them).
 
+> **4c.** Drafts are on `/v1`.
+> - **`/v1/drafts`**: list (`q` in text or title, `tag` repeated = all of
+>   them, newest change first, cursors on `updated_at`+id), create, read,
+>   `PATCH` (each field sent replaces; `post` as a whole), `DELETE`, and
+>   `:translate` (a new draft; needs `posts:write` too, for the DeepL
+>   quota). A draft holds a `POST /v1/posts` body as it stands: nothing is
+>   required, but what is there is checked against a post's bounds and must
+>   name the owner's media and accounts. It is stored without its unset
+>   fields, so it posts as it is. The title defaults to the text's first
+>   line and follows the text until one is given.
+> - **Versions.** Each write bumps `drafts.version`, sent as a strong ETag.
+>   `If-Match` on a stale version is `412 precondition_failed` (new code)
+>   with the current ETag; a PATCH without it still writes against the
+>   version it just read, so a write in between isn't lost silently.
+> - **Posting a draft**: `"draft"` on `POST /v1/posts` (and `:preview`)
+>   deletes it once the post is saved. Needs `drafts:write` (field error
+>   `not_permitted`); `unknown_draft` otherwise. A replayed
+>   Idempotency-Key replays the answer and deletes nothing more.
+> - **Migration v8** adds `drafts.body_json` and `version` and two
+>   indexes (`drafts(owner_id, updated_at, id)`,
+>   `media_objects(owner_id, sha256)`). **Conversion at startup**
+>   (`API.ConvertOldDrafts`, once per draft, before serving): attachments
+>   on this server's Blossom origin become media objects (others are
+>   dropped and logged), platforms become the enabled account of each type,
+>   overrides become options (only those the manifest declares) and
+>   per-account content, `anchors` become `part`, the title is derived
+>   again (the old one was cut at 80 bytes). Numbering, schedule and a
+>   reply or quote are mapped too, though the old server never stored
+>   them, so old drafts come with the defaults. A draft that fails is
+>   logged and tried again next start.
+>   Old drafts' media rows stay, unused. The old `/api/drafts*` routes are
+>   gone.
+> - **Web app.** Drafts save as JSON through `/v1/drafts` with `If-Match`;
+>   a 412 asks to overwrite. Opening a draft restores targets, per-account
+>   settings, media with their alt and part, numbering, schedule, tags, and
+>   a reply or quote (resolved again; if the source can't be read, it
+>   opens as a new post and says so). Posting sends `draft`. The list is
+>   built without innerHTML.
+> - Fixed on the way: `DeriveTitle` and `NormalizeTags` cut bytes, which
+>   could split a character.
+> - **Review fixes (4c).** A posted draft is taken (deleted at the version
+>   the request read) before the post is saved and put back if saving
+>   fails, so a double click or two tabs make one post, and a draft saved
+>   again meanwhile is kept (`draft_changed`). The draft check runs the
+>   post's checks too (options against the manifest, blank per-account
+>   text, one account per type, `schedule` without `at`). 412s from a race
+>   carry the current ETag; If-Match compares strongly. PATCH is not a
+>   merge patch (documented). The conversion checks the rest of an old
+>   attachment's description (poster only from media storage, known
+>   types, sane dimensions). The list reads neither bodies nor whole
+>   texts, takes at most 20 `tag`s, and `:translate` checks `posts:write`
+>   before reading the draft. Web app: a loaded schedule shows (button
+>   "Schedule"); New and Delete clear schedule, numbering, targets and
+>   tags; opening builds the draft first and the last click wins; edits
+>   made while saving stay unsaved; missing accounts are said; Overwrite
+>   goes through the single save.
+>   Deferred: a cap on drafts per owner; expected 4xx (412, a gone draft)
+>   still log a browser console line.
+> - **Deploy note:** migration v8 (additive) and the one-time draft
+>   conversion at first start; old drafts' attachments not on the
+>   configured `BLOSSOM_URL` origin are dropped from the converted draft
+>   (logged with the draft id).
+
 ## Task 4.1: Composer and history on `/v1`
 
 - [ ] Destinations/accounts/capabilities from `/v1`; option panels from

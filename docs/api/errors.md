@@ -96,7 +96,8 @@ Resolving an unknown item (`:resolve`) adds `unknown_item`, and for its
 account's token can't look posts up, e.g. Mastodon without `read:search`).
 Drafts add `unknown_media` and `unknown_account` (media or accounts that
 aren't yours), and posting one (`draft` on `POST /v1/posts`) adds
-`unknown_draft` and `not_permitted` (the token lacks `drafts:write`).
+`unknown_draft`, `draft_changed` (saved again meanwhile) and
+`not_permitted` (the token lacks `drafts:write`).
 
 ## invalid_parameter
 

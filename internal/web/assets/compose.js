@@ -17,6 +17,7 @@ function autoGrow(ta) {
 
 export function markDirty() {
   state.dirty = true;
+  state.edits++;
   const el2 = document.getElementById("draft-status");
   if (el2) { el2.className = "draft-status dirty"; el2.textContent = "unsaved changes"; }
   const save = document.getElementById("draft-save");
@@ -555,6 +556,7 @@ export function loadDraft(input) {
     window.scrollTo({ top: 0, behavior: "smooth" });
     renderImages();
     renderInteractionUI(); // re-renders chips/cards/preview and hides the banner
+    updateSched(); // a loaded schedule shows (and the button says Schedule)
     flash(input.notice || "Draft loaded");
     if (input.onLoaded) input.onLoaded();
   };
@@ -1123,6 +1125,8 @@ export function resetComposer() {
   for (const p of Object.keys(state.ov)) state.ov[p] = defaultOv(p);
   const m = $("#master"); if (m) { m.value = ""; autoGrow(m); }
   const sched = $("#schedat"); if (sched) { sched.value = ""; updateSched(); }
+  // A posted draft's tags don't carry over to the next one.
+  const tags = document.querySelector("#draft-tags-input .tag-chips"); if (tags) tags.replaceChildren();
   renderImages();
   refreshCounts();
   refreshTargets();
@@ -1200,7 +1204,7 @@ async function doPost() {
       post = await sendPost(body);
     } catch (e) {
       // Deleted meanwhile (another tab posted it): post without it.
-      const gone = e.problem && (e.problem.errors || []).some(fe => fe.pointer === "/draft");
+      const gone = e.problem && (e.problem.errors || []).some(fe => fe.pointer === "/draft" && fe.code === "unknown_draft");
       if (!gone) throw e;
       delete body.draft;
       post = await sendPost(body);
