@@ -31,6 +31,11 @@ type InteractSpec struct {
 	SourcePreview      SourcePreview // for fan-out reproduction
 	SourceImages       []Img         // original's media, re-hosted (fan-out only)
 	SourceMediaRecords []store.Media // archival records for the re-hosted source media
+	// Source is where the post came from ("web" when empty).
+	Source string
+	// Accounts names the account each platform posts as (platform →
+	// account id); a platform left out gets its env account.
+	Accounts map[string]string
 }
 
 // assembleReproduction builds a fan-out post body: commentary, an attributed copy

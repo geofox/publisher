@@ -351,6 +351,7 @@ func TestV1Conformance(t *testing.T) {
 	e.seedScheduled("sch", time.Now().Add(time.Hour), "bluesky")
 	e.seedPost("fail", "failed", "mastodon")
 	e.withEngine()
+	e.api.Resolve = sourcesResolver{}
 	med := e.upload("conf")
 	png := string(pngBytes(t, 4, 4))
 	imgHdr := map[string]string{"Content-Type": "image/png"}
@@ -375,6 +376,7 @@ func TestV1Conformance(t *testing.T) {
 		{"GET /v1/posts", req{method: "GET", path: "/v1/posts"}, 200},
 		{"POST /v1/posts", req{method: "POST", path: "/v1/posts", body: newPost, header: map[string]string{"Idempotency-Key": `"conf-1"`}}, 202},
 		{"POST /v1/posts:preview", req{method: "POST", path: "/v1/posts:preview", body: newPost}, 200},
+		{"POST /v1/resolve", req{method: "POST", path: "/v1/resolve", body: `{"url":"` + bskySource + `"}`}, 200},
 		{"POST /v1/media", req{method: "POST", path: "/v1/media?alt=x", body: png, header: imgHdr}, 201},
 		{"POST /v1/media:compress", req{method: "POST", path: "/v1/media:compress?preset=small", body: png, header: imgHdr}, 200},
 		{"GET /v1/media/{id}", req{method: "GET", path: "/v1/media/" + med}, 200},

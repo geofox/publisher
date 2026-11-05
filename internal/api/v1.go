@@ -90,6 +90,7 @@ func (a *API) v1Routes() []v1Route {
 		{Method: "GET", Path: "/v1/posts", Scope: scopePostsRead, Handler: a.v1ListPosts},
 		{Method: "POST", Path: "/v1/posts", Scope: scopePostsWrite, Idempotent: true, Handler: a.v1CreatePost},
 		{Method: "POST", Path: "/v1/posts:preview", Scope: scopePostsWrite, Handler: a.v1PreviewPost},
+		{Method: "POST", Path: "/v1/resolve", Scope: scopePostsWrite, Handler: a.v1Resolve},
 		{Method: "GET", Path: "/v1/posts/{id}", Scope: scopePostsRead, Handler: a.v1GetPost},
 		{Method: "PATCH", Path: "/v1/posts/{id}", Scope: scopePostsWrite, Handler: a.v1PatchPost},
 		{Method: "POST", Path: "/v1/posts/{id}", Scope: scopePostsWrite, Actions: []string{"cancel", "retry"}, Handler: a.v1PostAction},

@@ -275,10 +275,43 @@ func (d *Dispatcher) Interact(ctx context.Context, spec InteractSpec) *store.Pos
 
 func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec InteractSpec) *store.Post {
 	ctx = logging.With(ctx, "post_id", id)
+	rec := d.planInteract(ctx, id, spec)
+	if err := d.drive(ctx, id, &memMedia{post: spec.Images, source: spec.SourceImages},
+		func() error { return d.create(ctx, rec) }); err != nil {
+		return notSaved(rec, err)
+	}
+	return d.recorded(ctx, rec)
+}
+
+// EnqueueInteraction persists a reply, quote or repost for the background
+// workers, due now; nothing is sent inline. Its media must be in media
+// storage (MediaRecords, SourceMediaRecords): the workers fetch them.
+func (d *Dispatcher) EnqueueInteraction(ctx context.Context, spec InteractSpec) (*store.Post, error) {
+	if d.Store == nil {
+		return nil, errors.New("publishing requires a store")
+	}
+	id := newID()
+	ctx = logging.With(ctx, "post_id", id)
+	rec := d.planInteract(ctx, id, spec)
+	if err := d.create(ctx, rec); err != nil {
+		return nil, err
+	}
+	d.kick()
+	return d.recorded(ctx, rec), nil
+}
+
+// planInteract plans an interaction's targets, due now: the action on the
+// source's account, and for a quote, a link-quote reproduction on each
+// fan-out account.
+func (d *Dispatcher) planInteract(ctx context.Context, id string, spec InteractSpec) *store.Post {
 	now := d.now()
+	source := spec.Source
+	if source == "" {
+		source = "web"
+	}
 	rec := &store.Post{
 		ID: id, CreatedAt: time.Now().UTC(), MasterText: spec.Text,
-		Source: "web", Media: spec.MediaRecords, Status: "sending",
+		Source: source, Media: spec.MediaRecords, Status: "sending",
 		Interaction: &store.Interaction{
 			Action: spec.Action, SourcePlatform: spec.SourcePlatform,
 			SourceURL: spec.SourceURL, SourceAuthor: spec.SourceAuthor,
@@ -292,32 +325,38 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 		rec.Platforms = []string{spec.SourcePlatform}
 		fields, _ := json.Marshal(ov2fields(spec.Overrides[spec.SourcePlatform]))
 		rec.Targets = append(rec.Targets, store.Target{Platform: spec.SourcePlatform, FieldsJSON: string(fields), Status: "sending",
+			AccountID: spec.Accounts[spec.SourcePlatform],
 			Items: []store.Item{{Ordinal: 0, Status: store.ItemPlanned, NextAttemptAt: &now,
 				IdemKey: store.ItemKey(id, spec.SourcePlatform, 0)}}})
 	case actionReply, actionQuote:
 		rec.Platforms = append(rec.Platforms, spec.SourcePlatform)
-		rec.Targets = append(rec.Targets, d.planTarget(ctx, id, spec.SourcePlatform, interactText(spec, spec.SourcePlatform),
-			spec.Overrides[spec.SourcePlatform], postMedia(nUser), nil, spec.Number, &now, "sending"))
+		tg := d.planTarget(ctx, id, spec.SourcePlatform, interactText(spec, spec.SourcePlatform),
+			spec.Overrides[spec.SourcePlatform], postMedia(nUser), nil, spec.Number, &now, "sending")
+		tg.AccountID = spec.Accounts[spec.SourcePlatform]
+		rec.Targets = append(rec.Targets, tg)
 		for _, p := range dedupStrings(spec.Fanout) {
 			if p == spec.SourcePlatform {
 				continue
 			}
 			rec.Platforms = append(rec.Platforms, p)
-			text := assembleReproduction(interactText(spec, p), spec.SourcePreview, spec.SourceURL)
-			rec.Targets = append(rec.Targets, d.planTarget(ctx, id, p, text, spec.Overrides[p],
-				reproductionMedia(nUser, spec, d.mediaMax(ctx, p)), nil, spec.Number, &now, "sending"))
+			tg := d.planTarget(ctx, id, p, ReproductionText(spec, p), spec.Overrides[p],
+				reproductionMedia(nUser, spec, d.mediaMax(ctx, p)), nil, spec.Number, &now, "sending")
+			tg.AccountID = spec.Accounts[p]
+			rec.Targets = append(rec.Targets, tg)
 		}
 	}
-	if err := d.drive(ctx, id, &memMedia{post: spec.Images, source: spec.SourceImages},
-		func() error { return d.create(ctx, rec) }); err != nil {
-		return notSaved(rec, err)
-	}
-	return d.recorded(ctx, rec)
+	return rec
 }
 
-// reproductionMedia is a quote reproduction's media: the user's, then the
-// source's re-hosted media, capped at limit (0 = no cap). User media comes
-// first.
+// ReproductionText is a quote's text on a fan-out account: the commentary,
+// the original's attributed text and its URL.
+func ReproductionText(spec InteractSpec, plat string) string {
+	return assembleReproduction(interactText(spec, plat), spec.SourcePreview, spec.SourceURL)
+}
+
+// InteractText is a reply's or quote's commentary on the source's account.
+func InteractText(spec InteractSpec, plat string) string { return interactText(spec, plat) }
+
 func reproductionMedia(nUser int, spec InteractSpec, limit int) []planMedia {
 	out := postMedia(nUser)
 	nSource := max(len(spec.SourceImages), len(spec.SourceMediaRecords))

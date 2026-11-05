@@ -438,6 +438,29 @@ as they move.
 >   in eight under `-race` on main too (a write waits out the 5 s
 >   `busy_timeout` under the race detector's slowdown).
 
+> PR 3d (split again: 3d interactions, 3e the tools):
+>
+> - **Interactions name the source by URL.** `reply_to`, `quote` or
+>   `repost` on `POST /v1/posts` take `{url}`; the server resolves it (the
+>   same resolver as `/api/resolve`), so clients never carry platform
+>   refs. The action happens on the target account of the source's type,
+>   which must be in `targets`; only a quote may have other targets, each
+>   a link-quote. A quote's source images are copied to Blossom at create
+>   time (best-effort, no videos). Interactions are sent now: `schedule`
+>   is refused.
+> - **Persist first for interactions too**: `Dispatcher.EnqueueInteraction`
+>   plans with `planInteract` (shared with the inline `InteractWithID`)
+>   and leaves sending to the workers.
+> - **`POST /v1/resolve`** returns the post's author, text, media, created
+>   time, your account on its network and per-action availability; it
+>   doesn't return the native ref.
+> - **Drafts move to PR 4.** A /v1 draft holds the `/v1` post body (media
+>   by id), unlike today's composer drafts; moving them now would mean two
+>   formats in one table, or converting drafts the current web app still
+>   reads. PR 4 moves the web app and converts the drafts once (their
+>   media become media objects). Draft consumption (`draft` on create)
+>   goes with them.
+
 ## Task 3.1: Foundations
 
 - [ ] `internal/api/v1` package: router, problem-details writer, error

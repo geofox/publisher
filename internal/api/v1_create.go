@@ -14,6 +14,7 @@ import (
 
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/dispatch"
+	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/transcode"
 	"github.com/geofox/publisher/internal/unfurl"
@@ -44,6 +45,10 @@ type v1CreatePostReq struct {
 	Targets   []v1CreateTarget   `json:"targets"`
 	Threading *v1CreateThreading `json:"threading"`
 	Schedule  *v1CreateSchedule  `json:"schedule"`
+	// At most one: reply to, quote or repost the post at a URL.
+	ReplyTo *v1SourceIn `json:"reply_to"`
+	Quote   *v1SourceIn `json:"quote"`
+	Repost  *v1SourceIn `json:"repost"`
 }
 
 type v1CreateContent struct {
@@ -90,6 +95,9 @@ type createPlan struct {
 	media   []*store.MediaObject // the post's media, in order
 	// mediaReq is each media's index in the request.
 	mediaReq []int
+	// ix is the reply, quote or repost, with the post it acts on.
+	ix     *dispatch.InteractSpec
+	source *resolve.SourceRef
 }
 
 type plannedTarget struct {
@@ -97,6 +105,7 @@ type plannedTarget struct {
 	caps    destination.Capabilities
 	text    string
 	textPtr string // where text came from, for errors
+	reqPtr  string // the target in the request: /targets/i
 	ov      dispatch.Overrides
 	// warnings are notes about request fields the account ignores.
 	warnings []string
@@ -264,7 +273,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 		seenAcct[ac.ID], seenType[ac.Type] = true, true
 		caps := a.caps(ctx, ac.Type)
 		name := drv.Manifest().Name
-		pt := plannedTarget{account: ac, caps: caps, text: text, textPtr: "/content/text"}
+		pt := plannedTarget{account: ac, caps: caps, text: text, textPtr: "/content/text", reqPtr: ptr}
 		ov := dispatch.Overrides{}
 		cw, sensitive, langs := req.Content.ContentWarning, req.Content.Sensitive, req.Content.Languages
 		if c := t.Content; c != nil {
@@ -313,7 +322,8 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 			}
 		}
 		a.planOptions(drv.Manifest(), caps, t.Options, ptr+"/options", &ov, add)
-		if strings.TrimSpace(pt.text) == "" && len(req.Content.Media) == 0 && ov.Text == "" && !sharedEmpty {
+		if action, _, _ := req.interaction(); strings.TrimSpace(pt.text) == "" && len(req.Content.Media) == 0 &&
+			ov.Text == "" && !sharedEmpty && action != "quote" && action != "repost" {
 			sharedEmpty = true
 			add("/content/text", "required", "a post needs text or media")
 		}
@@ -354,6 +364,12 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 		}
 	}
 
+	plan.spec.MasterText = text
+	plan.spec.Source = "api"
+	if _, _, n := req.interaction(); n > 0 && len(errs) == 0 {
+		a.planInteraction(ctx, req, plan, add)
+	}
+
 	// The planner's split must stay a reasonable thread.
 	// (Planned without the link card: a card only shortens the text.)
 	for _, pt := range plan.targets {
@@ -363,8 +379,6 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 				" thread parts on "+pt.account.ID+"; at most 100")
 		}
 	}
-	plan.spec.MasterText = text
-	plan.spec.Source = "api"
 	return plan, errs, nil
 }
 
@@ -472,7 +486,19 @@ func (a *API) v1CreatePost(w http.ResponseWriter, r *http.Request) {
 	}
 	// Saving plans the post, which may fetch a link card: the post must
 	// not be lost to a client that hangs up meanwhile.
-	p, err := enq.Enqueue(context.WithoutCancel(r.Context()), plan.spec, plan.at)
+	var p *store.Post
+	if plan.ix != nil {
+		ienq, ok := a.Dispatch.(interactionEnqueuer)
+		if !ok {
+			problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "publishing replies, quotes and reposts is not available")
+			return
+		}
+		ctx := context.WithoutCancel(r.Context())
+		a.rehostSourceMedia(ctx, plan.ix, plan.source)
+		p, err = ienq.EnqueueInteraction(ctx, *plan.ix)
+	} else {
+		p, err = enq.Enqueue(context.WithoutCancel(r.Context()), plan.spec, plan.at)
+	}
 	if err != nil {
 		slog.ErrorContext(r.Context(), "v1: save post", "err", err)
 		problem(w, r, http.StatusInternalServerError, codeInternal, "saving the post failed")
@@ -547,8 +573,11 @@ type v1PreviewBody struct {
 }
 
 type v1PreviewTarget struct {
-	Account  string          `json:"account"`
-	Type     string          `json:"type"`
+	Account string `json:"account"`
+	Type    string `json:"type"`
+	// Role is what the account gets: post, reply, quote, repost, or
+	// link_quote (a quote's copy on another network).
+	Role     string          `json:"role"`
 	Items    []v1PreviewItem `json:"items"`
 	LinkCard *v1PreviewCard  `json:"link_card"`
 	Warnings []string        `json:"warnings"`
@@ -603,8 +632,9 @@ func (a *API) v1PreviewPost(w http.ResponseWriter, r *http.Request) {
 	for _, pt := range plan.targets {
 		// The unfurl gets a tight budget: a slow page previews without a
 		// card rather than holding the composer.
+		// Interactions carry no link cards (the engine plans none).
 		var card *unfurl.Card
-		if pt.caps.LinkPreview == destination.LinkPreviewClient && a.Unfurl != nil {
+		if pt.caps.LinkPreview == destination.LinkPreviewClient && a.Unfurl != nil && plan.ix == nil {
 			if u, _, ok := unfurl.CardURL(pt.text); ok {
 				c, seen := cards[u]
 				if !seen {
@@ -617,8 +647,22 @@ func (a *API) v1PreviewPost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		cp := dispatch.PlanTarget(pt.caps, pt.text, card, make([]int, len(plan.media)), plan.spec.Number)
-		vt := v1PreviewTarget{Account: pt.account.ID, Type: pt.account.Type, Items: []v1PreviewItem{},
+		vt := v1PreviewTarget{Account: pt.account.ID, Type: pt.account.Type, Role: "post", Items: []v1PreviewItem{},
 			Warnings: append(append([]string{}, pt.warnings...), cp.Warnings...), Media: []v1PreviewNote{}}
+		if ix := plan.ix; ix != nil {
+			vt.Role = ix.Action
+			if pt.account.Type != ix.SourcePlatform {
+				vt.Role = "link_quote"
+				if n := len(plan.source.Preview.Media); n > 0 {
+					vt.Warnings = append(vt.Warnings, "the original's images are copied to media storage and attached when posting")
+				}
+			}
+			if ix.Action == "repost" {
+				vt.Items = append(vt.Items, v1PreviewItem{Text: "", Media: []int{}})
+				out.Targets = append(out.Targets, vt)
+				continue
+			}
+		}
 		if len(cp.Segs) <= 1 {
 			all := make([]int, len(plan.media))
 			for i := range all {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	gonostr "fiatjaf.com/nostr"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
@@ -323,5 +324,49 @@ func TestInteractNostrQuoteCarriesImetas(t *testing.T) {
 	})
 	if len(na.gotImetas) != 1 {
 		t.Fatalf("nostr quote should forward 1 imeta, got %d", len(na.gotImetas))
+	}
+}
+
+// An enqueued quote is sent by the workers as the same interaction: the
+// native quote, and a link-quote carrying the copied source media.
+func TestEnqueueInteractionQuote(t *testing.T) {
+	bsky := &fakeBskyActor{}
+	masto := &fakeMastoActor{}
+	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: bsky, Mastodon: masto}),
+		Fetcher: fakeFetcher{}, PollInterval: 10 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go d.Run(ctx)
+	rec, err := d.EnqueueInteraction(context.Background(), InteractSpec{
+		Action: actionQuote, SourcePlatform: "bluesky", Source: "api",
+		Ref:       InteractRef{URI: "at://x", CID: "cidx"},
+		SourceURL: "https://bsky.app/x", SourceAuthor: "@alice",
+		SourcePreview:      SourcePreview{Author: "@alice", Text: "the original"},
+		SourceMediaRecords: []store.Media{{BlossomURL: "https://blossom/a.jpg", Mime: "image/jpeg", Alt: "a cat"}},
+		Text:               "great point",
+		Fanout:             []string{"mastodon"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Source != "api" || rec.Status != "sending" {
+		t.Fatalf("saved = %+v", rec)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		p, _ := d.Store.GetPost(rec.ID)
+		if p.Status == "success" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("post never published: %+v", p)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if bsky.quoted != "great point" {
+		t.Errorf("native quote = %q", bsky.quoted)
+	}
+	if !masto.lastPostText.contains("the original") || !masto.lastPostText.contains("https://bsky.app/x") {
+		t.Errorf("link-quote = %q", masto.lastPostText.s)
 	}
 }
