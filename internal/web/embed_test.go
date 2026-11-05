@@ -21,8 +21,8 @@ func TestServesIndexAndAssets(t *testing.T) {
 	}
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/compose.js", nil))
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "/api/post") {
-		t.Errorf("compose.js: code=%d references api? %v", rec.Code, strings.Contains(rec.Body.String(), "/api/post"))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "/v1/posts") {
+		t.Errorf("compose.js: code=%d references api? %v", rec.Code, strings.Contains(rec.Body.String(), "/v1/posts"))
 	}
 	// PWA assets (install standalone on iOS): manifest + apple-touch-icon must serve.
 	for _, p := range []string{"/manifest.json", "/icon-180.png", "/icon-192.png", "/icon-512.png"} {

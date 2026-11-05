@@ -1,3 +1,4 @@
+import path from "node:path";
 import { test, expect, openApp, switchTab, marker } from "./fixtures";
 
 test("saves a draft, survives a reload, reopens it and deletes it", async ({ page, fakes }) => {
@@ -70,4 +71,47 @@ test("schedules a post for later and cancels it from History", async ({ page, fa
   await expect(page.locator(".hitem", { hasText: m }).locator(".pill.s", { hasText: "Mastodon" })).toBeVisible();
   const sent = await fakes.calls();
   expect(sent.map(c => c.platform)).toEqual(["mastodon"]);
+});
+
+test("posts a saved draft with its image, and the draft is used up", async ({ page, fakes }) => {
+  const m = marker("draftimg");
+  await openApp(page);
+  await page.locator("#master").fill(`Draft with a picture ${m}`);
+  await page.locator("#imgfile").setInputFiles(path.join(__dirname, "assets", "gradient.png"));
+  await page.locator("#images .thumb").getByPlaceholder("alt text").fill("A saved gradient");
+  await page.locator("#draft-save").click();
+  await expect(page.locator("#draft-list .draft-row", { hasText: m })).toBeVisible();
+
+  // Reopened from the server, the image is a stored attachment, not a file.
+  await page.reload();
+  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await page.locator("#draft-list .draft-row", { hasText: m }).click();
+  await expect(page.locator("#images .thumb")).toHaveCount(1);
+  await expect(page.locator("#images .thumb").getByPlaceholder("alt text")).toHaveValue("A saved gradient");
+  await page.locator("#submit").click();
+  await expect(page.locator(".pmodal .pm-title")).toHaveText("✓ Posted");
+
+  const calls = await fakes.waitForCalls(m, 4);
+  for (const c of calls) {
+    expect(c.images, c.platform).toHaveLength(1);
+    expect(c.images![0].alt, c.platform).toBe("A saved gradient");
+  }
+  await page.locator(".pmodal").getByRole("button", { name: "Done" }).click();
+  await expect(page.locator("#draft-list .draft-row", { hasText: m })).toHaveCount(0);
+});
+
+test("a draft with the same image twice posts both", async ({ page, fakes }) => {
+  const m = marker("draftdup");
+  const file = path.join(__dirname, "assets", "gradient.png");
+  await openApp(page);
+  await page.locator("#master").fill(`Twice the gradient ${m}`);
+  await page.locator("#imgfile").setInputFiles(file);
+  await page.locator("#imgfile").setInputFiles(file);
+  await expect(page.locator("#images .thumb")).toHaveCount(2);
+  await page.locator("#draft-save").click();
+  await expect(page.locator("#draft-list .draft-row", { hasText: m })).toBeVisible();
+  await page.locator("#submit").click();
+  await expect(page.locator(".pmodal .pm-title")).toHaveText("✓ Posted");
+  const calls = await fakes.waitForCalls(m, 4);
+  for (const c of calls) expect(c.images, c.platform).toHaveLength(2);
 });

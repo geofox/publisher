@@ -1,13 +1,33 @@
 "use strict";
-import { el, $, api, flash, confirmModal } from "./common.js";
-import { startInteraction, showResultModal } from "./compose.js";
+import { el, $, v1, flash } from "./common.js";
+import { startInteraction, sendPost, openProgressModal } from "./compose.js";
+import { setInflight } from "./state.js";
+import { accountFor } from "./accounts.js";
 import { brandTile } from "./brands.js";
 
 const PLAT_LABEL = { bluesky: "Bluesky", mastodon: "Mastodon", nostr: "Nostr", threads: "Threads" };
 
 let _seq = 0;
 
-// resolveInput fetches the source post for the pasted URL/id and renders it.
+// fromV1 reads a POST /v1/resolve answer into the shape the composer keeps
+// for a source post.
+function fromV1(r) {
+  const caps = {};
+  for (const a of ["reply", "repost", "quote"]) caps[a] = (r.actions && r.actions[a]) || { allowed: false };
+  return {
+    platform: r.platform,
+    preview: {
+      author_name: (r.author && r.author.name) || "",
+      author_handle: (r.author && r.author.handle) || "",
+      text: r.text || "",
+      media: (r.media || []).filter(m => m.type !== "video").map(m => ({ url: m.url, alt: m.alt || "" })),
+      web_url: r.url,
+    },
+    caps,
+  };
+}
+
+// resolveInput looks up the pasted URL (or Nostr id) and renders the post.
 async function resolveInput(input) {
   const card = $("#srccard"), status = $("#srcstatus");
   card.innerHTML = "";
@@ -16,10 +36,10 @@ async function resolveInput(input) {
   const seq = ++_seq;
   let data;
   try {
-    data = await api("/api/resolve", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ input }),
-    });
+    data = fromV1(await v1("/v1/resolve", { method: "POST", body: { url: input.trim() } }));
+    // What was typed names the post for the server again (a Nostr id, a
+    // Mastodon URL); the answer's url is for showing (njump, the origin).
+    data.input = input.trim();
   } catch (e) {
     if (seq !== _seq) return;
     status.textContent = "✗ " + e.message;
@@ -51,44 +71,43 @@ function renderSource(s) {
   return card;
 }
 
+// actionRow offers what the post allows; a refused action shows why (the
+// server refuses it too).
 function actionRow(s) {
   const row = el("div", { class: "act-panel" });
   for (const [action, cap] of [["reply", s.caps.reply], ["repost", s.caps.repost], ["quote", s.caps.quote]]) {
     const btn = el("button", { class: "act-btn", type: "button", text: action[0].toUpperCase() + action.slice(1) });
-    if (!cap.allowed) { btn.classList.add("blocked"); btn.title = cap.reason || "not allowed"; }
+    if (!cap.allowed) {
+      btn.classList.add("blocked"); btn.disabled = true; btn.title = cap.reason || "not allowed";
+    } else if (cap.reason) btn.title = cap.reason;
     btn.addEventListener("click", () => {
-      if (action === "repost") { doRepost(s, cap); return; }
-      startInteraction(s, action); // reply/quote → Compose interaction mode (override handled in the banner)
+      if (!cap.allowed) return;
+      if (action === "repost") { doRepost(s, btn); return; }
+      startInteraction(s, action); // reply/quote → Compose interaction mode
     });
     row.append(btn);
   }
+  const why = [["reply", s.caps.reply], ["repost", s.caps.repost], ["quote", s.caps.quote]]
+    .filter(([, c]) => !c.allowed && c.reason).map(([a, c]) => a + ": " + c.reason);
+  if (why.length) row.append(el("div", { class: "act-why muted", text: why.join(" · ") }));
   return row;
 }
 
-// doRepost posts a one-click repost via /api/interact (multipart spec, no media).
-async function doRepost(s, cap) {
-  const send = async (force) => {
-    const fd = new FormData();
-    fd.append("spec", JSON.stringify({
-      action: "repost", platform: s.platform, ref: s.ref,
-      source_url: s.preview.web_url, source_author: s.preview.author_handle, force: !!force,
-    }));
-    const r = await fetch("/api/interact", { method: "POST", body: fd, credentials: "same-origin" });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
-    showResultModal({ post_id: data.id, status: data.status, targets: data.targets });
-  };
-  if (!cap.allowed) {
-    confirmModal({
-      title: "Repost blocked",
-      body: (cap.reason || "This repost is blocked") +
-        (s.platform === "bluesky" ? " (Bluesky may silently drop it)." : "") + " Repost anyway?",
-      confirmText: "Repost anyway",
-      onConfirm: async () => { try { await send(true); } catch (e) { flash("Error: " + e.message); } return true; },
-    });
-    return;
+// doRepost reposts at once: POST /v1/posts with repost and the source
+// network's account, then the progress modal.
+async function doRepost(s, btn) {
+  const acct = accountFor(s.platform);
+  if (!acct) { flash("No " + (PLAT_LABEL[s.platform] || s.platform) + " account is configured"); return; }
+  btn.disabled = true;
+  try {
+    const post = await sendPost({ repost: { url: s.input }, targets: [{ account: acct.id }] }, "interact");
+    setInflight(post.id);
+    openProgressModal(post.id, post);
+  } catch (e) {
+    flash("Error: " + e.message);
+  } finally {
+    btn.disabled = false;
   }
-  try { await send(false); } catch (e) { flash("Error: " + e.message); }
 }
 
 // interactInit wires the smart input (debounced).

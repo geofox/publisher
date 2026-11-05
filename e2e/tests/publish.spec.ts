@@ -172,3 +172,28 @@ test("Nostr images carry their alt text in the imeta tag", async ({ page, fakes 
   const nostr = (await fakes.waitForCalls(m, 4)).find(c => c.platform === "nostr")!;
   expect(nostr.images?.[0]?.alt).toBe("A blue gradient");
 });
+
+test("places an image on the thread part its chip names", async ({ page, fakes }) => {
+  const m = marker("place");
+  await openApp(page);
+  await page.locator("#master").fill(`${m} first part\n---\nsecond part`);
+  await page.locator("#imgfile").setInputFiles(path.join(__dirname, "assets", "gradient.png"));
+  const thumb = page.locator("#images .thumb");
+  await thumb.getByPlaceholder("alt text").fill("On part two");
+  await thumb.locator("select.place-chip").selectOption("1");
+  // The server preview plans it on the second post.
+  await expect(page.locator("#preview .pv-seg").nth(1).locator(".pv-media img")).toHaveCount(1);
+  await expect(page.locator("#preview .pv-seg").nth(0).locator(".pv-media img")).toHaveCount(0);
+  await page.locator("#submit").click();
+  await expect(page.locator(".pmodal .pm-title")).toHaveText("✓ Posted");
+
+  await expect.poll(async () => (await fakes.calls()).length).toBe(8);
+  const calls = await fakes.calls();
+  for (const p of PLATFORMS) {
+    const chain = calls.filter(c => c.platform === p);
+    expect(chain, p).toHaveLength(2);
+    expect(chain[0].images ?? [], p).toHaveLength(0);
+    expect(chain[1].images, p).toHaveLength(1);
+    expect(chain[1].images![0].alt, p).toBe("On part two");
+  }
+});

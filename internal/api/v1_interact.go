@@ -101,6 +101,11 @@ func (a *API) checkInteraction(req *v1CreatePostReq, plan *createPlan, add func(
 	if req.Schedule != nil {
 		add("/schedule", "not_supported", "replies, quotes and reposts are sent now; leave schedule out")
 	}
+	for j, cm := range req.Content.Media {
+		if cm.Part != nil && *cm.Part != 0 {
+			add("/content/media/"+strconv.Itoa(j)+"/part", "not_supported", "a reply's or quote's media go with its first part")
+		}
+	}
 	if action != "repost" {
 		return
 	}

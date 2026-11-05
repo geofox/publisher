@@ -3,6 +3,7 @@ import { el, $, v1, flash, relTime, shortID, shortRef, META, ORDER, confirmModal
 import { state } from "./state.js";
 import { loadDraft } from "./compose.js";
 import { brandTile } from "./brands.js";
+import { followPost as followPostEvents } from "./follow.js";
 
 // The History tab, on /v1/posts. A post has one target per account; a
 // target has its items (one, or one per thread part), and a Nostr item its
@@ -44,46 +45,29 @@ const typeName = t => (META[t] && META[t].label) || t;
 // ---------------------------------------------------------------------------
 
 // followPost keeps the detail pane (and the post's list row) current while
-// the post sends: its event stream (GET /v1/posts/{id}/events) wakes a
-// re-read, and a slow poll backs it up. The re-read decides when to stop,
-// not the stream: the stream replays from the post's first event, so a post
-// that had settled before a retry replays an old post.completed, and the
-// stream of a settled post (a relay retry) ends at once. until(post) says
-// when the wait is over; by default when nothing is publishing.
-let follow = null;
+// the post sends (see follow.js). until(post) says when the wait is over; by
+// default when nothing is publishing.
+let follow = null, followID = "";
 function stopFollow() {
-  if (!follow) return;
-  if (follow.es) follow.es.close();
-  clearTimeout(follow.timer);
-  clearInterval(follow.poll);
+  const stop = follow;
   follow = null;
+  if (stop) stop();
 }
 
-function followPost(id, until = p => p.status !== "publishing") {
+function followPost(id, until) {
   stopFollow();
-  const f = { id, es: null, timer: null, poll: null, shown: "", deadline: Date.now() + 5 * 60 * 1000 };
-  follow = f;
-  const reread = async () => {
-    let p;
-    try { p = await v1(postPath(id)); } catch { return; }
-    if (follow !== f) return;
-    const json = JSON.stringify(p);
-    if (json !== f.shown) {
-      f.shown = json;
+  const stop = followPostEvents(id, {
+    until,
+    onPost: p => {
+      if (follow !== stop) return;
       if ($("#hdetail").dataset.id === id) renderDetail(p);
       patchRow(p);
-    }
-    if (until(p) || Date.now() > f.deadline) { stopFollow(); refreshAttentionBadge(); }
-  };
-  const wake = () => { clearTimeout(f.timer); f.timer = setTimeout(reread, 250); };
-  const es = new EventSource(postPath(id) + "/events");
-  for (const t of ["post.updated", "post.completed", "item.sending", "item.published", "item.partial", "item.failed",
-    "item.unknown", "item.canceled", "delivery.updated"]) es.addEventListener(t, wake);
-  // The server ends the stream once the post settles; closing here stops
-  // EventSource from reconnecting.
-  es.onerror = () => { if (es.readyState === EventSource.CLOSED || follow !== f) { es.close(); wake(); } };
-  f.es = es;
-  f.poll = setInterval(reread, 2000);
+    },
+    // Ended by itself (settled, or the wait ran out), not replaced.
+    onStop: () => { if (follow === stop) { follow = null; refreshAttentionBadge(); } },
+  });
+  follow = stop;
+  followID = id;
 }
 
 // patchRow redraws a post's list row, if it is shown.
@@ -523,9 +507,9 @@ function renderDetail(post) {
 let detailGen = 0;
 export async function openDetail(id) {
   if (!id) return;
-  if (!id.startsWith("pst_")) id = "pst_" + id; // the composer's results still carry store ids
+  if (!id.startsWith("pst_")) id = "pst_" + id; // a store id (an in-flight post from before an upgrade)
   const gen = ++detailGen; // a later click wins
-  if (follow && follow.id !== id) stopFollow();
+  if (follow && followID !== id) stopFollow();
   $("#history").classList.add("detail-open"); // mobile slide-over
   const d = $("#hdetail"); d.innerHTML = "Loading…";
   try {

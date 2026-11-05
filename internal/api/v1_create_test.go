@@ -180,6 +180,8 @@ func TestV1CreatePostValidation(t *testing.T) {
 			[]string{"/schedule/at:in_past"}},
 		{"bad time", `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `"}],"schedule":{"at":"soon"}}`,
 			[]string{"/schedule/at:invalid_time"}},
+		{"bad part", `{"content":{"text":"x","media":[{"id":"` + img + `","part":100}]},"targets":[{"account":"` + bsky + `"}]}`,
+			[]string{"/content/media/0/part:invalid"}},
 	}
 	for _, c := range cases {
 		for _, path := range []string{"/v1/posts", "/v1/posts:preview"} {
@@ -494,5 +496,39 @@ func TestSniffType(t *testing.T) {
 		if got := sniffType(c.declared, c.head); got != c.want {
 			t.Errorf("sniffType(%q, %q) = %q, want %q", c.declared, c.head, got, c.want)
 		}
+	}
+}
+
+// A media's part places it on that part of the thread, in the preview and
+// in the post as saved.
+func TestV1CreatePostMediaPart(t *testing.T) {
+	e := newV1Env(t, true)
+	e.withEngine()
+	a, b := e.upload("a"), e.upload("b")
+	body := `{"content":{"text":"one\n---\ntwo\n---\nthree","media":[{"id":"` + a + `"},{"id":"` + b + `","part":2}]},
+		"targets":[{"account":"` + e.acct("bluesky") + `"},{"account":"` + e.acct("mastodon") + `","content":{"text":"just one"}}]}`
+	r := e.do(req{method: "POST", path: "/v1/posts:preview", body: body})
+	wantStatus(t, r, 200)
+	var pv v1PreviewBody
+	r.json(&pv)
+	bs := pv.Targets[0].Items
+	if len(bs) != 3 || len(bs[0].Media) != 1 || bs[0].Media[0] != 0 || len(bs[1].Media) != 0 || len(bs[2].Media) != 1 || bs[2].Media[0] != 1 {
+		t.Fatalf("bluesky preview items = %+v", bs)
+	}
+	// An account whose text has one part gets both on it.
+	if ms := pv.Targets[1].Items; len(ms) != 1 || len(ms[0].Media) != 2 {
+		t.Fatalf("mastodon preview items = %+v", ms)
+	}
+	r = e.do(req{method: "POST", path: "/v1/posts", body: body})
+	wantStatus(t, r, 202)
+	var p v1PostBody
+	r.json(&p)
+	got, err := e.st.GetPost(strings.TrimPrefix(p.ID, prefixPost))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := got.Targets[0].Items
+	if len(items) != 3 || len(items[0].Media) != 1 || len(items[1].Media) != 0 || len(items[2].Media) != 1 || items[2].Media[0] != 1 {
+		t.Fatalf("bluesky items = %+v", items)
 	}
 }

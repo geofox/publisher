@@ -1,6 +1,7 @@
 "use strict";
-import { el, $, gcount, graphemes, META } from "./common.js";
-import { state, focusedPlatform, postedText, masterParts } from "./state.js";
+import { el, $, gcount, graphemes, META, v1 } from "./common.js";
+import { state, focusedPlatform, postedText, mediaPart } from "./state.js";
+import { accountFor } from "./accounts.js";
 import { brandTile, icon } from "./brands.js";
 
 // threadBadgeStatic → the indigo "{N}-post thread" pill shown in a threaded
@@ -150,53 +151,57 @@ function appendFitNotes(host, platform, notes, media) {
 // normal single-post preview).
 export async function threadPreview(container, text, platform, number, isStale = () => false) {
   if (!text.trim()) return false;
+  const acct = accountFor(platform);
+  if (!acct) return false;
+  // The focused platform's post as POST /v1/posts:preview plans it: the text
+  // it will post (in a reply or quote, the commentary or the copy — see
+  // postedText) and the attachments in media storage, each with its part.
+  // The original's images a copy re-hosts aren't media objects: they show
+  // after yours, as in the single-post card.
+  const sent = []; // previewMedia index of each media sent
+  const reqMedia = [];
+  state.images.forEach((img, k) => {
+    if (!img.media_id || (img.video && img.phase !== "ready")) return;
+    const m = { id: img.media_id };
+    const part = state.interaction ? 0 : mediaPart(img);
+    if (part > 0) m.part = part;
+    reqMedia.push(m);
+    sent.push(k);
+  });
   let data;
   try {
-    // Build the media metadata array from state.images (which carry size_bytes,
-    // mime, dim for both fresh files and restored drafts). Fan-out source media
-    // from interaction previews only have {url,alt} — send zeros for those;
-    // the server uses the array to raise image-count only, never to split wrong.
-    const pvMedia = previewMedia(platform);
-    const userCount = state.images.length;
-    const media = pvMedia.map((_, idx) => {
-      if (idx < userCount) {
-        const img = state.images[idx];
-        return {
-          size_bytes: img.file ? img.file.size : (img.size_bytes || 0),
-          mime: img.file ? img.file.type : (img.mime || ""),
-          dim: img.dim || "",
-          duration_secs: img.duration_secs || 0,
-        };
-      }
-      return { size_bytes: 0, mime: "", dim: "", duration_secs: 0 };
-    });
-    const nParts = masterParts().length;
-    const img_parts = pvMedia.map((_, k) => {
-      const img = state.images[k];
-      return img ? Math.min(state.anchors[img.id] || 0, Math.max(0, nParts - 1)) : 0;
-    });
-    const resp = await fetch("/api/thread-preview", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        text, platforms: [platform], number,
-        images: pvMedia.length,
-        media,
-        img_parts,
-        interaction: !!state.interaction,
-      }),
-    });
-    data = await resp.json();
+    data = await v1("/v1/posts:preview", { method: "POST", body: {
+      content: { text, media: reqMedia },
+      targets: [{ account: acct.id }],
+      threading: { numbering: number },
+    } });
   } catch {
-    return false; // network hiccup → fall back to normal preview
+    return false; // refused or unreachable → the single-post preview stands
+  }
+  const vt = (data.targets || [])[0];
+  if (!vt) return false;
+  // In the shape the renderer below reads: segments, per-segment media (as
+  // previewMedia indices), the link card, fit notes.
+  const pv = {
+    count: vt.items.length,
+    segments: vt.items.map(it => it.text),
+    imgs: vt.items.map(it => (it.media || []).map(i => sent[i]).filter(i => i !== undefined)),
+    card: vt.link_card && !state.interaction ? { segment: vt.link_card.item, uri: vt.link_card.url, title: vt.link_card.title,
+      description: vt.link_card.description, thumb_url: vt.link_card.thumb_url || "" } : null,
+    fit_notes: (vt.media_notes || []).map(n => ({ ordinal: sent[n.media], note: n.note })).filter(n => n.ordinal !== undefined),
+    warnings: vt.warnings || [],
+  };
+  if (state.interaction && platform !== state.interaction.platform && pv.imgs.length) {
+    // The re-hosted originals go after yours, on the first post.
+    const n = state.images.length, extra = previewMedia(platform).length - n;
+    for (let i = 0; i < extra; i++) pv.imgs[0].push(n + i);
   }
   // A newer renderPreview() call already owns the container; discard this response
   // without touching the DOM. Return true so the caller's !rendered branch (which
   // would repaint a single-post card) is also skipped — the newer render stands.
   if (isStale()) return true;
-  const pv = (data.previews || []).find((p) => p.platform === platform);
-  if (!pv) return false;
-  const fitNotes = pv.fit_notes || [];
+  const fitNotes = pv.fit_notes;
+  const pvMedia = previewMedia(platform);
   if (pv.count < 2) {
     if (!pv.card && !fitNotes.length) return false;
     // Single post with a link card or fit notes: re-render with the authoritative
@@ -222,18 +227,9 @@ export async function threadPreview(container, text, platform, number, isStale =
     el("span", { class: "grow" }),
     threadBadgeStatic(pv.count),
   ));
-  // Per-segment media from the server's plan (pv.imgs).
-  // New shape: pv.imgs is [][]int — each entry is a list of attachment indices.
-  // Stale-bundle fallback: if entries are numbers (old count-slice shape), use
-  // the old head-only rule instead.
-  const media = previewMedia(platform);
-  const imgsIsNew = Array.isArray(pv.imgs) && (pv.imgs.length === 0 || Array.isArray(pv.imgs[0]));
-  const imgsIsOld = Array.isArray(pv.imgs) && pv.imgs.length > 0 && typeof pv.imgs[0] === "number";
-  // Old shape bookkeeping (counts per segment).
-  const counts = imgsIsOld ? pv.imgs : null;
-  const starts = [];
-  let moff = 0;
-  if (counts) for (const c of counts) { starts.push(moff); moff += c; }
+  // Per-segment media from the server's plan: pv.imgs[i] lists the
+  // attachments (previewMedia indices) on post i.
+  const media = pvMedia;
   pv.segments.forEach((seg, i) => {
     const rail = el("div", { class: "pv-seg-rail" }, el("div", { class: "pv-seg-num", text: String(i + 1) }));
     if (i < pv.count - 1) rail.append(el("div", { class: "pv-seg-line" }));
@@ -243,13 +239,7 @@ export async function threadPreview(container, text, platform, number, isStale =
       el("div", { class: "pv-seg-n", style: "margin-top:4px", text: `${i + 1}/${pv.count}` }),
       el("div", { class: "pv-seg-count" + (limit && segLen > limit ? " over" : ""), text: limit ? `${segLen}/${limit}` : `${segLen} chars` }),
     );
-    let segMedia;
-    if (imgsIsNew) {
-      const idxs = Array.isArray(pv.imgs[i]) ? pv.imgs[i] : [];
-      segMedia = idxs.map(ix => media[ix]).filter(Boolean);
-    } else {
-      segMedia = counts ? media.slice(starts[i], starts[i] + (counts[i] || 0)) : (i === 0 ? media : []);
-    }
+    const segMedia = (pv.imgs[i] || []).map(ix => media[ix]).filter(Boolean);
     if (segMedia.length) {
       const g = mediaGridFrom(segMedia);
       if (g) main.append(g);

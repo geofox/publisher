@@ -1,9 +1,10 @@
 "use strict";
 import { ORDER } from "./common.js";
+import { accountFor } from "./accounts.js";
 
 export function defaultOv(p) {
   // Read state.userLanguages at call time so callers (initial module load,
-  // post-/api/config init, startInteraction reset) all pick up the operator's
+  // post-/v1/instance init, startInteraction reset) all pick up the operator's
   // first configured language as the default. Falls back to "en" pre-fetch.
   const lang = (state.userLanguages && state.userLanguages[0]) || "en";
   const o = { text: null };
@@ -22,7 +23,7 @@ export const state = {
   focus: "bluesky", // platform shown in the live preview
   interaction: null, // null = normal compose; else {action, platform, ref, sourcePreview, sourceURL, sourceAuthor, caps, force}
   // Operator-configured ISO 639-1 codes (USER_LANGUAGES env). Empty until
-  // /api/config resolves on boot; defaultOv falls back to "en" until then.
+  // /v1/instance resolves on boot; defaultOv falls back to "en" until then.
   userLanguages: [],
   // ISO 639-1 codes the operator can translate INTO via DeepL — userLanguages
   // intersected with DeepL's supported targets, server-side. Empty when the
@@ -104,8 +105,7 @@ export function focusedPlatform() {
   return null;
 }
 
-// ovFor returns the API override object for one platform (shared by buildSpec
-// and buildInteractSpec).
+// ovFor returns a draft's override object for one platform (buildSpec).
 function ovFor(p) {
   const ov = state.ov[p], o = {};
   if (ov.text != null) o.text = ov.text;
@@ -123,23 +123,24 @@ function ovFor(p) {
   return o;
 }
 
-// imageSpecs serializes state.images for a publish/interact spec. A fresh image
-// (has a File) becomes a `ref` entry whose bytes ride as a multipart file; an
-// already-uploaded one (a restored/loaded draft) becomes a `blossom_url`
-// reference the server re-fetches. Shared by buildSpec and buildInteractSpec so
-// both paths carry references identically.
+// imageSpecs serializes state.images for a draft (the drafts API, until
+// drafts move to /v1). A fresh image still being uploaded becomes a `ref`
+// entry whose bytes ride as a multipart file; one in media storage (uploaded
+// through /v1/media, or a loaded draft's) becomes a `blossom_url` reference.
 export function imageSpecs() {
   return state.images.filter(i => !(i.video && i.phase !== "ready")).map((i, idx) => {
-    if (i.file) {
+    const url = i.file ? (i.media_id && i.remote_url) : i.blossom_url;
+    if (!url) {
       return { ordinal: idx, ref: "img_" + idx, alt: i.alt, id: i.id };
     }
     return {
-      ordinal: idx, blossom_url: i.blossom_url, sha256: i.sha256,
+      ordinal: idx, blossom_url: url, sha256: i.sha256,
       mime: i.mime, dim: i.dim, blurhash: i.blurhash, size_bytes: i.size_bytes,
       duration_secs: i.duration_secs || 0,
       poster_url: i.poster_url || "",
       alt: i.alt,
       id: i.id,
+      media_id: i.media_id || "",
     };
   });
 }
@@ -159,7 +160,7 @@ export function buildSpec() {
     overrides,
     images: imgs,
     img_parts,
-    anchors: state.anchors,   // for draft persistence (id-keyed); ignored by /api/post
+    anchors: state.anchors,   // media placement, keyed by attachment id
     // mirror the preview's numbering toggle so the posted thread matches what was shown
     number: document.getElementById("threadnum")?.checked ?? true,
   };
@@ -179,6 +180,7 @@ export let imagesGen = 0;
 export function clearImages() {
   for (const i of state.images) {
     if (i._compressAbort) i._compressAbort.abort();
+    if (i._uploadAbort) i._uploadAbort.abort();
     if (i._xhr) i._xhr.abort();
     if (i._jobTimer) clearInterval(i._jobTimer);
     if (i.url) URL.revokeObjectURL(i.url);
@@ -197,30 +199,86 @@ export function setInflight(id) { try { localStorage.setItem(INFLIGHT_KEY, id); 
 export function getInflight() { try { return localStorage.getItem(INFLIGHT_KEY) || ""; } catch { return ""; } }
 export function clearInflight() { try { localStorage.removeItem(INFLIGHT_KEY); } catch {} }
 
-// buildInteractSpec assembles the /api/interact spec (reply/quote) from the
-// interaction state: the source platform is the locked native target; the other
-// selected platforms are fan-out reproductions.
-export function buildInteractSpec() {
+// ---------------------------------------------------------------------------
+// POST /v1/posts bodies
+// ---------------------------------------------------------------------------
+
+function langList(v) {
+  const str = Array.isArray(v) ? v.join(",") : (v || "");
+  return str.split(",").map(s => s.trim()).filter(Boolean);
+}
+
+// v1Target is platform p's target: its account, the options its card sets and
+// the content it overrides (text, content warning, sensitivity, languages).
+// A repost carries nothing but the account.
+export function v1Target(p, { repost = false } = {}) {
+  const acct = accountFor(p);
+  const t = { account: acct ? acct.id : "" };
+  if (repost) return t;
+  const ov = state.ov[p], options = {}, content = {};
+  // The server refuses a blank override; the composer treats one as "use the
+  // shared text".
+  if (ov.text != null && ov.text.trim() !== "") content.text = ov.text;
+  if (p === "bluesky") {
+    options.reply_gate = ov.reply || "";
+    options.disable_quotes = !!ov.disable_quotes;
+    const langs = langList(ov.langs);
+    if (langs.length) content.languages = langs;
+  }
+  if (p === "mastodon") {
+    if (ov.visibility) options.visibility = ov.visibility;
+    if (ov.spoiler_text) content.content_warning = ov.spoiler_text;
+    if (ov.sensitive) content.sensitive = true;
+    if (ov.language) content.languages = [ov.language];
+  }
+  if (p === "threads") {
+    if (ov.topic_tag) options.topic_tag = ov.topic_tag;
+    if (ov.reply_control) options.reply_control = ov.reply_control;
+  }
+  if (p === "nostr") {
+    const pow = parseInt(ov.pow, 10);
+    options.pow = Number.isFinite(pow) && pow > 0 ? pow : 0;
+    if (ov.content_warning) content.content_warning = ov.content_warning;
+  }
+  if (Object.keys(options).length) t.options = options;
+  if (Object.keys(content).length) t.content = content;
+  return t;
+}
+
+// postMedia lists the attachments a post can carry now: in media storage
+// (an image uploaded, a video processed), in the composer's order.
+export function postMedia() {
+  return state.images.filter(i => i.media_id && !(i.video && i.phase !== "ready"));
+}
+
+// mediaPart is the text part an attachment goes with (its placement chip),
+// clamped to the parts there are.
+export function mediaPart(img) {
+  const n = masterParts().length;
+  return Math.min(state.anchors[img.id] || 0, Math.max(0, n - 1));
+}
+
+// v1PostBody is the composer as a POST /v1/posts body: shared text and
+// media, one target per selected platform, numbering, and the schedule or
+// the reply/quote it makes.
+export function v1PostBody() {
   const it = state.interaction;
-  const fanout = [...state.platforms].filter((p) => p !== it.platform);
-  const overrides = {};
-  for (const p of state.platforms) overrides[p] = ovFor(p);
-  return {
-    action: it.action,
-    platform: it.platform,
-    ref: it.ref,
-    source_url: it.sourceURL,
-    source_author: it.sourceAuthor,
-    source_preview: {
-      author: it.sourceAuthor,
-      text: (it.sourcePreview && it.sourcePreview.text) || "",
-      media: ((it.sourcePreview && it.sourcePreview.media) || []).map((m) => ({ url: m.url, alt: m.alt || "" })),
-    },
-    text: state.master,
-    overrides,
-    fanout,
-    number: document.getElementById("threadnum")?.checked ?? true,
-    force: !!it.force,
-    images: imageSpecs(),
+  const media = postMedia().map(i => {
+    const m = { id: i.media_id, alt: i.alt || "" };
+    const part = it ? 0 : mediaPart(i);
+    if (part > 0) m.part = part;
+    return m;
+  });
+  const body = {
+    content: { text: state.master, media },
+    targets: ORDER.filter(p => state.platforms.has(p)).map(p => v1Target(p)),
+    threading: { numbering: document.getElementById("threadnum")?.checked ?? true },
   };
+  if (it) {
+    body[it.action === "quote" ? "quote" : "reply_to"] = { url: it.sourceInput || it.sourceURL };
+  } else {
+    const sa = document.querySelector("#schedat")?.value;
+    if (sa) body.schedule = { at: new Date(sa).toISOString() };
+  }
+  return body;
 }

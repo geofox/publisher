@@ -42,7 +42,5 @@ reused; in CI it is always started fresh.
 
 ## Known gaps
 
-- Re-attaching media from a saved draft isn't covered: the server re-fetches
-  draft media over HTTPS only (SSRF guard), and the fake Blossom is plain HTTP.
 - Video (needs ffmpeg) and the Interact/Verify flows (need live resolvers)
   aren't covered yet.

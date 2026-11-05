@@ -62,6 +62,10 @@ type v1CreateContent struct {
 type v1CreateMedia struct {
 	ID  string  `json:"id"`
 	Alt *string `json:"alt"` // null or absent: the media object's own alt
+	// Part is the part of the text (0-based; parts are split by lines of
+	// "---") the media goes with. Default 0. A part past the last is the
+	// last; an account whose text has its own parts counts its own.
+	Part *int `json:"part"`
 }
 
 // v1TargetContent overrides the shared content for one account. A field
@@ -101,6 +105,12 @@ type createPlan struct {
 	// upstream is set when the source's network couldn't be reached: the
 	// request may be retried (502).
 	upstream bool
+}
+
+// imgParts is the part each media goes with, for the planner (which must
+// not share the spec's slice).
+func (p *createPlan) imgParts() []int {
+	return append(make([]int, 0, len(p.media)), p.spec.ImgParts...)
 }
 
 type plannedTarget struct {
@@ -210,6 +220,13 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 					add(ptr+"/alt", "invalid", msg)
 				}
 			}
+			part := 0
+			if cm.Part != nil {
+				part = *cm.Part
+				if part < 0 || part >= maxThreadParts {
+					add(ptr+"/part", "invalid", "a part from 0 to 99")
+				}
+			}
 			alt := m.Alt
 			if cm.Alt != nil {
 				alt = *cm.Alt
@@ -221,6 +238,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 			}
 			plan.media = append(plan.media, m)
 			plan.mediaReq = append(plan.mediaReq, j)
+			plan.spec.ImgParts = append(plan.spec.ImgParts, part)
 			plan.spec.MediaRecords = append(plan.spec.MediaRecords, mediaRecord(m, len(plan.spec.MediaRecords), alt))
 		}
 		switch {
@@ -381,7 +399,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 	// The planner's split must stay a reasonable thread.
 	// (Planned without the link card: a card only shortens the text.)
 	for _, pt := range plan.targets {
-		cp := dispatch.PlanTarget(pt.caps, pt.text, nil, make([]int, len(plan.media)), plan.spec.Number)
+		cp := dispatch.PlanTarget(pt.caps, pt.text, nil, plan.imgParts(), plan.spec.Number)
 		if len(cp.Segs) > maxThreadParts {
 			add(pt.textPtr, "too_many_parts", "the text makes "+strconv.Itoa(len(cp.Segs))+
 				" thread parts on "+pt.account.ID+"; at most 100")
@@ -664,7 +682,7 @@ func (a *API) v1PreviewPost(w http.ResponseWriter, r *http.Request) {
 				card = c
 			}
 		}
-		cp := dispatch.PlanTarget(pt.caps, pt.text, card, make([]int, len(plan.media)), plan.spec.Number)
+		cp := dispatch.PlanTarget(pt.caps, pt.text, card, plan.imgParts(), plan.spec.Number)
 		vt := v1PreviewTarget{Account: pt.account.ID, Type: pt.account.Type, Role: "post", Items: []v1PreviewItem{},
 			Warnings: append(append([]string{}, pt.warnings...), cp.Warnings...), Media: []v1PreviewNote{}}
 		if ix := plan.ix; ix != nil {
