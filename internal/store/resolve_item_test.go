@@ -71,11 +71,28 @@ func TestResolveItemPublishedWithoutReferenceStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, _ = s.GetPost("p")
-	if p.Targets[0].Status != "partial" || p.Status != "partial" || p.Targets[0].GaveUpAt == nil {
+	if p.Targets[0].Status != "partial" || p.Status != "partial" || p.Targets[0].Items[2].Status != ItemCanceled {
 		t.Fatalf("target %+v, post %s", p.Targets[0], p.Status)
 	}
 	if c := claim(t, s, time.Now().UTC(), ClaimFilter{}); c != nil {
 		t.Fatalf("the rest went out with nothing to reply to: %+v", c)
+	}
+}
+
+// The same when the target isn't given up (a retry by hand made it due):
+// the rest must not go out replying to nothing.
+func TestResolveItemPublishedWithoutReferenceAfterRetry(t *testing.T) {
+	s := openEngineStore(t)
+	ctx := context.Background()
+	p := unknownThread(t, s, "p")
+	if _, err := s.MarkDue(ctx, "p", []int64{p.Targets[0].ID}, time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveItem(ctx, Resolution{PostID: "p", TargetID: p.Targets[0].ID, Ordinal: 1, Published: true}); err != nil {
+		t.Fatal(err)
+	}
+	if c := claim(t, s, time.Now().UTC().Add(2*time.Hour), ClaimFilter{}); c != nil {
+		t.Fatalf("claimed %+v with nothing to reply to", c)
 	}
 }
 
@@ -87,7 +104,7 @@ func TestResolveItemNotPublishedSendsAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, _ = s.GetPost("p")
-	if p.Targets[0].Items[1].Status != ItemFailed || p.Targets[0].Status != "sending" || p.Status != "sending" || p.Attention {
+	if it := p.Targets[0].Items[1]; it.Status != ItemFailed || it.AttemptCount != 0 || p.Targets[0].Status != "sending" || p.Status != "sending" || p.Attention {
 		t.Fatalf("target %+v, post %s", p.Targets[0], p.Status)
 	}
 	c := claim(t, s, time.Now().UTC(), ClaimFilter{})

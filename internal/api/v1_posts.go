@@ -699,7 +699,7 @@ func (a *API) v1ResolveItem(w http.ResponseWriter, r *http.Request) {
 			add("/url", "not_allowed", "only a published item has a URL")
 		case len(link) > maxSourceURL:
 			add("/url", "too_long", "at most 2048 characters")
-		case !isHTTPURL(link):
+		case !isHTTPSURL(link):
 			add("/url", "invalid", "the post's https URL")
 		}
 	}
@@ -746,11 +746,20 @@ func (a *API) v1ResolveItem(w http.ResponseWriter, r *http.Request) {
 				return
 			case err != nil:
 				slog.InfoContext(r.Context(), "v1: locate", "post_id", p.ID, "err", store.Scrub(err.Error()))
-				if e := destination.Classify(err); e != nil && (e.Class == destination.ClassInvalid || e.Class == destination.ClassRejected) {
+				e := destination.Classify(err)
+				if e != nil && e.Class == destination.ClassAuth {
+					invalid(w, r, []fieldError{{Pointer: "/url", Code: "not_permitted",
+						Detail: "the account can't look posts up: check its credentials and scopes (Mastodon needs read:search)"}})
+					return
+				}
+				if e != nil && (e.Class == destination.ClassInvalid || e.Class == destination.ClassRejected) {
 					invalid(w, r, []fieldError{{Pointer: "/url", Code: "invalid", Detail: "not a URL of a post on this account's network"}})
 					return
 				}
 				problem(w, r, http.StatusBadGateway, codeUpstream, "the post's network couldn't be reached to look it up; try again")
+				return
+			case ref.ID != "" && slices.ContainsFunc(t.Items, func(x store.Item) bool { return x.RemoteID == ref.ID }):
+				invalid(w, r, []fieldError{{Pointer: "/url", Code: "duplicate", Detail: "that is another part of this thread"}})
 				return
 			default:
 				res.RemoteID, res.Ref, res.Continue = ref.ID, ref.Data, ref.ID != ""
@@ -776,8 +785,10 @@ func (a *API) v1ResolveItem(w http.ResponseWriter, r *http.Request) {
 	a.reloadPost(w, r, p.ID, http.StatusOK)
 }
 
-// isHTTPURL reports whether s is an absolute http(s) URL with a host.
-func isHTTPURL(s string) bool {
+// isHTTPSURL reports whether s is an absolute https URL with a host and no
+// user info. Where posts can't be looked up the URL is stored as given and
+// shown as the post's link (also in the public feed), so plain http is out.
+func isHTTPSURL(s string) bool {
 	u, err := url.Parse(s)
-	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil
 }

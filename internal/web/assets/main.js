@@ -40,9 +40,11 @@ function applyAccounts() {
     const max = a.capabilities && a.capabilities.text && a.capabilities.text.max_length;
     if (Number.isInteger(max) && max >= 0) META[p].limit = max;
   }
+  if (!composed) return; // composeInit draws with them
   applyIdentity(identityFromAccounts(ORDER));
   rerenderComposer();
 }
+let composed = false;
 
 // ---------------------------------------------------------------------------
 // Tab routing
@@ -62,11 +64,14 @@ function switchTab(view) {
 
 async function init() {
   await loadConfig();
+  // The accounts carry the effective limits and live profiles; profiles can
+  // take a few seconds on a cold cache. Wait briefly so the composer starts
+  // with the right limits; if they are slower, it takes them on arrival.
+  const accounts = loadAccounts().then(applyAccounts).catch(() => { /* keep built-ins and placeholders */ });
+  await Promise.race([accounts, new Promise(r => setTimeout(r, 1500))]);
   composeInit();
-  // Fire-and-forget: the accounts carry live profiles, which can take a few
-  // seconds on a cold cache; the composer starts with the built-in limits
-  // and placeholders and takes the real ones when they arrive.
-  loadAccounts().then(applyAccounts).catch(() => { /* keep placeholders */ });
+  composed = true;
+  accounts.then(applyAccounts); // now with the profiles, drawn into the composer
   historyInit();
   toolsInit();
   verifyInit();

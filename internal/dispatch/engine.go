@@ -652,6 +652,12 @@ func (d *Dispatcher) publishClaimed(ctx context.Context, post *store.Post, tg st
 		x.head = head
 	} else {
 		x.thread = &destination.ThreadRef{Root: itemRef(tg.Items[0]), Parent: itemRef(prevItem(tg, it))}
+		// A part confirmed live by hand without its reference can't be
+		// replied to; sending would post this part detached.
+		if x.thread.Root.ID == "" || x.thread.Parent.ID == "" {
+			return TargetResult{Platform: tg.Platform, Status: "failed", ErrorClass: string(destination.ClassInvalid),
+				Error: "an earlier part of this thread has no reference to reply to (it was marked posted by hand without one); post the rest yourself"}
+		}
 	}
 	return d.publishItem(ctx, tg.Platform, x)
 }

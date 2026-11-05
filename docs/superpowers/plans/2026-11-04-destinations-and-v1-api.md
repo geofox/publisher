@@ -578,6 +578,24 @@ as they move.
 >   old tokens had) and an expiry; rows show scopes and expired status.
 > - The composer's result modal still reads the `/api/post` shape
 >   (`results.js`) until 4b.
+> - **Review fixes (4a).** `not_published` resets the item's attempt count,
+>   so the engine's duplicate guard (Mastodon past its key hour) doesn't
+>   turn it back into `unknown`. `published` without a reference cancels
+>   the rest of the thread, and the engine refuses to send a thread part
+>   whose root or parent has no remote id (fails `invalid`) instead of
+>   posting it detached. A located post that is another part of the same
+>   thread is refused (`duplicate`); a token that can't look posts up is
+>   `not_permitted`, not a 502. Resolve URLs must be https without user
+>   info. Bluesky lookups keep their session unless it was refused (bad
+>   URLs no longer cost a sign-in each). The History pane follows a post by
+>   re-reading it (stream events wake it, a 2 s poll backs it up) until it
+>   stops publishing, or until a retried relay's row changes: the per-post
+>   stream replays from the start, so an old `post.completed` can't end the
+>   wait. Stale detail loads are dropped. Boot waits up to 1.5 s for the
+>   accounts so the composer starts with the effective limits.
+> - **Deferred:** a `:retry` of an `unknown` item on a key destination past
+>   its window is released as `unknown` again by the duplicate guard (use
+>   `:resolve`); the History hides Retry while an item is unknown.
 
 ## Task 4.1: Composer and history on `/v1`
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/geofox/publisher/internal/destination"
 	"net"
@@ -203,6 +204,19 @@ func (c *Client) readSession(ctx context.Context) (session, error) {
 	}
 	c.readSess, c.readExp = s, time.Now().Add(readSessionTTL)
 	return s, nil
+}
+
+// sessionRefused reports whether a lookup failed because the server refused
+// its session (expired or revoked token). Other failures (no such post, a
+// bad handle, a network error) keep it: dropping it would make every
+// failing lookup sign in again and spend the account's sign-in rate limit.
+func sessionRefused(err error) bool {
+	var he *destination.HTTPError
+	if err == nil || !errors.As(err, &he) {
+		return false
+	}
+	return he.StatusCode == http.StatusUnauthorized ||
+		strings.Contains(he.Body, "ExpiredToken") || strings.Contains(he.Body, "InvalidToken")
 }
 
 // dropReadSession forgets the cached lookup session after a failed call, so

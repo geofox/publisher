@@ -72,6 +72,14 @@ func TestV1ResolveItem(t *testing.T) {
 	if c := fieldCodes(p); c != "/url:invalid" {
 		t.Fatalf("errors = %s", c)
 	}
+	// Plain http and user info are refused too: the URL may be stored and
+	// shown as the post's link.
+	for _, u := range []string{"http://x.example/1", "https://u:p@x.example/1"} {
+		p = wantProblem(t, resolve(`{"target":"`+tgt+`","ordinal":1,"outcome":"published","url":"`+u+`"}`), 422, codeValidation)
+		if c := fieldCodes(p); c != "/url:invalid" {
+			t.Fatalf("%s: errors = %s", u, c)
+		}
+	}
 	p = wantProblem(t, resolve(`{"target":"tgt_999999","ordinal":1,"outcome":"published"}`), 422, codeValidation)
 	if c := fieldCodes(p); c != "/target:unknown_target" {
 		t.Fatalf("errors = %s", c)
@@ -98,6 +106,7 @@ func TestV1ResolveItem(t *testing.T) {
 		{destination.ErrPostNotFound, 422, "/url:not_found"},
 		{destination.ErrNotOwnPost, 422, "/url:not_own"},
 		{destination.Invalid(errors.New("not a post URL")), 422, "/url:invalid"},
+		{&destination.Error{Class: destination.ClassAuth, Err: errors.New("missing read:search")}, 422, "/url:not_permitted"},
 		{errors.New("dial tcp: i/o timeout"), 502, ""},
 	} {
 		loc.err = c.err
@@ -109,6 +118,13 @@ func TestV1ResolveItem(t *testing.T) {
 		if got := fieldCodes(wantProblem(t, r, c.status, codeValidation)); got != c.code {
 			t.Fatalf("%v: errors = %s", c.err, got)
 		}
+	}
+
+	// Another part of the same thread.
+	loc.err, loc.ref = nil, destination.ItemRef{ID: "r0", URL: "https://example.com/0"}
+	p = wantProblem(t, resolve(`{"target":"`+tgt+`","ordinal":1,"outcome":"published","url":"https://example.com/0"}`), 422, codeValidation)
+	if c := fieldCodes(p); c != "/url:duplicate" {
+		t.Fatalf("errors = %s", c)
 	}
 
 	// Found: the item is live with the post's reference, and the thread
@@ -140,7 +156,7 @@ func TestV1ResolveItemWithoutLookups(t *testing.T) {
 	wantStatus(t, r, 200)
 	var got v1PostBody
 	r.json(&got)
-	if items := *got.Targets[0].Items; items[1].URL != "https://x.example/2" || got.Status != "partial" || items[2].Status != "planned" {
+	if items := *got.Targets[0].Items; items[1].URL != "https://x.example/2" || got.Status != "partial" || items[2].Status != "canceled" {
 		t.Fatalf("post = %+v", got)
 	}
 

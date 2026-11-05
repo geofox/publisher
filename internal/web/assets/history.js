@@ -43,56 +43,70 @@ const typeName = t => (META[t] && META[t].label) || t;
 // Live updates after a retry or a resolve
 // ---------------------------------------------------------------------------
 
-// followPost re-reads the post as its events arrive (GET
-// /v1/posts/{id}/events), until it has nothing left to send. One stream at
-// a time: the detail pane shows one post.
+// followPost keeps the detail pane (and the post's list row) current while
+// the post sends: its event stream (GET /v1/posts/{id}/events) wakes a
+// re-read, and a slow poll backs it up. The re-read decides when to stop,
+// not the stream: the stream replays from the post's first event, so a post
+// that had settled before a retry replays an old post.completed, and the
+// stream of a settled post (a relay retry) ends at once. until(post) says
+// when the wait is over; by default when nothing is publishing.
 let follow = null;
-function followPost(id) {
-  if (follow) follow.close();
-  const es = new EventSource("/v1/posts/" + encodeURIComponent(id) + "/events");
-  let timer = null;
-  const refresh = () => {
-    clearTimeout(timer);
-    timer = setTimeout(async () => {
-      if ($("#hdetail").dataset.id !== id) { es.close(); return; }
-      try { renderDetail(await v1("/v1/posts/" + encodeURIComponent(id))); } catch { /* keep what is shown */ }
-    }, 250);
+function stopFollow() {
+  if (!follow) return;
+  if (follow.es) follow.es.close();
+  clearTimeout(follow.timer);
+  clearInterval(follow.poll);
+  follow = null;
+}
+
+function followPost(id, until = p => p.status !== "publishing") {
+  stopFollow();
+  const f = { id, es: null, timer: null, poll: null, shown: "", deadline: Date.now() + 5 * 60 * 1000 };
+  follow = f;
+  const reread = async () => {
+    let p;
+    try { p = await v1(postPath(id)); } catch { return; }
+    if (follow !== f) return;
+    const json = JSON.stringify(p);
+    if (json !== f.shown) {
+      f.shown = json;
+      if ($("#hdetail").dataset.id === id) renderDetail(p);
+      patchRow(p);
+    }
+    if (until(p) || Date.now() > f.deadline) { stopFollow(); refreshAttentionBadge(); }
   };
-  const stop = () => { es.close(); if (follow === es) follow = null; refresh(); refreshAttentionBadge(); patchListItem(id); };
-  for (const t of ["post.updated", "item.sending", "item.published", "item.partial", "item.failed",
-    "item.unknown", "item.canceled", "delivery.updated"]) es.addEventListener(t, refresh);
-  // The stream ends when the post settles; without the close, EventSource
-  // would reconnect every few seconds.
-  es.addEventListener("post.completed", stop);
-  es.onerror = () => { if (es.readyState === EventSource.CLOSED) stop(); };
-  setTimeout(() => { if (follow === es) stop(); }, 5 * 60 * 1000);
-  follow = es;
+  const wake = () => { clearTimeout(f.timer); f.timer = setTimeout(reread, 250); };
+  const es = new EventSource(postPath(id) + "/events");
+  for (const t of ["post.updated", "post.completed", "item.sending", "item.published", "item.partial", "item.failed",
+    "item.unknown", "item.canceled", "delivery.updated"]) es.addEventListener(t, wake);
+  // The server ends the stream once the post settles; closing here stops
+  // EventSource from reconnecting.
+  es.onerror = () => { if (es.readyState === EventSource.CLOSED || follow !== f) { es.close(); wake(); } };
+  f.es = es;
+  f.poll = setInterval(reread, 2000);
 }
 
-// patchListItem redraws one list row from the server, if it is shown.
-async function patchListItem(id) {
-  const node = $(`.hitem[data-id="${id}"]`);
-  if (!node) return;
-  try {
-    const p = await v1("/v1/posts/" + encodeURIComponent(id));
-    const i = hposts.findIndex(x => x.id === id);
-    if (i >= 0) hposts[i] = p;
-    node.replaceWith(historyItem(p, node.classList.contains("active")));
-  } catch { /* leave it */ }
+// patchRow redraws a post's list row, if it is shown.
+function patchRow(p) {
+  const i = hposts.findIndex(x => x.id === p.id);
+  if (i >= 0) hposts[i] = p;
+  const node = $(`.hitem[data-id="${p.id}"]`);
+  if (node) node.replaceWith(historyItem(p, node.classList.contains("active")));
 }
 
-// act runs a post action from a button, shows the post it answers with, and
-// follows it while it sends.
-async function act(btn, busyText, run, done, reload = false) {
+// act runs a post action from a button and shows the post it answers with.
+// opts.reload re-reads the list (the post may have left the filter);
+// opts.until follows the post until it holds (else while it publishes).
+async function act(btn, busyText, run, done, opts = {}) {
   const prev = btn.textContent;
   btn.disabled = true; btn.textContent = busyText;
   try {
     const post = await run();
     renderDetail(post);
-    if (reload) loadHistory(true); // the post may have left the filter
-    else { refreshAttentionBadge(); patchListItem(post.id); }
+    if (opts.reload) loadHistory(true);
+    else { refreshAttentionBadge(); patchRow(post); }
     if (done) flash(done);
-    if (post.status === "publishing") followPost(post.id);
+    if (opts.until || post.status === "publishing") followPost(post.id, opts.until);
   } catch (e) {
     btn.disabled = false; btn.textContent = prev;
     flash(e.message);
@@ -186,7 +200,7 @@ function confirmHide(p) {
         if (node) node.remove();
         hposts = hposts.filter(x => x.id !== p.id);
         const det = $("#hdetail");
-        if (det && det.dataset.id === p.id) { det.innerHTML = ""; delete det.dataset.id; }
+        if (det && det.dataset.id === p.id) { det.innerHTML = ""; delete det.dataset.id; stopFollow(); }
         refreshAttentionBadge();
         flash("Post hidden");
         return true;
@@ -275,19 +289,19 @@ function historyItem(p, active) {
 function schedControls(post) {
   if (post.status === "publishing") {
     const stop = el("button", { class: "ghost sm", type: "button", text: "stop sending",
-      onclick: () => act(stop, "…", () => v1(postPath(post.id) + ":cancel", { method: "POST" }), "stopped", true) });
+      onclick: () => act(stop, "…", () => v1(postPath(post.id) + ":cancel", { method: "POST" }), "stopped", { reload: true }) });
     return el("div", { class: "sched-ctrls" }, stop);
   }
   if (post.status !== "scheduled") return null;
   const cancel = el("button", { class: "ghost sm", type: "button", text: "cancel",
-    onclick: () => act(cancel, "…", () => v1(postPath(post.id) + ":cancel", { method: "POST" }), "canceled", true) });
+    onclick: () => act(cancel, "…", () => v1(postPath(post.id) + ":cancel", { method: "POST" }), "canceled", { reload: true }) });
   const change = el("button", { class: "ghost sm", type: "button", text: "change time",
     onclick: () => {
       const v = prompt("New time (YYYY-MM-DDTHH:MM, Paris):");
       if (!v) return;
       const d = new Date(v);
       if (isNaN(d.getTime())) { flash("Invalid date — use YYYY-MM-DDTHH:MM"); return; }
-      act(change, "…", () => v1(postPath(post.id), { method: "PATCH", body: { schedule: { at: d.toISOString() } } }), "rescheduled", true);
+      act(change, "…", () => v1(postPath(post.id), { method: "PATCH", body: { schedule: { at: d.toISOString() } } }), "rescheduled", { reload: true });
     } });
   return el("div", { class: "sched-ctrls" }, cancel, change);
 }
@@ -328,7 +342,7 @@ function resolveControls(post, t, it) {
     onclick: ev => {
       ev.stopPropagation();
       const ask = later
-        ? "Paste the post's URL. The rest of the thread goes on under it."
+        ? "Paste the post's URL. Where the network can look it up (Bluesky, Mastodon), the rest of the thread goes on under it; otherwise the rest is canceled."
         : "Paste the post's URL (optional).";
       const url = prompt(ask, "");
       if (url === null) return;
@@ -391,8 +405,15 @@ function deliveryBlock(post, t) {
       const btn = el("button", { class: "retry sm", type: "button", text: "↻",
         onclick: ev => {
           ev.stopPropagation();
+          // The relay is retried in the background: wait for its row to change.
+          const was = d.attempted_at;
+          const until = p => {
+            const tt = p.targets.find(x => x.id === t.id);
+            const dd = tt && tt.items && tt.items[0] && tt.items[0].deliveries.find(x => x.endpoint === d.endpoint);
+            return !dd || dd.status !== "failed" || dd.attempted_at !== was;
+          };
           act(btn, "…", () => v1(postPath(post.id) + ":retry", { method: "POST",
-            body: { deliveries: [{ target: t.id, endpoint: d.endpoint }] } }), d.endpoint.replace(/^wss?:\/\//, "") + ": retrying");
+            body: { deliveries: [{ target: t.id, endpoint: d.endpoint }] } }), d.endpoint.replace(/^wss?:\/\//, "") + ": retrying", { until });
         } });
       row.append(btn);
     }
@@ -499,16 +520,22 @@ function renderDetail(post) {
 // Public API
 // ---------------------------------------------------------------------------
 
+let detailGen = 0;
 export async function openDetail(id) {
+  if (!id) return;
   if (!id.startsWith("pst_")) id = "pst_" + id; // the composer's results still carry store ids
+  const gen = ++detailGen; // a later click wins
+  if (follow && follow.id !== id) stopFollow();
   $("#history").classList.add("detail-open"); // mobile slide-over
   const d = $("#hdetail"); d.innerHTML = "Loading…";
   try {
     const post = await v1(postPath(id));
+    if (gen !== detailGen) return;
     renderDetail(post);
     document.querySelectorAll(".hitem").forEach(e => e.classList.toggle("active", e.dataset.id === id));
     if (post.status === "publishing") followPost(id);
   } catch (e) {
+    if (gen !== detailGen) return;
     d.innerHTML = "";
     d.append(el("div", { class: "err", text: "Error: " + e.message }));
     $("#history").classList.remove("detail-open");

@@ -50,3 +50,30 @@ func TestLocateOwnPost(t *testing.T) {
 		t.Fatalf("not a post URL: %v", err)
 	}
 }
+
+// A failed lookup that isn't a refused session keeps the session: bad URLs
+// mustn't make every lookup sign in again.
+func TestLookupFailureKeepsSession(t *testing.T) {
+	sessions := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/xrpc/com.atproto.server.createSession":
+			sessions++
+			w.Write([]byte(`{"accessJwt":"jwt","did":"did:plc:me","handle":"me"}`))
+		case "/xrpc/com.atproto.identity.resolveHandle":
+			http.Error(w, `{"error":"InvalidRequest","message":"Unable to resolve handle"}`, 400)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "id", "pw")
+	for range 3 {
+		if _, err := c.GetPost(context.Background(), "https://bsky.app/profile/nobody.example/post/x"); err == nil {
+			t.Fatal("want an error")
+		}
+	}
+	if sessions != 1 {
+		t.Fatalf("3 failed lookups made %d sessions, want 1", sessions)
+	}
+}

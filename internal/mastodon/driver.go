@@ -261,6 +261,9 @@ func (a *Account) Locate(ctx context.Context, postURL string) (destination.ItemR
 		if errors.Is(err, ErrStatusNotFound) {
 			return destination.ItemRef{}, destination.ErrPostNotFound
 		}
+		if errors.Is(err, ErrSearchScope) {
+			return destination.ItemRef{}, &destination.Error{Class: destination.ClassAuth, Err: err}
+		}
 		return destination.ItemRef{}, classify(err)
 	}
 	me, err := a.C.OwnAccountID(ctx)

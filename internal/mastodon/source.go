@@ -37,6 +37,9 @@ type SourceMedia struct {
 	Video    bool
 }
 
+// ErrSearchScope: the token can't search, which looking posts up needs.
+var ErrSearchScope = errors.New("the Mastodon token is missing the read:search scope (needed to resolve posts)")
+
 // ErrStatusNotFound: the instance's search found no status at the URL.
 var ErrStatusNotFound = errors.New("post not found or not federated to this instance yet")
 
@@ -54,7 +57,7 @@ func (c *Client) ResolveStatus(ctx context.Context, postURL string) (*SourceStat
 		"q": {postURL}, "type": {"statuses"}, "resolve": {"true"}, "limit": {"1"},
 	}, &search); err != nil {
 		if strings.Contains(err.Error(), "outside the authorized scopes") {
-			return nil, fmt.Errorf("the Mastodon token is missing the read:search scope (needed to resolve posts)")
+			return nil, ErrSearchScope
 		}
 		return nil, fmt.Errorf("search: %w", err)
 	}

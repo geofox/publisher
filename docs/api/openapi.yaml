@@ -1032,9 +1032,10 @@ paths:
       summary: Say whether an item whose outcome is unknown went out
       description: |
         Needs `posts:write`. An item is `unknown` when a send was in flight
-        as the server stopped, on a network that can't drop a repeat
-        (Bluesky, Threads): it may be live. Check the account, then say
-        what you found.
+        as the server stopped and the network can't be trusted to drop a
+        repeat (Bluesky and Threads always; Mastodon once its idempotency
+        key has expired, after an hour): it may be live. Check the account,
+        then say what you found.
 
         `not_published`: the item is sent again now, then the rest of its
         thread. `published`: the item is recorded as live. With its `url`,
@@ -1042,8 +1043,10 @@ paths:
         account's own and to get the reference the next item replies to,
         and the rest of the thread is sent under it; the `url` is required
         then. Where posts can't be looked up (Threads), the URL is kept as
-        given, and what follows stays unsent (`partial`) for a `:retry`.
-        An item that isn't `unknown`: 409.
+        given, and the rest of the thread is canceled: nothing can reply to
+        the post (the target ends `partial`; a `:retry` fails those parts as
+        `invalid` rather than post them detached). An item that isn't
+        `unknown`: 409.
       security:
         - bearer: ["posts:write"]
         - session: []
@@ -2429,6 +2432,7 @@ components:
         ordinal:
           type: integer
           minimum: 0
+          maximum: 99
           description: The item's place in its target, from 0.
         outcome:
           type: string

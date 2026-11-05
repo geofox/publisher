@@ -78,11 +78,22 @@ func (s *Store) ResolveItem(ctx context.Context, r Resolution) error {
 		if !canceled {
 			next = at
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE target_items SET status = ?, next_attempt_at = ? WHERE id = ?`,
+		// attempt_count restarts: the owner says nothing went out, so the
+		// engine's duplicate guard (an uncertain attempt older than the
+		// destination remembers keys) no longer applies.
+		_, err = tx.ExecContext(ctx, `UPDATE target_items SET status = ?, next_attempt_at = ?, attempt_count = 0 WHERE id = ?`,
 			ItemFailed, next, itemID)
 	}
 	if err != nil {
 		return err
+	}
+	if r.Published && !r.Continue {
+		// Nothing to reply to: the rest of the thread can't go on under
+		// this item, and must not be sent replying to nothing.
+		if _, err := tx.ExecContext(ctx, `UPDATE target_items SET status = ?, next_attempt_at = NULL
+			WHERE target_id = ? AND ordinal > ? AND status IN ('planned', 'failed')`, ItemCanceled, r.TargetID, r.Ordinal); err != nil {
+			return err
+		}
 	}
 	// due: something of the target is to be sent now.
 	due := !canceled && !r.Published
@@ -112,7 +123,9 @@ func (s *Store) ResolveItem(ctx context.Context, r Resolution) error {
 		tstatus = "partial"
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE post_targets SET status = ?,
-		  gave_up_at = CASE WHEN ? THEN NULL ELSE gave_up_at END WHERE id = ?`, tstatus, due, r.TargetID); err != nil {
+		  gave_up_at = CASE WHEN ? THEN NULL ELSE gave_up_at END,
+		  error_class = CASE WHEN ? THEN NULL ELSE error_class END WHERE id = ?`,
+		tstatus, due, r.Published, r.TargetID); err != nil {
 		return err
 	}
 	if err := recomputeStatus(tx, r.PostID); err != nil {
@@ -122,6 +135,8 @@ func (s *Store) ResolveItem(ctx context.Context, r Resolution) error {
 	d := EventData{TargetID: r.TargetID, AccountID: account, Platform: platform, Ordinal: &ord, Status: evStatus}
 	if r.Published {
 		d.RemoteURL = r.RemoteURL
+	} else if canceled {
+		d.ErrorClass, d.Error = "unknown_outcome", "not published, as the owner confirmed; the post is canceled, so it isn't sent"
 	} else {
 		d.ErrorClass, d.Error = "unknown_outcome", "not published, as the owner confirmed; sending it again"
 	}
