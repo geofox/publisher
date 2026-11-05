@@ -80,27 +80,42 @@ func (a *Account) Capabilities(context.Context) destination.Capabilities {
 // Publish implements destination.Account. ItemRef.Data is the signed event,
 // which Redeliver re-sends unchanged.
 func (a *Account) Publish(ctx context.Context, req destination.PublishRequest) (destination.PublishResult, error) {
-	var pow *int
-	if n, ok := destination.OptInt(req.Options, OptPOW); ok {
-		pow = &n
-	}
-	imetas := Imetas(req.Media)
+	in := noteInput(req)
+	trace, _ := json.Marshal(map[string]any{"text": in.Text, "pow": in.POW, "imeta": in.Imetas, "tags": in.Tags})
+	out, err := a.publish(ctx, in)
+	out.Trace.Request = string(trace)
+	return out, err
+}
 
-	if req.Quote != nil {
-		return a.quote(ctx, req.Text, *req.Quote, imetas)
+// noteInput maps a request to a kind-1 note: imeta tags for the media, a
+// NIP-36 content warning, NIP-10 reply tags, or a NIP-18 quote (a "q" tag,
+// the commentary followed by a nostr:nevent mention of the quoted event).
+func noteInput(req destination.PublishRequest) PublishInput {
+	in := PublishInput{Kind: 1, Text: req.Text, Imetas: Imetas(req.Media), Tags: contentWarning(req.ContentWarning)}
+	if n, ok := destination.OptInt(req.Options, OptPOW); ok {
+		in.POW = &n
 	}
-	in := PublishInput{Text: req.Text, POW: pow, Imetas: imetas}
 	switch {
+	case req.Quote != nil:
+		src := *req.Quote
+		hint := firstHint(src.RelayHints)
+		content := strings.TrimSpace(req.Text)
+		if mention := neventMention(src.EventID, src.Author, hint); mention != "" {
+			if content == "" {
+				content = mention
+			} else {
+				content = content + "\n" + mention
+			}
+		}
+		in.Text = content
+		in.Tags = append([]gonostr.Tag{{"q", src.EventID, hint, src.Author}}, in.Tags...)
 	case req.InReplyTo != nil:
 		// RelayHint is left empty: NIP-10 hints are optional.
 		in.ReplyTo = &NostrReply{RootID: req.InReplyTo.Root.ID, ParentID: req.InReplyTo.Parent.ID}
 	case req.ReplyTo != nil:
 		in.ReplyTo = &NostrReply{RootID: req.ReplyTo.EventID, ParentID: req.ReplyTo.EventID, AuthorPubkey: req.ReplyTo.Author}
 	}
-	trace, _ := json.Marshal(map[string]any{"text": req.Text, "pow": pow, "imeta": imetas})
-	out, err := a.publish(ctx, in)
-	out.Trace.Request = string(trace)
-	return out, err
+	return in
 }
 
 // Imetas builds one NIP-92 imeta tag per media item that has a URL, with the
@@ -124,6 +139,17 @@ func Imetas(items []destination.MediaItem) []gonostr.Tag {
 	return out
 }
 
+// contentWarning is the NIP-36 tag that marks a note's content as sensitive,
+// with the reason clients show before revealing it. Newlines are folded:
+// clients render the reason on one line.
+func contentWarning(reason string) []gonostr.Tag {
+	reason = strings.Join(strings.Fields(reason), " ")
+	if reason == "" {
+		return nil
+	}
+	return []gonostr.Tag{{"content-warning", reason}}
+}
+
 // Repost implements destination.Reposter: NIP-18 kind 6 for a kind-1 note,
 // kind 16 (generic repost with a "k" tag) for any other kind.
 func (a *Account) Repost(ctx context.Context, src destination.SourceRef) (destination.PublishResult, error) {
@@ -135,22 +161,6 @@ func (a *Account) Repost(ctx context.Context, src destination.SourceRef) (destin
 		tags = append(tags, gonostr.Tag{"k", strconv.Itoa(src.EventKind)})
 	}
 	return a.publish(ctx, PublishInput{Kind: k, Text: "", Tags: tags})
-}
-
-// quote publishes a NIP-18 quote: kind 1 with a "q" tag, the commentary
-// followed by a nostr:nevent mention of the quoted event.
-func (a *Account) quote(ctx context.Context, text string, src destination.SourceRef, imetas []gonostr.Tag) (destination.PublishResult, error) {
-	hint := firstHint(src.RelayHints)
-	content := strings.TrimSpace(text)
-	if mention := neventMention(src.EventID, src.Author, hint); mention != "" {
-		if content == "" {
-			content = mention
-		} else {
-			content = content + "\n" + mention
-		}
-	}
-	tags := []gonostr.Tag{{"q", src.EventID, hint, src.Author}}
-	return a.publish(ctx, PublishInput{Kind: 1, Text: content, Tags: tags, Imetas: imetas})
 }
 
 // publish runs Publish and maps relay outcomes to deliveries and a status:

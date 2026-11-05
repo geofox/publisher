@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	gonostr "fiatjaf.com/nostr"
+
 	"github.com/geofox/publisher/internal/destination"
 )
 
@@ -52,5 +54,47 @@ func TestStatusFromDeliveries(t *testing.T) {
 		if got := StatusFromDeliveries(c.in); got != c.want {
 			t.Errorf("%v → %s, want %s", c.in, got, c.want)
 		}
+	}
+}
+
+func hasTag(tags []gonostr.Tag, want ...string) bool {
+	for _, t := range tags {
+		if strings.Join(t, "\x00") == strings.Join(want, "\x00") {
+			return true
+		}
+	}
+	return false
+}
+
+// A content warning is sent as the NIP-36 tag on notes, replies and quotes.
+func TestNoteInputContentWarning(t *testing.T) {
+	for name, req := range map[string]destination.PublishRequest{
+		"note":  {Text: "spoilers", ContentWarning: "film\nending"},
+		"reply": {Text: "r", ContentWarning: "film ending", InReplyTo: &destination.ThreadRef{Root: destination.ItemRef{ID: "a"}, Parent: destination.ItemRef{ID: "b"}}},
+		"quote": {Text: "q", ContentWarning: "film ending", Quote: &destination.SourceRef{EventID: strings.Repeat("ab", 32)}},
+	} {
+		in := noteInput(req)
+		if !hasTag(in.Tags, "content-warning", "film ending") {
+			t.Errorf("%s: tags %v lack the content warning", name, in.Tags)
+		}
+	}
+	if in := noteInput(destination.PublishRequest{Text: "plain"}); len(in.Tags) != 0 {
+		t.Errorf("no warning, no tag: %v", in.Tags)
+	}
+}
+
+func TestNoteInputQuoteAndReply(t *testing.T) {
+	id := strings.Repeat("ab", 32)
+	q := noteInput(destination.PublishRequest{Text: "my take", Quote: &destination.SourceRef{EventID: id, RelayHints: []string{"wss://r"}}})
+	if !hasTag(q.Tags, "q", id, "wss://r", "") || !strings.HasPrefix(q.Text, "my take\nnostr:nevent1") {
+		t.Errorf("quote = %q %v", q.Text, q.Tags)
+	}
+	r := noteInput(destination.PublishRequest{Text: "hi", ReplyTo: &destination.SourceRef{EventID: id, Author: "pk"}})
+	if r.ReplyTo == nil || r.ReplyTo.ParentID != id || r.ReplyTo.AuthorPubkey != "pk" {
+		t.Errorf("external reply = %+v", r.ReplyTo)
+	}
+	pow := noteInput(destination.PublishRequest{Text: "x", Options: map[string]any{OptPOW: 12}})
+	if pow.POW == nil || *pow.POW != 12 {
+		t.Errorf("pow option not applied: %v", pow.POW)
 	}
 }
