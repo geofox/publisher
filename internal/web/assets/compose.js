@@ -431,6 +431,7 @@ export function startInteraction(src, action) {
     state.interaction = {
       action, platform: src.platform, ref: src.ref,
       sourcePreview: src.preview, sourceURL: src.preview.web_url, sourceAuthor: src.preview.author_handle,
+      sourceInput: src.input || src.preview.web_url, // what POST /v1/posts resolves again
       caps: src.caps,
       // restored on exit; preserve the pre-interaction selection across a nested
       // re-entry (starting a new interaction while already in one).
@@ -538,7 +539,7 @@ export function loadDraft(input) {
       url: m.blossom_url || "",
       // restored video drafts are already transcoded — render as ready
       phase: /^video\//.test(m.mime || "") ? "ready" : undefined,
-      id: m.client_id || m.id || crypto.randomUUID(),
+      id: m.client_id || m.id || newKey(),
     }));
     bumpImagesGen();
     // Hydrate media-placement anchors from the draft spec (id-keyed map).
@@ -722,7 +723,7 @@ function fieldsFor(p, ov) {
   }
   if (p === "mastodon") {
     f.append(lbl("CW", el("input", { type: "text", value: ov.spoiler_text, oninput: e => { ov.spoiler_text = e.target.value; renderPreview(); } })));
-    f.append(lbl("sensitive", el("input", { type: "checkbox", onchange: e => { ov.sensitive = e.target.checked; renderPreview(); } })));
+    f.append(lbl("sensitive", el("input", { type: "checkbox", checked: !!ov.sensitive, onchange: e => { ov.sensitive = e.target.checked; renderPreview(); } })));
     const sel = el("select", { onchange: e => { ov.visibility = e.target.value; renderPreview(); } });
     [["", "default"], ["public", "public"], ["unlisted", "unlisted"], ["private", "private"], ["direct", "direct"]]
       .forEach(([v, t]) => sel.append(el("option", { value: v, text: t })));
@@ -837,7 +838,7 @@ function attachVideo(file) {
   if (state.images.length) { flash(state.images.some(i => i.video) ? "Only one video per post" : "Remove the images first (one video OR images per post)"); return; }
   const entry = { video: true, _file: file, _preset: $("#vidpreset")?.value || "1080p",
                   url: "", alt: "", phase: "uploading", pct: 0, _xhr: null, _jobTimer: null };
-  entry.id = crypto.randomUUID();
+  entry.id = newKey();
   state.images.push(entry);
   renderImages();
   startVideoUpload(entry);
@@ -966,17 +967,25 @@ export function renderImages() {
           // A pending compress for this attachment is now superseded no
           // matter what was picked — original included.
           if (img._compressAbort) { img._compressAbort.abort(); img._compressAbort = null; }
+          // Until the new file is uploaded, the post must not take the old one.
+          if (img._uploadAbort) img._uploadAbort.abort();
+          Object.assign(img, { media_id: "", _uploadFor: null, _upload: null });
+          const pick = v === "original" ? Promise.resolve(img.orig) : compressFile(img, img.orig, v);
+          img._compressing = pick;
           try {
-            const f = v === "original" ? img.orig : await compressFile(img, img.orig, v);
+            const f = await pick;
+            if (img._compressing === pick) img._compressing = null;
             URL.revokeObjectURL(img.url);
             img.file = f; img.url = URL.createObjectURL(f); img.preset = v;
             img.size_bytes = f.size; img.mime = f.type; img.dim = "";
             uploadImage(img);
             renderImages();
           } catch (err) {
+            if (img._compressing === pick) img._compressing = null;
             if (err.name === "AbortError") return; // superseded by a newer pick
             flash("Compress failed: " + err.message);
             ev.target.value = img.preset;
+            uploadImage(img); // the file it keeps
           }
         } });
       for (const [v, label] of [["original", "original"], ["large", "large ≤2048px"],
@@ -1113,13 +1122,15 @@ export function resetComposer() {
 // The last submit that may not have reached the server: its body and its
 // Idempotency-Key. Posting the same body again reuses the key, so a post the
 // server did save (the answer was lost) isn't posted twice.
-let lastSend = null;
+const lastSends = {};
 
 // sendPost sends a POST /v1/posts body with an Idempotency-Key and answers
-// the post (202: saved; the workers send it).
-export async function sendPost(body) {
+// the post (202: saved; the workers send it). slot keeps the composer's and
+// the Interact tab's retries apart.
+export async function sendPost(body, slot = "compose") {
   const json = JSON.stringify(body);
-  if (!lastSend || lastSend.json !== json) lastSend = { json, key: crypto.randomUUID() };
+  let lastSend = lastSends[slot];
+  if (!lastSend || lastSend.json !== json) lastSend = lastSends[slot] = { json, key: newKey() };
   const key = lastSend.key;
   let post;
   try {
@@ -1127,10 +1138,10 @@ export async function sendPost(body) {
   } catch (e) {
     // An answer means the server decided (refused, or the key is in use):
     // a changed body gets a new key anyway. Without one, keep the key.
-    if (e.status && e.status !== 409 && lastSend && lastSend.key === key) lastSend = null;
+    if (e.status && e.status !== 409 && lastSends[slot] === lastSend) delete lastSends[slot];
     throw e;
   }
-  if (lastSend && lastSend.key === key) lastSend = null;
+  if (lastSends[slot] === lastSend) delete lastSends[slot];
   return post;
 }
 
@@ -1142,10 +1153,15 @@ function missingAccounts() {
 // mediaReady waits for the attachments' uploads; false (with a note) when
 // one failed or can't be posted.
 async function mediaReady() {
+  // A preset being applied makes a new file to upload first.
+  await Promise.all(state.images.map(i => i._compressing && i._compressing.catch(() => {})));
   await Promise.all(state.images.map(i => (i.file && !i.media_id ? uploadImage(i) : null)));
-  const bad = state.images.filter(i => !i.video && !i.media_id);
+  const bad = state.images.filter(i => !i.media_id);
   if (bad.length) {
-    flash(bad.length === 1 ? "An image isn't uploaded: retry or remove it" : bad.length + " images aren't uploaded: retry or remove them");
+    // A file can be uploaded again; a draft's attachment without one can't.
+    flash(bad.some(i => !i.file && !i._file)
+      ? "An attachment from the draft can't be posted: remove it and attach it again"
+      : bad.length === 1 ? "An image isn't uploaded: retry or remove it" : bad.length + " images aren't uploaded: retry or remove them");
     renderImages();
     return false;
   }
@@ -1248,7 +1264,7 @@ function targetDetail(t) {
     return (failed.error || "failed") + retry;
   }
   if (items.length > 1) {
-    const sent = items.filter(it => it.status === "published").length;
+    const sent = items.filter(it => it.status === "published" || it.status === "partial").length;
     return `${sent}/${items.length} posts`;
   }
   if (t.status === "canceled") return "canceled";
@@ -1278,7 +1294,8 @@ export function openProgressModal(postId, first) {
     title.textContent = !settled ? "Posting…"
       : post.status === "published" ? "✓ Posted"
       : post.status === "failed" ? "⚠ Posting failed"
-      : post.status === "canceled" ? "⊘ Canceled" : "⚠ Posted with issues";
+      : post.status === "canceled" ? "⊘ Canceled"
+      : post.status === "missed" ? "⏰ Not posted (missed)" : "⚠ Posted with issues";
     tree.innerHTML = "";
     for (const t of (post.targets || [])) {
       tree.append(el("div", { class: "trow lvl1 st-" + progressClass(t.status) },
@@ -1313,8 +1330,15 @@ export function openProgressModal(postId, first) {
 
   if (first && first.targets && first.targets.some(t => t.items)) render(first);
   else { title.textContent = "Posting…"; foot.append(el("button", { class: "pm-btn", type: "button", text: "Close", onclick: close })); }
+  let last = first;
   stop = followPost(id, {
-    onPost: render,
+    onPost: p => { last = p; render(p); },
+    // Following gives up after a while: say so rather than spin.
+    onStop: () => {
+      if (!bk.isConnected || (last && last.status !== "publishing")) return;
+      clearInflight();
+      title.textContent = "Still sending: History shows how it goes";
+    },
     until: p => p.status !== "publishing",
     onGone: close, // a post that's gone (deleted, or from before an upgrade)
   });
@@ -1353,7 +1377,7 @@ export function composeInit() {
     if (gen !== imagesGen) return; // composer was cleared/replaced mid-convert
     if (state.images.length >= 10) { flash("Max 10 images"); return; }
     entry.url = URL.createObjectURL(entry.file);
-    entry.id = crypto.randomUUID();
+    entry.id = newKey();
     state.images.push(entry);
     uploadImage(entry);
     renderImages();
@@ -1363,6 +1387,30 @@ export function composeInit() {
   $("#submit").addEventListener("click", submit);
   document.getElementById("threadnum")?.addEventListener("change", () => { refreshTargets(); renderPreview(); });
   renderChips(); renderImages(); renderCards(); renderMeta(); renderPreview();
+  reattachInflight();
+}
+
+// reattachInflight reopens the progress of a post that was sending when the
+// page was left, if it still is: asking the list (not the post) keeps a post
+// that is gone from answering 404.
+async function reattachInflight() {
   const pending = getInflight();
-  if (pending) openProgressModal(pending);
+  if (!pending) return;
+  const id = pending.startsWith("pst_") ? pending : "pst_" + pending;
+  let page;
+  try { page = await v1("/v1/posts?status=publishing&limit=100"); } catch { return; }
+  if (getInflight() !== pending) return; // a new post took its place meanwhile
+  const p = ((page && page.data) || []).find(x => x.id === id);
+  if (p) openProgressModal(id);
+  else clearInflight();
+}
+
+// newKey is a random id: crypto.randomUUID needs a secure context (https or
+// localhost); a plain-http LAN install falls back to getRandomValues.
+export function newKey() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }

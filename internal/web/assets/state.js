@@ -275,7 +275,7 @@ export function v1PostBody() {
     threading: { numbering: document.getElementById("threadnum")?.checked ?? true },
   };
   if (it) {
-    body[it.action === "quote" ? "quote" : "reply_to"] = { url: it.sourceURL };
+    body[it.action === "quote" ? "quote" : "reply_to"] = { url: it.sourceInput || it.sourceURL };
   } else {
     const sa = document.querySelector("#schedat")?.value;
     if (sa) body.schedule = { at: new Date(sa).toISOString() };

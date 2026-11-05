@@ -1,8 +1,8 @@
 "use strict";
 import { state, buildSpec, defaultOv, clearImages, bumpImagesGen } from "./state.js";
-import { loadDraft, markDirty, renderImages } from "./compose.js";
+import { loadDraft, markDirty, renderImages, newKey } from "./compose.js";
 import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
-import { flash } from "./common.js";
+import { flash, el } from "./common.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -176,7 +176,7 @@ export async function saveActiveDraft() {
       // Preserve the stable id (same as loadDraft) so placement anchors keyed by
       // img.id keep matching after a save — otherwise every image's id becomes
       // undefined and state.anchors collapses onto a single key.
-      id: m.client_id || m.id || crypto.randomUUID(),
+      id: m.client_id || m.id || newKey(),
       blossom_url: m.blossom_url, sha256: m.sha256, mime: m.mime,
       dim: m.dim, blurhash: m.blurhash, size_bytes: m.size_bytes,
       alt: m.alt || "", ordinal: m.ordinal, file: null, media_id: m.media_id || "",
@@ -373,8 +373,8 @@ export function populateTranslateMenu() {
   const targets = state.translateTargets || [];
   if (targets.length === 0) { sel.hidden = true; return; }
   sel.hidden = false;
-  sel.innerHTML = `<option value="">🌐 Translate to…</option>` +
-    targets.map(t => `<option value="${t}">${t.toUpperCase()}</option>`).join("");
+  sel.replaceChildren(el("option", { value: "", text: "🌐 Translate to…" }),
+    ...targets.map(t => el("option", { value: t, text: String(t).toUpperCase() })));
   // attach the change handler once (replace any prior handler by cloning the node would lose the options;
   // instead, idempotently bind a property-based handler):
   sel.onchange = async () => {

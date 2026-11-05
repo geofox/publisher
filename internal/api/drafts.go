@@ -309,27 +309,43 @@ type draftOut struct {
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// adoptable is whether a draft attachment looks like a file in media
-// storage: an http(s) URL named by its SHA-256 (Blossom's addressing).
-// Old drafts' references came through the client, so nothing else is
-// turned into a media object.
-func adoptable(m store.Media) bool {
+// adoptable is whether a draft attachment is a file in this server's media
+// storage: on the configured Blossom server's origin, at /<sha256> (with an
+// optional extension), so the file is the one its hash names. Old drafts'
+// references came through the client: anything else (another host, an
+// internal address) never becomes media a post would fetch or publish.
+func adoptable(m store.Media, blossom string) bool {
+	base, err := neturl.Parse(blossom)
+	if err != nil || base.Host == "" {
+		return false
+	}
 	u, err := neturl.Parse(m.BlossomURL)
-	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil &&
-		sha256Hex.MatchString(m.SHA256) && strings.Contains(u.Path, m.SHA256)
+	if err != nil || u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) || u.User != nil ||
+		u.RawQuery != "" || u.Fragment != "" || !sha256Hex.MatchString(m.SHA256) {
+		return false
+	}
+	rest, ok := strings.CutPrefix(u.Path, strings.TrimRight(base.Path, "/")+"/"+m.SHA256)
+	return ok && (rest == "" || blossomExt.MatchString(rest))
 }
+
+var blossomExt = regexp.MustCompile(`^\.[a-z0-9]{1,5}$`)
 
 func (a *API) writeDraft(w http.ResponseWriter, r *http.Request, d *store.Draft) {
 	out := draftOut{Draft: d, Media: make([]draftMediaOut, 0, len(d.Media))}
+	// The old routes are the session's (the one owner's) until drafts move
+	// to /v1, where they are owner-scoped.
 	owner := store.DefaultOwner
-	if pr, ok := principalFrom(r.Context()); ok && pr.OwnerID != "" {
-		owner = pr.OwnerID
+	blossom := ""
+	if a.media != nil {
+		blossom = a.media.BlossomURL
 	}
+	var given []string
 	for _, m := range d.Media {
 		mo := draftMediaOut{Media: m}
-		if adoptable(m) {
-			if obj, err := a.Store.AdoptMedia(r.Context(), owner, m); err == nil {
+		if adoptable(m, blossom) {
+			if obj, err := a.Store.AdoptMedia(r.Context(), owner, m, given); err == nil {
 				mo.MediaID = obj.ID
+				given = append(given, obj.ID)
 			} else {
 				slog.WarnContext(r.Context(), "drafts: media object for an attachment", "draft_id", d.ID, "err", err)
 			}

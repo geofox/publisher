@@ -99,3 +99,19 @@ test("posts a saved draft with its image, and the draft is used up", async ({ pa
   await page.locator(".pmodal").getByRole("button", { name: "Done" }).click();
   await expect(page.locator("#draft-list .draft-row", { hasText: m })).toHaveCount(0);
 });
+
+test("a draft with the same image twice posts both", async ({ page, fakes }) => {
+  const m = marker("draftdup");
+  const file = path.join(__dirname, "assets", "gradient.png");
+  await openApp(page);
+  await page.locator("#master").fill(`Twice the gradient ${m}`);
+  await page.locator("#imgfile").setInputFiles(file);
+  await page.locator("#imgfile").setInputFiles(file);
+  await expect(page.locator("#images .thumb")).toHaveCount(2);
+  await page.locator("#draft-save").click();
+  await expect(page.locator("#draft-list .draft-row", { hasText: m })).toBeVisible();
+  await page.locator("#submit").click();
+  await expect(page.locator(".pmodal .pm-title")).toHaveText("✓ Posted");
+  const calls = await fakes.waitForCalls(m, 4);
+  for (const c of calls) expect(c.images, c.platform).toHaveLength(2);
+});

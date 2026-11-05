@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -109,18 +110,36 @@ func (s *Store) SetMediaAlt(ctx context.Context, owner, id, alt string) error {
 
 // AdoptMedia returns a ready media object for a file already in media
 // storage (a draft's attachment), creating one when the owner has none for
-// that file. The web composer posts a draft's media by id this way; drafts
-// on /v1 hold media ids themselves.
-func (s *Store) AdoptMedia(ctx context.Context, owner string, m Media) (*MediaObject, error) {
-	var id string
-	err := s.sql.QueryRowContext(ctx, `SELECT id FROM media_objects
-		WHERE owner_id = ? AND status = ? AND url = ? AND sha256 = ? ORDER BY created_at LIMIT 1`,
-		owner, MediaReady, m.BlossomURL, m.SHA256).Scan(&id)
-	switch {
-	case err == nil:
-		return s.MediaObject(ctx, owner, id)
-	case !errors.Is(err, sql.ErrNoRows):
+// that file. skip lists objects already handed out (the same file attached
+// twice gets two objects, as a post names each media once); the oldest
+// other one is taken, so reading a draft again gives the same ids. The web
+// composer posts a draft's media by id this way; drafts on /v1 hold media
+// ids themselves.
+func (s *Store) AdoptMedia(ctx context.Context, owner string, m Media, skip []string) (*MediaObject, error) {
+	rows, err := s.sql.QueryContext(ctx, `SELECT id FROM media_objects
+		WHERE owner_id = ? AND status = ? AND url = ? AND sha256 = ? ORDER BY created_at, id`,
+		owner, MediaReady, m.BlossomURL, m.SHA256)
+	if err != nil {
 		return nil, err
+	}
+	id := ""
+	for rows.Next() {
+		var cand string
+		if err := rows.Scan(&cand); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if !slices.Contains(skip, cand) {
+			id = cand
+			break
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if id != "" {
+		return s.MediaObject(ctx, owner, id)
 	}
 	mo := &MediaObject{OwnerID: owner, Status: MediaReady, URL: m.BlossomURL, SHA256: m.SHA256, Mime: m.Mime,
 		Dim: m.Dim, Blurhash: m.Blurhash, SizeBytes: m.SizeBytes, DurationSecs: m.DurationSecs,

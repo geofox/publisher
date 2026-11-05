@@ -37,6 +37,9 @@ async function resolveInput(input) {
   let data;
   try {
     data = fromV1(await v1("/v1/resolve", { method: "POST", body: { url: input.trim() } }));
+    // What was typed names the post for the server again (a Nostr id, a
+    // Mastodon URL); the answer's url is for showing (njump, the origin).
+    data.input = input.trim();
   } catch (e) {
     if (seq !== _seq) return;
     status.textContent = "✗ " + e.message;
@@ -97,7 +100,7 @@ async function doRepost(s, btn) {
   if (!acct) { flash("No " + (PLAT_LABEL[s.platform] || s.platform) + " account is configured"); return; }
   btn.disabled = true;
   try {
-    const post = await sendPost({ repost: { url: s.preview.web_url }, targets: [{ account: acct.id }] });
+    const post = await sendPost({ repost: { url: s.input }, targets: [{ account: acct.id }] }, "interact");
     setInflight(post.id);
     openProgressModal(post.id, post);
   } catch (e) {

@@ -630,6 +630,24 @@ as they move.
 > - **Progress** follows the post (`follow.js`, shared with History): its
 >   event stream wakes a re-read until it stops publishing. The result
 >   modal and `results.js` are gone.
+> - **Review fixes (4b).** Draft media are adopted only from the configured
+>   Blossom origin at `/<sha256>[.ext]` (no other host, no query): the
+>   engine fetches a media object's URL unguarded, so a client-made
+>   reference must never become one. The same file twice in a draft gets
+>   two media objects (a post names each once). Replies, quotes and reposts
+>   send what was typed (a Nostr id, the Mastodon URL), not the display URL
+>   (njump, the origin), which may not resolve again. Post waits for a
+>   preset being applied; a draft attachment (image or video) that can't
+>   be posted says so. A stale in-flight id is checked against the list of
+>   publishing posts (no 404 on boot). Keys fall back to getRandomValues
+>   on plain-http installs; the composer's and Interact's retry keys are
+>   apart. `missed` reads "Not posted"; the modal says when following
+>   gives up. The translate menu is built without innerHTML.
+>   Deferred: an index on `media_objects(owner_id, sha256)` (adoption reads
+>   scan the owner's media; fine at this scale, goes with 4c's
+>   conversion); preview refusals (a video one network refuses) show only
+>   the single-post card; relay deliveries of a Nostr thread's later parts
+>   aren't in the modal (History has them).
 
 ## Task 4.1: Composer and history on `/v1`
 
