@@ -98,8 +98,8 @@ func TestReadyzOpenWithAuthEnabled(t *testing.T) {
 	}
 	// A path trick must not turn the open gate into a bypass for gated routes.
 	rec := httptest.NewRecorder()
-	a.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz/../api/tokens", nil))
-	if rec.Code == http.StatusOK {
-		t.Fatalf("/readyz/../api/tokens reached a gated route: %d", rec.Code)
+	a.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz/../index.html", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("/readyz/../index.html got past the session gate: %d", rec.Code)
 	}
 }

@@ -15,6 +15,14 @@ export class Fakes {
   async reset() { expect((await this.request.post("/__e2e/reset")).ok()).toBeTruthy(); }
   async down(platform: string) { expect((await this.request.post(`/__e2e/down?platform=${platform}`)).ok()).toBeTruthy(); }
   async up(platform: string) { expect((await this.request.post(`/__e2e/up?platform=${platform}`)).ok()).toBeTruthy(); }
+  /** The platform refuses posts (an `invalid` error) until up() or reset(). */
+  async invalid(platform: string) { expect((await this.request.post(`/__e2e/invalid?platform=${platform}`)).ok()).toBeTruthy(); }
+  /** The platform takes `after` more calls; the next one never returns. */
+  async hold(platform: string, after: number) { expect((await this.request.post(`/__e2e/hold?platform=${platform}&after=${after}`)).ok()).toBeTruthy(); }
+  /** Abandon the engine mid-send and start a new one on the same database, as a restart does. */
+  async restart() { expect((await this.request.post("/__e2e/restart")).ok()).toBeTruthy(); }
+  /** Calls each platform received, failed ones included. */
+  async attempts(): Promise<Record<string, number>> { return (await this.request.get("/__e2e/attempts")).json(); }
   async calls(): Promise<Call[]> { return (await this.request.get("/__e2e/calls")).json(); }
   /** Calls whose text contains marker, polled until at least `min` arrive. */
   async waitForCalls(marker: string, min: number): Promise<Call[]> {

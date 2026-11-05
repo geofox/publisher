@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"runtime/debug"
-	"strconv"
 	"sync"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
-	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/thread"
 	"github.com/geofox/publisher/internal/unfurl"
@@ -398,9 +396,7 @@ func (d *Dispatcher) drive(ctx context.Context, postID string, mm *memMedia, per
 	return nil
 }
 
-func (d *Dispatcher) driveTarget(ctx context.Context, postID string, tg store.Target, mm *memMedia) {
-	sink := progress.SinkFrom(ctx)
-	ran, done := false, 0
+func (d *Dispatcher) driveTarget(ctx context.Context, _ string, tg store.Target, mm *memMedia) {
 	for !d.isStopping() {
 		c, err := d.Store.ClaimItem(ctx, d.now(), store.ClaimFilter{TargetID: tg.ID})
 		if err != nil {
@@ -410,44 +406,8 @@ func (d *Dispatcher) driveTarget(ctx context.Context, postID string, tg store.Ta
 		if c == nil {
 			break
 		}
-		if !ran {
-			sink.Platform(tg.Platform, progress.StatusRunning, "", "")
-			ran = true
-		}
-		if d.runClaim(ctx, c, mm, false) == store.ItemPublished {
-			done++
-		}
-		if n := len(tg.Items); n > 1 {
-			sink.Platform(tg.Platform, progress.StatusRunning, "thread "+strconv.Itoa(done)+"/"+strconv.Itoa(n), "")
-		}
+		d.runClaim(ctx, c, mm, false)
 	}
-	if !ran {
-		return
-	}
-	post, err := d.Store.GetPost(postID)
-	if err != nil {
-		return
-	}
-	for _, t := range post.Targets {
-		if t.ID == tg.ID {
-			sink.Platform(t.Platform, mapStatus(t.Status), threadDetail(t), t.RemoteURL)
-		}
-	}
-}
-
-// threadDetail is the progress detail of a finished thread: parts live of
-// parts planned.
-func threadDetail(t store.Target) string {
-	if len(t.Items) < 2 {
-		return ""
-	}
-	done := 0
-	for _, it := range t.Items {
-		if it.Status == store.ItemPublished {
-			done++
-		}
-	}
-	return "thread " + strconv.Itoa(done) + "/" + strconv.Itoa(len(t.Items))
 }
 
 // runClaim publishes a claimed item and records the result. auto marks a
@@ -510,6 +470,7 @@ func (d *Dispatcher) runClaim(ctx context.Context, c *store.Claim, mm *memMedia,
 		slog.ErrorContext(ctx, "engine: record result failed", "platform", c.Platform, "ordinal", c.Ordinal, "err", err)
 		return res.Status
 	}
+	logItemResult(ctx, c, res)
 	d.enqueueFanout(ctx, c.PostID, r.Status, r.SignedEventJSON, r.PendingRelays)
 	if out.PostBefore == "scheduled" {
 		metrics.IncSchedulerFire()
@@ -617,6 +578,10 @@ func itemStatus(s string) string {
 // target's options, threaded under the items before it (or, for the first
 // item of an interaction's source target, as the reply, quote or repost).
 func (d *Dispatcher) publishClaimed(ctx context.Context, post *store.Post, tg store.Target, it store.Item, mm *memMedia) TargetResult {
+	if !d.SendsAs(tg.Platform, tg.AccountID) {
+		e := errOtherAccount(tg.Platform)
+		return TargetResult{Platform: tg.Platform, Status: "failed", Error: e.Error(), ErrorClass: string(e.Class)}
+	}
 	var ov Overrides
 	if tg.FieldsJSON != "" {
 		if err := json.Unmarshal([]byte(tg.FieldsJSON), &ov); err != nil {
@@ -836,4 +801,30 @@ func (d *Dispatcher) alertGaveUp(ctx context.Context, postID, platform, why stri
 	body += "The failure would repeat (auth, invalid, rejected) or the post may already be live (unknown_outcome). " +
 		"Check the target, fix the cause, then retry manually."
 	d.alert(ctx, "Publisher: delivery needs attention", body)
+}
+
+// logItemResult writes one line per send attempt (post_id comes from ctx), so
+// a log alert can watch for failures without reading the database. Endpoint
+// counts are there for destinations that deliver to several (Nostr relays).
+func logItemResult(ctx context.Context, c *store.Claim, res store.ItemResult) {
+	attrs := []any{"platform", c.Platform, "ordinal", c.Ordinal, "attempt", c.Attempts + 1,
+		"status", res.Status, "latency_ms", res.LatencyMS}
+	if res.RemoteID != "" {
+		attrs = append(attrs, "remote_id", res.RemoteID)
+	}
+	if len(res.Deliveries) > 0 {
+		ok := 0
+		for _, rs := range res.Deliveries {
+			if rs.Status == "ok" {
+				ok++
+			}
+		}
+		attrs = append(attrs, "endpoints_ok", ok, "endpoints_failed", len(res.Deliveries)-ok)
+	}
+	if res.Status == store.ItemFailed || res.Status == store.ItemUnknown {
+		attrs = append(attrs, "error_class", res.ErrorClass, "error", res.Error, "give_up", res.GiveUp)
+		slog.WarnContext(ctx, "engine: item not sent", attrs...)
+		return
+	}
+	slog.InfoContext(ctx, "engine: item sent", attrs...)
 }

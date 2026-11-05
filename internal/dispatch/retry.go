@@ -51,6 +51,9 @@ func (d *Dispatcher) RetryTargetRelay(ctx context.Context, postID string, target
 	if target.SignedEventJSON == "" {
 		return nil, errors.New("no stored event to rebroadcast")
 	}
+	if !d.SendsAs(target.Platform, target.AccountID) {
+		return nil, errOtherAccount(target.Platform)
+	}
 	acct, err := d.account(target.Platform)
 	if err != nil {
 		return nil, err

@@ -618,7 +618,6 @@ func TestV1RetryEdgeCases(t *testing.T) {
 
 // relayDispatch records which target's delivery is retried.
 type relayDispatch struct {
-	fakeDispatcher
 	mu    chan struct{}
 	calls []string
 }

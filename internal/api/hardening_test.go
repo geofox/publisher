@@ -31,17 +31,17 @@ func TestCSRFGuard(t *testing.T) {
 
 	// Cross-origin state-changing request → blocked before routing.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://post.example/api/post", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://post.example/v1/posts", nil)
 	req.Header.Set("Origin", "http://evil.example")
 	a.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("cross-origin POST: code = %d, want 403", rec.Code)
 	}
 
-	// Same-origin Origin → allowed past the guard (handler 400s on the empty
-	// body; the point is it is NOT a 403).
+	// Same-origin Origin → allowed past the guard (the handler refuses the
+	// empty body; the point is it is NOT a 403).
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "http://post.example/api/post", nil)
+	req = httptest.NewRequest(http.MethodPost, "http://post.example/v1/posts", nil)
 	req.Header.Set("Origin", "http://post.example")
 	a.Routes().ServeHTTP(rec, req)
 	if rec.Code == http.StatusForbidden {
@@ -50,7 +50,7 @@ func TestCSRFGuard(t *testing.T) {
 
 	// No Origin header (server-to-server, e.g. n8n) → allowed past the guard.
 	rec = httptest.NewRecorder()
-	a.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "http://post.example/api/post", nil))
+	a.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "http://post.example/v1/posts", nil))
 	if rec.Code == http.StatusForbidden {
 		t.Error("origin-less POST was blocked as cross-origin")
 	}
@@ -76,7 +76,7 @@ func TestCSRFGuardTrustsAppBaseURL(t *testing.T) {
 	// Same-origin POST as the browser sees it, but r.Host is the internal
 	// upstream the proxy forwarded → must NOT be blocked.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://internal-upstream:8080/api/post", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://internal-upstream:8080/v1/posts", nil)
 	req.Header.Set("Origin", "https://publisher.example")
 	a.Routes().ServeHTTP(rec, req)
 	if rec.Code == http.StatusForbidden {
@@ -85,7 +85,7 @@ func TestCSRFGuardTrustsAppBaseURL(t *testing.T) {
 
 	// A genuinely foreign Origin is still blocked even with AppBaseURL set.
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "http://internal-upstream:8080/api/post", nil)
+	req = httptest.NewRequest(http.MethodPost, "http://internal-upstream:8080/v1/posts", nil)
 	req.Header.Set("Origin", "https://evil.example")
 	a.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {

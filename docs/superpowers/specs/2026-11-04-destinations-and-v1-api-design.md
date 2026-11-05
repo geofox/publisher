@@ -1,8 +1,58 @@
 # Destinations and the `/v1` API (roadmap step 2)
 
-**Status:** Draft for review (roadmap step 2, started 2026-11-04)
+**Status:** Built (roadmap step 2, started 2026-11-04, last part 4d on 2026-11-05)
 **Date:** 2026-11-04
 **Area:** Architecture — platform contract, accounts, publish engine, HTTP API
+
+## As built
+
+Step 2 shipped as eleven PRs instead of four (1, 2a–b, 3a–d, 4a–d), each
+deployable. The plan
+(`docs/superpowers/plans/2026-11-04-destinations-and-v1-api.md`) has an
+"As built" note per PR; what changed against this design:
+
+- **One connected account per type, in the engine.** The data model,
+  targets and API carry account ids, but the dispatcher holds one
+  destination account per type and looks it up by type (§3.2's seeding).
+  `POST /v1/posts` takes one account per type, and (4d) refuses an account
+  of a connected type that isn't the connected one: it would have been
+  sent with the other account's credentials. Step 4 replaces the type key
+  with the account id.
+- **Idempotency is real for Mastodon (key) and Nostr (the signed event is
+  saved before the first send).** Bluesky `rkey` and the Threads container
+  id stay `none` (§5.3): neither platform's behaviour on a repeat is
+  verified, so an unknown outcome there stops for the owner.
+- **`unknown` items are settled by hand** with a new
+  `POST /v1/posts/{id}:resolve` (`published` with the post's URL, which
+  Bluesky and Mastodon look up through an optional `destination.Locator`
+  so the thread goes on under it; or `not_published`, which sends it
+  again). History shows "It was posted / It wasn't" for them.
+- **The event log is a table** (v6), written with each state change; SSE
+  reads it. The in-memory progress registry went with the old routes.
+- **`:cancel` keeps the post** as `canceled`; the old route deleted it.
+- **Store statuses keep the old words** (`success`) and the API maps
+  them; `needs_attention` is computed.
+- **Media are objects** (v7): upload first, post by id. Drafts hold a
+  `/v1` post body (v8), converted once at startup; old attachments not on
+  the configured Blossom origin are dropped.
+- **Interactions:** a reply goes only to the source's network; the "try
+  anyway" override is gone (an action the post doesn't allow is refused).
+- **The old routes answer `410 Gone`** with a link to the migration
+  guide, rather than 404, so a caller that wasn't moved says why.
+- **Dropped:** History's raw request/response view (`/v1` attempts carry
+  no traces). **Added:** one log line per send attempt, which replaces the
+  old `/publish` summary line.
+- **e2e restarts the engine in process** (§7's "harness kills the server"):
+  the old dispatcher is abandoned mid-send and a new one recovers from the
+  same database, since killing the process loses the harness's temporary
+  database. The same case is a Go test
+  (`TestCrashBetweenThreadItemsCompletesWithoutDuplicate`).
+- **Deferred:** the shared `destinationtest` suite (per-driver `httptest`
+  tests for now); no driver declares `URLLength` or
+  `MentionLocalPartOnly` yet, so counts stay conservative; a delivery
+  retry that fails before reaching the relay is only logged; a cap on
+  drafts per owner; a `:retry` of an `unknown` item on a key destination
+  past its window comes back `unknown` (use `:resolve`).
 
 ## Problem
 

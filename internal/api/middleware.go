@@ -99,25 +99,18 @@ func (a *API) withGates(next http.Handler) http.Handler {
 		return next
 	}
 	session := a.requireSession(next)
-	publish := a.requireAPIToken(scopePostsWrite, next)
-	upload := a.requireAPIToken(scopeMediaWrite, next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Clean the path before gate selection: net/http does not normalize
-		// r.URL.Path before the handler runs, so a raw "/auth/../api/tokens"
-		// would otherwise satisfy the "/auth/" prefix and dodge the session gate.
+		// r.URL.Path before the handler runs, so a raw "/auth/../v1/tokens"
+		// would otherwise satisfy the "/auth/" prefix and dodge a gate.
 		p := path.Clean(r.URL.Path)
 		switch {
 		case p == "/healthz" || p == "/readyz" || p == "/metrics" ||
 			strings.HasPrefix(p, "/auth/") ||
-			p == "/api/public/feed" ||
-			p == "/v1" || strings.HasPrefix(p, "/v1/"):
-			next.ServeHTTP(w, r) // always-open / separately-gated (/v1 authenticates per route)
-		case p == "/publish":
-			publish.ServeHTTP(w, r) // machine endpoints
-		case p == "/upload-media":
-			upload.ServeHTTP(w, r)
+			p == "/v1" || strings.HasPrefix(p, "/v1/") || isOldAPIPath(p):
+			next.ServeHTTP(w, r) // always-open / separately-gated (/v1 authenticates per route; old paths answer 410)
 		default:
-			session.ServeHTTP(w, r) // SPA + browser /api/*
+			session.ServeHTTP(w, r) // the web app
 		}
 	})
 }
