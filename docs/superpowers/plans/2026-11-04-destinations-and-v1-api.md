@@ -477,6 +477,24 @@ as they move.
 >   Deferred: hashtags in copied text stay live; a per-token rate limit on
 >   `/v1/resolve`; the preview lists copied images only as a warning.
 
+> PR 3e (the tools):
+>
+> - `POST /v1/translate` (`posts:write`: it spends the DeepL quota),
+>   `POST /v1/verify` (`posts:read`; the verdict is always `200`, its
+>   `status` says verified, failed or error).
+> - **Relay sync under the Nostr account**:
+>   `GET/PUT /v1/accounts/{id}/nostr/relays` (`PUT` replaces the
+>   secondary list, which keeps its order; the old add/remove pair goes
+>   with the old routes) and the custom methods `:scan` and `:sync`
+>   (`direction` pull or push, optional `relays` naming targets; a name
+>   that isn't a target is a field error rather than silently skipped).
+>   `admin` scope. Still one Nostr identity (the env one) until step 4.
+> - **`GET /v1/public/feed`** keeps its own token (`PUBLIC_FEED_TOKEN`),
+>   documented as a separate security scheme, so a website's server never
+>   holds a token that can post. `limit` out of range is `400`, not
+>   clamped.
+> - `/v1/drafts/{id}:translate` moves with drafts to PR 4.
+
 ## Task 3.1: Foundations
 
 - [ ] `internal/api/v1` package: router, problem-details writer, error

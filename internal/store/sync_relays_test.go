@@ -2,6 +2,7 @@ package store
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -47,5 +48,32 @@ func TestSyncRelaysCRUDAndSeed(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("add idempotent: got %v", got)
+	}
+}
+
+func TestSetSyncRelays(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SetSyncRelays([]string{"wss://z", "wss://a", "wss://m"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.SyncRelays(); strings.Join(got, " ") != "wss://z wss://a wss://m" {
+		t.Fatalf("order = %v", got)
+	}
+	// Kept relays keep their place; a new one follows; a missing one goes.
+	if err := db.SetSyncRelays([]string{"wss://b", "wss://m", "wss://z"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.SyncRelays(); strings.Join(got, " ") != "wss://z wss://m wss://b" {
+		t.Fatalf("after replace = %v", got)
+	}
+	if err := db.SetSyncRelays(nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.SyncRelays(); len(got) != 0 {
+		t.Fatalf("after clear = %v", got)
 	}
 }

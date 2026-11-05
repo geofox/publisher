@@ -88,7 +88,8 @@ token that would outlive it). For a reply, quote or repost the source URL
 can be `unrecognized`, `not_supported` (Threads), `not_configured` or
 `unresolvable` (not found, deleted, private, or not yet known to your
 server); `not_allowed` and `missing_source_account` concern the action
-and its targets.
+and its targets. The tools add `unsupported_language` (translate) and
+`unknown_relay` (relay sync: a relay that isn't one of the account's).
 
 ## invalid_parameter
 
