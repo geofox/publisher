@@ -111,8 +111,7 @@ func insertDraftMedia(tx *sql.Tx, draftID string, media []Media) error {
 	return nil
 }
 
-// ErrDraftNotFound is returned by GetDraft / UpdateDraft / DeleteDraft when no
-// row matches the requested id.
+// ErrDraftNotFound is returned by GetDraft when no row matches the id.
 var ErrDraftNotFound = errors.New("draft not found")
 
 // GetDraft returns a draft hydrated with its media. Returns ErrDraftNotFound

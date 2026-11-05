@@ -23,10 +23,17 @@ func TestLogItemResult(t *testing.T) {
 	logItemResult(context.Background(), c, store.ItemResult{Status: store.ItemPublished, RemoteID: "r1",
 		Deliveries: []store.RelayState{{URL: "a", Status: "ok"}, {URL: "b", Status: "failed"}}})
 	logItemResult(context.Background(), c, store.ItemResult{Status: store.ItemFailed, ErrorClass: "transient", Error: "boom"})
+	logItemResult(context.Background(), c, store.ItemResult{Status: store.ItemFailed, ErrorClass: "auth",
+		Error: `401: {"error":"x","accessJwt":"eyJsecret"} ` + strings.Repeat("y", 400)})
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("want 2 lines, got %q", buf.String())
+	if len(lines) != 3 {
+		t.Fatalf("want 3 lines, got %q", buf.String())
+	}
+	var leak map[string]any
+	_ = json.Unmarshal([]byte(lines[2]), &leak)
+	if e, _ := leak["error"].(string); strings.Contains(e, "eyJsecret") || len([]rune(e)) > 301 {
+		t.Errorf("logged error not scrubbed or capped: %q", e)
 	}
 	var ok, bad map[string]any
 	_ = json.Unmarshal([]byte(lines[0]), &ok)

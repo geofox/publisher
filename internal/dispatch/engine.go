@@ -330,6 +330,7 @@ func (d *Dispatcher) recoverSending(ctx context.Context) {
 			continue
 		}
 		pctx := logging.With(ctx, "post_id", si.PostID)
+		logItemResult(pctx, &si.Claim, res)
 		if retry {
 			slog.InfoContext(pctx, "engine: re-queued an item left sending", "platform", si.Platform, "ordinal", si.Ordinal)
 			continue
@@ -426,6 +427,7 @@ func (d *Dispatcher) runClaim(ctx context.Context, c *store.Claim, mm *memMedia,
 				ErrorClass: string(destination.ClassUnknownOutcome),
 				Error:      "internal error while sending; it may have been posted: check, then retry by hand"}
 			if out, err := d.Store.RecordItemResult(context.WithoutCancel(ctx), res); err == nil {
+				logItemResult(ctx, c, res)
 				d.settled(ctx, c, out, "internal error")
 			}
 			status = store.ItemUnknown
@@ -529,6 +531,7 @@ func (d *Dispatcher) release(ctx context.Context, c *store.Claim, now time.Time)
 		slog.ErrorContext(ctx, "engine: release claim failed", "err", err)
 		return
 	}
+	logItemResult(ctx, c, res)
 	d.settled(ctx, c, out, "idempotency key expired")
 }
 
@@ -822,7 +825,12 @@ func logItemResult(ctx context.Context, c *store.Claim, res store.ItemResult) {
 		attrs = append(attrs, "endpoints_ok", ok, "endpoints_failed", len(res.Deliveries)-ok)
 	}
 	if res.Status == store.ItemFailed || res.Status == store.ItemUnknown {
-		attrs = append(attrs, "error_class", res.ErrorClass, "error", res.Error, "give_up", res.GiveUp)
+		// Scrubbed as the store scrubs it: an upstream body may echo a token.
+		msg := store.Scrub(res.Error)
+		if r := []rune(msg); len(r) > 300 {
+			msg = string(r[:300]) + "…"
+		}
+		attrs = append(attrs, "error_class", res.ErrorClass, "error", msg, "give_up", res.GiveUp)
 		slog.WarnContext(ctx, "engine: item not sent", attrs...)
 		return
 	}

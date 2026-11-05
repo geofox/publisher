@@ -759,6 +759,23 @@ as they move.
 >   and the n8n steps (token, account id, `POST /v1/media`, `POST
 >   /v1/posts` with `Idempotency-Key` and `Prefer: wait`, reading the
 >   outcome). Security and Logging sections updated.
+> - **Review fixes (4d).** The log line scrubs the error (as the store
+>   does) and caps it at 300 characters; recovery at startup, a release
+>   after a forgotten key and a panic write it too, so the README's alert
+>   sees every give-up. The README's n8n steps say `GET /v1/accounts` needs
+>   `accounts:read`, and that `Prefer: wait` can still answer 202 and a
+>   settled post can be `needs_attention`. `/v1/resolve` suggests only the
+>   connected account. A missing type now fails "not configured", not
+>   "another account". New Go test for the `/v1/media` video lifecycle
+>   (ready and failed), which the old route's tests had covered. The e2e
+>   restarts wait until the held call reached the fake, and the invalid
+>   test cancels its pending retry in a `finally`.
+>   Deferred: `Dispatcher.Post`, `PostWithID`, `Interact`, `Schedule` and
+>   `Retry` and the store's `AddSyncRelay`, `RemoveSyncRelay`,
+>   `CancelScheduled`, `HidePost` and `CreateAPIToken` are now used only by
+>   tests (about 28 engine tests drive `Post`); moving those tests onto
+>   `Enqueue` and deleting them is its own change. A held e2e call keeps
+>   one engine worker busy until the next restart.
 > - **Deploy note:** no migration. Move every n8n flow (or other caller)
 >   off `/publish` and `/upload-media` before deploying: they answer 410.
 

@@ -506,13 +506,13 @@ func replyGateProblem(s string) string {
 	return ""
 }
 
-// enqueuer saves a post for the background workers (*dispatch.Dispatcher).
 // accountSender reports whether the engine sends a type as a stored
 // account (dispatch.Dispatcher.SendsAs).
 type accountSender interface {
 	SendsAs(typ, id string) bool
 }
 
+// enqueuer saves a post for the background workers (*dispatch.Dispatcher).
 type enqueuer interface {
 	Enqueue(ctx context.Context, spec dispatch.PostSpec, at *time.Time) (*store.Post, error)
 }

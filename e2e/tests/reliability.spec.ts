@@ -106,9 +106,12 @@ test("a restart in the middle of a thread carries on from the part it stopped at
   expect(r.status()).toBe(202);
   const { id } = await r.json();
   await waitForPost(request, id, p => p.targets[0].items[1]?.status === "sending", "part 2 is being sent");
+  // Restart only once the call is at the platform (held), not merely claimed.
+  await expect.poll(async () => (await fakes.attempts()).mastodon).toBe(2);
 
   await fakes.restart();
-  // Mastodon drops a repeat of an idempotency key, so the part is sent again.
+  // Mastodon drops a repeat of an idempotency key, so recovery sends the
+  // part again (that the key is the same is pinned in the Go engine tests).
   const done = await waitForPost(request, id, p => p.status !== "publishing", "the thread settles");
   expect(done.status).toBe("published");
   expect(done.targets[0].items.map(i => i.status)).toEqual(["published", "published", "published"]);
@@ -132,6 +135,7 @@ test("an item that may have been posted waits for the owner, who sends it again 
   });
   const { id } = await r.json();
   await waitForPost(request, id, p => p.targets[0].items[1]?.status === "sending", "part 2 is being sent");
+  await expect.poll(async () => (await fakes.attempts()).bluesky).toBe(2);
   await fakes.restart();
   // Bluesky can't drop a repeat: the engine doesn't guess.
   const stuck = await waitForPost(request, id, p => p.targets[0].items[1].status === "unknown", "part 2 is unknown");
@@ -170,34 +174,37 @@ test("a refusal that would repeat is not retried; a transient failure is", async
   });
   expect(r.status()).toBe(202);
   const { id } = await r.json();
-  // Threads' retry is pending, so the post hasn't settled; wait for each
-  // target's first outcome.
-  const post = await waitForPost(request, id, p => p.targets.every(t => t.items[0].status !== "planned" && t.items[0].status !== "sending"),
-    "every target has an outcome");
-  expect(post.status).toBe("needs_attention"); // the refused target is the owner's now
-  const by = (type: string) => post.targets.find(t => t.type === type)!;
+  try {
+    // Threads' retry is pending, so the post hasn't settled; wait for each
+    // target's first outcome.
+    const post = await waitForPost(request, id, p => p.targets.every(t => t.items[0].status !== "planned" && t.items[0].status !== "sending"),
+      "every target has an outcome");
+    expect(post.status).toBe("needs_attention"); // the refused target is the owner's now
+    const by = (type: string) => post.targets.find(t => t.type === type)!;
 
-  const refused = by("mastodon");
-  expect(refused.status).toBe("failed");
-  expect(refused.error_class).toBe("invalid");
-  expect(refused.gave_up_at).toBeTruthy();
-  expect(refused.items[0].next_attempt_at ?? null).toBeNull();
+    const refused = by("mastodon");
+    expect(refused.status).toBe("failed");
+    expect(refused.error_class).toBe("invalid");
+    expect(refused.gave_up_at).toBeTruthy();
+    expect(refused.items[0].next_attempt_at ?? null).toBeNull();
 
-  const down = by("threads");
-  expect(down.status).toBe("failed");
-  expect(down.error_class).toBe("transient");
-  expect(down.gave_up_at ?? null).toBeNull();
-  expect(down.items[0].next_attempt_at).toBeTruthy(); // the engine will try again
+    const down = by("threads");
+    expect(down.status).toBe("failed");
+    expect(down.error_class).toBe("transient");
+    expect(down.gave_up_at ?? null).toBeNull();
+    expect(down.items[0].next_attempt_at).toBeTruthy(); // the engine will try again
 
-  expect(by("bluesky").status).toBe("published");
-  expect(await fakes.attempts()).toMatchObject({ mastodon: 1, threads: 1, bluesky: 1 });
+    expect(by("bluesky").status).toBe("published");
+    expect(await fakes.attempts()).toMatchObject({ mastodon: 1, threads: 1, bluesky: 1 });
 
-  await openApp(page);
-  await switchTab(page, "history");
-  await page.locator(".hitem", { hasText: m }).click();
-  await expect(page.locator("#hdetail").getByText("the network refused this content; it won't be retried")).toBeVisible();
-  // Stop Threads' pending retry, so it can't land in a later test.
-  expect((await request.post(`/v1/posts/${id}:cancel`)).status()).toBe(200);
+    await openApp(page);
+    await switchTab(page, "history");
+    await page.locator(".hitem", { hasText: m }).click();
+    await expect(page.locator("#hdetail").getByText("the network refused this content; it won't be retried")).toBeVisible();
+  } finally {
+    // Stop Threads' pending retry, so it can't land in a later test.
+    expect((await request.post(`/v1/posts/${id}:cancel`)).status()).toBe(200);
+  }
 });
 
 test("a second account of a type is listed but can't post yet; the composer posts as the connected one", async ({ page, request, fakes }) => {

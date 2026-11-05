@@ -363,8 +363,9 @@ func TestTargetOfAnotherAccountIsNotSent(t *testing.T) {
 	}
 	post, _ := d.Store.GetPost(rec.ID)
 	tg := post.Targets[0]
-	if tg.AccountID == "" || tg.Status != "failed" || tg.ErrorClass != string(destination.ClassAuth) {
-		t.Fatalf("target = %+v", tg)
+	if tg.AccountID == "" || tg.Status != "failed" || tg.ErrorClass != string(destination.ClassAuth) ||
+		tg.GaveUpAt == nil || tg.Items[0].NextAttemptAt != nil {
+		t.Fatalf("target = %+v (it must give up, not wait for a retry)", tg)
 	}
 	if !d.SendsAs("stub", "acc_connected") || d.SendsAs("stub", tg.AccountID) || !d.SendsAs("stub", "") {
 		t.Error("SendsAs")

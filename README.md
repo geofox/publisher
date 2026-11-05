@@ -138,7 +138,7 @@ which is what the old routes allowed.
 | `POST /api/post` | `POST /v1/posts` |
 | `POST /api/thread-preview` | `POST /v1/posts:preview` |
 | `GET /api/posts`, `GET /api/posts/{id}` | `GET /v1/posts`, `GET /v1/posts/{id}` |
-| `GET /api/posts/attention/count` | `GET /v1/posts?status=needs_attention` |
+| `GET /api/posts/attention/count` | `GET /v1/posts?status=needs_attention` (a list, not a count) |
 | `POST /api/posts/{id}/retry`, `…/relay-retry` | `POST /v1/posts/{id}:retry` (with `targets` or Nostr `deliveries` to narrow it) |
 | `POST /api/posts/{id}/cancel` | `POST /v1/posts/{id}:cancel` |
 | `POST /api/posts/{id}/reschedule`, `…/hide` | `PATCH /v1/posts/{id}` with `schedule.at` or `hidden` |
@@ -158,10 +158,13 @@ What changed besides the paths:
 
 - **Errors** are problem details with a `code`, not `{"error": "…"}`.
 - **Posting is saved first and sent by the engine.** `POST /v1/posts`
-  answers `202` at once; add `Prefer: wait=30` to get the outcome. The
-  answer is `201` whatever the platforms said, so read `status`
-  (`published`, `partial`, `failed`) instead of the HTTP code. The old
-  `/publish` answered `502` when no relay took the note.
+  answers `202` at once; add `Prefer: wait=30` to get `201` with the
+  outcome once the post settles (still `202`, `publishing`, if it hasn't
+  by then, for example while a retry is due). A `201` comes whatever the
+  platforms said, so read `status` instead of the HTTP code: `published`,
+  `partial`, `failed`, or `needs_attention` (something gave up and is
+  yours to check, such as a refused post). The old `/publish` answered
+  `502` when no relay took the note.
 - **Replies go only to the network of the post you reply to**; a quote
   posts natively there and as a link-quote on your other targets. The old
   "try anyway" override is gone.
@@ -173,7 +176,9 @@ What changed besides the paths:
 1. In the web app, open **Access tokens** and make a token with
    `posts:write` and `media:write` (or keep the one n8n has).
 2. Find your Nostr account's id once: `GET /v1/accounts` lists it
-   (`acc_…`, with `"type": "nostr"`).
+   (`acc_…`, with `"type": "nostr"`). It needs `accounts:read`, which the
+   n8n token doesn't have: open `/v1/accounts` in the browser while signed
+   in, or ask with a short-lived token that has it.
 3. If the workflow uploads media, point the upload node at `POST /v1/media`.
    It takes the same `file` part; add an `alt` part for alt text. Keep the
    answer's `id` (`med_…`); you no longer pass `imeta` along, since the
@@ -568,8 +573,11 @@ multi-user operation.
 
 ## Logging
 
-JSON-lines on stdout via `log/slog`. Each send attempt writes one line,
-`engine: item sent` (info) or `engine: item not sent` (warn), with:
+JSON-lines on stdout via `log/slog`. Each send attempt, and each item the
+engine settles without sending (one left in flight by a restart, one it
+won't repeat because the platform has forgotten its idempotency key),
+writes one line, `engine: item sent` (info) or `engine: item not sent`
+(warn), with:
 
 - `post_id`, `platform`, `ordinal` (the thread part, from 0), `attempt`
 - `status` (`published`, `partial`, `failed`, `unknown`), `latency_ms`

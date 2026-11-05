@@ -24,6 +24,8 @@ type engine struct {
 	ctx  context.Context // the harness's lifetime
 	make func() *dispatch.Dispatcher
 
+	restarting sync.Mutex // one restart at a time
+
 	mu     sync.RWMutex
 	d      *dispatch.Dispatcher
 	cancel context.CancelFunc
@@ -56,6 +58,8 @@ func (e *engine) start() {
 // restart stops the current dispatcher without waiting for its sends (a
 // held one never finishes) and starts a new one.
 func (e *engine) restart() {
+	e.restarting.Lock()
+	defer e.restarting.Unlock()
 	e.mu.RLock()
 	old, cancel := e.d, e.cancel
 	e.mu.RUnlock()

@@ -56,7 +56,9 @@ func (d *Dispatcher) SendsAs(typ, id string) bool {
 	if d.AccountIDs == nil || id == "" {
 		return true
 	}
-	return d.AccountIDs[typ] == id
+	connected, ok := d.AccountIDs[typ]
+	// No connected account of the type: d.account answers "not configured".
+	return !ok || connected == id
 }
 
 // errOtherAccount fails a target whose account isn't the connected one.
