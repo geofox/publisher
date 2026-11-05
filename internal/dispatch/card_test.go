@@ -4,22 +4,34 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/geofox/publisher/internal/bluesky"
+	"github.com/geofox/publisher/internal/mastodon"
 	"github.com/geofox/publisher/internal/unfurl"
 )
+
+var bskyCaps = bluesky.Driver{}.Manifest().Defaults
+
+// Only a destination that builds its own link previews places a card.
+func TestPlanTargetCardOnlyForClientPreviews(t *testing.T) {
+	cp := PlanTarget(mastodon.Driver{}.Manifest().Defaults, "hello https://x.com/a", card("https://x.com/a"), nil, false)
+	if cp.Card != nil || cp.Text != "hello https://x.com/a" {
+		t.Fatalf("server-preview destination must get no card and keep its text: %+v", cp)
+	}
+}
 
 func card(uri string) *unfurl.Card {
 	return &unfurl.Card{URI: uri, Title: "T", Description: "D"}
 }
 
 func TestPlanCardNilCardIsPlainSplit(t *testing.T) {
-	cp := PlanBlueskyCard("hello https://x.com/a", nil, nil, true)
+	cp := PlanTarget(bskyCaps, "hello https://x.com/a", nil, nil, true)
 	if cp.Card != nil || cp.Text != "hello https://x.com/a" || len(cp.Segs) != 1 {
 		t.Fatalf("plan: %+v", cp)
 	}
 }
 
 func TestPlanCardTrailingStripsURL(t *testing.T) {
-	cp := PlanBlueskyCard("hello https://x.com/a", card("https://x.com/a"), nil, true)
+	cp := PlanTarget(bskyCaps, "hello https://x.com/a", card("https://x.com/a"), nil, true)
 	if cp.Card == nil || cp.Card.Segment != 0 {
 		t.Fatalf("card: %+v", cp.Card)
 	}
@@ -29,7 +41,7 @@ func TestPlanCardTrailingStripsURL(t *testing.T) {
 }
 
 func TestPlanCardMidTextKeepsURL(t *testing.T) {
-	cp := PlanBlueskyCard("see https://x.com/a for more", card("https://x.com/a"), nil, true)
+	cp := PlanTarget(bskyCaps, "see https://x.com/a for more", card("https://x.com/a"), nil, true)
 	if cp.Card == nil || cp.Card.Segment != 0 {
 		t.Fatalf("card: %+v", cp.Card)
 	}
@@ -39,7 +51,7 @@ func TestPlanCardMidTextKeepsURL(t *testing.T) {
 }
 
 func TestPlanCardImagesWinRevert(t *testing.T) {
-	cp := PlanBlueskyCard("hello https://x.com/a", card("https://x.com/a"), []int{0, 0}, true)
+	cp := PlanTarget(bskyCaps, "hello https://x.com/a", card("https://x.com/a"), []int{0, 0}, true)
 	if cp.Card != nil {
 		t.Fatal("images own the embed slot — card must revert")
 	}
@@ -50,7 +62,7 @@ func TestPlanCardImagesWinRevert(t *testing.T) {
 
 func TestPlanCardThreadTrailingGoesToLastSegment(t *testing.T) {
 	long := strings.Repeat("word ", 120) + "\nhttps://x.com/a" // > 300 graphemes → threads
-	cp := PlanBlueskyCard(long, card("https://x.com/a"), nil, true)
+	cp := PlanTarget(bskyCaps, long, card("https://x.com/a"), nil, true)
 	if len(cp.Segs) < 2 {
 		t.Fatalf("expected a thread, got %d segs", len(cp.Segs))
 	}
@@ -65,14 +77,14 @@ func TestPlanCardThreadTrailingGoesToLastSegment(t *testing.T) {
 }
 
 func TestPlanCardURLMismatchIsPlain(t *testing.T) {
-	cp := PlanBlueskyCard("hello https://other.com/b", card("https://x.com/a"), nil, true)
+	cp := PlanTarget(bskyCaps, "hello https://other.com/b", card("https://x.com/a"), nil, true)
 	if cp.Card != nil {
 		t.Fatal("stale card (text edited) must be dropped")
 	}
 }
 
 func TestPlanCardURLOnlyPostKeepsURL(t *testing.T) {
-	cp := PlanBlueskyCard("https://x.com/a", card("https://x.com/a"), nil, true)
+	cp := PlanTarget(bskyCaps, "https://x.com/a", card("https://x.com/a"), nil, true)
 	if cp.Card == nil || cp.Text != "https://x.com/a" {
 		t.Fatalf("URL-only post: card=%v text=%q", cp.Card, cp.Text)
 	}
@@ -81,7 +93,7 @@ func TestPlanCardURLOnlyPostKeepsURL(t *testing.T) {
 func TestPlanCardMidTextImagesOnHeadSegmentReverts(t *testing.T) {
 	// The mid-text URL lands on the image-bearing head segment; the rule is a
 	// full revert — never a fallback to a later, URL-free segment.
-	cp := PlanBlueskyCard("see https://x.com/a for more", card("https://x.com/a"), []int{0, 0}, true)
+	cp := PlanTarget(bskyCaps, "see https://x.com/a for more", card("https://x.com/a"), []int{0, 0}, true)
 	if cp.Card != nil {
 		t.Fatal("images on the head segment must revert even for a mid-text URL")
 	}
@@ -91,7 +103,7 @@ func TestPlanCardMidTextImagesOnHeadSegmentReverts(t *testing.T) {
 }
 
 func TestPlanCardTrailingWithoutNumbering(t *testing.T) {
-	cp := PlanBlueskyCard("hello https://x.com/a", card("https://x.com/a"), nil, false)
+	cp := PlanTarget(bskyCaps, "hello https://x.com/a", card("https://x.com/a"), nil, false)
 	if cp.Card == nil || cp.Card.Segment != 0 || cp.Text != "hello" {
 		t.Fatalf("number=false must not change card planning: %+v", cp)
 	}
@@ -101,7 +113,7 @@ func TestPlanBlueskyCardImageOnCardPostRevertsCard(t *testing.T) {
 	card := &unfurl.Card{URI: "https://ex.com"}
 	// Single trailing-URL post with an image anchored to it ⇒ images own the embed
 	// slot ⇒ card reverts (card-wins fallback front-loads the image).
-	cp := PlanBlueskyCard("see https://ex.com", card, []int{0}, false)
+	cp := PlanTarget(bskyCaps, "see https://ex.com", card, []int{0}, false)
 	if cp.Card != nil {
 		t.Fatalf("expected card reverted when image owns the post")
 	}

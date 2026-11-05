@@ -89,7 +89,7 @@ CREATE TABLE post_targets (
   remote_url      TEXT,
   latency_ms      INTEGER,
   attempt_count   INTEGER NOT NULL DEFAULT 0,
-  last_attempt_at TIMESTAMP, signed_event_json TEXT, segments_json TEXT, gave_up_at TIMESTAMP,
+  last_attempt_at TIMESTAMP, signed_event_json TEXT, segments_json TEXT, gave_up_at TIMESTAMP, error_class TEXT,
   UNIQUE(post_id, platform)
 );
 
@@ -137,7 +137,7 @@ CREATE TABLE target_attempts (
   request_json  TEXT,
   response_json TEXT,
   attempted_at  TIMESTAMP NOT NULL
-);
+, error_class TEXT);
 
 -- table target_relays
 CREATE TABLE target_relays (

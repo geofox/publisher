@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/httpx"
-	"github.com/geofox/publisher/internal/thread"
 	"github.com/geofox/publisher/internal/transcode"
 	"github.com/geofox/publisher/internal/unfurl"
 )
@@ -88,19 +88,17 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		}
 		imgParts = append(imgParts, v)
 	}
-	// videoNotes maps video metas through the same VideoGate dispatch uses —
+	// videoNotes maps video metas through the same VideoCheck dispatch uses —
 	// ✗ marks a hard per-target failure, ⚠ an advisory. Image metas are
 	// handled by PlanMediaFit (which skips videos); ordinals stay aligned
 	// because both iterate req.Media by index.
-	videoNotes := func(plat string) []dispatch.FitNote {
+	videoNotes := func(plat string, mc destination.MediaCaps) []dispatch.FitNote {
 		var out []dispatch.FitNote
 		for i, m := range req.Media {
 			if !strings.HasPrefix(m.Mime, "video/") {
 				continue
 			}
-			fail, warns := transcode.VideoGate(plat, transcode.VideoInfo{
-				SizeBytes: m.SizeBytes, DurationSecs: m.DurationSecs,
-			})
+			fail, warns := dispatch.VideoCheck(displayName(plat), mc.Video, m.SizeBytes, m.DurationSecs)
 			if fail != "" {
 				out = append(out, dispatch.FitNote{Ordinal: i, Note: "✗ " + fail + " — this target will fail"})
 			}
@@ -130,38 +128,33 @@ func (a *API) handleThreadPreview(w http.ResponseWriter, r *http.Request) {
 		Previews []preview `json:"previews"`
 	}{Previews: []preview{}}
 	for _, p := range req.Platforms {
-		if p == "bluesky" {
-			// Same planner as dispatch (PlanBlueskyCard), so the previewed
-			// text, counts and card placement are exactly what posting does.
-			// The unfurl gets a tight budget: a slow page degrades the
-			// preview to "no card" instead of hanging the composer.
-			var card *unfurl.Card
-			// Interactions never carry cards in v1 (InteractWithID scrubs
-			// them), so their previews must not plan one either.
-			if a.Unfurl != nil && !req.Interaction {
-				if u, _, ok := unfurl.CardURL(req.Text); ok {
-					uctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-					if c, err := a.Unfurl.Unfurl(uctx, u); err == nil {
-						card = c
-					}
-					cancel()
+		caps := a.caps(r.Context(), p)
+		// Same planner as dispatch (PlanTarget), so the previewed text,
+		// counts and card placement are exactly what posting does. The
+		// unfurl gets a tight budget: a slow page degrades the preview to
+		// "no card" instead of hanging the composer.
+		var card *unfurl.Card
+		// Interactions never carry cards in v1 (InteractWithID scrubs them),
+		// so their previews must not plan one either.
+		if caps.LinkPreview == destination.LinkPreviewClient && a.Unfurl != nil && !req.Interaction {
+			if u, _, ok := unfurl.CardURL(req.Text); ok {
+				uctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+				if c, err := a.Unfurl.Unfurl(uctx, u); err == nil {
+					card = c
 				}
+				cancel()
 			}
-			cp := dispatch.PlanBlueskyCard(req.Text, card, imgParts, req.Number)
-			pv := preview{Platform: p, Count: len(cp.Segs), Segments: cp.Segs, Imgs: cp.Plan, Warnings: cp.Warnings, FitNotes: append(dispatch.PlanMediaFit(p, metas), videoNotes(p)...)}
-			if cp.Card != nil {
-				pv.Card = &cardJSON{
-					Segment: cp.Card.Segment, URI: cp.Card.URI, Title: cp.Card.Title,
-					Description: cp.Card.Description, ThumbURL: cp.Card.ThumbURL,
-				}
-			}
-			out.Previews = append(out.Previews, pv)
-			continue
 		}
-		segs, plan, warns := thread.SplitPlace(req.Text, thread.LimitFor(p), imgParts, thread.MaxImagesFor(p), thread.Opts{Number: req.Number})
-		out.Previews = append(out.Previews, preview{
-			Platform: p, Count: len(segs), Segments: segs, Imgs: plan, Warnings: warns, FitNotes: append(dispatch.PlanMediaFit(p, metas), videoNotes(p)...),
-		})
+		cp := dispatch.PlanTarget(caps, req.Text, card, imgParts, req.Number)
+		pv := preview{Platform: p, Count: len(cp.Segs), Segments: cp.Segs, Imgs: cp.Plan, Warnings: cp.Warnings,
+			FitNotes: append(dispatch.PlanMediaFit(displayName(p), caps.Media, metas), videoNotes(p, caps.Media)...)}
+		if cp.Card != nil {
+			pv.Card = &cardJSON{
+				Segment: cp.Card.Segment, URI: cp.Card.URI, Title: cp.Card.Title,
+				Description: cp.Card.Description, ThumbURL: cp.Card.ThumbURL,
+			}
+		}
+		out.Previews = append(out.Previews, pv)
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 }

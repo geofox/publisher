@@ -2,6 +2,7 @@ package transcode
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"strconv"
@@ -38,20 +39,6 @@ var (
 	// spec) — a WebP canonical must be re-encoded and re-hosted.
 	Threads = Profile{Name: "threads", MaxBytes: 8 << 20, Mimes: []string{"image/jpeg", "image/png"}, Quality: 85}
 )
-
-// ProfileFor returns the platform's image profile. ok=false (nostr, unknown)
-// means passthrough: the platform takes the canonical object as-is.
-func ProfileFor(platform string) (Profile, bool) {
-	switch platform {
-	case "bluesky":
-		return Bluesky, true
-	case "mastodon":
-		return Mastodon, true
-	case "threads":
-		return Threads, true
-	}
-	return Profile{}, false
-}
 
 // Meta is the metadata-only description of a media object, as known to the
 // composer (fresh file) or the media row (restored draft). Zero fields mean
@@ -107,7 +94,7 @@ func (p Profile) Fit(src []byte, mime string) (Result, error) {
 	}
 	r, err := Image(src, mime, ImageParams{MaxBytes: p.MaxBytes, MaxPixels: p.MaxPixels, Format: enc, Quality: p.Quality})
 	if err != nil {
-		return r, err
+		return r, unfittable{err}
 	}
 	// Undecodable input that violates the profile passed through Image()'s
 	// small-input escape: fail loudly rather than ship bytes the platform is
@@ -116,11 +103,21 @@ func (p Profile) Fit(src []byte, mime string) (Result, error) {
 	// input (pixel bomb over the profile's area cap) fails loudly here too.
 	if !r.Changed {
 		if need, reason := p.Needs(Meta{SizeBytes: int64(len(r.Bytes)), Mime: r.Mime, W: cw, H: ch}); need {
-			return Result{}, fmt.Errorf("media violates %s constraints (%s) and cannot be converted", p.Name, reason)
+			return Result{}, unfittable{fmt.Errorf("media violates %s constraints (%s) and cannot be converted", p.Name, reason)}
 		}
 	}
 	return r, nil
 }
+
+// ErrUnfittable matches (errors.Is) every Fit failure: the input can't be made
+// to satisfy the profile, so retrying the same bytes fails the same way.
+var ErrUnfittable = errors.New("media cannot be fitted")
+
+type unfittable struct{ err error }
+
+func (u unfittable) Error() string        { return u.err.Error() }
+func (u unfittable) Unwrap() error        { return u.err }
+func (u unfittable) Is(target error) bool { return target == ErrUnfittable }
 
 // ParseDim splits a "WxH" media-row dim string; (0,0) when malformed.
 func ParseDim(dim string) (w, h int) {

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/geofox/publisher/internal/store"
-	"github.com/geofox/publisher/internal/thread"
 )
 
 // Schedule persists a post (and its per-platform targets) as 'scheduled' for a
@@ -32,15 +31,10 @@ func (d *Dispatcher) Schedule(ctx context.Context, spec PostSpec, at time.Time) 
 	for _, plat := range platforms {
 		ov := spec.Overrides[plat]
 		text := finalText(spec, plat)
-		var segTexts []string
-		var segPlan [][]int
-		if plat == "bluesky" {
-			cp := PlanBlueskyCard(text, ov.LinkCard, imgParts, spec.Number)
-			text, segTexts, segPlan = cp.Text, cp.Segs, cp.Plan
-			ov.LinkCard = cp.Card // persist only as actually placed
-		} else {
-			segTexts, segPlan, _ = thread.SplitPlace(text, thread.LimitFor(plat), imgParts, thread.MaxImagesFor(plat), thread.Opts{Number: spec.Number})
-		}
+		caps, _ := d.Caps(ctx, plat)
+		cp := PlanTarget(caps, text, ov.LinkCard, imgParts, spec.Number)
+		text, segTexts, segPlan := cp.Text, cp.Segs, cp.Plan
+		ov.LinkCard = cp.Card // persist only as actually placed
 		// ov2fields returns a map of JSON-safe values only, so Marshal can't fail.
 		fields, _ := json.Marshal(ov2fields(ov))
 		tg := store.Target{

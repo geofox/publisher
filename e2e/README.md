@@ -5,8 +5,10 @@ Playwright drives the real web app in Chromium against a test harness
 dispatcher, threading, SQLite store (with real migrations, in a temp dir) and
 embedded assets. Only the network edge is fake:
 
-- the four platform posters (Nostr, Mastodon, Bluesky, Threads) record what
-  they would have sent and return deterministic ids/URLs;
+- the four destination accounts (Nostr, Mastodon, Bluesky, Threads) speak the
+  real drivers' manifests, so splitting, media fitting and gating run as in
+  production, but they record what they would have sent and return
+  deterministic ids/URLs;
 - a fake Blossom server, served on the same origin, stores uploads in memory.
 
 Nothing leaves the machine: no relays, no platform APIs, no DNS.

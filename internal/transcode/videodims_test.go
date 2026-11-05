@@ -1,7 +1,6 @@
 package transcode
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -51,34 +50,5 @@ func TestFitVideoDims(t *testing.T) {
 	// Unknown preset must fall back to 1080p — large input gets scaled down.
 	if w, h := FitVideoDims(3840, 2160, "bogus"); w != 1920 || h != 1080 {
 		t.Fatalf("unknown preset must fall back to 1080p, got %dx%d", w, h)
-	}
-}
-
-func TestVideoGate(t *testing.T) {
-	cases := []struct {
-		plat     string
-		v        VideoInfo
-		failPart string // "" = no hard failure
-		warnPart string // "" = no advisory
-	}{
-		{"bluesky", VideoInfo{SizeBytes: 100_000_000, DurationSecs: 60}, "", ""},
-		{"bluesky", VideoInfo{SizeBytes: 100_000_001, DurationSecs: 60}, "over 100 MB", ""},
-		{"bluesky", VideoInfo{SizeBytes: 5_000_000, DurationSecs: 181}, "", "3 min"},
-		{"mastodon", VideoInfo{SizeBytes: 103_809_025, DurationSecs: 60}, "over 99 MB", ""},
-		{"mastodon", VideoInfo{SizeBytes: 50_000_000, DurationSecs: 3600}, "", ""},
-		{"threads", VideoInfo{SizeBytes: 1 << 30, DurationSecs: 299}, "", ""},
-		{"threads", VideoInfo{SizeBytes: 1<<30 + 1, DurationSecs: 60}, "over 1 GB", ""},
-		{"threads", VideoInfo{SizeBytes: 1000, DurationSecs: 301}, "over 5 min", ""},
-		{"nostr", VideoInfo{SizeBytes: 5 << 30, DurationSecs: 9999}, "", ""},
-	}
-	for i, c := range cases {
-		fail, warns := VideoGate(c.plat, c.v)
-		if (c.failPart == "") != (fail == "") || (c.failPart != "" && !strings.Contains(fail, c.failPart)) {
-			t.Fatalf("case %d %s: fail=%q want ~%q", i, c.plat, fail, c.failPart)
-		}
-		joined := strings.Join(warns, ";")
-		if (c.warnPart == "") != (len(warns) == 0) || (c.warnPart != "" && !strings.Contains(joined, c.warnPart)) {
-			t.Fatalf("case %d %s: warns=%q want ~%q", i, c.plat, joined, c.warnPart)
-		}
 	}
 }

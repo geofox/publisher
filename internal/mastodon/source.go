@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/geofox/publisher/internal/destination"
 	"html"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -99,14 +99,16 @@ func (c *Client) postForm(ctx context.Context, path string, form url.Values, out
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if k, ok := ctx.Value(idemKey{}).(string); ok {
+		req.Header.Set("Idempotency-Key", k)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("%s: %s: %s", path, resp.Status, string(rb))
+		return destination.NewHTTPError(path, resp)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
@@ -125,7 +127,7 @@ func (c *Client) Reblog(ctx context.Context, id string) (Result, error) {
 
 // QuotePost creates a native quote post (server 4.5+). text is the commentary;
 // quotedID is the LOCAL status id to quote; imgs are attached as media.
-func (c *Client) QuotePost(ctx context.Context, text, quotedID string, imgs []Image) (Result, error) {
+func (c *Client) QuotePost(ctx context.Context, text, quotedID string, imgs []Image, idempotencyKey string) (Result, error) {
 	form := url.Values{"status": {text}, "quoted_status_id": {quotedID}}
 	for _, img := range imgs {
 		att, err := c.c.UploadMediaFromMedia(ctx, &gomast.Media{
@@ -140,7 +142,7 @@ func (c *Client) QuotePost(ctx context.Context, text, quotedID string, imgs []Im
 		ID  string `json:"id"`
 		URL string `json:"url"`
 	}
-	if err := c.postForm(ctx, "/api/v1/statuses", form, &st); err != nil {
+	if err := c.postForm(WithIdempotencyKey(ctx, idempotencyKey), "/api/v1/statuses", form, &st); err != nil {
 		return Result{}, fmt.Errorf("quote: %w", err)
 	}
 	return Result{RemoteID: st.ID, RemoteURL: st.URL}, nil
@@ -188,8 +190,7 @@ func (c *Client) getJSON(ctx context.Context, path string, params url.Values, ou
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("%s: %s: %s", path, resp.Status, string(rb))
+		return destination.NewHTTPError(path, resp)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

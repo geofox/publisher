@@ -5,15 +5,6 @@ import (
 	"testing"
 )
 
-func TestMaxImagesFor(t *testing.T) {
-	cases := map[string]int{"bluesky": 10, "mastodon": 4, "threads": 10, "nostr": 0, "weird": 0}
-	for p, want := range cases {
-		if got := MaxImagesFor(p); got != want {
-			t.Errorf("MaxImagesFor(%q)=%d want %d", p, got, want)
-		}
-	}
-}
-
 func TestPlanMedia(t *testing.T) {
 	cases := []struct {
 		name                    string

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -39,33 +40,10 @@ func (d *Dispatcher) Retry(ctx context.Context, postID string, platforms []strin
 	return post, nil
 }
 
-// nostrStatusFromRelays derives a Nostr target status from its relay states,
-// ignoring skipped (overlay) relays: success = all attempted ok, failed = none
-// ok, partial = some ok.
-func nostrStatusFromRelays(relays []store.RelayState) string {
-	attempted, ok := 0, 0
-	for _, r := range relays {
-		if r.Status == "skipped" {
-			continue
-		}
-		attempted++
-		if r.Status == "ok" {
-			ok++
-		}
-	}
-	switch {
-	case ok == 0:
-		return "failed"
-	case ok < attempted:
-		return "partial"
-	default:
-		return "success"
-	}
-}
-
-// RetryRelay rebroadcasts an archived nostr event to a single failed relay
-// (same signed event — no re-mine, no duplicate note) and updates that relay's
-// status. Platforms other than nostr have no relay rows and are rejected.
+// RetryRelay re-delivers an archived item to one failed endpoint (a Nostr
+// relay: the same signed event, so no re-mine and no duplicate note) and
+// updates that endpoint's status. Only destinations that deliver to several
+// endpoints (destination.Redeliverer) have endpoint rows.
 func (d *Dispatcher) RetryRelay(ctx context.Context, postID, relayURL string) (*store.Post, error) {
 	if d.Store == nil {
 		return nil, errors.New("retry requires a store")
@@ -75,19 +53,15 @@ func (d *Dispatcher) RetryRelay(ctx context.Context, postID, relayURL string) (*
 		return nil, err
 	}
 	var target *store.Target
-	for i := range post.Targets {
-		if post.Targets[i].Platform == "nostr" {
-			target = &post.Targets[i]
-			break
-		}
-	}
-	if target == nil {
-		return nil, ErrBadRelayRetry
-	}
 	var relay *store.RelayState
-	for i := range target.Relays {
-		if target.Relays[i].URL == relayURL {
-			relay = &target.Relays[i]
+	for i := range post.Targets {
+		for j := range post.Targets[i].Relays {
+			if post.Targets[i].Relays[j].URL == relayURL {
+				target, relay = &post.Targets[i], &post.Targets[i].Relays[j]
+				break
+			}
+		}
+		if target != nil {
 			break
 		}
 	}
@@ -99,19 +73,21 @@ func (d *Dispatcher) RetryRelay(ctx context.Context, postID, relayURL string) (*
 	if target.SignedEventJSON == "" {
 		return nil, errors.New("no stored event to rebroadcast")
 	}
-	if d.Nostr == nil {
-		return nil, errors.New("nostr not configured")
-	}
-	ok, msg := d.Nostr.RebroadcastToRelay(ctx, target.SignedEventJSON, relayURL)
-	status := "failed"
-	if ok {
-		status = "ok"
-	}
-	if err := d.Store.UpdateRelayStatus(target.ID, relayURL, status, msg); err != nil {
+	acct, err := d.account(target.Platform)
+	if err != nil {
 		return nil, err
 	}
-	// No notify() here: RetryRelay only rebroadcasts an already-signed Nostr
-	// event to one relay; it creates no new post/URL. The narrow case where a
+	rd, ok := acct.(destination.Redeliverer)
+	if !ok {
+		return nil, ErrBadRelayRetry
+	}
+	dl := rd.Redeliver(ctx, destination.ItemRef{ID: target.RemoteID, URL: target.RemoteURL,
+		Data: []byte(target.SignedEventJSON)}, relayURL)
+	if err := d.Store.UpdateRelayStatus(target.ID, relayURL, dl.Status, dl.Message); err != nil {
+		return nil, err
+	}
+	// No notify() here: RetryRelay only re-sends an already-signed event to
+	// one relay; it creates no new post/URL. The narrow case where a
 	// partial→success relay flip newly makes a post feed-eligible is
 	// intentionally not pinged (the feed still surfaces it on next fetch).
 	return d.Store.GetPost(postID)

@@ -7,7 +7,6 @@ import (
 
 	gonostr "fiatjaf.com/nostr"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
-	"github.com/geofox/publisher/internal/store"
 )
 
 // fakeNostrActor records the ReplyRef forwarded to PublishText.
@@ -16,24 +15,24 @@ type fakeNostrActor struct {
 	gotImetas []gonostr.Tag
 }
 
-func (f *fakeNostrActor) PublishText(_ context.Context, _ string, _ *int, _ []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error) {
+func (f *fakeNostrActor) PublishText(_ context.Context, _ string, _ *int, _ []gonostr.Tag, replyTo *ReplyRef) (legacyResult, error) {
 	f.lastReply = replyTo
-	return TargetResult{Platform: "nostr", Status: "success", RemoteID: "ev1"}, nil
+	return legacyResult{Platform: "nostr", Status: "success", RemoteID: "ev1"}, nil
 }
 func (f *fakeNostrActor) RebroadcastToRelay(context.Context, string, string) (bool, string) {
 	return true, ""
 }
-func (f *fakeNostrActor) Repost(context.Context, string, string, int, string) (TargetResult, error) {
-	return TargetResult{Platform: "nostr", Status: "success"}, nil
+func (f *fakeNostrActor) Repost(context.Context, string, string, int, string) (legacyResult, error) {
+	return legacyResult{Platform: "nostr", Status: "success"}, nil
 }
-func (f *fakeNostrActor) Quote(_ context.Context, _ string, _ string, _ string, _ string, imetas []gonostr.Tag) (TargetResult, error) {
+func (f *fakeNostrActor) Quote(_ context.Context, _ string, _ string, _ string, _ string, imetas []gonostr.Tag) (legacyResult, error) {
 	f.gotImetas = imetas
-	return TargetResult{Platform: "nostr", Status: "success", RemoteID: "nq"}, nil
+	return legacyResult{Platform: "nostr", Status: "success", RemoteID: "nq"}, nil
 }
 
 func TestReplyRefCarriesAuthorToNostr(t *testing.T) {
 	f := &fakeNostrActor{}
-	d := &Dispatcher{Nostr: f}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: f})}
 	ref := &ReplyRef{RootID: "r", ParentID: "r", AuthorPubkey: "extpub"}
 	d.runPlatform(context.Background(), "nostr", "hi", Overrides{}, nil, nil, ref)
 	if f.lastReply == nil || f.lastReply.AuthorPubkey != "extpub" {
@@ -49,21 +48,21 @@ type fakeBskyActor struct {
 	quoteRef [2]string // uri,cid
 }
 
-func (f *fakeBskyActor) PostBsky(_ context.Context, text string, _ Overrides, _ []Img, _ *ReplyRef) (TargetResult, error) {
-	return TargetResult{Platform: "bluesky", Status: "success", RemoteID: "p1"}, nil
+func (f *fakeBskyActor) PostBsky(_ context.Context, text string, _ Overrides, _ []Img, _ *ReplyRef) (legacyResult, error) {
+	return legacyResult{Platform: "bluesky", Status: "success", RemoteID: "p1"}, nil
 }
-func (f *fakeBskyActor) RepostBsky(_ context.Context, uri, cid string) (TargetResult, error) {
+func (f *fakeBskyActor) RepostBsky(_ context.Context, uri, cid string) (legacyResult, error) {
 	f.reposted = [2]string{uri, cid}
-	return TargetResult{Platform: "bluesky", Status: "success", RemoteID: "rp1"}, nil
+	return legacyResult{Platform: "bluesky", Status: "success", RemoteID: "rp1"}, nil
 }
-func (f *fakeBskyActor) QuoteBsky(_ context.Context, text string, _ Overrides, _ []Img, uri, cid string) (TargetResult, error) {
+func (f *fakeBskyActor) QuoteBsky(_ context.Context, text string, _ Overrides, _ []Img, uri, cid string) (legacyResult, error) {
 	f.quoted, f.quoteRef = text, [2]string{uri, cid}
-	return TargetResult{Platform: "bluesky", Status: "success", RemoteID: "q1"}, nil
+	return legacyResult{Platform: "bluesky", Status: "success", RemoteID: "q1"}, nil
 }
 
 func TestRunActionRepostBsky(t *testing.T) {
 	f := &fakeBskyActor{}
-	d := &Dispatcher{Bluesky: f}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f})}
 	r := d.runAction(context.Background(), actionRepost, "bluesky", "", Overrides{}, nil, nil,
 		InteractRef{URI: "at://x", CID: "cidx"})
 	if r.Status != "success" || f.reposted != [2]string{"at://x", "cidx"} {
@@ -73,7 +72,7 @@ func TestRunActionRepostBsky(t *testing.T) {
 
 func TestRunActionQuoteBsky(t *testing.T) {
 	f := &fakeBskyActor{}
-	d := &Dispatcher{Bluesky: f}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f})}
 	r := d.runAction(context.Background(), actionQuote, "bluesky", "my take", Overrides{}, nil, nil,
 		InteractRef{URI: "at://x", CID: "cidx"})
 	if r.Status != "success" || f.quoted != "my take" || f.quoteRef != [2]string{"at://x", "cidx"} {
@@ -91,23 +90,23 @@ type fakeMastoActor struct {
 	quoteImgs    []Img
 }
 
-func (f *fakeMastoActor) PostText(_ context.Context, text string, _ Overrides, _ []Img, _ *ReplyRef) (TargetResult, error) {
+func (f *fakeMastoActor) PostText(_ context.Context, text string, _ Overrides, _ []Img, _ *ReplyRef) (legacyResult, error) {
 	f.lastPostText = strHolder{s: text}
-	return TargetResult{Platform: "mastodon", Status: "success", RemoteID: "m1"}, nil
+	return legacyResult{Platform: "mastodon", Status: "success", RemoteID: "m1"}, nil
 }
-func (f *fakeMastoActor) Reblog(context.Context, string) (TargetResult, error) {
-	return TargetResult{Platform: "mastodon", Status: "success"}, nil
+func (f *fakeMastoActor) Reblog(context.Context, string) (legacyResult, error) {
+	return legacyResult{Platform: "mastodon", Status: "success"}, nil
 }
-func (f *fakeMastoActor) QuoteStatus(_ context.Context, text, _ string, imgs []Img) (TargetResult, error) {
+func (f *fakeMastoActor) QuoteStatus(_ context.Context, text, _ string, imgs []Img) (legacyResult, error) {
 	f.lastPostText = strHolder{s: text}
 	f.quoteImgs = imgs
-	return TargetResult{Platform: "mastodon", Status: "success", RemoteID: "mq1"}, nil
+	return legacyResult{Platform: "mastodon", Status: "success", RemoteID: "mq1"}, nil
 }
 
 func TestInteractQuoteFansOut(t *testing.T) {
 	bsky := &fakeBskyActor{}
 	masto := &fakeMastoActor{}
-	d := &Dispatcher{Bluesky: bsky, Mastodon: masto}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: bsky, Mastodon: masto})}
 	post := d.Interact(context.Background(), InteractSpec{
 		Action: actionQuote, SourcePlatform: "bluesky",
 		Ref:       InteractRef{URI: "at://x", CID: "cidx"},
@@ -135,7 +134,7 @@ func TestInteractQuoteFansOut(t *testing.T) {
 
 func TestInteractReplySingleTarget(t *testing.T) {
 	bsky := &fakeBskyActor{}
-	d := &Dispatcher{Bluesky: bsky}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: bsky})}
 	post := d.Interact(context.Background(), InteractSpec{
 		Action: actionReply, SourcePlatform: "bluesky",
 		Ref:  InteractRef{URI: "at://x", CID: "cidx", ReplyRootURI: "at://root", ReplyRootCID: "cidroot"},
@@ -151,7 +150,7 @@ func TestInteractReplySingleTarget(t *testing.T) {
 
 func TestInteractRepostSingleTarget(t *testing.T) {
 	bsky := &fakeBskyActor{}
-	d := &Dispatcher{Bluesky: bsky}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: bsky})}
 	post := d.Interact(context.Background(), InteractSpec{
 		Action: actionRepost, SourcePlatform: "bluesky",
 		Ref: InteractRef{URI: "at://x", CID: "cidx"},
@@ -166,7 +165,7 @@ func TestInteractRepostSingleTarget(t *testing.T) {
 
 func TestInteractReplyThreads(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Bluesky: f}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f})}
 	post := d.Interact(context.Background(), InteractSpec{
 		Action: actionReply, SourcePlatform: "bluesky",
 		Ref:  InteractRef{URI: "at://src", CID: "csrc", ReplyRootURI: "at://src", ReplyRootCID: "csrc"},
@@ -189,7 +188,7 @@ func TestInteractReplyThreads(t *testing.T) {
 func TestInteractQuoteFanoutReproduces(t *testing.T) {
 	bsky := &fakeBsky{failAt: -1}
 	masto := &fakeMastoActor{}
-	d := &Dispatcher{Bluesky: bsky, Mastodon: masto}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: bsky, Mastodon: masto})}
 	post := d.Interact(context.Background(), InteractSpec{
 		Action: actionQuote, SourcePlatform: "bluesky",
 		Ref:       InteractRef{URI: "at://src", CID: "csrc"},
@@ -208,7 +207,7 @@ func TestInteractQuoteFanoutReproduces(t *testing.T) {
 
 func TestInteractRepostUnchanged(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Bluesky: f}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f})}
 	post := d.Interact(context.Background(), InteractSpec{
 		Action: actionRepost, SourcePlatform: "bluesky", Ref: InteractRef{URI: "at://src", CID: "csrc"},
 	})
@@ -219,9 +218,9 @@ func TestInteractRepostUnchanged(t *testing.T) {
 
 func TestRunChainReplyHead(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Bluesky: f}
-	head := &headSpec{reply: &ReplyRef{RootID: "at://src", RootCID: "csrc", ParentID: "at://src", ParentCID: "csrc"}}
-	out := d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb", Overrides{}, nil, nil, false, nil, head, "t")
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f})}
+	head := &headSpec{reply: &InteractRef{URI: "at://src", CID: "csrc"}}
+	out := d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb", Overrides{}, nil, false, nil, head, "t")
 	if out.Status != "success" || len(out.Segments) != 2 {
 		t.Fatalf("want 2-seg success, got %s %+v", out.Status, out.Segments)
 	}
@@ -235,8 +234,8 @@ func TestRunChainReplyHead(t *testing.T) {
 
 func TestRunChainPlainHeadUnchanged(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Bluesky: f}
-	out := d.runChain(context.Background(), "bluesky", "solo", Overrides{}, nil, nil, false, nil, nil, "t")
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f})}
+	out := d.runChain(context.Background(), "bluesky", "solo", Overrides{}, nil, false, nil, nil, "t")
 	if out.Status != "success" || len(out.Segments) != 0 {
 		t.Fatalf("plain single post changed: %s %+v", out.Status, out.Segments)
 	}
@@ -270,17 +269,18 @@ func TestCapMedia(t *testing.T) {
 	}
 }
 
-func TestMediaMax(t *testing.T) {
+func TestMediaMaxFromAccountCaps(t *testing.T) {
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: &fakeBsky{}, Mastodon: &fakeMastoChain{}, Threads: fakeThreads{}, Nostr: fakeNostr{}})}
 	for p, want := range map[string]int{"bluesky": 10, "mastodon": 4, "threads": 10, "nostr": 0} {
-		if mediaMax(p) != want {
-			t.Errorf("mediaMax(%q)=%d want %d", p, mediaMax(p), want)
+		if got := d.mediaMax(context.Background(), p); got != want {
+			t.Errorf("mediaMax(%q)=%d want %d", p, got, want)
 		}
 	}
 }
 
 func TestInteractHonorsPerPlatformTextOverride(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Bluesky: f}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f})}
 	d.Interact(context.Background(), InteractSpec{
 		Action: actionReply, SourcePlatform: "bluesky",
 		Ref:       InteractRef{URI: "at://s", CID: "cs"},
@@ -294,11 +294,11 @@ func TestInteractHonorsPerPlatformTextOverride(t *testing.T) {
 
 func TestInteractMastodonQuoteCarriesMedia(t *testing.T) {
 	masto := &fakeMastoActor{}
-	d := &Dispatcher{Mastodon: masto}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Mastodon: masto})}
 	post := d.Interact(context.Background(), InteractSpec{
 		Action: actionQuote, SourcePlatform: "mastodon",
 		Ref:  InteractRef{LocalID: "42"},
-		Text: "look", Images: []Img{{Alt: "x"}},
+		Text: "look", Images: []Img{{Alt: "x", Bytes: []byte("i"), Mime: "image/png"}},
 	})
 	if len(masto.quoteImgs) != 1 || masto.quoteImgs[0].Alt != "x" {
 		t.Errorf("mastodon native quote should carry the attached media, got %#v", masto.quoteImgs)
@@ -313,12 +313,12 @@ func TestInteractMastodonQuoteCarriesMedia(t *testing.T) {
 
 func TestInteractNostrQuoteCarriesImetas(t *testing.T) {
 	na := &fakeNostrActor{}
-	d := &Dispatcher{Nostr: na}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: na})}
 	d.Interact(context.Background(), InteractSpec{
 		Action: actionQuote, SourcePlatform: "nostr",
-		Ref:          InteractRef{EventID: "ev", Author: "auth"},
-		Text:         "see this",
-		MediaRecords: []store.Media{{BlossomURL: "https://blossom/x.jpg", Mime: "image/jpeg"}},
+		Ref:    InteractRef{EventID: "ev", Author: "auth"},
+		Text:   "see this",
+		Images: []Img{{BlossomURL: "https://blossom/x.jpg", Mime: "image/jpeg"}},
 	})
 	if len(na.gotImetas) != 1 {
 		t.Fatalf("nostr quote should forward 1 imeta, got %d", len(na.gotImetas))

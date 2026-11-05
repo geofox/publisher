@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"github.com/geofox/publisher/internal/destination"
 	"net/http"
 	"time"
 
@@ -127,6 +128,10 @@ type API struct {
 	// live modal path (handlers fall back to synchronous dispatch).
 	Progress *progress.Registry
 
+	// Caps returns a target's effective capabilities (the dispatcher's
+	// Caps). nil → the registered drivers' defaults.
+	Caps func(ctx context.Context, name string) (destination.Capabilities, bool)
+
 	// fetchMedia downloads already-uploaded image bytes by URL when a publish
 	// carries Blossom references instead of fresh uploads (a restored/loaded
 	// draft). nil → fetchSourceMedia (https-only, SSRF-guarded). Overridable in
@@ -223,4 +228,26 @@ func (a *API) Routes() http.Handler {
 	}
 	mux.Handle("/", web.Handler())
 	return withSecurityHeaders(a.withCSRFGuard(a.withGates(mux)))
+}
+
+// caps returns a target's effective capabilities: the connected account's,
+// else the registered driver's defaults, else none (no limits).
+func (a *API) caps(ctx context.Context, name string) destination.Capabilities {
+	if a.Caps != nil {
+		if c, ok := a.Caps(ctx, name); ok {
+			return c
+		}
+	}
+	if d, ok := destination.Lookup(name); ok {
+		return d.Manifest().Defaults
+	}
+	return destination.Capabilities{}
+}
+
+// displayName is a destination type's human name ("Bluesky").
+func displayName(name string) string {
+	if d, ok := destination.Lookup(name); ok && d.Manifest().Name != "" {
+		return d.Manifest().Name
+	}
+	return name
 }

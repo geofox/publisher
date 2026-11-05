@@ -123,7 +123,7 @@ func (a *API) handleInteract(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		srcImgs = append(srcImgs, dispatch.Img{Bytes: res.Bytes, Mime: res.Mime, Alt: m.Alt, BlossomURL: res.URL,
-			SizeBytes: res.Size})
+			Dim: res.Dim, SizeBytes: res.Size, SHA256: res.SHA256, Blurhash: res.Blurhash})
 		srcRecs = append(srcRecs, store.Media{
 			Ordinal: i, BlossomURL: res.URL, SHA256: res.SHA256, Mime: res.Mime,
 			Dim: res.Dim, Blurhash: res.Blurhash, SizeBytes: res.Size, Alt: m.Alt,

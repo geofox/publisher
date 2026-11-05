@@ -5,6 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/geofox/publisher/internal/bluesky"
+	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/nostr"
+	"github.com/geofox/publisher/internal/threads"
 	"github.com/geofox/publisher/internal/transcode"
 )
 
@@ -14,15 +18,19 @@ func TestPlanMediaFit(t *testing.T) {
 		{SizeBytes: 3 << 20, Mime: "image/jpeg"}, // over bluesky's ~2 MB
 		{SizeBytes: 500, Mime: "image/webp"},     // threads format violation
 	}
-	bs := PlanMediaFit("bluesky", metas)
+	plan := func(d destination.Driver) []FitNote {
+		name, mc := capsOf(d)
+		return PlanMediaFit(name, mc, metas)
+	}
+	bs := plan(bluesky.Driver{})
 	if len(bs) != 1 || bs[0].Ordinal != 1 || !strings.Contains(bs[0].Note, "JPEG") {
 		t.Fatalf("bluesky notes = %+v, want one note for ordinal 1", bs)
 	}
-	th := PlanMediaFit("threads", metas)
+	th := plan(threads.Driver{})
 	if len(th) != 1 || th[0].Ordinal != 2 || !strings.Contains(th[0].Note, "webp") {
 		t.Fatalf("threads notes = %+v, want one note for ordinal 2", th)
 	}
-	if n := PlanMediaFit("nostr", metas); n != nil {
+	if n := plan(nostr.Driver{}); n != nil {
 		t.Fatalf("nostr must plan no fits, got %+v", n)
 	}
 }
@@ -41,18 +49,19 @@ func TestPlanMediaFitParityWithExecutors(t *testing.T) {
 		{SizeBytes: int64(len(png)), Mime: "image/png"},
 		{SizeBytes: int64(len(heic)), Mime: "image/heic"},
 	}
-	notes := PlanMediaFit("threads", metas)
+	name, mc := capsOf(threads.Driver{})
+	notes := PlanMediaFit(name, mc, metas)
 	planned := map[int]bool{}
 	for _, n := range notes {
 		planned[n.Ordinal] = true
 	}
-	ti, err := prepThreadsImgs(context.Background(), imgs,
+	items, err := prepareMedia(context.Background(), name, mc, imgs,
 		func(context.Context, []byte, string) (string, error) { return "https://b/v", nil })
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := range imgs {
-		hosted := ti[i].URL == "https://b/v"
+		hosted := items[i].URL == "https://b/v"
 		if hosted != planned[i] {
 			t.Fatalf("image %d: planned=%v but executor hosted=%v", i, planned[i], hosted)
 		}

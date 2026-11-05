@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/geofox/publisher/internal/destination"
 	"io"
 	"net/http"
 	"net/url"
@@ -364,8 +365,7 @@ func (c *Client) do(ctx context.Context, method, path string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("%s returned %d: %s", path, resp.StatusCode, string(rb))
+		return destination.NewHTTPError(path, resp)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

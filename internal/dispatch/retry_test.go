@@ -20,15 +20,15 @@ func (fakeFetcher) Fetch(ctx context.Context, url string) ([]byte, string, error
 
 type retryMasto struct{ calls int }
 
-func (m *retryMasto) PostText(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
+func (m *retryMasto) PostText(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (legacyResult, error) {
 	m.calls++
-	return TargetResult{Platform: "mastodon", Status: "success", RemoteID: "st2", RemoteURL: "https://m/2"}, nil
+	return legacyResult{Platform: "mastodon", Status: "success", RemoteID: "st2", RemoteURL: "https://m/2"}, nil
 }
-func (m *retryMasto) Reblog(context.Context, string) (TargetResult, error) {
-	return TargetResult{Platform: "mastodon", Status: "success"}, nil
+func (m *retryMasto) Reblog(context.Context, string) (legacyResult, error) {
+	return legacyResult{Platform: "mastodon", Status: "success"}, nil
 }
-func (m *retryMasto) QuoteStatus(context.Context, string, string, []Img) (TargetResult, error) {
-	return TargetResult{Platform: "mastodon", Status: "success"}, nil
+func (m *retryMasto) QuoteStatus(context.Context, string, string, []Img) (legacyResult, error) {
+	return legacyResult{Platform: "mastodon", Status: "success"}, nil
 }
 
 func TestDispatcherRetry(t *testing.T) {
@@ -47,7 +47,7 @@ func TestDispatcherRetry(t *testing.T) {
 	})
 
 	mock := &retryMasto{}
-	d := &Dispatcher{Mastodon: mock, Store: db, Fetcher: fakeFetcher{}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Mastodon: mock}), Store: db, Fetcher: fakeFetcher{}}
 	post, err := d.Retry(context.Background(), "p1", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestRetryNostrImeta(t *testing.T) {
 		},
 	})
 	cn := &capturingNostr{}
-	d := &Dispatcher{Nostr: cn, Store: db, Fetcher: fakeFetcher{}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: cn}), Store: db, Fetcher: fakeFetcher{}}
 	post, err := d.Retry(context.Background(), "p3", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -97,15 +97,15 @@ func TestRetryNostrImeta(t *testing.T) {
 
 type retryBsky struct{ calls int }
 
-func (b *retryBsky) PostBsky(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
+func (b *retryBsky) PostBsky(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (legacyResult, error) {
 	b.calls++
-	return TargetResult{Platform: "bluesky", Status: "success", RemoteID: "bb"}, nil
+	return legacyResult{Platform: "bluesky", Status: "success", RemoteID: "bb"}, nil
 }
-func (b *retryBsky) RepostBsky(context.Context, string, string) (TargetResult, error) {
-	return TargetResult{Platform: "bluesky", Status: "success"}, nil
+func (b *retryBsky) RepostBsky(context.Context, string, string) (legacyResult, error) {
+	return legacyResult{Platform: "bluesky", Status: "success"}, nil
 }
-func (b *retryBsky) QuoteBsky(context.Context, string, Overrides, []Img, string, string) (TargetResult, error) {
-	return TargetResult{Platform: "bluesky", Status: "success"}, nil
+func (b *retryBsky) QuoteBsky(context.Context, string, Overrides, []Img, string, string) (legacyResult, error) {
+	return legacyResult{Platform: "bluesky", Status: "success"}, nil
 }
 
 type relayFakeNostr struct {
@@ -113,14 +113,14 @@ type relayFakeNostr struct {
 	gotRelay      string
 }
 
-func (f *relayFakeNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error) {
-	return TargetResult{Platform: "nostr", Status: "success"}, nil
+func (f *relayFakeNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (legacyResult, error) {
+	return legacyResult{Platform: "nostr", Status: "success"}, nil
 }
-func (f *relayFakeNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
-	return TargetResult{Platform: "nostr", Status: "success"}, nil
+func (f *relayFakeNostr) Repost(context.Context, string, string, int, string) (legacyResult, error) {
+	return legacyResult{Platform: "nostr", Status: "success"}, nil
 }
-func (f *relayFakeNostr) Quote(context.Context, string, string, string, string, []gonostr.Tag) (TargetResult, error) {
-	return TargetResult{Platform: "nostr", Status: "success"}, nil
+func (f *relayFakeNostr) Quote(context.Context, string, string, string, string, []gonostr.Tag) (legacyResult, error) {
+	return legacyResult{Platform: "nostr", Status: "success"}, nil
 }
 func (f *relayFakeNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (bool, string) {
 	f.gotRelay = relayURL
@@ -148,7 +148,7 @@ func TestDispatcherRetryRelay(t *testing.T) {
 		}},
 	})
 	fake := &relayFakeNostr{rebroadcastOK: true}
-	d := &Dispatcher{Nostr: fake, Store: db}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fake}), Store: db}
 	post, err := d.RetryRelay(context.Background(), "p9", "wss://relay.damus.io")
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +177,7 @@ func TestRetryRelayStillFailing(t *testing.T) {
 			Attempts: []store.Attempt{{AttemptNo: 1, Status: "partial", AttemptedAt: time.Now()}},
 		}},
 	})
-	d := &Dispatcher{Nostr: &relayFakeNostr{rebroadcastOK: false}, Store: db}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: &relayFakeNostr{rebroadcastOK: false}}), Store: db}
 	post, err := d.RetryRelay(context.Background(), "p10", "wss://relay.damus.io")
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +203,7 @@ func TestRetryRelayRejectsIneligible(t *testing.T) {
 			Attempts: []store.Attempt{{AttemptNo: 1, Status: "partial", AttemptedAt: time.Now()}},
 		}},
 	})
-	d := &Dispatcher{Nostr: &relayFakeNostr{rebroadcastOK: true}, Store: db}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: &relayFakeNostr{rebroadcastOK: true}}), Store: db}
 	for _, relay := range []string{"wss://unknown.relay", "ws://x.onion", "wss://relay.geoffrey.one"} {
 		if _, err := d.RetryRelay(context.Background(), "p11", relay); !errors.Is(err, ErrBadRelayRetry) {
 			t.Errorf("RetryRelay(%q) err = %v, want ErrBadRelayRetry", relay, err)
@@ -216,8 +216,8 @@ func TestRetryRelayRejectsIneligible(t *testing.T) {
 // the stored relay rows and signed event.
 type refreshNostr struct{}
 
-func (refreshNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (TargetResult, error) {
-	return TargetResult{
+func (refreshNostr) PublishText(ctx context.Context, text string, pow *int, imetas []gonostr.Tag, replyTo *ReplyRef) (legacyResult, error) {
+	return legacyResult{
 		Platform: "nostr", Status: "success", RemoteID: "newev", SignedEventJSON: `{"id":"newev"}`,
 		Relays: []store.RelayState{
 			{URL: "wss://relay.geoffrey.one", Status: "ok"},
@@ -228,11 +228,11 @@ func (refreshNostr) PublishText(ctx context.Context, text string, pow *int, imet
 func (refreshNostr) RebroadcastToRelay(ctx context.Context, signedEventJSON, relayURL string) (bool, string) {
 	return true, ""
 }
-func (refreshNostr) Repost(context.Context, string, string, int, string) (TargetResult, error) {
-	return TargetResult{Platform: "nostr", Status: "success"}, nil
+func (refreshNostr) Repost(context.Context, string, string, int, string) (legacyResult, error) {
+	return legacyResult{Platform: "nostr", Status: "success"}, nil
 }
-func (refreshNostr) Quote(context.Context, string, string, string, string, []gonostr.Tag) (TargetResult, error) {
-	return TargetResult{Platform: "nostr", Status: "success"}, nil
+func (refreshNostr) Quote(context.Context, string, string, string, string, []gonostr.Tag) (legacyResult, error) {
+	return legacyResult{Platform: "nostr", Status: "success"}, nil
 }
 
 func TestRetryNostrRefreshesRelays(t *testing.T) {
@@ -251,7 +251,7 @@ func TestRetryNostrRefreshesRelays(t *testing.T) {
 			Attempts: []store.Attempt{{AttemptNo: 1, Status: "failed", AttemptedAt: time.Now()}},
 		}},
 	})
-	d := &Dispatcher{Nostr: refreshNostr{}, Store: db, Fetcher: fakeFetcher{}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: refreshNostr{}}), Store: db, Fetcher: fakeFetcher{}}
 	post, err := d.Retry(context.Background(), "p12", []string{"nostr"})
 	if err != nil {
 		t.Fatal(err)
@@ -286,7 +286,7 @@ func TestRetryPlatformFilter(t *testing.T) {
 	})
 	masto := &retryMasto{}
 	bsky := &retryBsky{}
-	d := &Dispatcher{Mastodon: masto, Bluesky: bsky, Store: db, Fetcher: fakeFetcher{}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Mastodon: masto, Bluesky: bsky}), Store: db, Fetcher: fakeFetcher{}}
 	post, err := d.Retry(context.Background(), "p2", []string{"bluesky"})
 	if err != nil {
 		t.Fatal(err)

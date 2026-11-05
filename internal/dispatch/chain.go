@@ -2,9 +2,10 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 
-	gonostr "fiatjaf.com/nostr"
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/thread"
@@ -17,6 +18,7 @@ type chainOutcome struct {
 	Platform                    string
 	Status                      string
 	Error                       string
+	ErrorClass                  string
 	FinalText                   string       // what this target actually sent (head text)
 	LinkCard                    *unfurl.Card // bluesky link card as actually attached (nil = none)
 	HeadRemoteID, HeadRemoteURL string
@@ -27,24 +29,16 @@ type chainOutcome struct {
 	Segments                    []store.Segment
 }
 
-// headSpec makes a chain's head segment a reply or a quote instead of a plain
-// post. nil → plain post head (normal Post + fan-out reproduction). The tail
-// segments always thread as plain replies under the head.
-type headSpec struct {
-	reply *ReplyRef    // head replies to this
-	quote *InteractRef // head quotes this (native quote)
-}
-
-// runHead posts the head segment per the headSpec (reply / quote / plain).
-func (d *Dispatcher) runHead(ctx context.Context, plat, text string, ov Overrides, imgs []Img, imetas []gonostr.Tag, head *headSpec) TargetResult {
-	if head != nil && head.quote != nil {
-		return d.runAction(ctx, actionQuote, plat, text, ov, imgs, imetas, *head.quote)
+// segRef is the reference a later segment replies to.
+func segRef(sg store.Segment) destination.ItemRef {
+	ref := destination.ItemRef{ID: sg.RemoteID, URL: sg.RemoteURL, Data: sg.Ref}
+	if len(ref.Data) == 0 && sg.CID != "" {
+		// Segments written before Ref existed kept only the Bluesky CID.
+		// This is the Bluesky driver's Ref.Data shape, {"cid": ...}.
+		b, _ := json.Marshal(map[string]string{"cid": sg.CID})
+		ref.Data = b
 	}
-	var replyTo *ReplyRef
-	if head != nil {
-		replyTo = head.reply
-	}
-	return d.runPlatform(ctx, plat, text, ov, imgs, imetas, replyTo)
+	return ref
 }
 
 // runChain splits text to the platform's limit and posts the segments as a
@@ -54,7 +48,7 @@ func (d *Dispatcher) runHead(ctx context.Context, plat, text string, ov Override
 // single segment posts exactly as before, with no Segments recorded. An
 // optional head action (reply/quote via headSpec; nil = plain post) lets the
 // chain's head segment thread under or quote a source post.
-func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrides, imgs []Img, imetas []gonostr.Tag, number bool, imgParts []int, head *headSpec, postID string) chainOutcome {
+func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrides, imgs []Img, number bool, imgParts []int, head *headSpec, postID string) chainOutcome {
 	// imgParts must be parallel to imgs. A nil/short slice (interaction paths,
 	// or an assembleImages skip) pads with 0 (front-load); a long one truncates.
 	// SplitPlace derives nImages from len(imgParts), so it MUST equal len(imgs).
@@ -63,15 +57,9 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 		copy(np, imgParts)
 		imgParts = np
 	}
-	var card *unfurl.Card
-	var segTexts []string
-	var plan [][]int
-	if plat == "bluesky" {
-		cp := PlanBlueskyCard(text, ov.LinkCard, imgParts, number)
-		segTexts, plan, text, card = cp.Segs, cp.Plan, cp.Text, cp.Card
-	} else {
-		segTexts, plan, _ = thread.SplitPlace(text, thread.LimitFor(plat), imgParts, thread.MaxImagesFor(plat), thread.Opts{Number: number})
-	}
+	caps, _ := d.Caps(ctx, plat)
+	cp := PlanTarget(caps, text, ov.LinkCard, imgParts, number)
+	segTexts, plan, text, card := cp.Segs, cp.Plan, cp.Text, cp.Card
 	// Only the card's own segment carries it; re-attached per segment below.
 	ov.LinkCard = nil
 	if len(segTexts) <= 1 {
@@ -79,10 +67,10 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 		if card != nil {
 			headOv.LinkCard = card
 		}
-		r := d.runHead(ctx, plat, text, headOv, imgs, imetas, head)
+		r := d.publishItem(ctx, plat, item{text: text, ov: headOv, imgs: imgs, head: head, postID: postID})
 		d.enqueueFanout(ctx, postID, r.Status, r.SignedEventJSON, r.PendingRelays)
 		return chainOutcome{
-			Platform: plat, Status: r.Status, Error: r.Error, FinalText: text, LinkCard: card,
+			Platform: plat, Status: r.Status, Error: r.Error, ErrorClass: r.ErrorClass, FinalText: text, LinkCard: card,
 			HeadRemoteID: r.RemoteID, HeadRemoteURL: r.RemoteURL, LatencyMS: r.LatencyMS,
 			Relays: r.Relays, SignedEventJSON: r.SignedEventJSON,
 			RequestJSON: r.RequestJSON, ResponseJSON: r.ResponseJSON,
@@ -95,29 +83,20 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 	for i, st := range segTexts {
 		out.Segments = append(out.Segments, store.Segment{Ordinal: i, Text: st, Status: "pending", Images: plan[i]})
 	}
-	var rootID, rootCID, parentID, parentCID string
+	var root, parent destination.ItemRef
 	for i, st := range segTexts {
-		var replyTo *ReplyRef
-		if i > 0 {
-			replyTo = &ReplyRef{RootID: rootID, RootCID: rootCID, ParentID: parentID, ParentCID: parentCID}
-		}
-		segImgs := pick(imgs, plan[i])
-		// Nostr's image is its imeta (the URL is appended to event content), so
-		// each segment carries exactly its planned images' imetas — mirroring
-		// segImgs for native-attachment platforms.
-		segImetas := pickImetas(imetas, plan[i])
-		segOv := ov
+		it := item{text: st, ov: ov, imgs: pick(imgs, plan[i]), postID: postID, ordinal: i}
 		if card != nil && i == card.Segment {
-			segOv.LinkCard = card
+			it.ov.LinkCard = card
 		}
-		var r TargetResult
 		if i == 0 {
-			r = d.runHead(ctx, plat, st, segOv, segImgs, segImetas, head)
+			it.head = head
 		} else {
-			r = d.runPlatform(ctx, plat, st, segOv, segImgs, segImetas, replyTo)
+			it.thread = &destination.ThreadRef{Root: root, Parent: parent}
 		}
+		r := d.publishItem(ctx, plat, it)
 		out.Segments[i] = store.Segment{
-			Ordinal: i, Text: st, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID,
+			Ordinal: i, Text: st, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, Ref: r.RefData,
 			Status: r.Status, Error: r.Error, Images: plan[i],
 		}
 		d.enqueueFanout(ctx, postID, r.Status, r.SignedEventJSON, r.PendingRelays)
@@ -130,13 +109,13 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 		}
 		progress.SinkFrom(ctx).Platform(plat, progress.StatusRunning, "thread "+strconv.Itoa(done)+"/"+strconv.Itoa(len(segTexts)), "")
 		if i == 0 {
-			rootID, rootCID = r.RemoteID, r.CID
+			root = segRef(out.Segments[0])
 			out.HeadRemoteID, out.HeadRemoteURL = r.RemoteID, r.RemoteURL
 			out.Relays, out.SignedEventJSON = r.Relays, r.SignedEventJSON
 			out.RequestJSON, out.ResponseJSON, out.LatencyMS = r.RequestJSON, r.ResponseJSON, r.LatencyMS
 		}
-		parentID, parentCID = r.RemoteID, r.CID
-		out.Error = r.Error
+		parent = segRef(out.Segments[i])
+		out.Error, out.ErrorClass = r.Error, r.ErrorClass
 		if r.RemoteID == "" { // no id to reply to → cannot continue the chain
 			break
 		}
@@ -174,14 +153,14 @@ func pick(imgs []Img, idx []int) []Img {
 // segment, threading from the last successful one (root stays segment 0). If the
 // head (segment 0) isn't success, the whole chain is re-posted from scratch.
 // No store writes — returns the updated outcome.
-func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag, postID string) chainOutcome {
-	return d.resumeSegmentsHead(ctx, tg, ov, imgs, imetas, postID, nil)
+func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, postID string) chainOutcome {
+	return d.resumeSegmentsHead(ctx, tg, ov, imgs, postID, nil)
 }
 
 // resumeSegmentsHead is resumeSegments with the chain's head action: when the
 // head (segment 0) has to be re-posted, it is posted per head (reply/quote of
 // the interaction's source) rather than as a plain post. nil = plain head.
-func (d *Dispatcher) resumeSegmentsHead(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag, postID string, head *headSpec) chainOutcome {
+func (d *Dispatcher) resumeSegmentsHead(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, postID string, head *headSpec) chainOutcome {
 	segs := append([]store.Segment(nil), tg.Segments...)
 	card := ov.LinkCard
 	ov.LinkCard = nil
@@ -200,10 +179,9 @@ func (d *Dispatcher) resumeSegmentsHead(ctx context.Context, tg store.Target, ov
 		}
 		return out
 	}
-	var rootID, rootCID, parentID, parentCID string
+	var root, parent destination.ItemRef
 	if start > 0 {
-		rootID, rootCID = segs[0].RemoteID, segs[0].CID
-		parentID, parentCID = segs[start-1].RemoteID, segs[start-1].CID
+		root, parent = segRef(segs[0]), segRef(segs[start-1])
 	}
 
 	// Back-compat: segments saved before media-placement have nil Images. Only
@@ -217,14 +195,11 @@ func (d *Dispatcher) resumeSegmentsHead(ctx context.Context, tg store.Target, ov
 	}
 	var legacyPlan []int
 	if legacy {
-		legacyPlan = thread.PlanMedia(len(imgs), len(segs), thread.MaxImagesFor(tg.Platform))
+		caps, _ := d.Caps(ctx, tg.Platform)
+		legacyPlan = thread.PlanMedia(len(imgs), len(segs), caps.Media.Images.MaxCount)
 	}
 
 	for i := start; i < len(segs); i++ {
-		var replyTo *ReplyRef
-		if i > 0 {
-			replyTo = &ReplyRef{RootID: rootID, RootCID: rootCID, ParentID: parentID, ParentCID: parentCID}
-		}
 		var segImgs []Img
 		if legacy {
 			if i < len(legacyPlan) {
@@ -233,32 +208,24 @@ func (d *Dispatcher) resumeSegmentsHead(ctx context.Context, tg store.Target, ov
 		} else {
 			segImgs = pick(imgs, segs[i].Images)
 		}
-		var segImetas []gonostr.Tag
-		if legacy {
-			if i == 0 {
-				segImetas = imetas // pre-placement threads kept all media on the head
-			}
-		} else {
-			segImetas = pickImetas(imetas, segs[i].Images)
-		}
-		segOv := ov
+		it := item{text: segs[i].Text, ov: ov, imgs: segImgs, postID: postID, ordinal: i}
 		if card != nil && i == card.Segment {
-			segOv.LinkCard = card
+			it.ov.LinkCard = card
 		}
-		var r TargetResult
 		if i == 0 {
-			r = d.runHead(ctx, tg.Platform, segs[i].Text, segOv, segImgs, segImetas, head)
+			it.head = head
 		} else {
-			r = d.runPlatform(ctx, tg.Platform, segs[i].Text, segOv, segImgs, segImetas, replyTo)
+			it.thread = &destination.ThreadRef{Root: root, Parent: parent}
 		}
-		segs[i] = store.Segment{Ordinal: i, Text: segs[i].Text, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, CID: r.CID, Status: r.Status, Error: r.Error, Images: segs[i].Images}
+		r := d.publishItem(ctx, tg.Platform, it)
+		segs[i] = store.Segment{Ordinal: i, Text: segs[i].Text, RemoteID: r.RemoteID, RemoteURL: r.RemoteURL, Ref: r.RefData, Status: r.Status, Error: r.Error, Images: segs[i].Images}
 		d.enqueueFanout(ctx, postID, r.Status, r.SignedEventJSON, r.PendingRelays)
 		if i == 0 {
-			rootID, rootCID = r.RemoteID, r.CID
+			root = segRef(segs[0])
 			out.Relays, out.SignedEventJSON, out.LatencyMS = r.Relays, r.SignedEventJSON, r.LatencyMS
 		}
-		parentID, parentCID = r.RemoteID, r.CID
-		out.Error = r.Error
+		parent = segRef(segs[i])
+		out.Error, out.ErrorClass = r.Error, r.ErrorClass
 		if r.RemoteID == "" {
 			break
 		}
@@ -269,9 +236,9 @@ func (d *Dispatcher) resumeSegmentsHead(ctx context.Context, tg store.Target, ov
 }
 
 // resumeChain resumes a partial threaded target and persists the result.
-func (d *Dispatcher) resumeChain(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, imetas []gonostr.Tag, postID string, head *headSpec) error {
-	out := d.resumeSegmentsHead(ctx, tg, ov, imgs, imetas, postID, head)
-	return d.Store.UpdateTargetSegments(tg.ID, out.Segments, out.Status, out.HeadRemoteID, out.HeadRemoteURL, out.LatencyMS, out.Error)
+func (d *Dispatcher) resumeChain(ctx context.Context, tg store.Target, ov Overrides, imgs []Img, postID string, head *headSpec) error {
+	out := d.resumeSegmentsHead(ctx, tg, ov, imgs, postID, head)
+	return d.Store.UpdateTargetSegments(tg.ID, out.Segments, out.Status, out.HeadRemoteID, out.HeadRemoteURL, out.LatencyMS, out.Error, out.ErrorClass)
 }
 
 // chainStatus aggregates a chain's segment statuses. expected is the planned
@@ -290,17 +257,4 @@ func chainStatus(segs []store.Segment, expected int) string {
 		return "success"
 	}
 	return "partial"
-}
-
-// pickImetas returns the imetas at the given image indices, preserving order and
-// skipping out-of-range indices and empty placeholders. Mirrors pick(imgs, idx)
-// so a Nostr segment carries exactly its planned images' imeta tags.
-func pickImetas(imetas []gonostr.Tag, idx []int) []gonostr.Tag {
-	out := make([]gonostr.Tag, 0, len(idx))
-	for _, i := range idx {
-		if i >= 0 && i < len(imetas) && len(imetas[i]) > 0 {
-			out = append(out, imetas[i])
-		}
-	}
-	return out
 }

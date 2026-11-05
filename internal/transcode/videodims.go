@@ -1,7 +1,5 @@
 package transcode
 
-import "fmt"
-
 // videoBoxes are the landscape bounding boxes per composer preset; portrait
 // input gets the box transposed. Unknown presets fall back to 1080p.
 var videoBoxes = map[string][2]int{
@@ -59,15 +57,6 @@ func FitVideoDims(w, h int, preset string) (int, int) {
 	return qw, qh
 }
 
-// VideoInfo is the metadata-only description used by the per-platform gates
-// (preview + dispatch share this — same philosophy as Profile.Needs for
-// images). Zero fields are unknown and pass (optimistic planning).
-type VideoInfo struct {
-	SizeBytes    int64
-	DurationSecs int64
-	W, H         int
-}
-
 // Platform video ceilings, verified 2026-06-11 (see phase-2 spec §2).
 const (
 	BlueskyVideoMaxBytes     = 100_000_000 // app.bsky.embed.video lexicon
@@ -76,37 +65,3 @@ const (
 	ThreadsVideoMaxBytes     = 1 << 30
 	ThreadsVideoMaxSecs      = 300
 )
-
-// VideoGate reports a hard per-platform failure reason ("" = none) and any
-// advisory warnings. Hard failures fail the target at dispatch (before any
-// network call) and badge the preview; advisories only badge.
-func VideoGate(plat string, v VideoInfo) (fail string, warns []string) {
-	switch plat {
-	case "bluesky":
-		if v.SizeBytes > BlueskyVideoMaxBytes {
-			fail = "video over 100 MB (Bluesky blob cap)"
-		}
-		if v.DurationSecs > BlueskyVideoAdvisorySecs {
-			warns = append(warns, "over 3 min — Bluesky may reject or truncate playback")
-		}
-	case "mastodon":
-		if v.SizeBytes > MastodonVideoMaxBytes {
-			fail = "video over 99 MB (instance cap)"
-		}
-	case "threads":
-		if v.SizeBytes > ThreadsVideoMaxBytes {
-			fail = "video over 1 GB (Threads cap)"
-		}
-		if v.DurationSecs > ThreadsVideoMaxSecs {
-			fail = joinFail(fail, fmt.Sprintf("video over 5 min (Threads cap, %ds)", v.DurationSecs))
-		}
-	}
-	return fail, warns
-}
-
-func joinFail(a, b string) string {
-	if a == "" {
-		return b
-	}
-	return a + "; " + b
-}

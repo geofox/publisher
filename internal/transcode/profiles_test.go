@@ -52,18 +52,13 @@ func TestProfileNeeds(t *testing.T) {
 		// Unknown metadata plans optimistically; dispatch re-checks real bytes.
 		{"threads", Meta{Mime: ""}, false, ""},
 	}
+	profiles := map[string]Profile{"bluesky": Bluesky, "mastodon": Mastodon, "threads": Threads}
 	for _, c := range cases {
-		prof, ok := ProfileFor(c.plat)
-		if !ok {
-			t.Fatalf("no profile for %s", c.plat)
-		}
+		prof := profiles[c.plat]
 		need, reason := prof.Needs(c.m)
 		if need != c.need || (c.reason != "" && !strings.Contains(reason, c.reason)) {
 			t.Fatalf("%s %+v → need=%v reason=%q, want need=%v reason~%q", c.plat, c.m, need, reason, c.need, c.reason)
 		}
-	}
-	if _, ok := ProfileFor("nostr"); ok {
-		t.Fatal("nostr must have no profile (passthrough)")
 	}
 }
 

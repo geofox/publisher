@@ -15,9 +15,9 @@ import (
 // 0 is unanchored and fills head-first.
 func TestRunChainPlacesAnchoredImage(t *testing.T) {
 	f := &fakeMastoChain{}
-	d := &Dispatcher{Mastodon: f}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Mastodon: f})}
 	out := d.runChain(context.Background(), "mastodon", "a\n---\nb\n---\nc",
-		Overrides{}, make([]Img, 2), nil, false, []int{0, 2}, nil, "t")
+		Overrides{}, testImgs(2), false, []int{0, 2}, nil, "t")
 
 	if out.Status != "success" {
 		t.Fatalf("status=%s err=%s", out.Status, out.Error)
@@ -48,7 +48,7 @@ func TestRunChainPlacesAnchoredImage(t *testing.T) {
 // plan. The non-front-loaded case: image 1 is on segment 2, not segment 0.
 func TestResumeReadsPersistedPlacement(t *testing.T) {
 	f := &fakeMastoChain{}
-	d := &Dispatcher{Mastodon: f}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Mastodon: f})}
 	// Segment 0 already succeeded (RemoteID set) — resume continues from seg 1.
 	// The persisted placement: seg0 had image 0, seg1 has no images, seg2 has image 1.
 	tg := store.Target{
@@ -59,8 +59,8 @@ func TestResumeReadsPersistedPlacement(t *testing.T) {
 			{Ordinal: 2, Text: "c", Status: "pending", Images: []int{1}},
 		},
 	}
-	imgs := []Img{{BlossomURL: "https://b/0"}, {BlossomURL: "https://b/1"}}
-	out := d.resumeSegments(context.Background(), tg, Overrides{}, imgs, nil, "t")
+	imgs := []Img{{BlossomURL: "https://b/0", Bytes: []byte("0"), Mime: "image/png"}, {BlossomURL: "https://b/1", Bytes: []byte("1"), Mime: "image/png"}}
+	out := d.resumeSegments(context.Background(), tg, Overrides{}, imgs, "t")
 	if out.Status != "success" {
 		t.Fatalf("status=%s err=%s", out.Status, out.Error)
 	}

@@ -3,11 +3,12 @@ package dispatch
 import (
 	"strings"
 
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/thread"
 	"github.com/geofox/publisher/internal/unfurl"
 )
 
-// CardPlan is a bluesky chain layout with an optional link-card placement.
+// CardPlan is a target's chain layout with an optional link-card placement.
 type CardPlan struct {
 	Segs     []string
 	Plan     [][]int
@@ -21,21 +22,24 @@ type CardPlan struct {
 	Card *unfurl.Card
 }
 
-// PlanBlueskyCard computes the bluesky split with an optional link card.
-// Deterministic strip-then-revert: tentatively strip a trailing card URL,
+// PlanTarget splits text into a chain for a destination with the given
+// capabilities: segments within its text limit, images placed within its
+// per-post cap and, for a destination that builds link previews itself
+// (LinkPreview "client"), the link card placed. Shared by runChain, Schedule
+// and the thread-preview endpoint so preview and dispatch cannot diverge.
+//
+// Card placement is a deterministic strip-then-revert: tentatively strip a trailing card URL,
 // split, locate the card's segment (last segment for trailing, the
 // URL-bearing segment otherwise), then revert entirely — no card, no strip —
 // when that segment already holds images, so the link can never silently
-// disappear from a post that can't carry the card. Shared by runChain,
-// Schedule and the thread-preview endpoint so preview and dispatch cannot
-// diverge.
-func PlanBlueskyCard(text string, card *unfurl.Card, imgParts []int, number bool) CardPlan {
-	limit, imgCap := thread.LimitFor("bluesky"), thread.MaxImagesFor("bluesky")
+// disappear from a post that can't carry the card.
+func PlanTarget(caps destination.Capabilities, text string, card *unfurl.Card, imgParts []int, number bool) CardPlan {
+	limit, imgCap := caps.Text.MaxLength, caps.Media.Images.MaxCount
 	plain := func() CardPlan {
 		segs, plan, warns := thread.SplitPlace(text, limit, imgParts, imgCap, thread.Opts{Number: number})
 		return CardPlan{Segs: segs, Plan: plan, Warnings: warns, Text: text}
 	}
-	if card == nil {
+	if card == nil || caps.LinkPreview != destination.LinkPreviewClient {
 		return plain()
 	}
 	u, trailing, ok := unfurl.CardURL(text)

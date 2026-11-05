@@ -17,23 +17,23 @@ type flakyMasto struct {
 	reply []*ReplyRef
 }
 
-func (m *flakyMasto) result() TargetResult {
+func (m *flakyMasto) result() legacyResult {
 	if len(m.calls) == 1 {
-		return TargetResult{Platform: "mastodon", Status: "failed", Error: "timeout"}
+		return legacyResult{Platform: "mastodon", Status: "failed", Error: "timeout"}
 	}
-	return TargetResult{Platform: "mastodon", Status: "success", RemoteID: "s2", RemoteURL: "https://m/2"}
+	return legacyResult{Platform: "mastodon", Status: "success", RemoteID: "s2", RemoteURL: "https://m/2"}
 }
 
-func (m *flakyMasto) PostText(_ context.Context, _ string, _ Overrides, _ []Img, r *ReplyRef) (TargetResult, error) {
+func (m *flakyMasto) PostText(_ context.Context, _ string, _ Overrides, _ []Img, r *ReplyRef) (legacyResult, error) {
 	m.calls = append(m.calls, "post")
 	m.reply = append(m.reply, r)
 	return m.result(), nil
 }
-func (m *flakyMasto) Reblog(_ context.Context, id string) (TargetResult, error) {
+func (m *flakyMasto) Reblog(_ context.Context, id string) (legacyResult, error) {
 	m.calls = append(m.calls, "reblog:"+id)
 	return m.result(), nil
 }
-func (m *flakyMasto) QuoteStatus(_ context.Context, _ string, id string, _ []Img) (TargetResult, error) {
+func (m *flakyMasto) QuoteStatus(_ context.Context, _ string, id string, _ []Img) (legacyResult, error) {
 	m.calls = append(m.calls, "quote:"+id)
 	return m.result(), nil
 }
@@ -45,7 +45,7 @@ func newInteractRetryDispatcher(t *testing.T, m *flakyMasto) *Dispatcher {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return &Dispatcher{Mastodon: m, Store: db, Fetcher: fakeFetcher{}}
+	return &Dispatcher{Accounts: legacyAccounts(legacy{Mastodon: m}), Store: db, Fetcher: fakeFetcher{}}
 }
 
 // A failed interaction must be retried as the same interaction. Before the fix

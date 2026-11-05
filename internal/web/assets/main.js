@@ -1,5 +1,5 @@
 "use strict";
-import { $, ORDER } from "./common.js";
+import { $, META, ORDER } from "./common.js";
 import { state, defaultOv } from "./state.js";
 import { composeInit, applyIdentity } from "./compose.js";
 import { historyInit, loadHistory } from "./history.js";
@@ -10,10 +10,10 @@ import { installRecoveryAutosave } from "./drafts_recovery.js";
 import { installDraftsSidebar, populateTranslateMenu } from "./drafts.js";
 import { tokensInit, tokensShow, loadUserChip } from "./tokens.js";
 
-// loadConfig fetches operator preferences (currently just USER_LANGUAGES) and
-// rebuilds the per-platform overrides so the Bluesky/Mastodon language fields
-// default to the operator's first configured language. Failures fall back to
-// the "en" default already in defaultOv.
+// loadConfig fetches operator preferences and destination limits. It rebuilds
+// the per-platform overrides so the Bluesky/Mastodon language fields default
+// to the operator's first configured language. Failures fall back to the "en"
+// default already in defaultOv and the built-in limits.
 async function loadConfig() {
   try {
     const r = await fetch("/api/config", { credentials: "same-origin" });
@@ -26,7 +26,23 @@ async function loadConfig() {
     if (Array.isArray(data.translate_targets)) {
       state.translateTargets = data.translate_targets;
     }
+    applyDestinations(data.destinations);
   } catch (_) { /* keep the "en" defaults; translate button stays hidden */ }
+}
+
+// applyDestinations takes each destination's name and text limit from the
+// server, so the composer counts against what dispatch splits by (a Mastodon
+// instance announces its own limit). Unknown or missing entries keep the
+// built-in META values.
+function applyDestinations(dests) {
+  if (!dests || typeof dests !== "object") return;
+  for (const p of ORDER) {
+    const d = dests[p];
+    if (!d || !META[p]) continue;
+    if (typeof d.name === "string" && d.name) META[p].label = d.name;
+    const max = d.capabilities && d.capabilities.text && d.capabilities.text.max_length;
+    if (Number.isInteger(max) && max >= 0) META[p].limit = max;
+  }
 }
 
 // loadIdentity fetches the operator's real cross-platform profile and applies it

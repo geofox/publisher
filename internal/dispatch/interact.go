@@ -10,7 +10,6 @@ import (
 	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/store"
-	"github.com/geofox/publisher/internal/thread"
 )
 
 // SourcePreview is the resolved original's content, passed from the frontend so
@@ -35,7 +34,7 @@ type InteractSpec struct {
 	Number             bool          // k/n counters on threaded segments
 	SourcePreview      SourcePreview // for fan-out reproduction
 	SourceImages       []Img         // original's media, re-hosted (fan-out only)
-	SourceMediaRecords []store.Media // imeta records for the re-hosted source media
+	SourceMediaRecords []store.Media // archival records for the re-hosted source media
 }
 
 // assembleReproduction builds a fan-out post body: commentary, an attributed copy
@@ -67,21 +66,12 @@ func capMedia(user, source []Img, max int) []Img {
 	return out
 }
 
-// capMediaRecords mirrors capMedia for store.Media (nostr imeta).
-func capMediaRecords(user, source []store.Media, max int) []store.Media {
-	out := append([]store.Media(nil), user...)
-	for _, m := range source {
-		if max > 0 && len(out) >= max {
-			break
-		}
-		out = append(out, m)
-	}
-	return out
+// mediaMax is the per-post image cap of the account a target names (0 = no
+// cap), the same value the splitter and the preview use.
+func (d *Dispatcher) mediaMax(ctx context.Context, plat string) int {
+	caps, _ := d.Caps(ctx, plat)
+	return caps.Media.Images.MaxCount
 }
-
-// mediaMax is the per-platform attachment cap. Single source of truth lives in
-// thread.MaxImagesFor so dispatch, preview, and the splitter cannot diverge.
-func mediaMax(plat string) int { return thread.MaxImagesFor(plat) }
 
 // fanoutChain posts an assembled reproduction (commentary + original text + url,
 // with re-hosted source media capped per platform) as a normal thread.
@@ -96,11 +86,10 @@ func interactText(spec InteractSpec, plat string) string {
 
 func (d *Dispatcher) fanoutChain(ctx context.Context, plat string, spec InteractSpec, postID string) chainOutcome {
 	text := assembleReproduction(interactText(spec, plat), spec.SourcePreview, spec.SourceURL)
-	imgs := capMedia(spec.Images, spec.SourceImages, mediaMax(plat))
-	recs := capMediaRecords(spec.MediaRecords, spec.SourceMediaRecords, mediaMax(plat))
+	imgs := capMedia(spec.Images, spec.SourceImages, d.mediaMax(ctx, plat))
 	ov := spec.Overrides[plat]
 	// Interactions carry no per-image part anchors; nil ⇒ runChain front-loads.
-	return d.runChain(ctx, plat, text, ov, imgs, buildImetas(recs), spec.Number, nil, nil, postID)
+	return d.runChain(ctx, plat, text, ov, imgs, spec.Number, nil, nil, postID)
 }
 
 // Interact performs reply/repost/quote and records it as a store.Post carrying an
@@ -128,10 +117,10 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 	case actionRepost:
 		sink := progress.SinkFrom(ctx)
 		sink.Platform(spec.SourcePlatform, progress.StatusRunning, "", "")
-		r := d.runAction(ctx, actionRepost, spec.SourcePlatform, "", spec.Overrides[spec.SourcePlatform], nil, nil, spec.Ref)
+		r := d.repost(ctx, spec.SourcePlatform, spec.Ref)
 		d.enqueueFanout(ctx, rec.ID, r.Status, r.SignedEventJSON, r.PendingRelays)
 		o := chainOutcome{
-			Platform: r.Platform, Status: r.Status, Error: r.Error,
+			Platform: r.Platform, Status: r.Status, Error: r.Error, ErrorClass: r.ErrorClass,
 			HeadRemoteID: r.RemoteID, HeadRemoteURL: r.RemoteURL, LatencyMS: r.LatencyMS,
 			Relays: r.Relays, SignedEventJSON: r.SignedEventJSON, RequestJSON: r.RequestJSON, ResponseJSON: r.ResponseJSON,
 		}
@@ -141,13 +130,13 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 		ov := spec.Overrides[spec.SourcePlatform]
 		head := &headSpec{}
 		if spec.Action == actionReply {
-			head.reply = buildReplyRef(spec.SourcePlatform, spec.Ref)
+			head.reply = &spec.Ref
 		} else {
 			head.quote = &spec.Ref
 		}
 		sink := progress.SinkFrom(ctx)
 		sink.Platform(spec.SourcePlatform, progress.StatusRunning, "", "")
-		o := d.runChain(ctx, spec.SourcePlatform, interactText(spec, spec.SourcePlatform), ov, spec.Images, buildImetas(spec.MediaRecords), spec.Number, nil, head, rec.ID)
+		o := d.runChain(ctx, spec.SourcePlatform, interactText(spec, spec.SourcePlatform), ov, spec.Images, spec.Number, nil, head, rec.ID)
 		sink.Platform(spec.SourcePlatform, mapStatus(o.Status), platformDetail(o), o.HeadRemoteURL)
 		outcomes = append(outcomes, o)
 		for _, p := range spec.Fanout {
@@ -167,9 +156,9 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 		rec.Platforms = append(rec.Platforms, o.Platform)
 		rec.Targets = append(rec.Targets, store.Target{
 			Platform: o.Platform, FinalText: o.FinalText, FieldsJSON: string(fields),
-			Status: o.Status, RemoteID: o.HeadRemoteID, RemoteURL: o.HeadRemoteURL, LatencyMS: o.LatencyMS,
+			Status: o.Status, ErrorClass: o.ErrorClass, RemoteID: o.HeadRemoteID, RemoteURL: o.HeadRemoteURL, LatencyMS: o.LatencyMS,
 			Relays: o.Relays, SignedEventJSON: o.SignedEventJSON, Segments: o.Segments,
-			Attempts: []store.Attempt{{AttemptNo: 1, Status: o.Status, Error: o.Error, LatencyMS: o.LatencyMS,
+			Attempts: []store.Attempt{{AttemptNo: 1, Status: o.Status, Error: o.Error, ErrorClass: o.ErrorClass, LatencyMS: o.LatencyMS,
 				RemoteID: o.HeadRemoteID, RequestJSON: o.RequestJSON, ResponseJSON: o.ResponseJSON, AttemptedAt: time.Now().UTC()}},
 		})
 		switch o.Status {
@@ -195,25 +184,6 @@ func (d *Dispatcher) InteractWithID(ctx context.Context, id string, spec Interac
 	d.notify(ctx, rec)
 	d.alertFailure(ctx, rec)
 	return rec
-}
-
-// buildReplyRef derives the platform reply ref from the source. Bluesky: parent =
-// source, root = its thread root (or source if top-level). Mastodon: parent id =
-// local id. Nostr: parent = event id with the external author for the p-tag.
-func buildReplyRef(platform string, ref InteractRef) *ReplyRef {
-	switch platform {
-	case "bluesky":
-		root, rootCID := ref.ReplyRootURI, ref.ReplyRootCID
-		if root == "" {
-			root, rootCID = ref.URI, ref.CID
-		}
-		return &ReplyRef{RootID: root, RootCID: rootCID, ParentID: ref.URI, ParentCID: ref.CID}
-	case "mastodon":
-		return &ReplyRef{ParentID: ref.LocalID}
-	case "nostr":
-		return &ReplyRef{RootID: ref.EventID, ParentID: ref.EventID, AuthorPubkey: ref.Author}
-	}
-	return nil
 }
 
 // marshalRef serializes the source's native ref for Interaction.Ref, so a
@@ -251,7 +221,7 @@ func interactionAction(post *store.Post, tg store.Target) (head *headSpec, repos
 	case actionQuote:
 		return &headSpec{quote: &ref}, nil, true, true
 	case actionReply:
-		return &headSpec{reply: buildReplyRef(ix.SourcePlatform, ref)}, nil, true, true
+		return &headSpec{reply: &ref}, nil, true, true
 	}
 	return nil, nil, true, false
 }

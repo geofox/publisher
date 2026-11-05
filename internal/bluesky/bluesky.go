@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/geofox/publisher/internal/destination"
 	"net"
 	"net/http"
 	"strings"
@@ -252,7 +252,7 @@ func mediaEmbed(images []map[string]any) map[string]any {
 
 func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 	if uniseg.GraphemeClusterCount(p.Text) > maxGraphemes {
-		return Result{}, fmt.Errorf("text exceeds %d graphemes", maxGraphemes)
+		return Result{}, fmt.Errorf("%w: exceeds %d graphemes", errTooLong, maxGraphemes)
 	}
 	s, err := c.createSession(ctx)
 	if err != nil {
@@ -477,8 +477,7 @@ func (c *Client) doWith(ctx context.Context, cl *http.Client, path, contentType,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("%s returned %d: %s", path, resp.StatusCode, string(rb))
+		return destination.NewHTTPError(path, resp)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

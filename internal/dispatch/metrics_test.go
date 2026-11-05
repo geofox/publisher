@@ -15,14 +15,14 @@ import (
 // fakeMastodon implements MastodonPoster; PostText always succeeds.
 type fakeMastodon struct{}
 
-func (fakeMastodon) PostText(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (TargetResult, error) {
-	return TargetResult{Platform: "mastodon", Status: "success", RemoteID: "1"}, nil
+func (fakeMastodon) PostText(ctx context.Context, text string, o Overrides, imgs []Img, replyTo *ReplyRef) (legacyResult, error) {
+	return legacyResult{Platform: "mastodon", Status: "success", RemoteID: "1"}, nil
 }
-func (fakeMastodon) Reblog(ctx context.Context, statusID string) (TargetResult, error) {
-	return TargetResult{}, nil
+func (fakeMastodon) Reblog(ctx context.Context, statusID string) (legacyResult, error) {
+	return legacyResult{}, nil
 }
-func (fakeMastodon) QuoteStatus(ctx context.Context, text, quotedID string, imgs []Img) (TargetResult, error) {
-	return TargetResult{}, nil
+func (fakeMastodon) QuoteStatus(ctx context.Context, text, quotedID string, imgs []Img) (legacyResult, error) {
+	return legacyResult{}, nil
 }
 
 func metricValue(t *testing.T, re *regexp.Regexp) float64 {
@@ -44,7 +44,7 @@ func metricValue(t *testing.T, re *regexp.Regexp) float64 {
 }
 
 func TestRunPlatformRecordsPublish(t *testing.T) {
-	d := &Dispatcher{Mastodon: fakeMastodon{}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Mastodon: fakeMastodon{}})}
 	re := regexp.MustCompile(`publisher_publish_total\{outcome="success",platform="mastodon"\} (\d+)`)
 	before := metricValue(t, re)
 
@@ -91,7 +91,7 @@ func TestSchedulerMetricsHelpers(t *testing.T) {
 // in publish_total. fakeMastodon.Reblog returns an empty TargetResult, which
 // runAction normalizes to status "failed" — so this asserts the failed series.
 func TestRunActionRecordsPublish(t *testing.T) {
-	d := &Dispatcher{Mastodon: fakeMastodon{}}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Mastodon: fakeMastodon{}})}
 	re := regexp.MustCompile(`publisher_publish_total\{outcome="failed",platform="mastodon"\} (\d+)`)
 	before := metricValue(t, re)
 

@@ -25,6 +25,7 @@ import (
 
 	"github.com/geofox/publisher/internal/api"
 	"github.com/geofox/publisher/internal/dispatch"
+	"github.com/geofox/publisher/internal/drivers"
 	"github.com/geofox/publisher/internal/health"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/progress"
@@ -69,17 +70,16 @@ func run() error {
 	mp.Lookup = st.LookupMediaURL
 
 	rec := newRecorder()
+	drivers.Register()
 	d := &dispatch.Dispatcher{
-		Nostr:    &fakeNostr{rec},
-		Mastodon: &fakeMastodon{rec},
-		Bluesky:  &fakeBluesky{rec},
-		Threads:  &fakeThreads{rec},
+		Accounts: fakeAccounts(rec),
 		Store:    st,
 		Fetcher:  mp,
 	}
 	a := api.New(nil, mp)
 	a.Store = st
 	a.Dispatch = d
+	a.Caps = d.Caps
 	a.Progress = progress.NewRegistry()
 	a.UserLanguages = []string{"en", "fr"}
 	a.Ready = &health.Checker{Local: []health.Check{health.Database(st, store.LatestSchemaVersion())}}

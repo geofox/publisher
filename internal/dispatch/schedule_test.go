@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/geofox/publisher/internal/store"
-	"github.com/geofox/publisher/internal/thread"
 )
 
 // newTestStore opens a real store.Store on a temp DB (Schedule/Fire need a real
@@ -52,9 +51,9 @@ func TestScheduleCreatesPendingPost(t *testing.T) {
 func TestScheduleSplitsOverLimitIntoChain(t *testing.T) {
 	st := newTestStore(t)
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Store: st, Bluesky: f}
+	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f}), Store: st}
 
-	limit := thread.LimitFor("bluesky") // 300
+	limit := bskyCaps.Text.MaxLength // 300
 	// Two paragraphs, each within the limit, together over it → 2 segments.
 	long := strings.Repeat("a", limit-50) + "\n\n" + strings.Repeat("b", limit-50)
 	at := time.Now().Add(-time.Minute).UTC()
