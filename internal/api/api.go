@@ -4,18 +4,18 @@ import (
 	"context"
 	"github.com/geofox/publisher/internal/destination"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/geofox/publisher/internal/auth"
-	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/health"
+	"github.com/geofox/publisher/internal/httpx"
 	"github.com/geofox/publisher/internal/identity"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
-	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/relaysync"
 	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
@@ -59,13 +59,9 @@ const maxVideoUploadBytes = 1<<30 + 1<<20
 // so the api package has no concrete dependency on the dispatcher and tests
 // can substitute a fake.
 type Dispatcher interface {
-	Post(ctx context.Context, spec dispatch.PostSpec) *store.Post
-	PostWithID(ctx context.Context, id string, spec dispatch.PostSpec) *store.Post
-	Retry(ctx context.Context, id string, platforms []string) (*store.Post, error)
-	RetryRelay(ctx context.Context, id, relay string) (*store.Post, error)
-	Schedule(ctx context.Context, spec dispatch.PostSpec, at time.Time) (*store.Post, error)
-	Interact(ctx context.Context, spec dispatch.InteractSpec) *store.Post
-	InteractWithID(ctx context.Context, id string, spec dispatch.InteractSpec) *store.Post
+	// Saving a post is Enqueue (enqueuer) or EnqueueInteraction
+	// (interactionEnqueuer); the engine has both.
+	RetryTargetRelay(ctx context.Context, postID string, targetID int64, relay string) (*store.Post, error)
 }
 
 // Syncer is implemented by *relaysync.Sync.
@@ -110,8 +106,8 @@ type API struct {
 	np        *pubnostr.Publisher
 	media     *media.Pipeline
 	Dispatch  Dispatcher   // set by cmd/publisher (exported so tests can inject fakes)
-	Store     *store.Store // set by cmd/publisher; used by history endpoints
-	Sync      Syncer       // set by cmd/publisher; used by relay-sync endpoints
+	Store     *store.Store // set by cmd/publisher
+	Sync      Syncer       // set by cmd/publisher; Nostr relay sync
 	HomeRelay string       // set by cmd/publisher; the home relay URL
 	Verify    Verifier     // set by cmd/publisher; verifies pasted events / post URLs
 	// relaySyncMu lets one /v1 relay scan or sync run at a time.
@@ -122,34 +118,28 @@ type API struct {
 	Locator ItemLocator
 
 	// UserLanguages is the operator's spoken-languages list (ISO 639-1 codes);
-	// exposed via GET /api/config so the frontend can default the Bluesky and
-	// Mastodon language fields and offer a dropdown when there's more than one.
+	// in GET /v1/instance so the web app can default the language fields and
+	// offer a dropdown when there's more than one.
 	UserLanguages []string
 
-	// Translator powers POST /api/translate. nil → feature disabled (handler
-	// returns 503 and /api/config emits an empty translate_targets array).
+	// Translator powers translation (POST /v1/translate, drafts' :translate).
+	// nil → disabled: 503, and /v1/instance lists no translate_targets.
 	Translator Translator
 
-	// PublicFeedToken gates GET /api/public/feed. Empty → the endpoint is
-	// disabled (returns 404). Set → callers must send Authorization: Bearer <it>.
+	// PublicFeedToken gates GET /v1/public/feed. Empty → the endpoint is
+	// disabled (404). Set → callers must send Authorization: Bearer <it>.
 	PublicFeedToken string
 
 	// Identity aggregates the operator's own per-platform profile (handle, name,
-	// avatar) for the composer. nil → GET /api/identity returns empty accounts.
+	// avatar), shown on the accounts (GET /v1/accounts). nil → none.
 	Identity *identity.Service
-
-	// Progress is the live in-flight progress registry (SSE). nil disables the
-	// live modal path (handlers fall back to synchronous dispatch).
-	Progress *progress.Registry
 
 	// Caps returns a target's effective capabilities (the dispatcher's
 	// Caps). nil → the registered drivers' defaults.
 	Caps func(ctx context.Context, name string) (destination.Capabilities, bool)
 
-	// fetchMedia downloads already-uploaded image bytes by URL when a publish
-	// carries Blossom references instead of fresh uploads (a restored/loaded
-	// draft). nil → fetchSourceMedia (https-only, SSRF-guarded). Overridable in
-	// tests so the reattach path can run without a live Blossom server.
+	// fetchMedia downloads a quoted post's images to copy them. nil → the
+	// SSRF-guarded client. Overridable in tests.
 	fetchMedia func(ctx context.Context, rawURL string) ([]byte, string, error)
 
 	// Auth holds the OIDC Relying Party. nil → auth disabled (gates are
@@ -205,41 +195,12 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("/healthz", a.handleHealthz)
 	mux.HandleFunc("GET /readyz", a.handleReadyz)
 	mux.Handle("GET /metrics", metrics.Handler())
-	mux.HandleFunc("/publish", a.handlePublish)
-	mux.HandleFunc("/upload-media", a.handleUploadMedia)
-	mux.HandleFunc("/api/post", a.handleAPIPost)
-	mux.HandleFunc("GET /api/posts", a.handleListPosts)
-	mux.HandleFunc("GET /api/posts/attention/count", a.handleAttentionCount)
-	mux.HandleFunc("GET /api/posts/{id}", a.handleGetPost)
-	mux.HandleFunc("GET /api/posts/{id}/progress", a.handleProgress)
-	mux.HandleFunc("POST /api/posts/{id}/retry", a.handleRetry)
-	mux.HandleFunc("POST /api/posts/{id}/relay-retry", a.handleRelayRetry)
-	mux.HandleFunc("POST /api/posts/{id}/cancel", a.handleCancelScheduled)
-	mux.HandleFunc("POST /api/posts/{id}/reschedule", a.handleReschedule)
-	mux.HandleFunc("POST /api/posts/{id}/hide", a.handleHidePost)
-	mux.HandleFunc("GET /api/sync/relays", a.handleSyncRelaysList)
-	mux.HandleFunc("POST /api/sync/relays", a.handleSyncRelayAdd)
-	mux.HandleFunc("DELETE /api/sync/relays", a.handleSyncRelayRemove)
-	mux.HandleFunc("GET /api/sync/targets", a.handleSyncTargets)
-	mux.HandleFunc("POST /api/sync/scan", a.handleSyncScan)
-	mux.HandleFunc("POST /api/sync/apply", a.handleSyncApply)
-	mux.HandleFunc("POST /api/verify", a.handleVerify)
-	mux.HandleFunc("POST /api/thread-preview", a.handleThreadPreview)
-	mux.HandleFunc("POST /api/resolve", a.handleResolve)
-	mux.HandleFunc("POST /api/interact", a.handleInteract)
-	mux.HandleFunc("GET /api/config", a.handleConfig)
-	mux.HandleFunc("GET /api/identity", a.handleIdentity)
-	mux.HandleFunc("GET /api/public/feed", a.handlePublicFeed)
-	mux.HandleFunc("POST /api/translate", a.handleTranslate)
-	mux.HandleFunc("POST /api/media/compress", a.handleCompressMedia)
-	mux.HandleFunc("POST /api/media/video", a.handleVideoUpload)
-	mux.HandleFunc("GET /api/media/video/{id}", a.handleVideoJob)
-	// Token management + identity + auth routes (only when OIDC is enabled).
+	// The pre-1.0 API is gone; its paths say where it went.
+	for _, p := range oldAPIPaths {
+		mux.HandleFunc(p, handleGone)
+	}
+	// Sign-in routes (only when OIDC is enabled).
 	if a.authEnabled() {
-		mux.HandleFunc("GET /api/tokens", a.handleListTokens)
-		mux.HandleFunc("POST /api/tokens", a.handleCreateToken)
-		mux.HandleFunc("DELETE /api/tokens/{id}", a.handleRevokeToken)
-		mux.HandleFunc("GET /api/me", a.handleMe)
 		mux.HandleFunc("GET /auth/login", a.handleAuthLogin)
 		mux.HandleFunc("GET /auth/callback", a.handleAuthCallback)
 		mux.HandleFunc("POST /auth/logout", a.handleAuthLogout)
@@ -269,4 +230,20 @@ func displayName(name string) string {
 		return d.Manifest().Name
 	}
 	return name
+}
+
+// oldAPIPaths are the pre-1.0 API's routes (patterns), answered 410.
+var oldAPIPaths = []string{"/publish", "/upload-media", "/api/"}
+
+// isOldAPIPath reports whether a cleaned path is one of the old routes.
+func isOldAPIPath(p string) bool {
+	return p == "/publish" || p == "/upload-media" || p == "/api" || strings.HasPrefix(p, "/api/")
+}
+
+// handleGone answers a call to the pre-1.0 API: removed in 1.0, replaced
+// by /v1. Open (no session or token needed), so a script or n8n flow sees
+// why instead of a sign-in page.
+func handleGone(w http.ResponseWriter, _ *http.Request) {
+	httpx.WriteError(w, http.StatusGone, "the pre-1.0 API was removed; use /v1 (see "+
+		"https://github.com/geofox/publisher#migrating-from-the-pre-10-api)")
 }

@@ -55,12 +55,12 @@ type Config struct {
 	// more than one. Unset → empty (frontend falls back to "en").
 	UserLanguages []string
 
-	// DeepLAPIKey enables /api/translate (translate-a-history-post → Compose).
+	// DeepLAPIKey enables /v1/translate and draft translation.
 	// Free vs Pro is auto-detected from the key suffix (":fx" → Free). Unset
 	// → translation disabled (the UI hides the button).
 	DeepLAPIKey string
 
-	// PublicFeedToken gates GET /api/public/feed (empty → endpoint disabled).
+	// PublicFeedToken gates GET /v1/public/feed (empty → endpoint disabled).
 	PublicFeedToken string
 	// FeedWebhookURL: signal-only ping POSTed when a feed-eligible post is
 	// published (empty → no webhook). FeedWebhookToken is sent as a bearer token.

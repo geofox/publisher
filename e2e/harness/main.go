@@ -27,8 +27,8 @@ import (
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/drivers"
 	"github.com/geofox/publisher/internal/health"
+	"github.com/geofox/publisher/internal/mastodon"
 	"github.com/geofox/publisher/internal/media"
-	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -77,20 +77,32 @@ func run() error {
 	for typ, acct := range accounts {
 		seed = append(seed, store.EnvAccount{Type: typ, Label: acct.Manifest().Name})
 	}
-	if _, err := st.SeedEnvAccounts(context.Background(), store.DefaultOwner, seed); err != nil {
+	seeded, err := st.SeedEnvAccounts(context.Background(), store.DefaultOwner, seed)
+	if err != nil {
 		return err
 	}
-	d := &dispatch.Dispatcher{
-		Accounts: accounts,
-		Store:    st,
-		Fetcher:  mp,
-		Policy:   dispatch.RetryPolicy{Enabled: true, MaxAttempts: 6, Base: 2 * time.Minute, Max: time.Hour},
+	// A second Mastodon account with no credentials: the composer must keep
+	// posting as the connected one, and /v1 must refuse to send as it.
+	if err := seedSecondAccount(filepath.Join(dir, "e2e.db"), mastodon.Type, "Mastodon (second)"); err != nil {
+		return err
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	eng := newEngine(ctx, func() *dispatch.Dispatcher {
+		return &dispatch.Dispatcher{
+			Accounts:   accounts,
+			AccountIDs: dispatch.ConnectedIDs(seeded),
+			Store:      st,
+			Fetcher:    mp,
+			Policy:     dispatch.RetryPolicy{Enabled: true, MaxAttempts: 6, Base: 2 * time.Minute, Max: time.Hour},
+		}
+	})
+	rec.restart = eng.restart
 	a := api.New(nil, mp)
 	a.Store = st
-	a.Dispatch = d
-	a.Caps = d.Caps
-	a.Progress = progress.NewRegistry()
+	a.Dispatch = eng
+	a.Caps = eng.Caps
 	a.UserLanguages = []string{"en", "fr"}
 	a.Ready = &health.Checker{Local: []health.Check{health.Database(st, store.LatestSchemaVersion())}}
 
@@ -100,16 +112,12 @@ func run() error {
 	mux.Handle("/", a.Routes())
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	d.Recover(ctx)
-	go d.Run(ctx)
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(sctx)
-		_ = d.Shutdown(sctx)
+		_ = eng.shutdown(sctx)
 	}()
 	slog.Info("e2e harness listening", "url", base, "db", dir)
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {

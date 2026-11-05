@@ -49,6 +49,24 @@ func (d *Dispatcher) account(name string) (destination.Account, error) {
 	return nil, &destination.Error{Class: destination.ClassAuth, Err: fmt.Errorf("%s not configured", name)}
 }
 
+// SendsAs reports whether the connected account of type typ is the stored
+// account id, so a post naming id is sent with that account's credentials.
+// True when the dispatcher wasn't told the ids.
+func (d *Dispatcher) SendsAs(typ, id string) bool {
+	if d.AccountIDs == nil || id == "" {
+		return true
+	}
+	connected, ok := d.AccountIDs[typ]
+	// No connected account of the type: d.account answers "not configured".
+	return !ok || connected == id
+}
+
+// errOtherAccount fails a target whose account isn't the connected one.
+func errOtherAccount(typ string) *destination.Error {
+	return &destination.Error{Class: destination.ClassAuth,
+		Err: fmt.Errorf("this %s account isn't the one connected on this server", typ)}
+}
+
 // Caps returns the effective capabilities for a target name: the account's
 // when one is connected, else the registered driver's defaults (so the
 // composer can preview a platform before it is connected). ok=false when the
@@ -331,4 +349,14 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// ConnectedIDs maps each type to the stored account its connected account
+// sends as, for Dispatcher.AccountIDs, from store.SeedEnvAccounts' answer.
+func ConnectedIDs(seeded map[string]store.Account) map[string]string {
+	out := make(map[string]string, len(seeded))
+	for typ, a := range seeded {
+		out[typ] = a.ID
+	}
+	return out
 }

@@ -436,8 +436,10 @@ func (a *API) v1Resolve(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, ac := range accts {
 		// The account planCreate would accept: enabled, on a registered
-		// destination.
-		if _, registered := destination.Lookup(ac.Type); ac.Enabled && registered && ac.Type == src.Platform {
+		// destination, and the one the engine sends the type as.
+		sa, guarded := a.Dispatch.(accountSender)
+		if _, registered := destination.Lookup(ac.Type); ac.Enabled && registered && ac.Type == src.Platform &&
+			(!guarded || sa.SendsAs(ac.Type, ac.ID)) {
 			id := ac.ID
 			out.Account = &id
 			break

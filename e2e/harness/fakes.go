@@ -5,9 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -37,23 +40,58 @@ type imageRef struct {
 	Size int    `json:"size"`
 }
 
-// recorder holds every call plus the set of platforms the tests marked down.
+// recorder holds every call plus how the tests set each platform up: down
+// (a transient failure), invalid (a refusal that would repeat), or held
+// after n more calls (the next one never returns, as a send in flight when
+// the process is killed).
 type recorder struct {
-	mu    sync.Mutex
-	calls []call
-	down  map[string]bool
-	seq   int
+	mu       sync.Mutex
+	calls    []call
+	down     map[string]bool
+	invalid  map[string]bool
+	hold     map[string]int
+	attempts map[string]int // every call a platform received, failed ones too
+	seq      int
+	restart  func()        // replaces the dispatcher (engine.restart)
+	never    chan struct{} // held calls wait on it; it is never closed
 }
 
-func newRecorder() *recorder { return &recorder{down: map[string]bool{}} }
+func newRecorder() *recorder {
+	r := &recorder{never: make(chan struct{})}
+	r.clear()
+	return r
+}
+
+// clear forgets calls and modes. Calls already held stay held: their
+// dispatcher is gone, and releasing them would record over what the new one
+// recovered.
+func (r *recorder) clear() {
+	r.calls = nil
+	r.down, r.invalid, r.hold, r.attempts = map[string]bool{}, map[string]bool{}, map[string]int{}, map[string]int{}
+}
+
+// errInvalid is a fake's refusal of the content (destination.ClassInvalid).
+var errInvalid = errors.New("e2e: the platform refuses this post")
 
 // record stores a call and returns its fake remote id, or an error when the
-// platform is marked down.
+// platform is marked down or invalid. A held platform blocks the call for
+// good once its count runs out.
 func (r *recorder) record(c call) (string, error) {
 	r.mu.Lock()
+	r.attempts[c.Platform]++
+	if n, ok := r.hold[c.Platform]; ok {
+		if n == 0 {
+			r.mu.Unlock()
+			<-r.never
+		}
+		r.hold[c.Platform] = n - 1
+	}
 	defer r.mu.Unlock()
 	if r.down[c.Platform] {
 		return "", fmt.Errorf("e2e: %s is down", c.Platform)
+	}
+	if r.invalid[c.Platform] {
+		return "", errInvalid
 	}
 	r.seq++
 	c.RemoteID = fmt.Sprintf("%s-%d", c.Platform, r.seq)
@@ -63,10 +101,14 @@ func (r *recorder) record(c call) (string, error) {
 
 // handler serves the test-control API:
 //
-//	GET  /__e2e/calls             → every recorded call, oldest first
-//	POST /__e2e/reset             → forget calls, bring every platform up
-//	POST /__e2e/down?platform=X   → make X fail until /__e2e/up or reset
-//	POST /__e2e/up?platform=X
+//	GET  /__e2e/calls                  → every recorded call, oldest first
+//	GET  /__e2e/attempts               → calls received per platform, failed ones too
+//	POST /__e2e/reset                  → forget calls, bring every platform up
+//	POST /__e2e/down?platform=X        → make X fail (transient) until up or reset
+//	POST /__e2e/invalid?platform=X     → make X refuse posts (invalid) until up or reset
+//	POST /__e2e/hold?platform=X&after=N → X takes N more calls, then the next never returns
+//	POST /__e2e/up?platform=X          → undo down, invalid and hold
+//	POST /__e2e/restart                → abandon the dispatcher and start a new one
 func (r *recorder) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /__e2e/calls", func(w http.ResponseWriter, _ *http.Request) {
@@ -76,21 +118,42 @@ func (r *recorder) handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
 	})
+	mux.HandleFunc("GET /__e2e/attempts", func(w http.ResponseWriter, _ *http.Request) {
+		r.mu.Lock()
+		out := maps.Clone(r.attempts)
+		r.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	})
 	mux.HandleFunc("POST /__e2e/reset", func(w http.ResponseWriter, _ *http.Request) {
 		r.mu.Lock()
-		r.calls, r.down = nil, map[string]bool{}
+		r.clear()
 		r.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("POST /__e2e/restart", func(w http.ResponseWriter, _ *http.Request) {
+		r.mu.Lock()
+		clear(r.hold) // the new process's sends go through
+		r.mu.Unlock()
+		r.restart()
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /__e2e/{state}", func(w http.ResponseWriter, req *http.Request) {
-		p := req.URL.Query().Get("platform")
-		state := req.PathValue("state")
-		if p == "" || (state != "down" && state != "up") {
-			http.Error(w, "want POST /__e2e/down|up?platform=X", http.StatusBadRequest)
+		q := req.URL.Query()
+		p, state := q.Get("platform"), req.PathValue("state")
+		after, err := strconv.Atoi(q.Get("after"))
+		switch {
+		case p == "", state != "down" && state != "up" && state != "invalid" && state != "hold",
+			state == "hold" && (err != nil || after < 0):
+			http.Error(w, "want POST /__e2e/down|up|invalid?platform=X or /__e2e/hold?platform=X&after=N", http.StatusBadRequest)
 			return
 		}
 		r.mu.Lock()
-		r.down[p] = state == "down"
+		r.down[p], r.invalid[p] = state == "down", state == "invalid"
+		delete(r.hold, p)
+		if state == "hold" {
+			r.hold[p] = after
+		}
 		r.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -153,8 +216,11 @@ func (f fakeRelayAccount) Redeliver(_ context.Context, _ destination.ItemRef, en
 func (f *fakeAccount) result(c call) (destination.PublishResult, error) {
 	seq, err := f.rec.record(c)
 	if err != nil {
-		return destination.PublishResult{Status: destination.StatusFailed},
-			&destination.Error{Class: destination.ClassTransient, Err: err}
+		class := destination.ClassTransient
+		if errors.Is(err, errInvalid) {
+			class = destination.ClassInvalid
+		}
+		return destination.PublishResult{Status: destination.StatusFailed}, &destination.Error{Class: class, Err: err}
 	}
 	out := destination.PublishResult{Status: destination.StatusPublished,
 		Ref: destination.ItemRef{ID: f.id(seq), URL: f.url(seq)}}

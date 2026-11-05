@@ -14,18 +14,18 @@ import (
 // with a title and tags. Text is the body's text, kept in its own column
 // for search; Version counts writes and is the draft's ETag.
 type V1Draft struct {
-	ID        string
-	OwnerID   string
-	Title     string
-	Tags      []string
-	Text      string
-	Body      string
+	ID      string
+	OwnerID string
+	Title   string
+	Tags    []string
+	Text    string
+	Body    string
 	// FirstMediaID is the post's first media id, read by ListV1Drafts
 	// (which reads neither Body nor all of Text).
 	FirstMediaID string
 	Version      int64
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // ErrDraftConflict is returned by a write whose expected version is not

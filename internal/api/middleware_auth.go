@@ -3,22 +3,14 @@ package api
 import (
 	"context"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/geofox/publisher/internal/httpx"
-	"github.com/geofox/publisher/internal/store"
 )
 
 type ctxKey int
 
 const userCtxKey ctxKey = iota
-
-// userFromContext returns the authenticated user, if any.
-func userFromContext(ctx context.Context) (store.User, bool) {
-	u, ok := ctx.Value(userCtxKey).(store.User)
-	return u, ok
-}
 
 // requireSession gates browser routes. Page requests without a valid session
 // redirect to /auth/login; XHR requests get a 401 JSON body.
@@ -46,29 +38,6 @@ func wantsHTML(r *http.Request) bool {
 		return m == "navigate"
 	}
 	return strings.Contains(r.Header.Get("Accept"), "text/html")
-}
-
-// requireAPIToken gates machine endpoints via an Authorization: Bearer
-// token holding scope (or admin): /publish needs posts:write and
-// /upload-media media:write, what tokens made before scopes hold.
-func (a *API) requireAPIToken(scope string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, ok := bearerToken(r.Header.Get("Authorization"))
-		if !ok {
-			httpx.WriteError(w, http.StatusUnauthorized, "missing bearer token")
-			return
-		}
-		t, err := a.Store.APITokenByRaw(raw)
-		if err != nil {
-			httpx.WriteError(w, http.StatusUnauthorized, "invalid token")
-			return
-		}
-		if !slices.Contains(t.Scopes, scope) && !slices.Contains(t.Scopes, scopeAdmin) {
-			httpx.WriteError(w, http.StatusForbidden, "this token lacks the "+scope+" scope")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // bearerToken reads "Bearer <token>"; the scheme is case-insensitive

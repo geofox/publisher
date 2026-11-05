@@ -342,3 +342,32 @@ func TestQuoteReproductionKeepsSourceMediaOnRetry(t *testing.T) {
 		t.Fatalf("retry sent media %+v", last.Media)
 	}
 }
+
+// A target naming a stored account that isn't the connected one of its type
+// is never sent with the connected account's credentials: it fails as an
+// auth error (not retried), and nothing reaches the platform.
+func TestTargetOfAnotherAccountIsNotSent(t *testing.T) {
+	acct := &stubAccount{manifest: stubManifest(destination.IdempotentKey), publish: (&keyedPlatform{}).publish}
+	d := stubDispatcher(t, acct)
+	// The post names the stored stub account; the engine says another one is
+	// connected (the same mismatch as a second stored account of the type).
+	d.AccountIDs = map[string]string{"stub": "acc_connected"}
+	now := d.now()
+	rec := d.planPost(context.Background(), newID(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}, Source: "test"}, &now, "sending")
+	if err := d.create(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+	d.runDue(context.Background())
+	if len(acct.reqs) != 0 {
+		t.Fatalf("sent %d requests as the connected account", len(acct.reqs))
+	}
+	post, _ := d.Store.GetPost(rec.ID)
+	tg := post.Targets[0]
+	if tg.AccountID == "" || tg.Status != "failed" || tg.ErrorClass != string(destination.ClassAuth) ||
+		tg.GaveUpAt == nil || tg.Items[0].NextAttemptAt != nil {
+		t.Fatalf("target = %+v (it must give up, not wait for a retry)", tg)
+	}
+	if !d.SendsAs("stub", "acc_connected") || d.SendsAs("stub", tg.AccountID) || !d.SendsAs("stub", "") {
+		t.Error("SendsAs")
+	}
+}

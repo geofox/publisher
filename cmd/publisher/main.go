@@ -34,7 +34,6 @@ import (
 	"github.com/geofox/publisher/internal/metrics"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/notify"
-	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/relaysync"
 	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
@@ -115,12 +114,14 @@ func main() {
 	for typ, acct := range accounts {
 		seed = append(seed, store.EnvAccount{Type: typ, Label: acct.Manifest().Name})
 	}
-	if _, err := st.SeedEnvAccounts(context.Background(), store.DefaultOwner, seed); err != nil {
+	seeded, err := st.SeedEnvAccounts(context.Background(), store.DefaultOwner, seed)
+	if err != nil {
 		slog.Error("seeding accounts failed", "err", err)
 		os.Exit(1)
 	}
 	d := &dispatch.Dispatcher{
-		Accounts: accounts,
+		Accounts:   accounts,
+		AccountIDs: dispatch.ConnectedIDs(seeded),
 		// Re-encoded variants for URL-transport destinations (Threads) are
 		// hosted on Blossom; content addressing makes a retry reuse the URL.
 		Host: func(ctx context.Context, body []byte, mime string) (string, error) {
@@ -148,7 +149,6 @@ func main() {
 	a.UserLanguages = cfg.UserLanguages
 	a.PublicFeedToken = cfg.PublicFeedToken
 	a.Version = version
-	a.Progress = progress.NewRegistry()
 	// Drafts saved before /v1 get their /v1 shape, once, before requests.
 	a.ConvertOldDrafts(context.Background())
 	// Video pipeline: enabled only when both ffmpeg and ffprobe are present (dev

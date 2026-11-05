@@ -8,7 +8,9 @@ import { test, expect, marker } from "./fixtures";
 test("posts through /v1 with media and waits for the outcome", async ({ request, fakes }) => {
   const m = marker("v1");
   const accounts = (await (await request.get("/v1/accounts")).json()).data as { id: string; type: string; enabled: boolean }[];
-  const enabled = accounts.filter(a => a.enabled);
+  // The connected account of each type: the first listed (the harness also
+  // seeds a second Mastodon account, which can't post).
+  const enabled = accounts.filter((a, i) => a.enabled && accounts.findIndex(b => b.enabled && b.type === a.type) === i);
   expect(enabled.map(a => a.type).sort()).toEqual(["bluesky", "mastodon", "nostr", "threads"]);
 
   const up = await request.post("/v1/media?alt=A%20blue%20gradient", {

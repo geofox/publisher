@@ -20,12 +20,12 @@ since grown into a standalone multi-platform publisher with its own web UI.
 
 ## HTTP API
 
-### The `/v1` API (being built)
+### The `/v1` API
 
-`/v1` is the API that replaces the routes below. It is described by an
+`/v1` is the publisher's API; the web app uses it too. It is described by an
 OpenAPI 3.1 document, served at `GET /v1/openapi.json` (no sign-in needed)
 and kept in [`docs/api/openapi.yaml`](docs/api/openapi.yaml); a test checks
-every route, request and response against it. So far it has:
+every route, request and response against it. It has:
 
 | Route | Scope | |
 |---|---|---|
@@ -53,9 +53,10 @@ every route, request and response against it. So far it has:
 | `GET/PUT /v1/accounts/{id}/nostr/relays` | `admin` | a Nostr account's relays for relay sync; `PUT` replaces the secondary list |
 | `POST /v1/accounts/{id}/nostr/relays:scan` | `admin` | compare each relay with your home relay (changes nothing) |
 | `POST /v1/accounts/{id}/nostr/relays:sync` | `admin` | copy missing events: `pull` to the home relay, `push` from it |
+| `GET /v1/drafts`, `POST /v1/drafts` | `drafts:read`, `drafts:write` | saved drafts (filter by `q` and `tag`); a draft holds a `POST /v1/posts` body in the making |
+| `GET/PATCH/DELETE /v1/drafts/{id}` | `drafts:read`, `drafts:write` | one draft; `PATCH` and `DELETE` take `If-Match` so a stale tab can't overwrite a newer save |
+| `POST /v1/drafts/{id}:translate` | `drafts:write`, `posts:write` | a translated copy of a draft (DeepL) |
 | `GET /v1/public/feed` | feed token | your published posts for a homepage, with `PUBLIC_FEED_TOKEN` as the bearer |
-
-Drafts move with the web app, which moves over before the old routes go.
 
 - **Posting** is two steps: upload media (`POST /v1/media`, which answers
   a `med_` id), then `POST /v1/posts` naming the accounts
@@ -91,9 +92,8 @@ Drafts move with the web app, which moves over before the old routes go.
   carry scopes (`posts:read`, `posts:write`, `media:write`, `drafts:read`,
   `drafts:write`, `accounts:read`, `admin`, which includes all) and an
   optional expiry. Tokens made before scopes keep `posts:write media:write`,
-  which is what `/publish` and `/upload-media` let them do. Those two routes
-  now check scopes too: `/publish` needs `posts:write`, `/upload-media`
-  `media:write` (or `admin`). A token can't create a token that outlives it.
+  which is what the old `/publish` and `/upload-media` let them do. A token
+  can't create a token that outlives it.
 - **Errors** are RFC 9457 problem details with a stable `code`; the
   [error catalogue](docs/api/errors.md) lists them.
 - **Lists** page with `?limit=` (1 to 200) and `?cursor=`; the answer is
@@ -121,150 +121,100 @@ curl -s -X POST https://publisher.example/v1/posts \
 curl -sN https://publisher.example/v1/events -H "Authorization: Bearer $TOKEN"
 ```
 
-### `POST /publish`
+### Migrating from the pre-1.0 API
 
-```json
-{
-  "text":  "hello world",
-  "kind":  1,
-  "imeta": ["imeta", "url ...", "m ...", "dim ...", "x ...", "blurhash ..."],
-  "pow":   16
-}
+The routes the publisher had before `/v1` are gone: `/publish`,
+`/upload-media` and everything under `/api/` answer `410 Gone` with a
+pointer here. The web app uses `/v1` itself. Tokens you already have keep
+working: those made before scopes existed carry `posts:write media:write`,
+which is what the old routes allowed.
+
+| Old route | On `/v1` |
+|---|---|
+| `POST /publish` | `POST /v1/posts` with a Nostr account in `targets` (see below) |
+| `POST /upload-media` | `POST /v1/media` (the same `multipart/form-data` with a `file` part) |
+| `POST /api/media/video`, `GET /api/media/video/{id}` | `POST /v1/media`, `GET /v1/media/{id}` |
+| `POST /api/media/compress` | `POST /v1/media:compress` |
+| `POST /api/post` | `POST /v1/posts` |
+| `POST /api/thread-preview` | `POST /v1/posts:preview` |
+| `GET /api/posts`, `GET /api/posts/{id}` | `GET /v1/posts`, `GET /v1/posts/{id}` |
+| `GET /api/posts/attention/count` | `GET /v1/posts?status=needs_attention` (a list, not a count) |
+| `POST /api/posts/{id}/retry`, `…/relay-retry` | `POST /v1/posts/{id}:retry` (with `targets` or Nostr `deliveries` to narrow it) |
+| `POST /api/posts/{id}/cancel` | `POST /v1/posts/{id}:cancel` |
+| `POST /api/posts/{id}/reschedule`, `…/hide` | `PATCH /v1/posts/{id}` with `schedule.at` or `hidden` |
+| (new) | `POST /v1/posts/{id}:resolve`, to settle an item whose outcome is `unknown` |
+| `GET /api/posts/{id}/progress` | `GET /v1/posts/{id}/events`, `GET /v1/events` |
+| `GET /api/config`, `GET /api/identity` | `GET /v1/instance`, `GET /v1/accounts` |
+| `POST /api/resolve` | `POST /v1/resolve` |
+| `POST /api/interact` | `POST /v1/posts` with `reply_to`, `quote` or `repost` |
+| `POST /api/verify` | `POST /v1/verify` |
+| `POST /api/translate` | `POST /v1/translate` |
+| `/api/drafts…` | `/v1/drafts…` (drafts saved before the upgrade are converted on first start) |
+| `/api/sync/relays`, `/api/sync/targets`, `/api/sync/scan`, `/api/sync/apply` | `GET`/`PUT /v1/accounts/{id}/nostr/relays`, `POST …/relays:scan`, `POST …/relays:sync` |
+| `/api/tokens`, `/api/me` | `/v1/tokens`, `/v1/me` |
+| `GET /api/public/feed` | `GET /v1/public/feed` (the same `PUBLIC_FEED_TOKEN`) |
+
+What changed besides the paths:
+
+- **Errors** are problem details with a `code`, not `{"error": "…"}`.
+- **Posting is saved first and sent by the engine.** `POST /v1/posts`
+  answers `202` at once; add `Prefer: wait=30` to get `201` with the
+  outcome once the post settles (still `202`, `publishing`, if it hasn't
+  by then, for example while a retry is due). A `201` comes whatever the
+  platforms said, so read `status` instead of the HTTP code: `published`,
+  `partial`, `failed`, or `needs_attention` (something gave up and is
+  yours to check, such as a refused post). The old `/publish` answered
+  `502` when no relay took the note.
+- **Replies go only to the network of the post you reply to**; a quote
+  posts natively there and as a link-quote on your other targets. The old
+  "try anyway" override is gone.
+- **Canceling** a post keeps it in the history as `canceled`; the old
+  route deleted it.
+
+#### Moving an n8n workflow off `/publish`
+
+1. In the web app, open **Access tokens** and make a token with
+   `posts:write` and `media:write` (or keep the one n8n has).
+2. Find your Nostr account's id once: `GET /v1/accounts` lists it
+   (`acc_…`, with `"type": "nostr"`). It needs `accounts:read`, which the
+   n8n token doesn't have: open `/v1/accounts` in the browser while signed
+   in, or ask with a short-lived token that has it.
+3. If the workflow uploads media, point the upload node at `POST /v1/media`.
+   It takes the same `file` part; add an `alt` part for alt text. Keep the
+   answer's `id` (`med_…`); you no longer pass `imeta` along, since the
+   publisher builds it.
+4. Change the publish node to `POST /v1/posts` with a JSON body:
+
+   ```json
+   {
+     "content": {"text": "hello world", "media": [{"id": "med_…"}]},
+     "targets": [{"account": "acc_…", "options": {"pow": 16}}]
+   }
+   ```
+
+   and these headers: `Authorization: Bearer <token>`,
+   `Idempotency-Key: "<a fresh UUID per post>"` (n8n can retry a node
+   without posting twice), and `Prefer: wait=30` if the next node needs the
+   outcome. Leave out `pow` to use `POW_DIFFICULTY_DEFAULT`. Only kind 1
+   notes are posted; the old `kind` field has no equivalent.
+5. Read the answer: `status` says how it went, and
+   `targets[0].items[0].remote_id` is the note's event id. `targets[0].items[0].deliveries` lists each relay with its
+   `status` and `message`, as the old `relays` list did.
+
+The same two calls with `curl`:
+
+```sh
+MED=$(curl -s -X POST https://publisher.example/v1/media \
+  -H "Authorization: Bearer $TOKEN" -F file=@photo.jpg -F alt='A sunset' | jq -r .id)
+curl -s -X POST https://publisher.example/v1/posts \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: \"$(uuidgen)\"" -H 'Prefer: wait=30' \
+  -d '{"content":{"text":"hello world","media":[{"id":"'"$MED"'"}]},"targets":[{"account":"acc_…"}]}' \
+  | jq '{status, event: .targets[0].items[0].remote_id, relays: .targets[0].items[0].deliveries}'
 ```
 
-**Size cap: 256 KB.** Enforced by `http.MaxBytesReader` around the JSON
-decoder. Over-cap requests get `413 Request Entity Too Large` cleanly.
-Note: even within the cap, relays have their own server-side max-event-size
-policies (often ~64 KB content); the cap is a defense-in-depth bound, not a
-guarantee the resulting event lands.
-
-All fields except `text` are optional.
-
-- `kind` defaults to `1` (text note)
-- `imeta` is attached as a tag; pass through from `/upload-media` response
-- `pow` is clamped to `[0, POW_DIFFICULTY_MAX]`; falls back to
-  `POW_DIFFICULTY_DEFAULT` if unset
-- **If `imeta` contains a URL and that URL isn't in `text`, the URL is
-  appended to `text` with a `\n\n` separator** before signing. NIP-92 imeta
-  annotates a URL the client expects to find in `content`; clients (Damus,
-  Amethyst, YakiHonne, primal) render media from URLs in content and use
-  imeta for hints (blurhash placeholder, dim). Append is idempotent — no-op
-  if the URL is already present anywhere in `text`.
-
-Response:
-
-```json
-{
-  "event_id": "<64-char hex>",
-  "kind":     1,
-  "mined_ms": 12,
-  "relays": [
-    {"url": "wss://relay.example.com", "ok": true,  "message": ""},
-    {"url": "wss://nos.lol",           "ok": true,  "message": ""},
-    {"url": "wss://relay.damus.io",    "ok": false, "message": "rate-limited"}
-  ]
-}
-```
-
-HTTP 200 if at least one relay accepted. HTTP 502 if zero relays accepted.
-HTTP 4xx for malformed requests or signing failure.
-
-### `POST /upload-media`
-
-`multipart/form-data` with a `file` field. Signs a BUD-01 `kind:24242`
-upload-auth event and PUTs to Blossom.
-
-**Size cap: 64 MB.** Enforced by a `Content-Length` pre-check (fast 413 for
-well-formed clients) plus `http.MaxBytesReader` on `r.Body` (catches
-chunked-encoding tricks). The multipart parser spills to `/tmp` over 8 MB to
-bound RAM; the full body is still loaded into memory by `io.ReadAll` for
-sha256 + image-decode, so peak per-upload RAM is ~64 MB.
-
-Response:
-
-```json
-{
-  "url":      "https://blossom.example.com/<sha256>",
-  "sha256":   "<64-char hex>",
-  "size":     12345,
-  "mime":     "image/jpeg",
-  "dim":      "1920x1080",
-  "blurhash": "L9AS...",
-  "imeta": [
-    "imeta",
-    "url https://blossom.example.com/<sha256>",
-    "m image/jpeg",
-    "dim 1920x1080",
-    "x <sha256>",
-    "blurhash L9AS..."
-  ]
-}
-```
-
-`dim` and `blurhash` are omitted for non-image MIME types (the imeta tag in
-that case carries only `url`, `m`, and `x`).
-
-### `POST /api/verify`
-
-Verify that a post is authentically signed by the claimed author. Read-only;
-uses no credentials and never touches the signing key.
-
-```json
-{ "input": "<pasted Nostr event JSON | Bluesky/Mastodon post URL | at:// URI>",
-  "platform": "",   // optional: nostr|bluesky|mastodon (else auto-detected)
-  "expected": "" }  // optional: npub / handle / @user@domain to match the signer
-```
-
-Response is a verdict with a tri-state `status` (`verified` / `failed` /
-`error`), an `assurance` level (`cryptographic` for Nostr, Bluesky, and
-FEP-8b32-signed Mastodon posts; `origin` for plain Mastodon), the resolved
-`signer`, an optional `expected` match, and a transparent `checks` list.
-
-- **Nostr:** verifies the event id and Schnorr signature (offline).
-- **Bluesky:** verifies the repo commit signature and the record's MST inclusion
-  proof, fetched from the author's PDS.
-- **Mastodon:** verifies origin authority (the actor's domain serves the object),
-  plus a FEP-8b32 `eddsa-jcs-2022` integrity proof when present.
-- **Threads:** same ActivityPub origin-authority check as Mastodon, for
-  `threads.com`/`threads.net` URLs (Threads has no native per-post signature and
-  emits no FEP-8b32 proofs, so it never exceeds `origin` assurance). Only works
-  for fediverse-federated Threads accounts whose posts expose an ActivityPub
-  representation; a normal Threads web URL serves HTML, not ActivityPub, and
-  returns `error`.
-
-`status` semantics: `verified` = authentic; `failed` = the check completed and
-the signature/inclusion is invalid (tampering/impersonation); `error` = the
-check could not complete (network, unresolvable identity, deleted post) — NOT a
-forgery signal.
-
-HTTP 200 for any completed verdict (including `failed`); 400 for malformed
-input; 413 if the body exceeds 512 KB; 502 when the verifier itself could not
-complete (network/timeout).
-
-### `POST /api/thread-preview`
-
-Preview how a draft would split into a per-platform reply-chain (read-only; no
-posting). Used by the compose preview.
-
-```json
-{ "text": "<master draft>", "platforms": ["bluesky","mastodon","threads","nostr"], "number": true }
-```
-
-Returns one entry per platform with the computed `segments` (each ≤ that
-platform's limit — Bluesky 300 graphemes, Mastodon/Threads 500, Nostr
-unlimited), the `count`, and any `warnings` (e.g. a URL longer than the limit
-had to be hard-split). With `number`, a chain of ≥2 segments gets per-platform
-` k/n` counters. Manual `---` lines in the text force breaks.
-
-**Size cap: 256 KB.** Over-cap requests get `413 Request Entity Too Large`.
-
-**Threaded posting:** when a draft exceeds a platform's limit (or contains `---`
-break markers), the post is delivered as a native reply-chain per platform —
-Bluesky/Mastodon/Threads wrap to their limits, Nostr stays one note unless
-explicitly marked. Media and (for Nostr) `imeta` ride on the head segment only.
-A chain that fails mid-way is recorded as `partial`; **resume** from history
-re-posts only the not-yet-sent segments (already-delivered segments are never
-re-sent). With `number`, segments get per-platform ` k/n` counters.
+To post the same text to Bluesky, Mastodon or Threads from the same node,
+add their accounts to `targets`.
 
 ### Automatic failure recovery
 
@@ -302,9 +252,10 @@ When retries stop (the cap, or a failure that would repeat), the target is
 marked **given up** and an operational alert fires once (via
 `ALERT_WEBHOOK_URL`); a post's first-run alert names the targets that gave up.
 Immediate-post failures also alert. The History tab
-gains an **attention** filter (delivery failed/partial) with a live count from
-`GET /api/posts/attention/count`. Manual retry remains available on any
-target, including given-up ones.
+gains an **attention** filter (`GET /v1/posts?status=needs_attention`).
+Manual retry (`POST /v1/posts/{id}:retry`) remains available on any target,
+including given-up ones, and an item whose outcome is `unknown` is settled
+by hand with `POST /v1/posts/{id}:resolve`.
 
 ### Stopping and restarting
 
@@ -316,70 +267,9 @@ seconds, so give the container 30 (`stop_grace_period: 30s` in compose,
 `docker stop -t 30`). Anything still being sent when the time runs out is
 handled on the next start as described above.
 
-### `POST /api/resolve`
-
-Resolve a pasted post URL (Bluesky/Mastodon) or a Nostr identifier
-(`nevent`/`note`/`nostr:`/hex) into a preview + capability report (read-only;
-no posting). Used by the **Interact** tab.
-
-Body: `{ "input": "<url-or-nostr-id>" }`. Returns `{ platform, ref, preview,
-caps }` where `caps.{reply,quote,repost}` each carry `{allowed, reason}`.
-Threads URLs return 400 (the API has no URL→id lookup). Resolution failures
-(not found, unfederated, bad input) return 400 with a reason.
-
-### `POST /api/interact`
-
-Reply to, repost, or quote a resolved source post. **`multipart/form-data`** with
-a `spec` JSON field + optional `image` files (mirrors `/api/post`). The `spec`:
-`{ action, platform, ref, source_url, source_author, source_preview:{author,text,
-media:[{url,alt}]}, text, overrides, fanout, number, force, images:[{alt}] }` —
-`ref` is the `ref` object returned by `/api/resolve`.
-
-`reply` and `repost` act on the source `platform`; `reply`/`quote` commentary that
-exceeds a platform's limit is **auto-threaded** (head = the native reply/quote,
-tail = a reply-chain), with `number` adding `k/n` counters. `quote` (and a fanned-
-out `reply`) does the native action on the source and a **fan-out reproduction** on
-each `fanout` platform: your commentary + an attributed copy of the original's
-text + re-hosted media + the source URL (the original isn't native there). Source
-media is downloaded through an SSRF-guarded client and re-uploaded; failures are
-skipped. `force: true` overrides a blocked capability (Bluesky may then silently
-drop it). Returns the resulting `store.Post` (one threaded target per platform).
-Used by the **Interact** tab.
-
-### `/api/drafts`
-
-Persistent scratchpad for work-in-progress posts. Lives in the Compose tab as a
-left sidebar; saves are explicit; publishing consumes the draft.
-
-- `GET /api/drafts?q=&tag=&tag=&limit=&offset=` — list (lightweight projection
-  with `id, title, preview, tags, updated_at, first_media_url?`). Repeated
-  `tag` params filter AND. `q` matches `master_text` (LIKE).
-- `GET /api/drafts/{id}` — full draft hydrated with media references.
-- `POST /api/drafts` — create. `multipart/form-data` with a `spec` JSON field
-  + zero or more newly-attached image files keyed by `ref` (`img_0`, `img_1`,
-  …). The `spec`: `{ master_text, platforms, overrides, interaction?, tags[],
-  images:[{ordinal, ref?, blossom_url?, sha256?, mime?, alt?}] }`. Image
-  entries with `ref` are read from the matching multipart field and uploaded
-  to Blossom; entries with `blossom_url` are preserved as-is. Tag input is
-  normalized server-side (lowercase, trimmed, `#`-stripped, 32-char cap,
-  deduped).
-- `PUT /api/drafts/{id}` — full-replace update (same multipart shape).
-- `DELETE /api/drafts/{id}` — `204`, cascades to `draft_media`.
-- `POST /api/drafts/{id}/translate` — body `{ "target": "<iso639-1>" }`.
-  Translates `master_text` via DeepL and creates a **new** draft (original
-  untouched). Returns the new draft. Requires `DEEPL_API_KEY`.
-
-`POST /api/post` accepts an optional `draft_id` field on its `spec`. On
-success (immediate or scheduled), the referenced draft is deleted in the same
-transaction. On any failure, the draft survives so the user can retry.
-
-Image uploads dedup by sha256 across both `posts` and `drafts`: if the bytes
-already live on Blossom (via a previous post or draft), the pipeline returns
-the existing URL instead of re-uploading.
-
 ### Public feed
 
-- `GET /api/public/feed?limit=20` — latest public master posts as JSON for a
+- `GET /v1/public/feed?limit=20` — latest public master posts as JSON for a
   homepage. Requires `Authorization: Bearer $PUBLIC_FEED_TOKEN`; returns `404`
   when `PUBLIC_FEED_TOKEN` is unset. Each item has `id`, `published_at` (first
   time the post went live on any platform), `text`, optional `media[]`, optional
@@ -394,22 +284,21 @@ a retry), publisher fires a signal-only `POST` to `FEED_WEBHOOK_URL`
 re-fetch instead of polling. The body carries no content; treat it as a refresh
 trigger.
 
-### Web UI & `/api`
+### Web UI
 
-The container embeds a mobile-first web UI (the crosspost composer, post
-history, scheduled posts, relay tools, verify, and interact) served from the
-root path, backed by a JSON `/api/*` surface. These endpoints are
-unauthenticated by the service itself — see [Security](#security).
+The container embeds a mobile-first web UI (the crosspost composer with
+drafts, post history, scheduled posts, relay tools, verify, and interact)
+served from the root path. It talks to the publisher through `/v1` like any
+other client. Without OIDC it is unauthenticated by the service itself; see
+[Security](#security).
 
 The **Interact** tab accepts a pasted post URL or Nostr identifier, previews
 the source post, and reports which of reply/quote/repost the post allows.
 **Repost** is one-click. **Reply** and **Quote** open the **Compose** tab in
-interaction mode — a source banner over the full composer, so your reply/quote
-gets the live preview, auto-threading, media, and per-platform overrides. The
-source platform is locked on (native reply/quote); selecting your other
-platforms fans the action out as a reproduction (your commentary + the
-original's text + re-hosted media + link). Blocked actions show a "try anyway"
-override in the banner.
+interaction mode: a source banner over the full composer, so your reply or
+quote gets the live preview, auto-threading, media, and per-account
+overrides. A reply goes to the source post's network only; a quote also
+goes to your other selected accounts as a link-quote.
 
 ### `GET /healthz`
 
@@ -524,7 +413,7 @@ infrastructure and should be overridden.
 | `ALERT_WEBHOOK_URL` | no | — | Webhook posted to on scheduled-post failure |
 | `ALERT_WEBHOOK_USER` | no | `alertmanager` | Basic-auth user for the alert webhook |
 | `ALERT_WEBHOOK_PASS` | no | — | Basic-auth password for the alert webhook (**secret**) |
-| `PUBLIC_FEED_TOKEN` | no | — | Bearer token gating `GET /v1/public/feed` (and the old `GET /api/public/feed`); unset disables the endpoint (**secret**) |
+| `PUBLIC_FEED_TOKEN` | no | — | Bearer token gating `GET /v1/public/feed`; unset disables the endpoint (**secret**) |
 | `FEED_WEBHOOK_URL` | no | — | Signal-only webhook POSTed when a feed-eligible post is published |
 | `FEED_WEBHOOK_TOKEN` | no | — | Bearer token sent on the feed webhook so the receiver can verify it (**secret**) |
 | `PORT` | no | `8080` | Listen port |
@@ -640,7 +529,7 @@ The service holds your `NSEC` and signs events on request. **Do not expose
 it directly to the internet.**
 
 **OIDC disabled (default — `OIDC_ISSUER` unset):** the embedded web UI and
-all `/api/*`, `/v1/*`, `/publish`, and `/upload-media` endpoints are **not**
+all `/v1/*` endpoints are **not**
 authenticated by the service itself: every request the proxy lets through
 can do everything, token management included. (On `/v1`, a bearer token,
 when one is sent, is still checked.) Put it behind an authenticating reverse
@@ -653,16 +542,14 @@ place a proxy in front of it.
 an OpenID Connect Relying Party against a standard OIDC provider (Authelia,
 Keycloak, or any spec-compliant issuer). When enabled:
 
-- The SPA and browser `/api/*` routes require an authenticated session whose
+- The web UI requires an authenticated session whose
   OIDC subject (`sub`) or email is on the allowlist (`OIDC_ALLOWED_SUBJECTS`
   / `OIDC_ALLOWED_EMAILS`).
-- The machine endpoints `/publish` and `/upload-media` require
-  `Authorization: Bearer <api-token>`. Tokens are created and revoked in the
-  UI under **Access tokens**.
 - Every `/v1` route takes either the session or a bearer token, and checks
-  the token's scopes (see [the `/v1` API](#the-v1-api-being-built)).
+  the token's scopes (see [the `/v1` API](#the-v1-api)). Tokens are
+  created and revoked in the UI under **Access tokens**.
   `GET /v1/openapi.json` is open.
-- `/healthz`, `/readyz`, `/metrics`, and the token-gated `GET /api/public/feed` remain
+- `/healthz`, `/readyz`, `/metrics`, and the feed-token-gated `GET /v1/public/feed` remain
   open (no session required). `/metrics` is intentionally unauthenticated so
   a Prometheus scraper can reach it without a session; restrict it at the
   network or proxy layer if that is a concern in your deployment.
@@ -681,20 +568,25 @@ multi-user operation.
    subject and/or email to `OIDC_ALLOWED_SUBJECTS` / `OIDC_ALLOWED_EMAILS`.
 3. For machine callers (e.g. an automation workflow), open the UI under
    **Access tokens**, create a token, and configure the caller to send
-   `Authorization: Bearer <token>` on requests to `/publish` and
-   `/upload-media`.
+   `Authorization: Bearer <token>` on its `/v1` requests (see
+   [Migrating from the pre-1.0 API](#migrating-from-the-pre-10-api) for n8n).
 
 ## Logging
 
-JSON-lines on stdout via `log/slog`. Important fields per publish:
+JSON-lines on stdout via `log/slog`. Each send attempt, and each item the
+engine settles without sending (one left in flight by a restart, one it
+won't repeat because the platform has forgotten its idempotency key),
+writes one line, `engine: item sent` (info) or `engine: item not sent`
+(warn), with:
 
-- `event_id`
-- `kind`
-- `pow_target`, `pow_actual`, `mined_ms`
-- `relays_resolved` (the NIP-65 outbox result)
-- `relays_succeeded`, `relays_failed`
+- `post_id`, `platform`, `ordinal` (the thread part, from 0), `attempt`
+- `status` (`published`, `partial`, `failed`, `unknown`), `latency_ms`
+- `remote_id` when the platform answered with one (a Nostr event id)
+- `endpoints_ok`, `endpoints_failed` for Nostr (relays that took the note)
+- `error_class`, `error` and `give_up` when it wasn't sent
 
-Recommended log alert: `relays_succeeded == 0`.
+Recommended log alert: `msg = "engine: item not sent" and give_up = true`,
+which is when a part stopped being retried.
 
 ## Not implemented
 

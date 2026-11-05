@@ -529,14 +529,31 @@ func TestV1AuthProxyMode(t *testing.T) {
 }
 
 // TestV1PathTricksStayGated: a /v1 prefix can't smuggle a request past the
-// session gate to the old routes.
+// session gate to the web app.
 func TestV1PathTricksStayGated(t *testing.T) {
 	e := newV1Env(t, true)
-	rq := httptest.NewRequest("GET", "/v1/../api/tokens", nil)
+	rq := httptest.NewRequest("GET", "/v1/../index.html", nil)
 	rec := httptest.NewRecorder()
 	e.h.ServeHTTP(rec, rq)
-	if rec.Code == 200 {
-		t.Fatalf("/v1/../api/tokens = 200 without a session")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("/v1/../index.html = %d without a session, want 401", rec.Code)
+	}
+}
+
+// The pre-1.0 routes are gone, and say where they went: 410 with a pointer
+// to the migration guide, signed in or not.
+func TestOldRoutesAreGone(t *testing.T) {
+	e := newV1Env(t, true)
+	for _, rt := range []string{"POST /publish", "POST /upload-media", "GET /api/posts", "POST /api/post",
+		"GET /api/drafts", "GET /api/config", "POST /api/tokens"} {
+		method, path, _ := strings.Cut(rt, " ")
+		rq := httptest.NewRequest(method, path, nil)
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, rq)
+		if rec.Code != http.StatusGone || !strings.Contains(rec.Body.String(), "/v1") ||
+			!strings.Contains(rec.Body.String(), "migrating-from-the-pre-10-api") {
+			t.Errorf("%s: %d %s", rt, rec.Code, rec.Body.String())
+		}
 	}
 }
 
@@ -568,7 +585,7 @@ func TestV1Recover(t *testing.T) {
 
 func TestV1Instance(t *testing.T) {
 	e := newV1Env(t, false)
-	e.api.Translator = &fakeTranslator{}
+	e.api.Translator = v1FakeTranslator{}
 	e.api.PublicFeedToken = "x"
 	e.h = e.api.Routes()
 	r := e.do(req{method: "GET", path: "/v1/instance"})

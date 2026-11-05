@@ -532,3 +532,23 @@ func TestV1CreatePostMediaPart(t *testing.T) {
 		t.Fatalf("bluesky items = %+v", items)
 	}
 }
+
+// TestV1CreatePostOtherAccountOfType: until accounts can be added, the engine
+// holds one connected account per type. A stored account of that type that
+// isn't the connected one would be sent with the connected one's
+// credentials, so it is refused.
+func TestV1CreatePostOtherAccountOfType(t *testing.T) {
+	e := newV1Env(t, true)
+	d := e.withEngine()
+	bsky := e.acct("bluesky")
+	d.AccountIDs = map[string]string{"bluesky": "acc_connected"}
+	body := `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `"}]}`
+	for _, path := range []string{"/v1/posts", "/v1/posts:preview"} {
+		p := wantProblem(t, e.do(req{method: "POST", path: path, body: body, badRequest: true}), 422, codeValidation)
+		if len(p.Errors) != 1 || p.Errors[0].Pointer != "/targets/0/account" || p.Errors[0].Code != "account_disabled" {
+			t.Fatalf("%s: errors = %+v", path, p.Errors)
+		}
+	}
+	d.AccountIDs = map[string]string{"bluesky": bsky}
+	wantStatus(t, e.do(req{method: "POST", path: "/v1/posts", body: body}), 202)
+}

@@ -303,6 +303,12 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 			add(ptr+"/account", "account_disabled", "this account is disabled (not configured on this server)")
 			continue
 		}
+		if sa, ok := a.Dispatch.(accountSender); ok && !sa.SendsAs(ac.Type, ac.ID) {
+			// Another account of a connected type: the engine would send it
+			// with the connected account's credentials.
+			add(ptr+"/account", "account_disabled", "this account isn't connected on this server (one account per destination type for now)")
+			continue
+		}
 		if seenAcct[ac.ID] {
 			add(ptr+"/account", "duplicate", "this account is already a target")
 			continue
@@ -498,6 +504,12 @@ func replyGateProblem(s string) string {
 		}
 	}
 	return ""
+}
+
+// accountSender reports whether the engine sends a type as a stored
+// account (dispatch.Dispatcher.SendsAs).
+type accountSender interface {
+	SendsAs(typ, id string) bool
 }
 
 // enqueuer saves a post for the background workers (*dispatch.Dispatcher).

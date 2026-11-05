@@ -712,6 +712,73 @@ as they move.
 >   configured `BLOSSOM_URL` origin are dropped from the converted draft
 >   (logged with the draft id).
 
+> **4d.** The old routes are gone.
+> - **`/publish`, `/upload-media` and `/api/*` answer `410 Gone`**, not
+>   404, with a pointer to the README's "Migrating from the pre-1.0 API",
+>   so an n8n flow that wasn't moved fails with the fix in its error. They
+>   pass the session gate to get there (nothing behind them).
+> - **Removed with them:** the old handlers and their tests (the behaviour
+>   they pinned is covered by the `/v1` tests; the link-card and media-note
+>   preview tests were ported to `/v1/posts:preview`), the in-memory
+>   progress registry (`internal/progress`; the event log replaced it in
+>   3b), `requireAPIToken`, the old draft store functions (only the reads
+>   the v8 conversion needs stay), and `dispatch.NewID`. The API's
+>   `Dispatcher` interface is down to the relay retry.
+> - **Logging.** The old `/publish` wrote the only per-send log line
+>   (`relays_succeeded` and so on, which the README told you to alert on).
+>   The engine now writes one per attempt: `engine: item sent` (info) or
+>   `engine: item not sent` (warn), with platform, ordinal, attempt,
+>   status, latency, remote id, Nostr endpoint counts, and the error class
+>   and give-up flag when it failed.
+> - **Found: a second account of a type would post as the first.** The
+>   engine holds one connected account per type and looked it up by type,
+>   so a target naming another stored account of that type (possible once
+>   step 4 adds accounts, or with a row written by hand) would have been
+>   sent with the connected account's credentials. `Dispatcher.AccountIDs`
+>   (type → the stored account the credentials belong to, from
+>   `SeedEnvAccounts`) closes it: `POST /v1/posts` and `:preview` refuse
+>   such a target (`account_disabled`), and the engine fails one already
+>   saved as `auth` without sending, relay retries included.
+> - **e2e.** The harness can hold a platform's next call for good, make a
+>   platform refuse (`invalid`), and restart the engine in process: the
+>   old dispatcher is abandoned mid-send (its held call never returns, as
+>   in a killed process) and a new one on the same database recovers what
+>   was left sending. Killing the server process would lose the harness's
+>   temporary database and fakes. It also seeds a second Mastodon account
+>   straight into the database. New scenarios: a submit whose answer was
+>   lost, resubmitted from the composer (one post); two racing submits
+>   with one key; a restart mid-thread on Mastodon (the part is re-sent
+>   with its key and the thread carries on); the same on Bluesky leaves
+>   the part `unknown`, and "It wasn't: send it again" in History finishes
+>   the thread; an `invalid` refusal given up at once while a transient
+>   failure waits for its retry; the second account listed, refused by
+>   `/v1`, and not used by the composer.
+> - **README.** The `/v1` section is the API (drafts added to its table);
+>   the old route sections are replaced by the migration guide: a map
+>   from every old route to its `/v1` call, what changed besides paths,
+>   and the n8n steps (token, account id, `POST /v1/media`, `POST
+>   /v1/posts` with `Idempotency-Key` and `Prefer: wait`, reading the
+>   outcome). Security and Logging sections updated.
+> - **Review fixes (4d).** The log line scrubs the error (as the store
+>   does) and caps it at 300 characters; recovery at startup, a release
+>   after a forgotten key and a panic write it too, so the README's alert
+>   sees every give-up. The README's n8n steps say `GET /v1/accounts` needs
+>   `accounts:read`, and that `Prefer: wait` can still answer 202 and a
+>   settled post can be `needs_attention`. `/v1/resolve` suggests only the
+>   connected account. A missing type now fails "not configured", not
+>   "another account". New Go test for the `/v1/media` video lifecycle
+>   (ready and failed), which the old route's tests had covered. The e2e
+>   restarts wait until the held call reached the fake, and the invalid
+>   test cancels its pending retry in a `finally`.
+>   Deferred: `Dispatcher.Post`, `PostWithID`, `Interact`, `Schedule` and
+>   `Retry` and the store's `AddSyncRelay`, `RemoveSyncRelay`,
+>   `CancelScheduled`, `HidePost` and `CreateAPIToken` are now used only by
+>   tests (about 28 engine tests drive `Post`); moving those tests onto
+>   `Enqueue` and deleting them is its own change. A held e2e call keeps
+>   one engine worker busy until the next restart.
+> - **Deploy note:** no migration. Move every n8n flow (or other caller)
+>   off `/publish` and `/upload-media` before deploying: they answer 410.
+
 ## Task 4.1: Composer and history on `/v1`
 
 - [ ] Destinations/accounts/capabilities from `/v1`; option panels from
@@ -727,15 +794,15 @@ as they move.
 
 ## Task 4.2: Remove the old routes
 
-- [ ] Delete `/publish`, `/upload-media`, `/api/*` handlers and tests that
+- [x] Delete `/publish`, `/upload-media`, `/api/*` handlers and tests that
   only covered them.
-- [ ] README: `/v1` overview, link to the OpenAPI document, "Migrating from
+- [x] README: `/v1` overview, link to the OpenAPI document, "Migrating from
   the pre-1.0 API" with a `curl` per old call including the n8n `/publish`
   flow.
 
 ## Task 4.3: e2e
 
-- [ ] Existing scenarios on `/v1`; new: idempotent double submit, restart
+- [x] Existing scenarios on `/v1`; new: idempotent double submit, restart
   mid-thread, `unknown` item resolved by hand, `invalid` error not retried,
   a second account of one type (seeded by the harness directly in the DB).
-- [ ] Spec "As built" section with what the work found.
+- [x] Spec "As built" section with what the work found.

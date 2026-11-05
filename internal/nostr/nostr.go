@@ -17,8 +17,6 @@ import (
 	gonostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip13"
 	"fiatjaf.com/nostr/nip19"
-
-	"github.com/geofox/publisher/internal/progress"
 )
 
 // ErrInvalidInput is returned by Publish when the caller supplies an empty text field.
@@ -264,18 +262,12 @@ func (p *Publisher) publishToRelays(ctx context.Context, event gonostr.Event, ur
 	ctx, cancel := context.WithTimeout(ctx, p.cfg.PublishTimeout)
 	defer cancel()
 
-	sink := progress.SinkFrom(ctx)
-	sink.RelaysQueued("nostr", urls)
-
 	results := make([]RelayResult, 0, len(urls))
 	for r := range p.pool.PublishMany(ctx, urls, event) {
 		rr := RelayResult{URL: r.RelayURL, OK: r.Error == nil}
-		status := progress.RelayOK
 		if r.Error != nil {
 			rr.Message = r.Error.Error()
-			status = progress.RelayFailed
 		}
-		sink.Relay("nostr", rr.URL, status, rr.Message)
 		results = append(results, rr)
 	}
 	return results

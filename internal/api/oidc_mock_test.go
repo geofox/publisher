@@ -159,8 +159,8 @@ func TestCallbackHappyPath(t *testing.T) {
 
 // TestRoutesGatesOnWhenAuthEnabled exercises the gate-on path through the real
 // Routes() handler (not the middleware in isolation): an unauthenticated
-// browser navigation is redirected to login, an unauthenticated machine call to
-// /publish is 401, and the always-open /healthz stays reachable.
+// browser navigation is redirected to login, the removed pre-1.0 routes say so
+// (410) even signed out, and the always-open /healthz stays reachable.
 func TestRoutesGatesOnWhenAuthEnabled(t *testing.T) {
 	issuer := newMockOIDC(t)
 	au, err := auth.New(context.Background(), auth.Config{
@@ -179,18 +179,18 @@ func TestRoutesGatesOnWhenAuthEnabled(t *testing.T) {
 
 	// Browser navigation to a gated route without a session → 302 /auth/login.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/posts", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Sec-Fetch-Mode", "navigate")
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/auth/login" {
 		t.Fatalf("gated page: code=%d loc=%s want 302 /auth/login", rec.Code, rec.Header().Get("Location"))
 	}
 
-	// Machine endpoint without a bearer token → 401.
+	// A removed machine route says where it went, without a token.
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/publish", nil))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("gated /publish: code=%d want 401", rec.Code)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("/publish: code=%d want 410", rec.Code)
 	}
 
 	// Always-open health check stays reachable with auth on.

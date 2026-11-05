@@ -38,3 +38,14 @@ func TestLookupMediaURL_postsAndDrafts(t *testing.T) {
 		t.Errorf("post hit: got url=%q ok=%v", url, ok)
 	}
 }
+
+func mkDraft(t *testing.T, s *Store, id, master string, tags []string, mediaURL string) {
+	t.Helper()
+	d := &Draft{ID: id, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), MasterText: master, Tags: tags, Spec: `{}`}
+	if mediaURL != "" {
+		d.Media = []Media{{Ordinal: 0, BlossomURL: mediaURL, SHA256: "x"}}
+	}
+	if err := s.CreateDraft(d); err != nil {
+		t.Fatalf("mkDraft %q: %v", id, err)
+	}
+}

@@ -510,12 +510,6 @@ func (a *API) v1CancelPost(w http.ResponseWriter, r *http.Request) {
 	a.reloadPost(w, r, p.ID, http.StatusOK)
 }
 
-// targetRelayRetrier retries one target's delivery (dispatch.Dispatcher
-// has it; the old routes' fakes need not).
-type targetRelayRetrier interface {
-	RetryTargetRelay(ctx context.Context, postID string, targetID int64, relay string) (*store.Post, error)
-}
-
 type v1RetryReq struct {
 	Targets    []string `json:"targets"`
 	Deliveries []struct {
@@ -641,13 +635,7 @@ func (a *API) v1RetryPost(w http.ResponseWriter, r *http.Request) {
 				if ctx.Err() != nil {
 					return
 				}
-				var err error
-				if tr, ok := a.Dispatch.(targetRelayRetrier); ok {
-					_, err = tr.RetryTargetRelay(ctx, p.ID, rr.target.ID, rr.endpoint)
-				} else {
-					_, err = a.Dispatch.RetryRelay(ctx, p.ID, rr.endpoint)
-				}
-				if err != nil {
+				if _, err := a.Dispatch.RetryTargetRelay(ctx, p.ID, rr.target.ID, rr.endpoint); err != nil {
 					slog.WarnContext(ctx, "v1: relay retry", "post_id", p.ID, "relay", rr.endpoint, "err", err)
 				}
 			}

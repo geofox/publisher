@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/geofox/publisher/internal/destination"
-	"github.com/geofox/publisher/internal/progress"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/unfurl"
 )
@@ -141,9 +140,14 @@ type PostNotifier interface {
 // Dispatcher publishes posts to destination accounts and records the outcome.
 type Dispatcher struct {
 	// Accounts are the connected destination accounts, keyed by the name a
-	// post targets. Until accounts are stored (step 2, PR 2) the name is the
-	// destination type.
+	// post targets. Until accounts can be added (step 4) the name is the
+	// destination type: one connected account per type.
 	Accounts map[string]destination.Account
+	// AccountIDs names the stored account each entry of Accounts sends as
+	// (type → account id, from store.SeedEnvAccounts). A target naming
+	// another account of the type is refused rather than sent with these
+	// credentials. Nil skips the check (unit tests).
+	AccountIDs map[string]string
 	// Host re-hosts re-encoded media for URL-transport destinations. Nil
 	// keeps canonical URLs.
 	Host     MediaHost
@@ -239,10 +243,6 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-// NewID mints a new unique post ID. Exported so the API layer can pre-mint an
-// ID before launching a detached dispatch goroutine.
-func NewID() string { return newID() }
-
 func dedupStrings(in []string) []string {
 	seen := make(map[string]bool, len(in))
 	out := make([]string, 0, len(in))
@@ -253,18 +253,4 @@ func dedupStrings(in []string) []string {
 		}
 	}
 	return out
-}
-
-// mapStatus maps a chainOutcome/target status to a progress platform status.
-// They share the same vocabulary ("success"/"failed"/"partial"); an empty or
-// unknown status is treated as failed.
-func mapStatus(s string) string {
-	switch s {
-	case "success":
-		return progress.StatusSuccess
-	case "partial":
-		return progress.StatusPartial
-	default:
-		return progress.StatusFailed
-	}
 }
