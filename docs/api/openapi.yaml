@@ -161,20 +161,18 @@ paths:
       operationId: getAccount
       tags: [accounts]
       summary: One account
-      description: Needs `accounts:read`.
+      description: Needs `accounts:read`. The `ETag` is for `If-Match` on `PATCH`.
       security:
         - bearer: ["accounts:read"]
         - session: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            examples: [acc_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c]
+        - $ref: "#/components/parameters/AccountID"
       responses:
         "200":
           description: The account.
+          headers:
+            ETag:
+              $ref: "#/components/headers/AccountETag"
           content:
             application/json:
               schema:
@@ -185,6 +183,68 @@ paths:
           $ref: "#/components/responses/InsufficientScope"
         "404":
           $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: updateAccount
+      tags: [accounts]
+      summary: Change your settings on an account
+      description: |
+        Needs `accounts:write`, a scope `admin` doesn't include: only the
+        signed-in owner can grant it to a token. Each field sent replaces
+        the account's; a field left out is kept, and `null` is refused.
+        `label` is trimmed and must then be 1 to 64 characters with no
+        control characters. `enabled: false` turns the account off: a new
+        post can't pick it, and a post already waiting for it fails on it
+        when its turn comes (retry it once the account is on again).
+        `default_selected` is whether the
+        composer selects it for a new post; `public_feed` is whether its
+        posts appear in the public feed. Send `If-Match` with the ETag you
+        read: if the account changed since, the answer is `412
+        precondition_failed` with the current `ETag`, and nothing changes.
+        Without `If-Match` (or with `*`) the change applies to the account
+        as the server reads it, and is still refused (412) if another
+        change lands in between. A change is logged as an
+        `account.updated` event naming the fields that changed.
+      security:
+        - bearer: ["accounts:write"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+        - $ref: "#/components/parameters/AccountIfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountPatch"
+          application/merge-patch+json:
+            schema:
+              $ref: "#/components/schemas/AccountPatch"
+      responses:
+        "200":
+          description: The account after the change.
+          headers:
+            ETag:
+              $ref: "#/components/headers/AccountETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
         default:
           $ref: "#/components/responses/Problem"
   /v1/me:
@@ -556,10 +616,14 @@ paths:
         Needs `posts:write`. Resolves a post URL (Bluesky, Mastodon) or a
         Nostr nevent/note id: its author, text and media, the account of
         yours on its network, and whether you can reply to, quote or
-        repost it. The post is looked up with your first connected
-        account on its network, and `account` is that account. Threads
-        posts can't be resolved (its API has no URL lookup). Problems
-        with the URL are `422` with a field code on `/url`:
+        repost it. The post is looked up with `account` when you name
+        one, or else with your first connected account on its network;
+        the answer's `account` is the account used. Threads posts can't
+        be resolved (its API has no URL lookup). A named `account` that
+        isn't yours is `422` `unknown_account` on `/account`; one on
+        another network is `not_allowed`; one that isn't connected is
+        `account_disabled`. Problems with the URL are `422` with a field
+        code on `/url`:
         `unrecognized` (not a post URL or Nostr id), `not_supported`
         (Threads), `not_configured` (none of your accounts on that network
         is connected), `unresolvable` (not found, deleted, private, or not
@@ -574,7 +638,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/SourceIn"
+              $ref: "#/components/schemas/ResolveIn"
       responses:
         "200":
           description: The post and what you can do with it.
@@ -1678,7 +1742,8 @@ paths:
       description: |
         Needs `posts:read`. Streams events from now on (or after
         `Last-Event-ID` / `after`, for a client catching up) until the
-        client disconnects (the header wins over `after`); a `: ping`
+        client disconnects (the header wins over `after`). Account events
+        are included only when the caller also has `accounts:read`. A `: ping`
         comment every 15 seconds keeps idle connections open. A stream
         ends after an hour or when the server stops: reconnect with
         `Last-Event-ID`. Events are kept 7 days. Too many open streams:
@@ -1752,6 +1817,12 @@ components:
       description: The draft's ETag as you read it (`"3"`), or `*` for any version.
       schema:
         type: string
+    AccountIfMatch:
+      name: If-Match
+      in: header
+      description: The account's ETag as you read it, or `*` for any version.
+      schema:
+        type: string
     PostID:
       name: id
       in: path
@@ -1791,6 +1862,15 @@ components:
   headers:
     DraftETag:
       description: The draft's version, a strong ETag (`"3"`), for `If-Match`.
+      required: true
+      schema:
+        type: string
+        pattern: '^"[0-9]+"$'
+    AccountETag:
+      description: |
+        The account's version, a strong ETag (digits in quotes), for
+        `If-Match`. It changes when your settings on it change, not when
+        its status or profile does.
       required: true
       schema:
         type: string
@@ -2098,6 +2178,22 @@ components:
         target_lang:
           type: string
           description: An ISO 639-1 code from `GET /v1/instance` `translate_targets`.
+    ResolveIn:
+      type: object
+      additionalProperties: false
+      required: [url]
+      description: A post to look up, by its URL (or a Nostr nevent/note id).
+      properties:
+        url:
+          type: string
+          maxLength: 2048
+        account:
+          type: string
+          description: |
+            The account to look the post up with: one of yours on the
+            post's network, connected. A Mastodon post id is only valid on
+            its own server, so this picks whose server answers. Absent: your
+            first connected account on that network.
     SourceIn:
       type: object
       additionalProperties: false
@@ -2943,9 +3039,12 @@ components:
         `post.updated` (status, schedule or visibility), `post.completed`
         (nothing left to send), `item.sending`, `item.published`,
         `item.partial`, `item.failed`, `item.unknown`, `item.canceled`,
-        `delivery.updated`. Fields are present as the type needs.
+        `delivery.updated`, and `account.updated` (your settings on an
+        account changed: `account`, `destination`, `fields`, `actor`, and
+        `token` when a token made the change; no `post`). Fields are
+        present as the type needs.
       additionalProperties: false
-      required: [id, type, created_at, post]
+      required: [id, type, created_at]
       properties:
         id:
           type: integer
@@ -2956,6 +3055,7 @@ components:
         post:
           type: string
           pattern: "^pst_"
+          description: The post; absent for an account event.
         status:
           type: string
           description: The post's status for post events; the item's or delivery's otherwise.
@@ -2979,6 +3079,20 @@ components:
           $ref: "#/components/schemas/Timestamp"
         hidden:
           type: boolean
+        fields:
+          type: array
+          items:
+            type: string
+            enum: [label, enabled, default_selected, public_feed]
+          description: An account event's changed fields, by name (never their values).
+        actor:
+          type: string
+          enum: [session, token, proxy]
+          description: Who made an account change.
+        token:
+          type: string
+          pattern: "^tok_"
+          description: The token that made an account change.
     Problem:
       type: object
       description: An RFC 9457 problem with a stable `code`. Clients should ignore members they don't know (RFC 9457 §3.2).
@@ -3330,7 +3444,12 @@ components:
     Account:
       type: object
       additionalProperties: false
-      required: [id, type, label, source, enabled, created_at, updated_at]
+      required: [id, type, label, source, enabled, status, order, default_selected, public_feed, created_at, updated_at]
+      description: |
+        One of your accounts. The profile fields (`handle`,
+        `display_name`, `avatar`, `profile_url`) are as the network last
+        reported them: reading never waits on the network, and a stale
+        profile is fetched in the background for the next read.
       properties:
         id:
           type: string
@@ -3348,11 +3467,49 @@ components:
           type: string
           format: uri
           description: An absolute http(s) URL; absent when the profile has none.
+        profile_url:
+          type: string
+          format: uri
+          description: The account's page on its network (absolute http(s)); absent when unknown.
+        remote_id:
+          type: string
+          description: |
+            The account's stable id on its network (a DID, an account URL,
+            a user id, a public key); absent until the network was first
+            asked.
         source:
           type: string
           description: Where the account is configured (`env` for now).
         enabled:
           type: boolean
+          description: Your switch; `status` says whether it can be used.
+        status:
+          type: string
+          enum: [connected, disabled, not_configured, locked, needs_reconnect, deleted]
+          description: |
+            Whether the account can be used now. `connected`: yes.
+            `disabled`: you turned it off. `not_configured`: its variables
+            are no longer set, its settings can't be used, or this version
+            has no driver for its network. `locked`: its saved state can't
+            be read now. `needs_reconnect`: the network refused its
+            credentials. A send to a locked account waits; to any other
+            account that isn't connected it fails, and can be retried once
+            the account is connected.
+        status_reason:
+          type: string
+          description: Why it isn't connected, and what to do; absent when connected.
+        order:
+          type: integer
+          description: |
+            Its place in the app's order (networks in a fixed order, then
+            oldest first); tabs and target rows follow it. Lists are by
+            creation time, so sort by this to show them.
+        default_selected:
+          type: boolean
+          description: The composer selects it for a new post.
+        public_feed:
+          type: boolean
+          description: Its posts appear in the public feed.
         capabilities:
           description: Absent when this server has no driver for the account's type.
           $ref: "#/components/schemas/Capabilities"
@@ -3360,6 +3517,21 @@ components:
           $ref: "#/components/schemas/Timestamp"
         updated_at:
           $ref: "#/components/schemas/Timestamp"
+    AccountPatch:
+      type: object
+      additionalProperties: false
+      description: Your settings on an account; send only what changes.
+      properties:
+        label:
+          type: string
+          minLength: 1
+          maxLength: 64
+        enabled:
+          type: boolean
+        default_selected:
+          type: boolean
+        public_feed:
+          type: boolean
     Token:
       type: object
       additionalProperties: false

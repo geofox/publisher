@@ -120,23 +120,31 @@ type LegacyStore interface {
 }
 
 // AdoptLegacy gives state 2.x kept for the one account of a type to the
-// env account that owns it now: the relay-sync list goes to the first env
-// Nostr account when that account has none yet. Then each env Nostr
+// env account that owns it now: the relay-sync list goes to the Nostr
+// account of the unnumbered variables (2.x's one account; else the first
+// env Nostr account) when that account has none yet. Then each env Nostr
 // account without a list starts with its SYNC_RELAYS. rows are the env
-// rows (SeedEnvAccounts) in registry order within the type; env says
-// which rows the environment configures. Idempotent.
+// rows (SeedEnvAccounts); env says which rows the environment configures.
+// Idempotent.
 func AdoptLegacy(ctx context.Context, st LegacyStore, rows []store.Account, env []EnvAccount) error {
 	var errs []error
-	adopted := false
+	heir := ""
+	for _, row := range rows {
+		if row.Type == nostr.Type && row.Source == "env" && (heir == "" || row.EnvKey == destination.EnvKeyDefault) {
+			heir = row.ID
+			if row.EnvKey == destination.EnvKeyDefault {
+				break
+			}
+		}
+	}
+	if heir != "" {
+		if _, err := st.AdoptLegacySyncRelays(ctx, heir); err != nil {
+			errs = append(errs, fmt.Errorf("relay-sync list: %w", err))
+		}
+	}
 	for _, row := range rows {
 		if row.Type != nostr.Type || row.Source != "env" {
 			continue
-		}
-		if !adopted {
-			adopted = true
-			if _, err := st.AdoptLegacySyncRelays(ctx, row.ID); err != nil {
-				errs = append(errs, fmt.Errorf("relay-sync list: %w", err))
-			}
 		}
 		for _, e := range env {
 			if e.Type != row.Type || e.Key != row.EnvKey {

@@ -106,6 +106,8 @@ type AccountRegistry interface {
 	Acquire(id string) (destination.Account, func(), error)
 	// Profile is the account's last known profile, at once.
 	Profile(id string) (accounts.Profile, bool)
+	// Update takes the owner's settings from a row the store just saved.
+	Update(id string, row store.Account) error
 }
 
 // API holds the dependencies for the HTTP handlers.

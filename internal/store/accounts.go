@@ -35,6 +35,13 @@ type AccountMeta struct {
 	Enabled         *bool
 	DefaultSelected *bool
 	PublicFeed      *bool
+	// IfUpdatedAt, when set, refuses the change (ErrAccountConflict)
+	// unless the account's updated_at is still this: the caller read it.
+	IfUpdatedAt time.Time
+	// Actor and TokenID say who changed it, for the account.updated event
+	// ("session", "token" or "proxy"; the token's id for a token).
+	Actor   string
+	TokenID string
 }
 
 // EnvKeyDefault is the env_key of the account seeded from a type's
@@ -149,6 +156,9 @@ func scanAccount(r interface{ Scan(...any) error }) (Account, error) {
 // ErrAccountNotFound: no account of that owner has that id.
 var ErrAccountNotFound = errors.New("account not found")
 
+// ErrAccountConflict: the account changed since the caller read it.
+var ErrAccountConflict = errors.New("account changed since it was read")
+
 // Account returns one of the owner's accounts.
 func (s *Store) Account(ctx context.Context, owner, id string) (Account, error) {
 	a, err := scanAccount(s.sql.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts WHERE owner_id = ? AND id = ?`, owner, id))
@@ -160,6 +170,8 @@ func (s *Store) Account(ctx context.Context, owner, id string) (Account, error) 
 
 // UpdateAccountMeta changes what the owner set on an account. updated_at
 // moves only when a value changes, so it can serve as the account's ETag.
+// A change logs an account.updated event naming the fields that changed
+// (never their values) and who changed them.
 func (s *Store) UpdateAccountMeta(ctx context.Context, owner, id string, m AccountMeta) (Account, error) {
 	tx, err := s.sql.BeginTx(ctx, nil)
 	if err != nil {
@@ -172,6 +184,9 @@ func (s *Store) UpdateAccountMeta(ctx context.Context, owner, id string, m Accou
 	}
 	if err != nil {
 		return Account{}, err
+	}
+	if !m.IfUpdatedAt.IsZero() && !m.IfUpdatedAt.Equal(cur.UpdatedAt) {
+		return cur, ErrAccountConflict
 	}
 	next := cur
 	if m.Label != nil {
@@ -197,7 +212,29 @@ func (s *Store) UpdateAccountMeta(ctx context.Context, owner, id string, m Accou
 		WHERE id = ?`, next.Label, next.Enabled, next.DefaultSelected, next.PublicFeed, next.UpdatedAt, id); err != nil {
 		return Account{}, err
 	}
-	return next, tx.Commit()
+	var fields []string
+	for _, f := range []struct {
+		name    string
+		changed bool
+	}{
+		{"label", next.Label != cur.Label},
+		{"enabled", next.Enabled != cur.Enabled},
+		{"default_selected", next.DefaultSelected != cur.DefaultSelected},
+		{"public_feed", next.PublicFeed != cur.PublicFeed},
+	} {
+		if f.changed {
+			fields = append(fields, f.name)
+		}
+	}
+	if err := emitOwner(ctx, tx, owner, EventAccountUpdated, EventData{AccountID: id, Platform: cur.Type,
+		Fields: fields, Actor: m.Actor, TokenID: m.TokenID}, next.UpdatedAt); err != nil {
+		return Account{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Account{}, err
+	}
+	s.ev.fire()
+	return next, nil
 }
 
 // SetAccountIdentity records the handle and remote id an account's network

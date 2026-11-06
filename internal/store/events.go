@@ -26,6 +26,9 @@ const (
 	EventItemUnknown   = "item.unknown"
 	EventItemCanceled  = "item.canceled"
 	EventDelivery      = "delivery.updated"
+	// EventAccountUpdated: the owner changed an account's settings. It
+	// belongs to no post; its data names the fields, never their values.
+	EventAccountUpdated = "account.updated"
 )
 
 // EventRetention is how long events are kept.
@@ -55,6 +58,11 @@ type EventData struct {
 	Endpoint    string     `json:"endpoint,omitempty"`
 	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
 	Hidden      *bool      `json:"hidden,omitempty"`
+	// Fields are the names of what an account event changed.
+	Fields []string `json:"fields,omitempty"`
+	// Actor and TokenID say who made an account change.
+	Actor   string `json:"actor,omitempty"`
+	TokenID string `json:"token_id,omitempty"`
 }
 
 // eventSignal wakes stream readers when events are written. Readers also
@@ -97,6 +105,15 @@ func emit(ctx context.Context, tx execQuerier, postID, typ string, d EventData, 
 	_, err := tx.ExecContext(ctx, `INSERT INTO events (owner_id, post_id, type, data, created_at)
 		VALUES ((SELECT owner_id FROM posts WHERE id = ?), ?, ?, ?, ?)`,
 		postID, postID, typ, string(b), at.UTC())
+	return err
+}
+
+// emitOwner writes an event that belongs to no post (an account change)
+// in the caller's transaction. Call s.ev.fire() after the commit.
+func emitOwner(ctx context.Context, tx execQuerier, owner, typ string, d EventData, at time.Time) error {
+	b, _ := json.Marshal(d)
+	_, err := tx.ExecContext(ctx, `INSERT INTO events (owner_id, post_id, type, data, created_at) VALUES (?, NULL, ?, ?, ?)`,
+		owner, typ, string(b), at.UTC())
 	return err
 }
 
@@ -164,8 +181,11 @@ func PostSettled(status string) bool {
 type EventFilter struct {
 	OwnerID string
 	PostID  string // "" for all the owner's posts
-	After   int64  // events with a larger id
-	Limit   int
+	// PostsOnly leaves out events that belong to no post (account
+	// changes), for a caller that may not read accounts.
+	PostsOnly bool
+	After     int64 // events with a larger id
+	Limit     int
 }
 
 // EventsSince returns events after f.After, oldest first.
@@ -174,8 +194,8 @@ func (s *Store) EventsSince(ctx context.Context, f EventFilter) ([]Event, error)
 		f.Limit = 500
 	}
 	rows, err := s.sql.QueryContext(ctx, `SELECT id, owner_id, COALESCE(post_id, ''), type, data, created_at FROM events
-		WHERE owner_id = ? AND id > ? AND (? = '' OR post_id = ?) ORDER BY id LIMIT ?`,
-		f.OwnerID, f.After, f.PostID, f.PostID, f.Limit)
+		WHERE owner_id = ? AND id > ? AND (? = '' OR post_id = ?) AND (? = 0 OR post_id IS NOT NULL) ORDER BY id LIMIT ?`,
+		f.OwnerID, f.After, f.PostID, f.PostID, f.PostsOnly, f.Limit)
 	if err != nil {
 		return nil, err
 	}

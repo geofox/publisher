@@ -1,9 +1,10 @@
 "use strict";
 import { v1, v1All } from "./common.js";
 
-// The owner's accounts (GET /v1/accounts). Until accounts can be added in the
-// app there is one per destination type, so the composer still picks types
-// (ORDER) and accountFor maps a type to the account that posts it.
+// The owner's accounts (GET /v1/accounts), in the app's order (each
+// account's `order`). Until the composer picks accounts (part A3) it picks
+// types (ORDER), and accountFor maps a type to the first connected account
+// of it.
 const byType = {};
 let all = [];
 let loading = null;
@@ -13,10 +14,10 @@ let loading = null;
 export function loadAccounts() {
   if (!loading) {
     loading = v1All("/v1/accounts?limit=100").then(list => {
-      all = list;
+      all = [...list].sort((a, b) => a.order - b.order);
       for (const k of Object.keys(byType)) delete byType[k];
-      for (const a of list) if (a.enabled && !byType[a.type]) byType[a.type] = a;
-      return list;
+      for (const a of all) if (a.status === "connected" && !byType[a.type]) byType[a.type] = a;
+      return all;
     }).catch(e => { loading = null; throw e; });
   }
   return loading;
@@ -29,8 +30,8 @@ export function reloadAccounts() {
   return loadAccounts();
 }
 
-// accountFor is the enabled account of a type, or null (none configured, or
-// the accounts haven't loaded).
+// accountFor is the first connected account of a type, or null (none is
+// connected, or the accounts haven't loaded).
 export function accountFor(type) { return byType[type] || null; }
 
 // accountByID finds any of the owner's accounts, enabled or not.

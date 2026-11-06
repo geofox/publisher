@@ -98,7 +98,16 @@ can be `unrecognized`, `not_supported` (Threads), `not_configured` (none
 of your accounts on the post's network is connected) or
 `unresolvable` (not found, deleted, private, or not yet known to your
 server); `not_allowed` and `missing_source_account` concern the action
-and its targets. The tools add `unsupported_language` (translate) and
+and its targets, and `one_native_actor` a second target on the post's own
+network (the post exists once there, so one of your accounts acts on it;
+send from the others separately). A target's account that can't send
+now is `account_disabled`; `detail` says why (turned off, not
+configured, locked, needs to be connected again). The same account twice
+is `duplicate`. `POST /v1/resolve` with `account` adds, on `/account`,
+`unknown_account` (not one of yours), `not_allowed` (on another network)
+and `account_disabled`. `PATCH /v1/accounts/{id}` uses `required`,
+`too_long` and `invalid` (a control character, or a value of the wrong
+type, `null` included). The tools add `unsupported_language` (translate) and
 `unknown_relay` (relay sync: a relay that isn't one of the account's).
 Resolving an unknown item (`:resolve`) adds `unknown_item`, and for its
 `url` `not_found` (no such post), `not_own` (another account's post),
@@ -155,7 +164,8 @@ key for a new request. Keys are kept for 24 hours.
 ## precondition_failed
 
 **412.** The `If-Match` header names a version the resource is no longer
-at: it changed since you read it (a draft saved from another tab, say).
+at: it changed since you read it (a draft saved from another tab, or an
+account's settings changed by another client).
 The response's `ETag` is the current version. Read the resource again,
 merge, and retry with the new ETag, or send `If-Match: *` to overwrite.
 

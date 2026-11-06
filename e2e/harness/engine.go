@@ -116,3 +116,4 @@ func (e *engine) Profile(id string) (accounts.Profile, bool) { return e.registry
 func (e *engine) Acquire(id string) (destination.Account, func(), error) {
 	return e.registry().Acquire(id)
 }
+func (e *engine) Update(id string, row store.Account) error { return e.registry().Update(id, row) }

@@ -672,6 +672,36 @@ One commit: every caller moves to the registry and account-keyed specs.
   source network; resolve with `account`; PATCH with ETags and scopes; an
   admin token can't PATCH or mint `accounts:write`.
 
+### As built (A2.5)
+
+- **Account views** carry `status`, `status_reason`, `order`, `remote_id`,
+  `profile_url`, `default_selected` and `public_feed`; the handlers moved
+  to `v1_accounts.go`. The single view's `ETag` is `updated_at` in Unix
+  nanoseconds (which moves only on an owner's change); the store compares
+  it inside the update's transaction (`AccountMeta.IfUpdatedAt`,
+  `ErrAccountConflict`), so a change landing between read and write is a
+  412 even without `If-Match`, as for drafts.
+- **`PATCH /v1/accounts/{id}`** decodes each field raw so `null` is
+  refused (`invalid`) instead of read as "keep". `api.AccountRegistry`
+  gained `Update`. `Registry.Update` now takes only the owner's fields and
+  ignores a row older than the one it holds (two PATCHes whose registry
+  notices cross), keeping the handle and remote id the registry learnt.
+- **`account.updated`** is written by `UpdateAccountMeta` in its
+  transaction with `post_id` NULL; data: account, type, field names,
+  actor (`session`, `token`, `proxy`) and token id. `/v1/events` sends it
+  only to a caller with `accounts:read` (`EventFilter.PostsOnly`); `post`
+  became optional in the event schema. Pulled forward from C (spec §10.1).
+- **Drafts** accept an unavailable account without a warning field (they
+  never had one); the composer shows the account's status when it loads
+  the draft (A3).
+- **The token form** offers `accounts:write`; `admin` reads "everything
+  else".
+- **Fixed on the way:** `AdoptLegacy` gave the 2.x relay-sync list to the
+  first env Nostr row in the order given, which could be a numbered
+  account (same `created_at`, random id); it now goes to the unnumbered
+  (`default`) account, 2.x's one account. Its test was order-dependent
+  (failed about half the runs).
+
 ### Task A2.6: Nostr and Blossom optional
 
 **Files:** `cmd/publisher/main.go` (extract `run(ctx, getenv)`),

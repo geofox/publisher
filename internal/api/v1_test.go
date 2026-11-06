@@ -382,6 +382,8 @@ func TestV1Conformance(t *testing.T) {
 		{"GET /v1/destinations", req{method: "GET", path: "/v1/destinations"}, 200},
 		{"GET /v1/accounts", req{method: "GET", path: "/v1/accounts"}, 200},
 		{"GET /v1/accounts/{id}", req{method: "GET", path: "/v1/accounts/" + accts[0].ID}, 200},
+		{"PATCH /v1/accounts/{id}", req{method: "PATCH", path: "/v1/accounts/" + accts[0].ID,
+			header: map[string]string{"If-Match": "*"}, body: `{"label":"Work","default_selected":false}`}, 200},
 		{"GET /v1/me", req{method: "GET", path: "/v1/me"}, 200},
 		{"GET /v1/tokens", req{method: "GET", path: "/v1/tokens"}, 200},
 		{"POST /v1/tokens", req{method: "POST", path: "/v1/tokens", body: `{"name":"ci","scopes":["posts:read"],"expires_at":"2099-01-01T00:00:00Z"}`}, 201},

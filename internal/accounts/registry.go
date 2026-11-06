@@ -470,9 +470,11 @@ func (r *Registry) Reopen(ctx context.Context, id string) error {
 	return nil
 }
 
-// Update replaces an account's stored row after the owner changed its
-// settings (label, enabled, flags). The live object is kept, so its
-// caches survive.
+// Update takes the owner's settings (label, enabled, flags) from a row the
+// store just saved. The live object is kept, so its caches survive. The
+// network's identity (handle, remote id) is the registry's own and is
+// kept, and a row older than the one held is ignored: two changes saved
+// one after the other may reach here in the other order.
 func (r *Registry) Update(id string, row store.Account) error {
 	r.mu.Lock()
 	e, ok := r.entries[id]
@@ -480,11 +482,12 @@ func (r *Registry) Update(id string, row store.Account) error {
 		r.mu.Unlock()
 		return ErrNoAccount
 	}
-	reorder := row.Type != e.row.Type || !row.CreatedAt.Equal(e.row.CreatedAt)
-	e.row = row
-	if reorder {
-		r.reorderLocked()
+	if row.UpdatedAt.Before(e.row.UpdatedAt) {
+		r.mu.Unlock()
+		return nil
 	}
+	e.row.Label, e.row.Enabled, e.row.DefaultSelected, e.row.PublicFeed = row.Label, row.Enabled, row.DefaultSelected, row.PublicFeed
+	e.row.UpdatedAt = row.UpdatedAt
 	snap := e.snapshot()
 	r.mu.Unlock()
 	r.emit(Change{ID: id, Kind: ChangeUpdated, Entry: snap})

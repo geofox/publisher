@@ -31,11 +31,12 @@ every route, request and response against it. It has:
 |---|---|---|
 | `GET /v1/instance` | any | version, features, languages, limits |
 | `GET /v1/destinations` | `accounts:read` | destination types and their manifests |
-| `GET /v1/accounts`, `GET /v1/accounts/{id}` | `accounts:read` | accounts with profile and capabilities |
+| `GET /v1/accounts`, `GET /v1/accounts/{id}` | `accounts:read` | accounts with status, profile and capabilities |
+| `PATCH /v1/accounts/{id}` | `accounts:write` | rename an account, turn it off or on, choose whether new posts select it and whether its posts go to the public feed (`If-Match`) |
 | `GET /v1/me` | any | who is calling, with which scopes |
 | `GET/POST /v1/tokens`, `GET/DELETE /v1/tokens/{id}` | `admin` | API tokens with scopes and expiry |
 | `POST /v1/posts` | `posts:write` | publish or schedule a post to one or more accounts (`Idempotency-Key`, `Prefer: wait`) |
-| `POST /v1/resolve` | `posts:write` | look up a post by URL: author, text, media, and whether you can reply, quote or repost |
+| `POST /v1/resolve` | `posts:write` | look up a post by URL (optionally with a given `account`): author, text, media, and whether you can reply, quote or repost |
 | `POST /v1/posts:preview` | `posts:write` | the same body: what each account would get (thread parts, link card, warnings); sends nothing |
 | `GET /v1/posts` | `posts:read` | the history, newest first; filter by `status`, `account`, `q`, `since`, `until`, `hidden` |
 | `GET /v1/posts/{id}` | `posts:read` | a post with its targets, items (thread parts), deliveries and attempts |
@@ -44,7 +45,7 @@ every route, request and response against it. It has:
 | `POST /v1/posts/{id}:retry` | `posts:write` | send failed items again, optionally only some `targets` or Nostr `deliveries` |
 | `POST /v1/posts/{id}:resolve` | `posts:write` | say whether an item whose outcome is `unknown` went out; with the post's URL a thread goes on under it |
 | `GET /v1/posts/{id}/events` | `posts:read` | a post's progress as server-sent events, from its first event until it settles |
-| `GET /v1/events` | `posts:read` | every post's events as they happen |
+| `GET /v1/events` | `posts:read` | every post's events as they happen (and account changes, with `accounts:read`) |
 | `POST /v1/media` | `media:write` | upload an image (stored at once) or a video (processed in the background) |
 | `GET/PATCH /v1/media/{id}` | `media:write` | a media object's state; set its alt text |
 | `POST /v1/media:compress` | `media:write` | re-encode an image with a preset (HEIC to JPEG too); stores nothing |
@@ -100,10 +101,12 @@ every route, request and response against it. It has:
 
 - **Auth:** the browser session, or `Authorization: Bearer <token>`. Tokens
   carry scopes (`posts:read`, `posts:write`, `media:write`, `drafts:read`,
-  `drafts:write`, `accounts:read`, `admin`, which includes all) and an
-  optional expiry. Tokens made before scopes keep `posts:write media:write`,
-  which is what the old `/publish` and `/upload-media` let them do. A token
-  can't create a token that outlives it.
+  `drafts:write`, `accounts:read`, `accounts:write`, and `admin`, which
+  includes all of them but `accounts:write`) and an optional expiry. Tokens
+  made before scopes keep `posts:write media:write`, which is what the old
+  `/publish` and `/upload-media` let them do. A token can't create a token
+  that outlives it, and only the signed-in owner can create one holding
+  `accounts:write`.
 - **Errors** are RFC 9457 problem details with a stable `code`; the
   [error catalogue](docs/api/errors.md) lists them.
 - **Lists** page with `?limit=` (1 to 200) and `?cursor=`; the answer is

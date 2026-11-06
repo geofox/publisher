@@ -9,7 +9,7 @@ import { loadAccounts, accountFor } from "./accounts.js";
 async function relaysPath() {
   await loadAccounts();
   const a = accountFor("nostr");
-  if (!a) throw new Error("no Nostr account is configured");
+  if (!a) throw new Error("no Nostr account is connected");
   return "/v1/accounts/" + encodeURIComponent(a.id) + "/nostr/relays";
 }
 

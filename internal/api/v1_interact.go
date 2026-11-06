@@ -182,7 +182,8 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 	prefer := ""
 	for _, pt := range plan.targets {
 		if pt.account.Type == resolve.Detect(in.URL) {
-			prefer = pt.account.ID
+			prefer = pt.account.ID // the first acts natively
+			break
 		}
 	}
 	src, _, upstream := a.resolveSource(ctx, in.URL, prefer, ptr+"/url", add)
@@ -209,6 +210,12 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 	native := -1
 	for i, pt := range plan.targets {
 		if pt.account.Type == src.Platform {
+			if native >= 0 {
+				// The post exists once on its network: one account acts on it.
+				add(pt.reqPtr+"/account", "one_native_actor", "only one of your "+displayName(src.Platform)+
+					" accounts can "+action+" this post; send from the others separately")
+				continue
+			}
 			native = i
 			continue
 		}
@@ -446,8 +453,16 @@ type v1ResolveAction struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
+// v1ResolveSourceReq is POST /v1/resolve's body.
+type v1ResolveSourceReq struct {
+	URL string `json:"url"`
+	// Account looks the post up with this account (one of yours on the
+	// post's network, connected); absent: the first such account.
+	Account *string `json:"account"`
+}
+
 func (a *API) v1Resolve(w http.ResponseWriter, r *http.Request) {
-	var req v1SourceIn
+	var req v1ResolveSourceReq
 	if !decodeJSON(w, r, &req) {
 		return
 	}
@@ -459,7 +474,30 @@ func (a *API) v1Resolve(w http.ResponseWriter, r *http.Request) {
 	add := func(ptr, code, detail string) {
 		errs = append(errs, fieldError{Pointer: ptr, Code: code, Detail: detail})
 	}
-	src, account, upstream := a.resolveSource(r.Context(), req.URL, "", "/url", add)
+	prefer := ""
+	if req.Account != nil {
+		prefer = *req.Account
+		pr, _ := principalFrom(r.Context())
+		var e accounts.Entry
+		ok := false
+		if a.Accounts != nil {
+			e, ok = a.Accounts.Get(prefer)
+		}
+		typ := resolve.Detect(req.URL)
+		switch {
+		case !ok || e.Row.OwnerID != pr.OwnerID:
+			add("/account", "unknown_account", "no account "+prefer+"; list them with GET /v1/accounts")
+		case typ != "" && e.Row.Type != typ:
+			add("/account", "not_allowed", "a "+displayName(e.Row.Type)+" account can't look up a "+displayName(typ)+" post")
+		case e.Status != accounts.Connected:
+			add("/account", "account_disabled", (&accounts.Unavailable{ID: prefer, Status: e.Status, Reason: e.Reason}).Error())
+		}
+		if len(errs) > 0 {
+			invalid(w, r, errs)
+			return
+		}
+	}
+	src, account, upstream := a.resolveSource(r.Context(), req.URL, prefer, "/url", add)
 	if upstream {
 		problem(w, r, http.StatusBadGateway, codeUpstream, "the post's network could not be reached; try again")
 		return

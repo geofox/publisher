@@ -676,6 +676,7 @@ func (statusOf) Acquire(id string) (destination.Account, func(), error) {
 	return nil, nil, accounts.ErrNoAccount
 }
 func (statusOf) Profile(string) (accounts.Profile, bool) { return accounts.Profile{}, false }
+func (statusOf) Update(string, store.Account) error      { return nil }
 
 // TestV1CreatePostUnavailableAccount: an account the registry says can't
 // send (here, the environment no longer configures it) is refused, saying

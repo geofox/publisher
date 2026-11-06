@@ -321,7 +321,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 	for _, ac := range accts {
 		byID[ac.ID] = ac
 	}
-	seenAcct, seenType := map[string]bool{}, map[string]bool{}
+	seenAcct := map[string]bool{}
 	sharedEmpty := false // reported once, not per target
 	for i, t := range req.Targets {
 		ptr := "/targets/" + strconv.Itoa(i)
@@ -339,13 +339,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 			add(ptr+"/account", "duplicate", "this account is already a target")
 			continue
 		}
-		if seenType[ac.Type] {
-			// The engine sends through one account per type until accounts
-			// can be added (step 4).
-			add(ptr+"/account", "duplicate_type", "one account per destination type for now")
-			continue
-		}
-		seenAcct[ac.ID], seenType[ac.Type] = true, true
+		seenAcct[ac.ID] = true
 		caps := a.caps(ctx, ac.ID, ac.Type)
 		name := drv.Manifest().Name
 		pt := plannedTarget{account: ac, caps: caps, text: rawText, textPtr: "/content/text", reqPtr: ptr}

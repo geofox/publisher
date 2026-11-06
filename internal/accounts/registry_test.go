@@ -322,6 +322,32 @@ func TestUpdateKeepsObject(t *testing.T) {
 	}
 }
 
+// Two saves whose notices cross: the older row doesn't undo the newer
+// one, and the network's identity the registry learnt is kept.
+func TestUpdateNewestWins(t *testing.T) {
+	r := row("acc_m", "mastodon", "env", "default", 0, true)
+	h := newHarness(t, []store.Account{r}, []EnvAccount{env("mastodon", "default")})
+	h.Registry.mu.Lock()
+	h.entries["acc_m"].row.Handle, h.entries["acc_m"].row.RemoteID = "@me@new.example", "https://new.example/users/me"
+	h.Registry.mu.Unlock()
+	older, newer := r, r
+	older.Label, older.UpdatedAt = "Old", r.UpdatedAt.Add(time.Second)
+	newer.Label, newer.Enabled, newer.UpdatedAt = "New", false, r.UpdatedAt.Add(2*time.Second)
+	if err := h.Update("acc_m", newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Update("acc_m", older); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := h.Get("acc_m")
+	if e.Row.Label != "New" || e.Row.Enabled || e.Status != Disabled || !e.Row.UpdatedAt.Equal(newer.UpdatedAt) {
+		t.Errorf("entry = %+v; the older row won", e)
+	}
+	if e.Row.Handle != "@me@new.example" || e.Row.RemoteID != "https://new.example/users/me" {
+		t.Errorf("identity = %q %q; the stored row's replaced the network's", e.Row.Handle, e.Row.RemoteID)
+	}
+}
+
 func TestCapsFallback(t *testing.T) {
 	h := newHarness(t, []store.Account{row("acc_m", "mastodon", "env", "default", 0, true), row("acc_b", "bluesky", "env", "default", 0, true)},
 		[]EnvAccount{env("mastodon", "default")})

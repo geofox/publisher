@@ -49,6 +49,27 @@ the `edge` image.
   that network turned off it says none is connected.
 - `GET /v1/public/feed` links carry `account` (the id of the account that
   posted) and its `handle`.
+- A post can go to two accounts of one network (two Mastodon accounts,
+  say), each counted by its own limits. `duplicate_type` is gone; the same
+  account twice is still `duplicate`. A reply, quote or repost is made by
+  one account on the original's network; a second one there is refused
+  with `one_native_actor`.
+- `GET /v1/accounts` says whether each account can be used (`status`,
+  `status_reason`), its place in the app's order (`order`), its
+  `remote_id` and `profile_url`, and the owner's `default_selected` and
+  `public_feed` flags; `GET /v1/accounts/{id}` has an `ETag`.
+- `POST /v1/resolve` takes `account`, the account to look the post up
+  with.
+- The `/v1/events` stream's `post` field is absent on the new account
+  events, which only a caller with `accounts:read` receives.
+
+### Added
+
+- `PATCH /v1/accounts/{id}` changes an account's label, turns it off or
+  on, and sets whether new posts select it and whether its posts go to the
+  public feed. It needs the new `accounts:write` scope, which `admin`
+  doesn't include and only the signed-in owner can grant to a token. Each
+  change is an `account.updated` event naming the fields that changed.
 
 ### Security
 

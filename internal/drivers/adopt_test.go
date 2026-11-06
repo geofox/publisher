@@ -41,7 +41,19 @@ func TestAdoptLegacySyncRelays(t *testing.T) {
 		{Type: nostr.Type, EnvAccount: destination.EnvAccount{Key: destination.EnvKeyDefault, Config: seed("wss://env-1.example")}},
 		{Type: nostr.Type, EnvAccount: destination.EnvAccount{Key: "2", Config: seed("wss://env-2.example")}},
 	}
-	all := append(append([]store.Account{}, rows...), store.Account{ID: "acc_web", Type: nostr.Type, Source: "web"})
+	var first, second string
+	for _, r := range rows {
+		if r.EnvKey == destination.EnvKeyDefault {
+			first = r.ID
+		} else {
+			second = r.ID
+		}
+	}
+	// The numbered account comes first here: the 2.x list still goes to
+	// the account of the unnumbered variables, 2.x's one account.
+	all := []store.Account{{ID: second, Type: nostr.Type, Source: "env", EnvKey: "2"},
+		{ID: first, Type: nostr.Type, Source: "env", EnvKey: destination.EnvKeyDefault},
+		{ID: "acc_web", Type: nostr.Type, Source: "web"}}
 	if err := AdoptLegacy(ctx, st, all, env); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +65,6 @@ func TestAdoptLegacySyncRelays(t *testing.T) {
 		}
 		return got
 	}
-	first, second := rows[0].ID, rows[1].ID
 	if got := list(first); !reflect.DeepEqual(got, legacy) {
 		t.Errorf("first env account = %v, want the 2.x list %v", got, legacy)
 	}

@@ -21,11 +21,11 @@ import (
 
 // Token scopes.
 const (
-	scopePostsRead    = "posts:read"
-	scopePostsWrite   = "posts:write"
-	scopeMediaWrite   = "media:write"
-	scopeDraftsRead   = "drafts:read"
-	scopeDraftsWrite  = "drafts:write"
+	scopePostsRead     = "posts:read"
+	scopePostsWrite    = "posts:write"
+	scopeMediaWrite    = "media:write"
+	scopeDraftsRead    = "drafts:read"
+	scopeDraftsWrite   = "drafts:write"
 	scopeAccountsRead  = "accounts:read"
 	scopeAccountsWrite = "accounts:write"
 	scopeAdmin         = "admin"
@@ -94,6 +94,7 @@ func (a *API) v1Routes() []v1Route {
 		{Method: "GET", Path: "/v1/destinations", Scope: scopeAccountsRead, Handler: a.v1Destinations},
 		{Method: "GET", Path: "/v1/accounts", Scope: scopeAccountsRead, Handler: a.v1Accounts},
 		{Method: "GET", Path: "/v1/accounts/{id}", Scope: scopeAccountsRead, Handler: a.v1Account},
+		{Method: "PATCH", Path: "/v1/accounts/{id}", Scope: scopeAccountsWrite, Handler: a.v1PatchAccount},
 		{Method: "GET", Path: "/v1/me", Handler: a.v1Me},
 		{Method: "GET", Path: "/v1/tokens", Scope: scopeAdmin, Handler: a.v1ListTokens},
 		// Not idempotent: the response carries a secret we never store.
