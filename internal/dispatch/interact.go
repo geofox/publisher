@@ -7,7 +7,6 @@ import (
 	"unicode"
 
 	"github.com/geofox/publisher/internal/store"
-	"github.com/geofox/publisher/internal/thread"
 )
 
 // SourcePreview is the resolved original's content, passed from the frontend so
@@ -17,30 +16,55 @@ type SourcePreview struct {
 	Text   string
 }
 
+// InteractSpec is a reply, quote or repost of another post.
 type InteractSpec struct {
-	Action         string // reply|repost|quote
+	Action string // reply|repost|quote
+	// SourcePlatform is the source post's destination type.
 	SourcePlatform string
-	Ref            InteractRef
-	SourceURL      string
-	SourceAuthor   string
-	Text           string
-	Overrides      map[string]Overrides // keyed by platform
-	Fanout         []string             // quote only: other platforms for link-quotes
-	Force          bool
-	Images         []Img
-	MediaRecords   []store.Media
-	Number         bool // k/n counters on threaded segments
-	// Layout is the source account's breaks and media positions in its
-	// commentary (a link-quote copy is split automatically).
-	Layout             thread.Layout
-	SourcePreview      SourcePreview // for fan-out reproduction
-	SourceImages       []Img         // original's media, re-hosted (fan-out only)
+	// SourceAccount is the account that replies, quotes or reposts
+	// natively; its entry in Targets (if any) carries its own text,
+	// options and layout.
+	SourceAccount string
+	Ref           InteractRef
+	SourceURL     string
+	SourceAuthor  string
+	// Text is the shared commentary; a target's own Text wins.
+	Text string
+	// Targets are the accounts the interaction posts as: SourceAccount's
+	// acts natively, and each other one posts a link-quote copy (its
+	// layout is ignored: a copy is split automatically).
+	Targets      []TargetSpec
+	Force        bool
+	Images       []Img
+	MediaRecords []store.Media
+	Number       bool // k/n counters on threaded segments
+	// SourcePreview is the original's content, for the copies.
+	SourcePreview      SourcePreview
+	SourceImages       []Img         // original's media, re-hosted (copies only)
 	SourceMediaRecords []store.Media // archival records for the re-hosted source media
 	// Source is where the post came from ("web" when empty).
 	Source string
-	// Accounts names the account each platform posts as (platform →
-	// account id); a platform left out gets its env account.
-	Accounts map[string]string
+}
+
+// split returns the source account's target and copies of the others, in
+// order, each account once. Without an entry for SourceAccount its target
+// is the shared commentary with no options.
+func (s InteractSpec) split() (src TargetSpec, others []TargetSpec) {
+	src = TargetSpec{AccountID: s.SourceAccount, Type: s.SourcePlatform}
+	seen := map[string]bool{s.SourceAccount: true}
+	for _, t := range s.Targets {
+		if t.AccountID == s.SourceAccount {
+			src = t
+			src.Type = s.SourcePlatform
+			continue
+		}
+		if seen[t.AccountID] {
+			continue
+		}
+		seen[t.AccountID] = true
+		others = append(others, t)
+	}
+	return src, others
 }
 
 // assembleReproduction builds a fan-out post body: commentary, an attributed copy
@@ -121,22 +145,10 @@ func isInvisibleControl(r rune) bool {
 	return false
 }
 
-// mediaMax is the per-post image cap of the account a target names (0 = no
-// cap), the same value the splitter and the preview use.
-func (d *Dispatcher) mediaMax(ctx context.Context, plat string) int {
-	caps, _ := d.Caps(ctx, plat)
-	return caps.Media.Images.MaxCount
-}
-
-// fanoutChain posts an assembled reproduction (commentary + original text + url,
-// with re-hosted source media capped per platform) as a normal thread.
-// interactText is the commentary for one platform: its per-platform text
-// override when set (mirrors Post honoring ov.Text), else the master commentary.
-func interactText(spec InteractSpec, plat string) string {
-	if t := spec.Overrides[plat].Text; t != "" {
-		return t
-	}
-	return spec.Text
+// mediaMax is the per-post image cap of target t's account (0 = no cap),
+// the same value the splitter and the preview use.
+func (d *Dispatcher) mediaMax(ctx context.Context, t TargetSpec) int {
+	return d.Caps(ctx, t.AccountID, t.Type).Media.Images.MaxCount
 }
 
 // marshalRef serializes the source's native ref for Interaction.Ref, so a
@@ -155,13 +167,19 @@ func marshalRef(ref InteractRef) json.RawMessage {
 const errNoInteractionRef = "cannot retry: this reply/quote/repost was recorded without its source reference; redo it from the composer"
 
 // interactionAction returns how a retry must re-run target tg of post: the
-// head action for the interaction's source-platform target (reply/quote head,
-// or a repost), nil/false for every other target (plain posts, including
-// quote fan-out reproductions). ok=false with a target means the action
-// can't be repeated (missing ref).
+// head action for the interaction's source target (reply/quote head, or a
+// repost), nil/false for every other target (plain posts, including quote
+// link-quote copies). The source target is the source account's, or for
+// an interaction recorded before accounts were, the target of the
+// source's type. ok=false with a target means the action can't be
+// repeated (missing ref).
 func interactionAction(post *store.Post, tg store.Target) (head *headSpec, repost *InteractRef, isAction, ok bool) {
 	ix := post.Interaction
-	if ix == nil || tg.Platform != ix.SourcePlatform {
+	if ix == nil {
+		return nil, nil, false, true
+	}
+	if ix.SourceAccount != "" && tg.AccountID != ix.SourceAccount ||
+		ix.SourceAccount == "" && tg.Platform != ix.SourcePlatform {
 		return nil, nil, false, true
 	}
 	var ref InteractRef

@@ -26,7 +26,7 @@ func TestScheduleCreatesPendingPost(t *testing.T) {
 	st := newTestStore(t)
 	d := &Dispatcher{Store: st}
 	at := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	rec, err := d.Schedule(context.Background(), PostSpec{
+	rec, err := d.Schedule(context.Background(), typeSpec{
 		MasterText: "hello", Platforms: []string{"bluesky"}, Source: "web",
 		Overrides: map[string]Overrides{"bluesky": {Langs: []string{"en"}}},
 	}, at)
@@ -51,13 +51,13 @@ func TestScheduleCreatesPendingPost(t *testing.T) {
 func TestScheduleSplitsOverLimitIntoChain(t *testing.T) {
 	st := newTestStore(t)
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f}), Store: st}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Bluesky: f}), Store: st}
 
 	limit := bskyCaps.Text.MaxLength // 300
 	// Two paragraphs, each within the limit, together over it → 2 segments.
 	long := strings.Repeat("a", limit-50) + "\n\n" + strings.Repeat("b", limit-50)
 	at := time.Now().Add(-time.Minute).UTC()
-	rec, err := d.Schedule(context.Background(), PostSpec{
+	rec, err := d.Schedule(context.Background(), typeSpec{
 		MasterText: long, Platforms: []string{"bluesky"}, Source: "web",
 	}, at)
 	if err != nil {

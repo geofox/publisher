@@ -176,7 +176,10 @@ func TestMigrateTargetItemsCarriesEverything(t *testing.T) {
 	}
 }
 
-// Startup seeding enables configured types, disables the rest and keeps ids.
+// Startup seeding creates a row per configured account, keeps ids, and
+// never changes an existing row (enabled is the owner's; whether an env
+// account is configured is the registry's call). Rows added in the app
+// are left alone.
 func TestSeedEnvAccounts(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
@@ -184,28 +187,53 @@ func TestSeedEnvAccounts(t *testing.T) {
 	}
 	defer s.Close()
 	ctx := context.Background()
-	first, err := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{"bluesky", "Bluesky"}, {"nostr", "Nostr"}})
+	byKey := func(rows []Account) map[string]Account {
+		out := map[string]Account{}
+		for _, a := range rows {
+			out[a.Type+"/"+a.EnvKey] = a
+		}
+		return out
+	}
+	first, err := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{Type: "bluesky", Label: "Bluesky"},
+		{Type: "nostr", Key: EnvKeyDefault, Label: "Nostr"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first) != 2 || first["bluesky"].Label != "Bluesky" || !first["bluesky"].Enabled {
+	f := byKey(first)
+	if len(first) != 2 || f["bluesky/default"].Label != "Bluesky" || !f["bluesky/default"].Enabled {
 		t.Fatalf("first seed = %+v", first)
 	}
-	second, err := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{"nostr", "Nostr"}})
+	// The owner turned Bluesky off and renamed Nostr; the environment
+	// dropped Bluesky and added a second Nostr account.
+	off, label := false, "Mine"
+	if _, err := s.UpdateAccountMeta(ctx, DefaultOwner, f["bluesky/default"].ID, AccountMeta{Enabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateAccountMeta(ctx, DefaultOwner, f["nostr/default"].ID, AccountMeta{Label: &label}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertAccount(ctx, Account{ID: "acc_db", Type: "nostr", Label: "Added", Source: "db", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{Type: "nostr", Label: "Nostr"},
+		{Type: "nostr", Key: "2", Label: "Nostr"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(second) != 1 || second["nostr"].ID != first["nostr"].ID {
-		t.Fatalf("second seed = %+v; ids must be stable", second)
+	g := byKey(second)
+	if len(second) != 3 {
+		t.Fatalf("second seed = %+v; want every env row, and not the app's", second)
 	}
-	all, _ := s.Accounts(ctx, DefaultOwner)
-	for _, a := range all {
-		if a.Type == "bluesky" && a.Enabled {
-			t.Errorf("an unconfigured type must be disabled, not deleted: %+v", a)
-		}
+	if g["nostr/default"].ID != f["nostr/default"].ID || g["nostr/default"].Label != "Mine" {
+		t.Errorf("nostr = %+v; the id must be stable and the owner's label kept", g["nostr/default"])
 	}
-	third, _ := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{"bluesky", "Bluesky"}})
-	if third["bluesky"].ID != first["bluesky"].ID {
-		t.Errorf("re-enabled account must keep its id")
+	if b := g["bluesky/default"]; b.ID != f["bluesky/default"].ID || b.Enabled {
+		t.Errorf("bluesky = %+v; an unconfigured account keeps its row and the owner's enabled", b)
+	}
+	if n := g["nostr/2"]; n.ID == "" || n.ID == g["nostr/default"].ID || !n.Enabled {
+		t.Errorf("second nostr = %+v", n)
+	}
+	if a, err := s.Account(ctx, DefaultOwner, "acc_db"); err != nil || a.Label != "Added" || a.Source != "db" {
+		t.Errorf("app account = %+v, %v", a, err)
 	}
 }

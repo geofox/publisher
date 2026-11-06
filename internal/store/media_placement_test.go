@@ -17,7 +17,7 @@ func TestSegmentImagesRoundTrip(t *testing.T) {
 			},
 		}},
 	}
-	if err := s.SavePost(p); err != nil {
+	if err := saveWithAccounts(s, p); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetPost(p.ID)

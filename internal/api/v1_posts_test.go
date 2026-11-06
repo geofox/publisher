@@ -32,7 +32,7 @@ func (e *v1Env) seedPostAt(id, status string, at time.Time, platforms ...string)
 		}
 		p.Targets = append(p.Targets, tg)
 	}
-	if err := e.st.SavePost(p); err != nil {
+	if err := e.savePost(p); err != nil {
 		e.t.Fatal(err)
 	}
 	got, err := e.st.GetPost(id)
@@ -49,7 +49,7 @@ func (e *v1Env) seedScheduled(id string, at time.Time, platforms ...string) *sto
 	for _, pl := range platforms {
 		p.Targets = append(p.Targets, store.Target{Platform: pl, Status: "scheduled", FinalText: "later"})
 	}
-	if err := e.st.SavePost(p); err != nil {
+	if err := e.savePost(p); err != nil {
 		e.t.Fatal(err)
 	}
 	got, err := e.st.GetPost(id)
@@ -163,7 +163,7 @@ func TestV1PostsNeedingAttention(t *testing.T) {
 	p := &store.Post{ID: "x", CreatedAt: now, Platforms: []string{"bluesky"}, Source: "test", Status: "sending",
 		Targets: []store.Target{{Platform: "bluesky", Status: "sending", Items: []store.Item{
 			{Ordinal: 0, Text: "x", Status: store.ItemPlanned, IdemKey: store.LegacyItemKey("x", "bluesky", 0), NextAttemptAt: &now}}}}}
-	if err := e.st.SavePost(p); err != nil {
+	if err := e.savePost(p); err != nil {
 		t.Fatal(err)
 	}
 	c, err := e.st.ClaimItem(ctx, now, store.ClaimFilter{})
@@ -468,7 +468,7 @@ func TestV1PostEventsFollowsAPost(t *testing.T) {
 	p := &store.Post{ID: "x", CreatedAt: now, Platforms: []string{"bluesky"}, Source: "test", Status: "sending",
 		Targets: []store.Target{{Platform: "bluesky", Status: "sending", Items: []store.Item{
 			{Ordinal: 0, Text: "x", Status: store.ItemPlanned, IdemKey: store.LegacyItemKey("x", "bluesky", 0), NextAttemptAt: &now}}}}}
-	if err := e.st.SavePost(p); err != nil {
+	if err := e.savePost(p); err != nil {
 		t.Fatal(err)
 	}
 	go func() {
@@ -599,7 +599,7 @@ func TestV1RetryEdgeCases(t *testing.T) {
 		p.Targets[0].Items = append(p.Targets[0].Items, store.Item{Ordinal: i, Text: "x", Status: store.ItemPlanned,
 			IdemKey: store.LegacyItemKey("t", "bluesky", i), NextAttemptAt: &now})
 	}
-	if err := e.st.SavePost(p); err != nil {
+	if err := e.savePost(p); err != nil {
 		t.Fatal(err)
 	}
 	c, _ := e.st.ClaimItem(ctx, now, store.ClaimFilter{})
@@ -632,7 +632,7 @@ func TestV1RetryDeliveries(t *testing.T) {
 	e := newV1Env(t, true)
 	d := &relayDispatch{mu: make(chan struct{}, 10)}
 	e.api.Dispatch = d
-	if err := e.st.SavePost(&store.Post{
+	if err := e.savePost(&store.Post{
 		ID: "n", CreatedAt: time.Now().UTC(), Platforms: []string{"nostr"}, Source: "web", Status: "partial",
 		Targets: []store.Target{{Platform: "nostr", Status: "partial", FinalText: "hi",
 			Relays: []store.RelayState{{URL: "wss://a", Status: "ok"}, {URL: "wss://b", Status: "failed"}}}},

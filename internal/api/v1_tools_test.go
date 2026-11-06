@@ -190,9 +190,7 @@ func TestV1Relays(t *testing.T) {
 	wantProblem(t, e.do(req{method: "GET", path: "/v1/accounts/" + e.acct("bluesky") + "/nostr/relays"}), 404, codeNotFound)
 	wantProblem(t, e.do(req{method: "GET", path: "/v1/accounts/acc_nope/nostr/relays"}), 404, codeNotFound)
 	// A disabled Nostr account.
-	if _, err := e.st.SeedEnvAccounts(context.Background(), store.DefaultOwner, []store.EnvAccount{{Type: "bluesky", Label: "Bluesky"}}); err != nil {
-		t.Fatal(err)
-	}
+	e.disable(e.acct("nostr"))
 	wantProblem(t, e.do(req{method: "GET", path: base}), 409, codeInvalidState)
 	// Relay sync needs admin.
 	_, raw, err := e.st.CreateScopedToken("w", []string{"posts:write"}, time.Time{})

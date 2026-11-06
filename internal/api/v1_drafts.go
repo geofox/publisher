@@ -206,7 +206,7 @@ func (a *API) checkDraft(ctx context.Context, owner string, in *v1DraftIn) ([]fi
 			// Options as the post checks them, against the account's
 			// destination; without one, only their shape.
 			if drv, registered := destination.Lookup(ac.Type); ok && registered {
-				a.planOptions(drv.Manifest(), a.caps(ctx, ac.Type), t.Options, ptr+"/options", &dispatch.Overrides{}, add)
+				a.planOptions(drv.Manifest(), a.caps(ctx, ac.ID, ac.Type), t.Options, ptr+"/options", &dispatch.Overrides{}, add)
 			} else {
 				for k, v := range t.Options {
 					op := ptr + "/options/" + jsonPointerToken(k)

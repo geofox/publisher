@@ -1,0 +1,80 @@
+package drivers
+
+import (
+	"context"
+	"path/filepath"
+	"reflect"
+	"testing"
+
+	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/nostr"
+	"github.com/geofox/publisher/internal/store"
+)
+
+// The 2.x relay-sync list goes to the first env Nostr account; every env
+// Nostr account without a list starts with its own SYNC_RELAYS; a Nostr
+// account added from the web is left alone; and running it again (every
+// start) never brings back a relay the owner removed.
+func TestAdoptLegacySyncRelays(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	legacy := []string{"wss://old-a.example", "wss://old-b.example"}
+	if err := st.SetSyncRelays(legacy); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.SeedEnvAccounts(ctx, store.DefaultOwner, []store.EnvAccount{
+		{Type: nostr.Type, Key: destination.EnvKeyDefault, Label: "Nostr"},
+		{Type: nostr.Type, Key: "2", Label: "Nostr 2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertAccount(ctx, store.Account{ID: "acc_web", Type: nostr.Type, Label: "Web", Source: "web", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	seed := func(urls ...string) map[string]any { return map[string]any{nostr.ConfigSyncRelaysSeed: urls} }
+	env := []EnvAccount{
+		{Type: nostr.Type, EnvAccount: destination.EnvAccount{Key: destination.EnvKeyDefault, Config: seed("wss://env-1.example")}},
+		{Type: nostr.Type, EnvAccount: destination.EnvAccount{Key: "2", Config: seed("wss://env-2.example")}},
+	}
+	all := append(append([]store.Account{}, rows...), store.Account{ID: "acc_web", Type: nostr.Type, Source: "web"})
+	if err := AdoptLegacy(ctx, st, all, env); err != nil {
+		t.Fatal(err)
+	}
+	list := func(id string) []string {
+		t.Helper()
+		got, err := st.AccountSyncRelays(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	first, second := rows[0].ID, rows[1].ID
+	if got := list(first); !reflect.DeepEqual(got, legacy) {
+		t.Errorf("first env account = %v, want the 2.x list %v", got, legacy)
+	}
+	if got := list(second); !reflect.DeepEqual(got, []string{"wss://env-2.example"}) {
+		t.Errorf("second env account = %v, want its SYNC_RELAYS", got)
+	}
+	if got := list("acc_web"); len(got) != 0 {
+		t.Errorf("web account = %v, want no list", got)
+	}
+
+	// The owner trims the first list; the next start keeps the trim.
+	if err := st.SetAccountSyncRelays(ctx, first, legacy[:1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := AdoptLegacy(ctx, st, all, env); err != nil {
+		t.Fatal(err)
+	}
+	if got := list(first); !reflect.DeepEqual(got, legacy[:1]) {
+		t.Errorf("after a restart the first list = %v, want the owner's %v", got, legacy[:1])
+	}
+	if got := list(second); !reflect.DeepEqual(got, []string{"wss://env-2.example"}) {
+		t.Errorf("after a restart the second list = %v", got)
+	}
+}

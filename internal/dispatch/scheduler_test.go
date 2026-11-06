@@ -38,9 +38,9 @@ func (stubNostr) Quote(context.Context, string, string, string, string, []gonost
 func TestEngineFiresDueScheduledPost(t *testing.T) {
 	st := newTestStore(t)
 	fn := &fakeNotifier{}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostr{}}), Store: st, Alerter: fn, ScheduleGrace: 2 * time.Hour}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: stubNostr{}}), Store: st, Alerter: fn, ScheduleGrace: 2 * time.Hour}
 	at := time.Now().Add(-time.Minute).UTC()
-	rec, err := d.Schedule(context.Background(), PostSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"}, at)
+	rec, err := d.Schedule(context.Background(), typeSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"}, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,8 +60,8 @@ func TestEngineFiresDueScheduledPost(t *testing.T) {
 func TestEngineLeavesFutureScheduledPost(t *testing.T) {
 	st := newTestStore(t)
 	n := 0
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostr{calls: &n}}), Store: st}
-	rec, err := d.Schedule(context.Background(), PostSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"},
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: stubNostr{calls: &n}}), Store: st}
+	rec, err := d.Schedule(context.Background(), typeSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"},
 		time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -80,9 +80,9 @@ func TestEngineLeavesFutureScheduledPost(t *testing.T) {
 func TestFireSkipsAlreadyDispatched(t *testing.T) {
 	st := newTestStore(t)
 	n := 0
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostr{calls: &n}}), Store: st}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: stubNostr{calls: &n}}), Store: st}
 	at := time.Now().Add(-time.Minute).UTC()
-	rec, err := d.Schedule(context.Background(), PostSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"}, at)
+	rec, err := d.Schedule(context.Background(), typeSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"}, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,9 +104,9 @@ func TestEngineMarksMissed(t *testing.T) {
 	st := newTestStore(t)
 	n := 0
 	fn := &fakeNotifier{}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostr{calls: &n}}), Store: st, Alerter: fn, ScheduleGrace: 2 * time.Hour}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: stubNostr{calls: &n}}), Store: st, Alerter: fn, ScheduleGrace: 2 * time.Hour}
 	at := time.Now().Add(-5 * time.Hour).UTC() // overdue beyond 2h grace
-	rec, err := d.Schedule(context.Background(), PostSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"}, at)
+	rec, err := d.Schedule(context.Background(), typeSpec{MasterText: "x", Platforms: []string{"nostr"}, Source: "web"}, at)
 	if err != nil {
 		t.Fatal(err)
 	}

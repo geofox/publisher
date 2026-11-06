@@ -124,7 +124,7 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 			if !r.relayDue(rl, now) || ctx.Err() != nil {
 				continue
 			}
-			if _, err := r.disp.RetryRelay(ctx, id, rl.URL); err != nil {
+			if _, err := r.disp.RetryTargetRelay(ctx, id, t.ID, rl.URL); err != nil {
 				slog.ErrorContext(ctx, "retrier: relay retry failed", "relay", rl.URL, "err", err)
 			} else {
 				slog.InfoContext(ctx, "retrier: rebroadcast to relay", "relay", rl.URL)

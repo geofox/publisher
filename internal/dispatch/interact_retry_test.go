@@ -45,7 +45,7 @@ func newInteractRetryDispatcher(t *testing.T, m *flakyMasto) *Dispatcher {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return &Dispatcher{Accounts: legacyAccounts(legacy{Mastodon: m}), Store: db, Fetcher: fakeFetcher{}}
+	return &Dispatcher{Registry: legacyAccounts(legacy{Mastodon: m}), Store: db, Fetcher: fakeFetcher{}}
 }
 
 // A failed interaction must be retried as the same interaction. Before the fix
@@ -64,7 +64,7 @@ func TestRetryRepeatsInteraction(t *testing.T) {
 		t.Run(tc.action, func(t *testing.T) {
 			m := &flakyMasto{}
 			d := newInteractRetryDispatcher(t, m)
-			p := d.Interact(context.Background(), InteractSpec{
+			p := d.Interact(context.Background(), typeInteract{
 				Action: tc.action, SourcePlatform: "mastodon",
 				Ref: InteractRef{LocalID: "109"}, Text: "commentary",
 			})
@@ -97,7 +97,7 @@ func TestRetryInteractionWithoutRefFailsClosed(t *testing.T) {
 	m := &flakyMasto{}
 	d := newInteractRetryDispatcher(t, m)
 	now := time.Now().UTC()
-	if err := d.Store.SavePost(&store.Post{
+	if err := saveWithAccounts(d.Store, &store.Post{
 		ID: "old", CreatedAt: now, Platforms: []string{"mastodon"}, Source: "web", Status: "failed",
 		Interaction: &store.Interaction{Action: actionReply, SourcePlatform: "mastodon", SourceURL: "https://m/@a/109"},
 		Targets: []store.Target{{Platform: "mastodon", Status: "failed", FinalText: "my reply",
@@ -127,7 +127,7 @@ func TestRetryResumesThreadedReplyHead(t *testing.T) {
 	m := &flakyMasto{}
 	d := newInteractRetryDispatcher(t, m)
 	long := strings.Repeat("word ", 150) // 750 chars: two Mastodon segments
-	p := d.Interact(context.Background(), InteractSpec{
+	p := d.Interact(context.Background(), typeInteract{
 		Action: actionReply, SourcePlatform: "mastodon", Ref: InteractRef{LocalID: "109"}, Text: long,
 	})
 	if p.Status != "failed" || len(p.Targets[0].Segments) < 2 {

@@ -104,7 +104,8 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 	for _, p := range imgParts {
 		lay.MediaAt = append(lay.MediaAt, parts[min(max(p, 0), len(parts)-1)])
 	}
-	tg := d.planTarget(ctx, id, plat, text, ov, postMedia(len(imgs)), lay, number, &now, "sending")
+	tg := d.planTarget(ctx, id, TargetSpec{AccountID: acct(plat), Type: plat, Text: text, Overrides: ov, Layout: lay},
+		postMedia(len(imgs)), number, &now, "sending")
 	rec := &store.Post{ID: id, CreatedAt: now, MasterText: text, Platforms: []string{plat}, Source: "test",
 		Status: "sending", Media: mediaRecords(imgs), Targets: []store.Target{tg}}
 	if head != nil {
@@ -117,7 +118,7 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 		}
 		rec.Interaction = ix
 	}
-	if err := d.drive(ctx, id, &memMedia{post: imgs}, func() error { return st.SavePost(rec) }); err != nil {
+	if err := d.drive(ctx, id, &memMedia{post: imgs}, func() error { return saveWithAccounts(st, rec) }); err != nil {
 		panic(err)
 	}
 	post, err := st.GetPost(id)
@@ -142,7 +143,7 @@ func (d *Dispatcher) resumeSegments(ctx context.Context, tg store.Target, ov Ove
 	}
 	rec := &store.Post{ID: id, CreatedAt: d.now(), Platforms: []string{tg.Platform}, Source: "test", Status: "partial",
 		Media: mediaRecords(imgs), Targets: []store.Target{tg}}
-	if err := st.SavePost(rec); err != nil {
+	if err := saveWithAccounts(st, rec); err != nil {
 		panic(err)
 	}
 	saved, err := st.GetPost(id)
@@ -171,7 +172,7 @@ func segRef(sg store.Segment) destination.ItemRef {
 }
 
 // marked is spec with its "---" lines turned into breaks for every platform.
-func marked(spec PostSpec) PostSpec {
+func marked(spec typeSpec) typeSpec {
 	text, breaks, _ := thread.FromMarkers(spec.MasterText)
 	spec.MasterText = text
 	spec.Layouts = map[string]thread.Layout{}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/threads"
 )
@@ -109,4 +110,43 @@ func (l LegacyState) Save(_ context.Context, row store.Account, u destination.St
 		}
 	}
 	return l.Store.SaveThreadsToken(next.Token, next.ExpiresAt, next.SeedHash, next.RefreshedAt)
+}
+
+// LegacyStore is where 2.x kept state of "the" account of a type that now
+// belongs to one account.
+type LegacyStore interface {
+	AdoptLegacySyncRelays(ctx context.Context, accountID string) (bool, error)
+	SeedAccountSyncRelaysIfEmpty(ctx context.Context, accountID string, urls []string) error
+}
+
+// AdoptLegacy gives state 2.x kept for the one account of a type to the
+// env account that owns it now: the relay-sync list goes to the first env
+// Nostr account when that account has none yet. Then each env Nostr
+// account without a list starts with its SYNC_RELAYS. rows are the env
+// rows (SeedEnvAccounts) in registry order within the type; env says
+// which rows the environment configures. Idempotent.
+func AdoptLegacy(ctx context.Context, st LegacyStore, rows []store.Account, env []EnvAccount) error {
+	var errs []error
+	adopted := false
+	for _, row := range rows {
+		if row.Type != nostr.Type || row.Source != "env" {
+			continue
+		}
+		if !adopted {
+			adopted = true
+			if _, err := st.AdoptLegacySyncRelays(ctx, row.ID); err != nil {
+				errs = append(errs, fmt.Errorf("relay-sync list: %w", err))
+			}
+		}
+		for _, e := range env {
+			if e.Type != row.Type || e.Key != row.EnvKey {
+				continue
+			}
+			seed, _ := destination.ConfigStrings(e.Config, nostr.ConfigSyncRelaysSeed)
+			if err := st.SeedAccountSyncRelaysIfEmpty(ctx, row.ID, seed); err != nil {
+				errs = append(errs, fmt.Errorf("relay-sync list: %w", err))
+			}
+		}
+	}
+	return errors.Join(errs...)
 }

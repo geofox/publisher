@@ -16,7 +16,7 @@ func TestClaimCarriesStoredKeyAndAccount(t *testing.T) {
 	p := &Post{ID: "k1", CreatedAt: time.Now().UTC(), Platforms: []string{"mastodon"}, Source: "test", Status: "sending",
 		Targets: []Target{{Platform: "mastodon", Status: "sending", Items: []Item{
 			{Ordinal: 0, Text: "a", Status: ItemPlanned, IdemKey: "stored-key", NextAttemptAt: &due}}}}}
-	if err := s.SavePost(p); err != nil {
+	if err := saveWithAccounts(s, p); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.GetPost("k1")

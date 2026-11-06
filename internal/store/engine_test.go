@@ -31,7 +31,7 @@ func plannedPost(t *testing.T, s *Store, id string, due time.Time, n int, platfo
 		}
 		p.Targets = append(p.Targets, tg)
 	}
-	if err := s.SavePost(p); err != nil {
+	if err := saveWithAccounts(s, p); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetPost(id)

@@ -61,7 +61,7 @@ func TestRunChainEnqueuesFanoutPerSegment(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: &fanoutNostr{}}), Store: st}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: &fanoutNostr{}}), Store: st}
 	imgs := []Img{{BlossomURL: "https://b/x"}}
 	o := d.runChain(context.Background(), "nostr", "a\n---\nb", Overrides{}, imgs, false, []int{0}, nil, "post1")
 	if o.Status != "success" {
@@ -83,7 +83,7 @@ func TestRunChainFailedPrimaryEnqueuesNoFanout(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: &fanoutNostrFail{}}), Store: st}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: &fanoutNostrFail{}}), Store: st}
 	imgs := []Img{{BlossomURL: "https://b/x"}}
 	// Single-segment publish that fails at the primary relay.
 	d.runChain(context.Background(), "nostr", "hello", Overrides{}, imgs, false, []int{0}, nil, "post2")

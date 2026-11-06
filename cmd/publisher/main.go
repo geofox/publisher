@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/api"
 	"github.com/geofox/publisher/internal/auth"
 	"github.com/geofox/publisher/internal/bluesky"
@@ -92,52 +93,76 @@ func main() {
 	mp.Lookup = st.LookupMediaURL
 
 	uf := unfurl.New()
-	// One account per destination type, from the environment (the account
-	// registry adds more); a type whose variables aren't set has no account,
-	// so posting to it fails as "not configured" before any network call.
-	// Each configured type is one env-sourced stored account with a stable
-	// id; unconfigured types' accounts are disabled (their history stays).
+	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
+	// Every account the environment configures has a stored row with a
+	// stable id; state 2.x kept for "the" account of a type moves to it;
+	// then the registry opens what it can (without network I/O).
 	var seed []store.EnvAccount
 	for _, e := range env {
 		drv, _ := destination.Lookup(e.Type)
-		seed = append(seed, store.EnvAccount{Type: e.Type, Label: drv.Manifest().Name})
+		seed = append(seed, store.EnvAccount{Type: e.Type, Key: e.Key, Label: drv.Manifest().Name})
 	}
-	seeded, err := st.SeedEnvAccounts(context.Background(), store.DefaultOwner, seed)
+	envRows, err := st.SeedEnvAccounts(context.Background(), store.DefaultOwner, seed)
 	if err != nil {
 		slog.Error("seeding accounts failed", "err", err)
 		os.Exit(1)
 	}
-	accountIDs := dispatch.ConnectedIDs(seeded)
-	accounts, err := drivers.OpenEnv(context.Background(), env, accountIDs, destination.Tuning{
-		PublishTimeout:  cfg.PublishTimeout,
-		POWTimeout:      cfg.POWTimeout,
-		RelayCacheTTL:   cfg.RelayCacheTTL,
-		VerifyTimeout:   cfg.VerifyHTTPTimeout,
-		PLCDirectoryURL: cfg.PLCDirectoryURL,
+	if err := drivers.AdoptLegacy(context.Background(), st, envRows, env); err != nil {
+		slog.Error("adopting 2.x account state failed; it is tried again at the next start", "err", err)
+	}
+	regEnv := make([]accounts.EnvAccount, 0, len(env))
+	for _, e := range env {
+		regEnv = append(regEnv, accounts.EnvAccount{Type: e.Type, EnvAccount: e.EnvAccount})
+	}
+	reg := accounts.New(accounts.Options{
+		Store: st,
+		Env:   regEnv,
+		State: drivers.LegacyState{Store: st},
+		Tuning: destination.Tuning{
+			PublishTimeout:  cfg.PublishTimeout,
+			POWTimeout:      cfg.POWTimeout,
+			RelayCacheTTL:   cfg.RelayCacheTTL,
+			VerifyTimeout:   cfg.VerifyHTTPTimeout,
+			PLCDirectoryURL: cfg.PLCDirectoryURL,
+		},
+		Alerter: notifier,
 	})
-	if err != nil {
-		slog.Error("opening accounts failed", "err", err)
+	if err := reg.Load(context.Background()); err != nil {
+		slog.Error("loading accounts failed", "err", err)
 		os.Exit(1)
 	}
-	// The identity, source resolution and token services still take the
-	// clients (until they work by account in part A2). Nostr is always
-	// configured here; the others are nil when unset.
-	np := accounts[pubnostr.Type].(*pubnostr.Account).P
+	defer reg.Close()
+	// The identity, source resolution and relay-sync services still take
+	// one client per type: the first connected account's (A2.4 makes them
+	// work by account). Their leases are held for the process's life.
+	first := func(typ string) destination.Account {
+		for _, e := range reg.OfType(store.DefaultOwner, typ) {
+			if acct, _, err := reg.Acquire(e.Row.ID); err == nil {
+				return acct
+			}
+		}
+		return nil
+	}
+	na, ok := first(pubnostr.Type).(*pubnostr.Account)
+	if !ok {
+		slog.Error("the Nostr account from NSEC_HEX could not be opened")
+		os.Exit(1)
+	}
+	np := na.P
 	var bc *bluesky.Client
-	if a, ok := accounts[bluesky.Type].(*bluesky.Account); ok {
+	if a, ok := first(bluesky.Type).(*bluesky.Account); ok {
 		bc = a.C
 	}
 	var mc *mastodon.Client
-	if a, ok := accounts[mastodon.Type].(*mastodon.Account); ok {
+	if a, ok := first(mastodon.Type).(*mastodon.Account); ok {
 		mc = a.C
 	}
 	var tc *threads.Client
-	if a, ok := accounts[threads.Type].(*threads.Account); ok {
+	if a, ok := first(threads.Type).(*threads.Account); ok {
 		tc = a.C
 	}
 	d := &dispatch.Dispatcher{
-		Accounts:   accounts,
-		AccountIDs: accountIDs,
+		Registry: reg,
 		// Re-encoded variants for URL-transport destinations (Threads) are
 		// hosted on Blossom; content addressing makes a retry reuse the URL.
 		Host: func(ctx context.Context, body []byte, mime string) (string, error) {
@@ -151,6 +176,7 @@ func main() {
 		Fetcher:  mp,
 		Notify:   feed.NewWebhook(cfg.FeedWebhookURL, cfg.FeedWebhookToken),
 		Unfurler: uf,
+		Alerter:  notifier,
 		Policy: dispatch.RetryPolicy{Enabled: cfg.AutoRetryEnabled, MaxAttempts: cfg.AutoRetryMaxAttempts,
 			Base: cfg.AutoRetryBaseDelay, Max: cfg.AutoRetryMaxDelay},
 		Workers:       cfg.PublishWorkers,
@@ -160,6 +186,7 @@ func main() {
 	a.Store = st
 	a.Dispatch = d
 	a.Caps = d.Caps
+	a.Accounts = reg
 	a.Locator = d
 	a.Unfurl = uf
 	a.UserLanguages = cfg.UserLanguages
@@ -226,7 +253,7 @@ func main() {
 	for typ, field := range map[string]*resolve.Source{
 		bluesky.Type: &rs.Bluesky, mastodon.Type: &rs.Mastodon, pubnostr.Type: &rs.Nostr,
 	} {
-		if r, ok := accounts[typ].(destination.SourceResolver); ok {
+		if r, ok := first(typ).(destination.SourceResolver); ok {
 			*field = resolve.AccountAdapter{R: r}
 		}
 	}
@@ -244,8 +271,6 @@ func main() {
 			}
 			return nil
 		}})
-	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
-	d.Alerter = notifier
 	a.AllowedHosts = cfg.AllowedHosts
 	if !cfg.OIDCEnabled() && len(cfg.AllowedHosts) == 0 {
 		slog.Warn("OIDC is off and ALLOWED_HOSTS is unset: set ALLOWED_HOSTS to the host name you reach publisher by, so a web page can't reach it through DNS rebinding")
@@ -317,10 +342,10 @@ func main() {
 			}
 		}
 	}()
-	if e, ok := envAccount(env, threads.Type); ok && tc != nil {
-		mgr := threads.NewTokenManager(st, tc, notifier, e.Secrets[threads.SecretAccessToken])
-		go mgr.Start(ctx)
-	}
+	// Credentials are renewed before they expire, and accounts are checked
+	// daily (and after a refused send).
+	go reg.RunRefresh(ctx)
+	go reg.RunChecks(ctx)
 	// The engine first recovers what a stopped process left in flight, then
 	// claims due items (scheduled posts, retries) in the background.
 	// Settle what a stopped process left sending before anything can claim:
@@ -333,7 +358,7 @@ func main() {
 		cfg.AutoRetryEnabled, cfg.AutoRetryMaxAttempts,
 		cfg.AutoRetryBaseDelay, cfg.AutoRetryMaxDelay, cfg.RetrierTick,
 	).Start(ctx)
-	go dispatch.NewFanout(d, np.PrimaryFanout(),
+	go dispatch.NewFanout(d,
 		cfg.AutoRetryMaxAttempts, cfg.AutoRetryBaseDelay, cfg.AutoRetryMaxDelay,
 		cfg.FanoutTick,
 	).Start(ctx)
@@ -349,13 +374,13 @@ func main() {
 	srv.RegisterOnShutdown(func() { close(stopping) })
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServe() }()
-	accountTypes := make([]string, 0, len(env))
-	for _, e := range env {
-		accountTypes = append(accountTypes, e.Type)
+	var accountList []string
+	for _, e := range reg.List(store.DefaultOwner) {
+		accountList = append(accountList, e.Row.Type+":"+e.Row.ID+"="+string(e.Status))
 	}
 	slog.Info("publisher starting",
 		"port", cfg.Port,
-		"accounts", accountTypes,
+		"accounts", accountList,
 		"pubkey", np.OwnerPubkey().Hex(),
 		"blossom", cfg.BlossomURL,
 		"bootstrap_relay", np.HomeRelay(),

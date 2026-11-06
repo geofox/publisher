@@ -512,6 +512,60 @@ One commit: every caller moves to the registry and account-keyed specs.
   account**; fan-out through its own account, through another when locked,
   waiting when none.
 
+### As built (A2.1–A2.3)
+
+- **Store names.** The per-account relay-sync functions are
+  `AccountSyncRelays`, `SetAccountSyncRelays`,
+  `SeedAccountSyncRelaysIfEmpty` and `AdoptLegacySyncRelays`; the global
+  `SyncRelays`/`SeedSyncRelaysIfEmpty` stay until A2.4 moves relay sync to
+  accounts. `InsertAccount(ctx, Account)` was added for tests and the
+  harness (a second account of a type, a `not_configured` row); C's write
+  API replaces it for real accounts.
+- **Test helpers stay in their packages.** `store` has
+  `fixtures_test.go` (`saveWithAccounts`, `testAccount`); `dispatch` has
+  `registry_test.go` (a `testRegistry` with lease counts, `typeSpec` and
+  `typeInteract` builders for the old per-type tests). No `storetest` or
+  `dispatchtest` package: nothing outside the package needs them yet.
+- **The dispatcher's per-type entry points** (`Post`, `Schedule`, `Fire`,
+  `Retry(types)`, `Interact`, `RetryRelay`) moved to `registry_test.go`
+  as test-only wrappers over `Enqueue` instead of rewriting about 150
+  tests; production code no longer has them.
+- **Registry status lives in memory.** It is recomputed on `Load` and by
+  checks; nothing new is stored. `destination.Expirer`
+  (`CredentialsExpireAt`) is how the refresh loop and the expiry alert
+  read an account's expiry; the Threads account implements it.
+- **A `Restore` error makes the account `locked`** ("its saved state could
+  not be read; it is retried at the next start") rather than failing the
+  start or opening with the environment's token, which could be older than
+  the refreshed one.
+- **Locked items wait `clamp(time since the post was due, 1 min, 15
+  min)`** rather than a per-item backoff: no attempt is counted, so the
+  backoff has nothing to grow from, and the post's age gives the same
+  shape. The item stays `planned` with `not_sent`, class `transient`, the
+  error "the account is locked: <reason>; it is sent once the account
+  opens", no settled step and no alert. Part C should make a locked
+  account's items due at once when it unlocks.
+- **`InteractSpec.Targets` includes the source account** (the one that
+  acts natively) with every copy; `split()` separates them and forces the
+  source target's type to `SourcePlatform`.
+- **The API checks accounts up front** (`accountUnusable`, pulled forward
+  from A2.5): a target whose account isn't loaded or can't send is refused
+  with `account_disabled` and the registry's reason, rather than being
+  accepted and failing as `auth`. `duplicate_type` stays until A2.5.
+- **Fan-out and relay retry** use the job's account, else the first
+  connected `Redeliverer` of the type, else wait; `NewFanout` lost its
+  `enabled` argument.
+- **Startup** (`main.go`): env accounts → `SeedEnvAccounts` →
+  `AdoptLegacy` (an error is logged, not fatal: the lists can be fixed in
+  the app) → `Registry.Load` → refresh and check loops → recovery →
+  workers. Until A2.4 the interim identity, resolve and relay-sync services
+  lease the first connected account of their type; startup still fails if
+  the env Nostr account can't open (A2.6 makes Nostr optional).
+- **Known follow-ups:** `internal/web/assets/accounts.js` picks the first
+  `enabled` account per type; since v11 every env row is enabled, so A2.5
+  must expose `status` and A3 (or A2.5) pick the first `connected` one.
+  `TokenManager` and `drivers.OpenEnv` are unused in production (A2.7).
+
 ### Task A2.4: services per account
 
 **Files:** delete `internal/identity`, `resolve.Service` and adapters;
@@ -1382,6 +1436,8 @@ Made by this plan; the spec is updated to match.
 | §2.1: order by type alphabetically | Order by driver registration (`TypesInOrder`), which keeps the composer's order. |
 | §2.2: `needs_reconnect` on an `auth` failure | Only after an authenticated check confirms it; a later passing check clears it. |
 | §2.2: locked items retried "on the normal schedule" | Not counted as attempts, never given up, claimed with retries off. |
+| Plan A2.3: locked items pushed "by the backoff" | Wait `clamp(age, 1 min, 15 min)`, no alert (see As built A2). |
+| Plan A2.5: unavailable account refused at create | Pulled into A2.3 (`accountUnusable`), so no post is accepted for an account that can't send. |
 | §2.4: `nostr_relay` readiness check kept | Dropped; each Nostr account's check covers its relay. |
 | §2.6: field code `duplicate_account` | Today's `duplicate` kept for the same account twice; `duplicate_account` is C's 409. |
 | §2.6: `profile` object | Flat `display_name`, `avatar` (as today) plus `profile_url`. |

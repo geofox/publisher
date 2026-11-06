@@ -46,13 +46,13 @@ func newFanoutTest(t *testing.T) (*store.Store, *countingRebroadcaster, *Dispatc
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	cr := &countingRebroadcaster{}
-	return st, cr, &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: stubNostrFanout{cr}}), Store: st}
+	return st, cr, &Dispatcher{Registry: legacyAccounts(legacy{Nostr: stubNostrFanout{cr}}), Store: st}
 }
 
 func TestFanoutWorkerDeliversAndMarksOK(t *testing.T) {
 	st, cr, d := newFanoutTest(t)
 	_ = st.EnqueueFanout("p", 0, `{"id":"ev"}`, []string{"wss://a", "wss://b"})
-	f := NewFanout(d, true, 6, time.Minute, time.Hour, time.Second) // different relays → both delivered in one pass
+	f := NewFanout(d, 6, time.Minute, time.Hour, time.Second) // different relays → both delivered in one pass
 	f.runDue(context.Background())
 	if len(cr.calls) != 2 {
 		t.Fatalf("delivered %d, want 2", len(cr.calls))
@@ -67,7 +67,7 @@ func TestFanoutWorkerPacesPerRelay(t *testing.T) {
 	// Two events to the SAME relay; per-relay pacing sends one per pass.
 	_ = st.EnqueueFanout("p", 0, `{"id":"ev1"}`, []string{"wss://a"})
 	_ = st.EnqueueFanout("p", 0, `{"id":"ev2"}`, []string{"wss://a"})
-	f := NewFanout(d, true, 6, time.Minute, time.Hour, time.Minute)
+	f := NewFanout(d, 6, time.Minute, time.Hour, time.Minute)
 	f.runDue(context.Background())
 	if len(cr.calls) != 1 {
 		t.Fatalf("same-relay pass delivered %d, want 1 (paced)", len(cr.calls))
@@ -78,7 +78,7 @@ func TestFanoutWorkerBacksOffOnFailure(t *testing.T) {
 	st, cr, d := newFanoutTest(t)
 	cr.fail = true
 	_ = st.EnqueueFanout("p", 0, `{"id":"ev"}`, []string{"wss://a"})
-	f := NewFanout(d, true, 6, time.Minute, time.Hour, 0)
+	f := NewFanout(d, 6, time.Minute, time.Hour, 0)
 	f.runDue(context.Background())
 	// Failed → deferred, not due now.
 	if jobs, _ := st.DueFanout(time.Now(), 10); len(jobs) != 0 {

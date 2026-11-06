@@ -156,7 +156,6 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 		add(ptr+"/url", "not_allowed", reason)
 	}
 	native := -1
-	var fanout []string
 	for i, pt := range plan.targets {
 		if pt.account.Type == src.Platform {
 			native = i
@@ -165,9 +164,7 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 		if action != "quote" {
 			add(pt.reqPtr+"/account", "not_allowed", "a "+action+" goes only to the source's network ("+src.Platform+
 				"); use a quote to share it elsewhere")
-			continue
 		}
-		fanout = append(fanout, pt.account.Type)
 	}
 	if native < 0 {
 		add("/targets", "missing_source_account", "include your "+src.Platform+" account: the "+action+" happens there")
@@ -190,16 +187,23 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 		webURL = in.URL
 	}
 	r := src.Ref
+	targets := make([]dispatch.TargetSpec, len(plan.targets))
+	for i, pt := range plan.targets {
+		targets[i] = dispatch.TargetSpec{AccountID: pt.account.ID, Type: pt.account.Type, Overrides: pt.ov, Layout: pt.layout}
+		if pt.own {
+			targets[i].Text = pt.text
+		}
+	}
 	ix := &dispatch.InteractSpec{
-		Action: action, SourcePlatform: src.Platform, SourceURL: webURL, SourceAuthor: author,
+		Action: action, SourcePlatform: src.Platform, SourceAccount: plan.targets[native].account.ID,
+		SourceURL: webURL, SourceAuthor: author,
 		Ref: dispatch.InteractRef{URI: r.URI, CID: r.CID, ReplyRootURI: r.ReplyRootURI, ReplyRootCID: r.ReplyRootCID,
 			LocalID: r.LocalID, EventID: r.EventID, Author: r.Author, RelayHints: r.RelayHints, Kind: r.Kind,
 			ThreadRootID: r.ThreadRootID, Mentions: r.Mentions},
-		Text: plan.spec.MasterText, Overrides: plan.spec.Overrides, Fanout: fanout, Number: plan.spec.Number,
+		Text: plan.spec.MasterText, Targets: targets, Number: plan.spec.Number,
 		MediaRecords:  plan.spec.MediaRecords,
 		SourcePreview: dispatch.SourcePreview{Author: author, Text: src.Preview.Text},
-		Source:        "api", Accounts: plan.spec.Accounts,
-		Layout: plan.spec.Layouts[src.Platform],
+		Source:        "api",
 	}
 	plan.ix, plan.source = ix, src
 	if allowed.Allowed && allowed.Reason != "" {
@@ -212,11 +216,11 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 		case action == "repost":
 			pt.text = ""
 		case i == native:
-			pt.text = dispatch.InteractText(*ix, pt.account.Type)
+			pt.text = dispatch.InteractText(*ix, targets[i])
 		default:
 			// A link-quote copy is split automatically, every media on
 			// its first post.
-			pt.text = dispatch.ReproductionText(*ix, pt.account.Type)
+			pt.text = dispatch.ReproductionText(*ix, targets[i])
 			pt.layout = thread.Layout{MediaAt: make([]int, len(plan.media))}
 		}
 	}
@@ -243,7 +247,7 @@ func sourceImagesWanted(plan *createPlan) int {
 	}
 	room := 0
 	for _, pt := range plan.targets {
-		if pt.account.Type == plan.source.Platform || !pt.caps.Media.Images.Supported {
+		if pt.account.ID == plan.ix.SourceAccount || !pt.caps.Media.Images.Supported {
 			continue
 		}
 		r := maxSourceImages
@@ -261,7 +265,7 @@ func sourceImagesWanted(plan *createPlan) int {
 // to copy here).
 func (a *API) rehostSourceMedia(ctx context.Context, plan *createPlan) int {
 	ix, want := plan.ix, sourceImagesWanted(plan)
-	if a.media == nil || len(ix.Fanout) == 0 || want == 0 {
+	if a.media == nil || len(ix.Targets) < 2 || want == 0 {
 		return 0
 	}
 	ctx, cancel := context.WithTimeout(ctx, sourceMediaBudget)
@@ -436,11 +440,8 @@ func (a *API) v1Resolve(w http.ResponseWriter, r *http.Request) {
 		out.Media = append(out.Media, v1ResolveMedia{URL: m.URL, Alt: m.Alt, Type: kind})
 	}
 	for _, ac := range accts {
-		// The account planCreate would accept: enabled, on a registered
-		// destination, and the one the engine sends the type as.
-		sa, guarded := a.Dispatch.(accountSender)
-		if _, registered := destination.Lookup(ac.Type); ac.Enabled && registered && ac.Type == src.Platform &&
-			(!guarded || sa.SendsAs(ac.Type, ac.ID)) {
+		// The account planCreate would accept.
+		if ac.Type == src.Platform && a.accountUnusable(ac) == "" {
 			id := ac.ID
 			out.Account = &id
 			break

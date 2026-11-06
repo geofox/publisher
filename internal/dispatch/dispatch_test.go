@@ -50,8 +50,8 @@ func (*capturingNostr) Quote(context.Context, string, string, string, string, []
 
 func TestDispatchNostrImeta(t *testing.T) {
 	cn := &capturingNostr{}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: cn})}
-	rec := d.Post(context.Background(), PostSpec{
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Nostr: cn})}
+	rec := d.Post(context.Background(), typeSpec{
 		MasterText: "hi", Platforms: []string{"nostr"}, Source: "web",
 		Images: []Img{
 			{BlossomURL: "https://b/x", SHA256: "deadbeef", Mime: "image/png", Dim: "10x10", Blurhash: "LEH"},
@@ -74,8 +74,8 @@ func TestDispatchNostrImeta(t *testing.T) {
 
 func TestDispatchNostrNoMedia(t *testing.T) {
 	cn := &capturingNostr{}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: cn})}
-	d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"nostr"}, Source: "web"})
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Nostr: cn})}
+	d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"nostr"}, Source: "web"})
 	if len(cn.gotImetas) != 0 {
 		t.Errorf("text-only post should pass no imeta, got %v", cn.gotImetas)
 	}
@@ -94,8 +94,8 @@ func (fakeMasto) QuoteStatus(context.Context, string, string, []Img) (legacyResu
 }
 
 func TestDispatchFanOut(t *testing.T) {
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: fakeNostr{fail: true}, Mastodon: fakeMasto{}})}
-	rec := d.Post(context.Background(), PostSpec{
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Nostr: fakeNostr{fail: true}, Mastodon: fakeMasto{}})}
+	rec := d.Post(context.Background(), typeSpec{
 		MasterText: "hi", Platforms: []string{"nostr", "mastodon"}, Source: "web",
 	})
 	if rec.Status != "partial" {
@@ -114,7 +114,7 @@ func TestDispatchFanOut(t *testing.T) {
 
 func TestDispatchEmptyPlatforms(t *testing.T) {
 	d := &Dispatcher{Store: openDispatchStore(t)}
-	rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: nil, Source: "web"})
+	rec := d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: nil, Source: "web"})
 	if rec.Status != "failed" {
 		t.Errorf("empty platforms status = %q, want failed", rec.Status)
 	}
@@ -122,15 +122,15 @@ func TestDispatchEmptyPlatforms(t *testing.T) {
 
 func TestDispatchNilAdapter(t *testing.T) {
 	d := &Dispatcher{Store: openDispatchStore(t)} // Nostr nil
-	rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"nostr"}, Source: "web"})
+	rec := d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"nostr"}, Source: "web"})
 	if rec.Status != "failed" || rec.Targets[0].Attempts[0].Error == "" {
 		t.Errorf("nil adapter not handled: %+v", rec)
 	}
 }
 
 func TestDispatchDedupsPlatforms(t *testing.T) {
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: fakeNostr{}})}
-	rec := d.Post(context.Background(), PostSpec{
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Nostr: fakeNostr{}})}
+	rec := d.Post(context.Background(), typeSpec{
 		MasterText: "hi", Platforms: []string{"nostr", "nostr"}, Source: "web",
 	})
 	if len(rec.Targets) != 1 {
@@ -151,8 +151,8 @@ func (simpleFakeBsky) QuoteBsky(context.Context, string, Overrides, []Img, strin
 }
 
 func TestDispatchBluesky(t *testing.T) {
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: simpleFakeBsky{}})}
-	rec := d.Post(context.Background(), PostSpec{
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Bluesky: simpleFakeBsky{}})}
+	rec := d.Post(context.Background(), typeSpec{
 		MasterText: "hi", Platforms: []string{"bluesky"}, Source: "web",
 		Overrides: map[string]Overrides{"bluesky": {Langs: []string{"en"}}},
 	})
@@ -168,8 +168,8 @@ func (fakeThreads) PostThreads(ctx context.Context, text string, o Overrides, im
 }
 
 func TestDispatchThreads(t *testing.T) {
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Threads: fakeThreads{}})}
-	rec := d.Post(context.Background(), PostSpec{
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Threads: fakeThreads{}})}
+	rec := d.Post(context.Background(), typeSpec{
 		MasterText: "hi", Platforms: []string{"threads"}, Source: "web",
 		Overrides: map[string]Overrides{"threads": {TopicTag: "golang"}},
 	})
@@ -199,8 +199,8 @@ func (partialNostr) Quote(context.Context, string, string, string, string, []gon
 // A single partial target must make the whole post partial (not failed) — the
 // in-memory rec.Status returned to the API must match store.recomputeStatus.
 func TestPostPartialTarget(t *testing.T) {
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: partialNostr{}})}
-	rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"nostr"}, Source: "web"})
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Nostr: partialNostr{}})}
+	rec := d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"nostr"}, Source: "web"})
 	if rec.Status != "partial" {
 		t.Errorf("post status = %q, want partial", rec.Status)
 	}
@@ -213,7 +213,7 @@ func TestPostAlertsOnFailure(t *testing.T) {
 	st := openDispatchStore(t)
 	al := &fakeAlerter{}                     // defined in retrier_test.go (same package)
 	d := &Dispatcher{Store: st, Alerter: al} // no adapters → bluesky post fails
-	rec := d.Post(context.Background(), PostSpec{
+	rec := d.Post(context.Background(), typeSpec{
 		MasterText: "hello", Platforms: []string{"bluesky"},
 	})
 	if rec.Status == "success" {

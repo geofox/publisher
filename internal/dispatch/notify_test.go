@@ -16,8 +16,8 @@ func (r *recordingNotifier) PostPublished(_ context.Context, p *store.Post) {
 
 func TestPostNotifiesOnImmediatePublish(t *testing.T) {
 	rn := &recordingNotifier{}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: fakeNostr{}}), Notify: rn}
-	rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"nostr"}, Source: "web"})
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Nostr: fakeNostr{}}), Notify: rn}
+	rec := d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"nostr"}, Source: "web"})
 	if len(rn.posts) != 1 || rn.posts[0].ID != rec.ID {
 		t.Fatalf("PostPublished calls = %d, want 1 with id %s", len(rn.posts), rec.ID)
 	}
@@ -25,8 +25,8 @@ func TestPostNotifiesOnImmediatePublish(t *testing.T) {
 
 func TestInteractNotifies(t *testing.T) {
 	rn := &recordingNotifier{}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: fakeNostr{}}), Notify: rn}
-	rec := d.Interact(context.Background(), InteractSpec{
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Nostr: fakeNostr{}}), Notify: rn}
+	rec := d.Interact(context.Background(), typeInteract{
 		Action: "quote", SourcePlatform: "nostr", Text: "nice",
 		Ref: InteractRef{EventID: "e1", Author: "a1"},
 	})
@@ -42,7 +42,7 @@ func TestRetryNotifies(t *testing.T) {
 	}
 	defer db.Close()
 	// A post whose nostr target failed, so Retry will re-run it.
-	if err := db.SavePost(&store.Post{
+	if err := saveWithAccounts(db, &store.Post{
 		ID: "p1", Platforms: []string{"nostr"}, Status: "failed",
 		Targets: []store.Target{{Platform: "nostr", Status: "failed",
 			Attempts: []store.Attempt{{AttemptNo: 1, Status: "failed"}}}},
@@ -50,7 +50,7 @@ func TestRetryNotifies(t *testing.T) {
 		t.Fatal(err)
 	}
 	rn := &recordingNotifier{}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fakeNostr{}}), Store: db, Notify: rn}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: fakeNostr{}}), Store: db, Notify: rn}
 	if _, err := d.Retry(context.Background(), "p1", nil); err != nil {
 		t.Fatalf("Retry: %v", err)
 	}
@@ -65,14 +65,14 @@ func TestFireNotifies(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := db.SavePost(&store.Post{
+	if err := saveWithAccounts(db, &store.Post{
 		ID: "p2", Platforms: []string{"nostr"}, Status: "scheduled",
 		Targets: []store.Target{{Platform: "nostr", Status: "scheduled"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	rn := &recordingNotifier{}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fakeNostr{}}), Store: db, Notify: rn}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: fakeNostr{}}), Store: db, Notify: rn}
 	if _, err := d.Fire(context.Background(), "p2"); err != nil {
 		t.Fatalf("Fire: %v", err)
 	}

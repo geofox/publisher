@@ -53,7 +53,7 @@ func scheduledPost(t *testing.T, s *Store, id string, at time.Time, n int, platf
 		}
 		p.Targets = append(p.Targets, tg)
 	}
-	if err := s.SavePost(p); err != nil {
+	if err := saveWithAccounts(s, p); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetPost(id)
@@ -374,7 +374,7 @@ func TestListPostsPage(t *testing.T) {
 		for _, pl := range platforms {
 			p.Targets = append(p.Targets, Target{Platform: pl, Status: status})
 		}
-		if err := s.SavePost(p); err != nil {
+		if err := saveWithAccounts(s, p); err != nil {
 			t.Fatal(err)
 		}
 		if hidden {
@@ -440,7 +440,7 @@ func ptr[T any](v T) *T { return &v }
 // A relay retry logs the delivery, and the post when it changes.
 func TestEventsForRelayRetry(t *testing.T) {
 	s := openEngineStore(t)
-	if err := s.SavePost(&Post{
+	if err := saveWithAccounts(s, &Post{
 		ID: "p", CreatedAt: time.Now().UTC(), Platforms: []string{"nostr"}, Source: "web", Status: "partial",
 		Targets: []Target{{Platform: "nostr", Status: "partial", FinalText: "hi",
 			Relays:   []RelayState{{URL: "wss://a", Status: "ok"}, {URL: "wss://b", Status: "failed", Message: "503"}},
@@ -661,7 +661,7 @@ func TestMissedThenFailedIsFailed(t *testing.T) {
 func TestDeliveryMessagesAreScrubbed(t *testing.T) {
 	s := openEngineStore(t)
 	secret := "bad Bearer abc.def.ghi"
-	if err := s.SavePost(&Post{
+	if err := saveWithAccounts(s, &Post{
 		ID: "p", CreatedAt: time.Now().UTC(), Platforms: []string{"nostr"}, Source: "web", Status: "partial",
 		Targets: []Target{{Platform: "nostr", Status: "partial", FinalText: "hi",
 			Relays: []RelayState{{URL: "wss://a", Status: "ok"}, {URL: "wss://b", Status: "failed", Message: secret}}}},

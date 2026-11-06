@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -13,8 +14,11 @@ import (
 type Interaction struct {
 	Action         string `json:"action"` // reply|repost|quote
 	SourcePlatform string `json:"source_platform"`
-	SourceURL      string `json:"source_url"`
-	SourceAuthor   string `json:"source_author"`
+	// SourceAccount is the account that acted natively ("" on rows
+	// recorded before accounts: the target of SourcePlatform's type).
+	SourceAccount string `json:"source_account,omitempty"`
+	SourceURL     string `json:"source_url"`
+	SourceAuthor  string `json:"source_author"`
 	// Ref is the source post's platform-native reference (dispatch.InteractRef
 	// as JSON), kept so a retry can repeat the action. Empty on rows recorded
 	// before it existed.
@@ -172,9 +176,9 @@ func (s *Store) SavePost(p *Post) error {
 	for _, tg := range p.Targets {
 		accountID := tg.AccountID
 		if accountID == "" {
-			if accountID, err = envAccountFor(ctx, tx, DefaultOwner, tg.Platform); err != nil {
-				return err
-			}
+			// Never guessed: an account picked by type could send with
+			// credentials the post didn't name.
+			return fmt.Errorf("store: the %s target names no account", tg.Platform)
 		}
 		var lastAttempt any // a target planned and not yet sent has none
 		if len(tg.Attempts) > 0 {
@@ -197,7 +201,7 @@ func (s *Store) SavePost(p *Post) error {
 		var headID int64
 		for i, it := range items {
 			if it.IdemKey == "" {
-				it.IdemKey = LegacyItemKey(p.ID, tg.Platform, it.Ordinal)
+				it.IdemKey = AccountItemKey(p.ID, accountID, it.Ordinal)
 			}
 			// Planned items the caller passed carry their own due time (nil:
 			// not until a retry). Derived ones are due at the post's time, or now.

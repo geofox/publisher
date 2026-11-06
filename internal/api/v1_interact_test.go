@@ -235,10 +235,8 @@ func TestV1Resolve(t *testing.T) {
 		t.Fatalf("errors = %+v", p.Errors)
 	}
 	e.api.Resolve = sourcesResolver{}
-	// No account on the post's network: nothing is allowed.
-	if _, err := e.st.SeedEnvAccounts(context.Background(), store.DefaultOwner, []store.EnvAccount{{Type: "mastodon", Label: "Mastodon"}}); err != nil {
-		t.Fatal(err)
-	}
+	// No usable account on the post's network: nothing is allowed.
+	e.disable(e.acct("bluesky"))
 	r = e.do(req{method: "POST", path: "/v1/resolve", body: `{"url":"` + bskySource + `"}`})
 	wantStatus(t, r, 200)
 	r.json(&got)

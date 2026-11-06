@@ -36,7 +36,7 @@ func TestDispatcherRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = db.SavePost(&store.Post{
+	_ = saveWithAccounts(db, &store.Post{
 		ID: "p1", CreatedAt: time.Now().UTC(), Platforms: []string{"mastodon", "nostr"}, Source: "web", Status: "partial",
 		Targets: []store.Target{
 			{Platform: "mastodon", Status: "failed", FinalText: "hi", FieldsJSON: `{"visibility":"public"}`,
@@ -47,7 +47,7 @@ func TestDispatcherRetry(t *testing.T) {
 	})
 
 	mock := &retryMasto{}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Mastodon: mock}), Store: db, Fetcher: fakeFetcher{}}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Mastodon: mock}), Store: db, Fetcher: fakeFetcher{}}
 	post, err := d.Retry(context.Background(), "p1", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestRetryNostrImeta(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = db.SavePost(&store.Post{
+	_ = saveWithAccounts(db, &store.Post{
 		ID: "p3", CreatedAt: time.Now().UTC(), Platforms: []string{"nostr"}, Source: "web", Status: "failed",
 		Media: []store.Media{{Ordinal: 0, BlossomURL: "https://b/z", SHA256: "beef", Mime: "image/png", Dim: "5x5"}},
 		Targets: []store.Target{
@@ -79,7 +79,7 @@ func TestRetryNostrImeta(t *testing.T) {
 		},
 	})
 	cn := &capturingNostr{}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: cn}), Store: db, Fetcher: fakeFetcher{}}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: cn}), Store: db, Fetcher: fakeFetcher{}}
 	post, err := d.Retry(context.Background(), "p3", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestDispatcherRetryRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = db.SavePost(&store.Post{
+	_ = saveWithAccounts(db, &store.Post{
 		ID: "p9", CreatedAt: time.Now().UTC(), Platforms: []string{"nostr"}, Source: "web", Status: "partial",
 		Targets: []store.Target{{
 			Platform: "nostr", Status: "partial", FinalText: "hi",
@@ -148,7 +148,7 @@ func TestDispatcherRetryRelay(t *testing.T) {
 		}},
 	})
 	fake := &relayFakeNostr{rebroadcastOK: true}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fake}), Store: db}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: fake}), Store: db}
 	post, err := d.RetryRelay(context.Background(), "p9", "wss://relay.damus.io")
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +166,7 @@ func TestRetryRelayStillFailing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = db.SavePost(&store.Post{
+	_ = saveWithAccounts(db, &store.Post{
 		ID: "p10", CreatedAt: time.Now().UTC(), Platforms: []string{"nostr"}, Source: "web", Status: "partial",
 		Targets: []store.Target{{
 			Platform: "nostr", Status: "partial", FinalText: "hi", SignedEventJSON: `{"id":"ev"}`,
@@ -177,7 +177,7 @@ func TestRetryRelayStillFailing(t *testing.T) {
 			Attempts: []store.Attempt{{AttemptNo: 1, Status: "partial", AttemptedAt: time.Now()}},
 		}},
 	})
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: &relayFakeNostr{rebroadcastOK: false}}), Store: db}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: &relayFakeNostr{rebroadcastOK: false}}), Store: db}
 	post, err := d.RetryRelay(context.Background(), "p10", "wss://relay.damus.io")
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestRetryRelayRejectsIneligible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = db.SavePost(&store.Post{
+	_ = saveWithAccounts(db, &store.Post{
 		ID: "p11", CreatedAt: time.Now().UTC(), Platforms: []string{"nostr"}, Source: "web", Status: "partial",
 		Targets: []store.Target{{
 			Platform: "nostr", Status: "partial", FinalText: "hi", SignedEventJSON: `{"id":"ev"}`,
@@ -203,7 +203,7 @@ func TestRetryRelayRejectsIneligible(t *testing.T) {
 			Attempts: []store.Attempt{{AttemptNo: 1, Status: "partial", AttemptedAt: time.Now()}},
 		}},
 	})
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: &relayFakeNostr{rebroadcastOK: true}}), Store: db}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: &relayFakeNostr{rebroadcastOK: true}}), Store: db}
 	for _, relay := range []string{"wss://unknown.relay", "ws://x.onion", "wss://relay.geoffrey.one"} {
 		if _, err := d.RetryRelay(context.Background(), "p11", relay); !errors.Is(err, ErrBadRelayRetry) {
 			t.Errorf("RetryRelay(%q) err = %v, want ErrBadRelayRetry", relay, err)
@@ -240,7 +240,7 @@ func TestRetryNostrRefreshesRelays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = db.SavePost(&store.Post{
+	_ = saveWithAccounts(db, &store.Post{
 		ID: "p12", CreatedAt: time.Now().UTC(), Platforms: []string{"nostr"}, Source: "web", Status: "failed",
 		Targets: []store.Target{{
 			Platform: "nostr", Status: "failed", FinalText: "hi", SignedEventJSON: `{"id":"oldev"}`,
@@ -251,7 +251,7 @@ func TestRetryNostrRefreshesRelays(t *testing.T) {
 			Attempts: []store.Attempt{{AttemptNo: 1, Status: "failed", AttemptedAt: time.Now()}},
 		}},
 	})
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: refreshNostr{}}), Store: db, Fetcher: fakeFetcher{}}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: refreshNostr{}}), Store: db, Fetcher: fakeFetcher{}}
 	post, err := d.Retry(context.Background(), "p12", []string{"nostr"})
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +275,7 @@ func TestRetryPlatformFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = db.SavePost(&store.Post{
+	_ = saveWithAccounts(db, &store.Post{
 		ID: "p2", CreatedAt: time.Now().UTC(), Platforms: []string{"mastodon", "bluesky"}, Source: "web", Status: "failed",
 		Targets: []store.Target{
 			{Platform: "mastodon", Status: "failed", FinalText: "hi",
@@ -286,7 +286,7 @@ func TestRetryPlatformFilter(t *testing.T) {
 	})
 	masto := &retryMasto{}
 	bsky := &retryBsky{}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Mastodon: masto, Bluesky: bsky}), Store: db, Fetcher: fakeFetcher{}}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Mastodon: masto, Bluesky: bsky}), Store: db, Fetcher: fakeFetcher{}}
 	post, err := d.Retry(context.Background(), "p2", []string{"bluesky"})
 	if err != nil {
 		t.Fatal(err)

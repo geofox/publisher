@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/store"
 )
@@ -62,7 +63,7 @@ func sendWithoutRecording(t *testing.T, d *Dispatcher, postID string) *store.Cla
 func plan(t *testing.T, d *Dispatcher, text string) string {
 	t.Helper()
 	now := d.now()
-	rec := d.planPost(context.Background(), newID(), marked(PostSpec{MasterText: text, Platforms: []string{"stub"}, Source: "test"}), &now, "sending")
+	rec := d.planPost(context.Background(), newID(), marked(typeSpec{MasterText: text, Platforms: []string{"stub"}, Source: "test"}).spec(), &now, "sending")
 	if err := d.create(context.Background(), rec); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +88,7 @@ func TestCrashBetweenThreadItemsCompletesWithoutDuplicate(t *testing.T) {
 
 	// Restart: a new dispatcher on the same store.
 	al := &fakeAlerter{}
-	d2 := &Dispatcher{Accounts: d.Accounts, Store: d.Store, Alerter: al, Policy: d.Policy}
+	d2 := &Dispatcher{Registry: d.Registry, Store: d.Store, Alerter: al, Policy: d.Policy}
 	d2.recoverSending(context.Background())
 	if n := d2.runDue(context.Background()); n != 2 {
 		t.Fatalf("ran %d items after restart, want 2 (part 2 again, part 3)", n)
@@ -121,7 +122,7 @@ func TestRecoveryWithoutIdempotencyAsksTheOwner(t *testing.T) {
 	sendWithoutRecording(t, d, id)
 
 	al := &fakeAlerter{}
-	d2 := &Dispatcher{Accounts: d.Accounts, Store: d.Store, Alerter: al, Policy: d.Policy}
+	d2 := &Dispatcher{Registry: d.Registry, Store: d.Store, Alerter: al, Policy: d.Policy}
 	d2.recoverSending(context.Background())
 	if n := d2.runDue(context.Background()); n != 0 {
 		t.Fatalf("re-sent %d items that may be live", n)
@@ -154,7 +155,7 @@ func TestRecoveryAfterTheKeyWindowAsksTheOwner(t *testing.T) {
 	sendWithoutRecording(t, d, id)
 
 	later := time.Now().UTC().Add(2 * time.Hour)
-	d2 := &Dispatcher{Accounts: d.Accounts, Store: d.Store, Policy: d.Policy, Clock: func() time.Time { return later }}
+	d2 := &Dispatcher{Registry: d.Registry, Store: d.Store, Policy: d.Policy, Clock: func() time.Time { return later }}
 	d2.recoverSending(context.Background())
 	if n := d2.runDue(context.Background()); n != 0 || len(acct.reqs) != 1 {
 		t.Fatalf("re-sent after the key expired: %d items, %d requests", n, len(acct.reqs))
@@ -192,9 +193,9 @@ func TestPreparedItemIsSavedFirstAndReused(t *testing.T) {
 				Ref: destination.ItemRef{ID: "ev", Data: req.Prepared}}, nil
 		}}
 	acct := &preparingAccount{stubAccount: stub}
-	d = &Dispatcher{Accounts: map[string]destination.Account{"stub": acct}, Store: openDispatchStore(t),
+	d = &Dispatcher{Registry: registryOf(map[string]destination.Account{"stub": acct}), Store: openDispatchStore(t),
 		Policy: RetryPolicy{Enabled: true, MaxAttempts: 6, Base: time.Minute, Max: time.Hour}}
-	rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}})
+	rec := d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"stub"}})
 	if rec.Status != "failed" {
 		t.Fatalf("first attempt status = %q", rec.Status)
 	}
@@ -242,7 +243,7 @@ func TestShutdownFinishesTheItemInFlight(t *testing.T) {
 	d.PollInterval = 10 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	go d.Run(ctx)
-	rec, err := d.Schedule(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}}, time.Now().Add(-time.Second))
+	rec, err := d.Schedule(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"stub"}}, time.Now().Add(-time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +272,7 @@ func TestShutdownFinishesTheItemInFlight(t *testing.T) {
 		t.Errorf("in-flight post status = %q, want success", p.Status)
 	}
 
-	after := d.Post(context.Background(), PostSpec{MasterText: "late", Platforms: []string{"stub"}})
+	after := d.Post(context.Background(), typeSpec{MasterText: "late", Platforms: []string{"stub"}})
 	if len(acct.reqs) != 1 {
 		t.Errorf("a post created during shutdown was sent")
 	}
@@ -315,9 +316,9 @@ func TestQuoteReproductionKeepsSourceMediaOnRetry(t *testing.T) {
 	src := &stubAccount{manifest: stubManifest(destination.IdempotentNone)}
 	src.manifest.Type = "src"
 	src.manifest.Defaults.Interactions.Quote = true
-	d := &Dispatcher{Accounts: map[string]destination.Account{"stub": acct, "src": src}, Store: openDispatchStore(t),
+	d := &Dispatcher{Registry: registryOf(map[string]destination.Account{"stub": acct, "src": src}), Store: openDispatchStore(t),
 		Fetcher: fakeFetcher{}}
-	rec := d.Interact(context.Background(), InteractSpec{Action: actionQuote, SourcePlatform: "src",
+	rec := d.Interact(context.Background(), typeInteract{Action: actionQuote, SourcePlatform: "src",
 		Ref: InteractRef{URI: "s://1"}, Text: "look", Fanout: []string{"stub"}, SourceURL: "https://s/1",
 		SourcePreview:      SourcePreview{Author: "@a", Text: "orig"},
 		SourceImages:       []Img{{Bytes: []byte("x"), Mime: "image/png", BlossomURL: "https://b/src0"}},
@@ -343,31 +344,37 @@ func TestQuoteReproductionKeepsSourceMediaOnRetry(t *testing.T) {
 	}
 }
 
-// A target naming a stored account that isn't the connected one of its type
-// is never sent with the connected account's credentials: it fails as an
-// auth error (not retried), and nothing reaches the platform.
-func TestTargetOfAnotherAccountIsNotSent(t *testing.T) {
-	acct := &stubAccount{manifest: stubManifest(destination.IdempotentKey), publish: (&keyedPlatform{}).publish}
-	d := stubDispatcher(t, acct)
-	// The post names the stored stub account; the engine says another one is
-	// connected (the same mismatch as a second stored account of the type).
-	d.AccountIDs = map[string]string{"stub": "acc_connected"}
+// A target whose account can't be used (here, the environment no longer
+// configures it) is never sent with another account's credentials: it
+// fails as an auth error saying why (not retried), nothing reaches the
+// platform, and the registry isn't asked to check credentials it never
+// tried.
+func TestTargetOfUnavailableAccountIsNotSent(t *testing.T) {
+	acct1 := &stubAccount{manifest: stubManifest(destination.IdempotentKey), publish: (&keyedPlatform{}).publish}
+	d := stubDispatcher(t, acct1)
+	reg := d.Registry.(*testRegistry)
+	reg.add("acc_gone", "stub", nil)
+	reg.set("acc_gone", accounts.NotConfigured, "set STUB_TOKEN to use it again")
 	now := d.now()
-	rec := d.planPost(context.Background(), newID(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}, Source: "test"}, &now, "sending")
+	rec := d.planPost(context.Background(), newID(), PostSpec{MasterText: "hi", Source: "test",
+		Targets: []TargetSpec{{AccountID: "acc_gone", Type: "stub"}}}, &now, "sending")
+	if err := ensureAccount(d.Store, "acc_gone", "stub"); err != nil {
+		t.Fatal(err)
+	}
 	if err := d.create(context.Background(), rec); err != nil {
 		t.Fatal(err)
 	}
 	d.runDue(context.Background())
-	if len(acct.reqs) != 0 {
-		t.Fatalf("sent %d requests as the connected account", len(acct.reqs))
+	if len(acct1.reqs) != 0 {
+		t.Fatalf("sent %d requests with another account", len(acct1.reqs))
 	}
 	post, _ := d.Store.GetPost(rec.ID)
 	tg := post.Targets[0]
-	if tg.AccountID == "" || tg.Status != "failed" || tg.ErrorClass != string(destination.ClassAuth) ||
-		tg.GaveUpAt == nil || tg.Items[0].NextAttemptAt != nil {
-		t.Fatalf("target = %+v (it must give up, not wait for a retry)", tg)
+	if tg.AccountID != "acc_gone" || tg.Status != "failed" || tg.ErrorClass != string(destination.ClassAuth) ||
+		tg.GaveUpAt == nil || tg.Items[0].NextAttemptAt != nil || !strings.Contains(tg.Items[0].Error, "STUB_TOKEN") {
+		t.Fatalf("target = %+v, item %+v (it must give up, saying why)", tg, tg.Items[0])
 	}
-	if !d.SendsAs("stub", "acc_connected") || d.SendsAs("stub", tg.AccountID) || !d.SendsAs("stub", "") {
-		t.Error("SendsAs")
+	if len(reg.reported) != 0 {
+		t.Errorf("reported %v to the registry", reg.reported)
 	}
 }

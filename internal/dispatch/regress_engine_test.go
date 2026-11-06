@@ -68,7 +68,7 @@ func TestEnablingAutoRetryResendsOldFailures(t *testing.T) {
 
 	// Three weeks later: AUTO_RETRY_ENABLED=true, restart.
 	later := time.Now().UTC().Add(21 * 24 * time.Hour)
-	d2 := &Dispatcher{Accounts: d.Accounts, Store: d.Store, Clock: func() time.Time { return later },
+	d2 := &Dispatcher{Registry: d.Registry, Store: d.Store, Clock: func() time.Time { return later },
 		Policy: RetryPolicy{Enabled: true, MaxAttempts: 6, Base: time.Minute, Max: time.Hour}}
 	d2.Recover(ctx)
 	d2.passes(ctx)
@@ -118,7 +118,7 @@ func TestRestartBeforeCommitIsReportedAsMaybePosted(t *testing.T) {
 	}
 	// The process stops while preparing media: no request reached the platform.
 	al := &fakeAlerter{}
-	d2 := &Dispatcher{Accounts: d.Accounts, Store: d.Store, Alerter: al, Policy: d.Policy}
+	d2 := &Dispatcher{Registry: d.Registry, Store: d.Store, Alerter: al, Policy: d.Policy}
 	d2.Recover(ctx)
 	d2.runDue(ctx)
 	p, _ = d.Store.GetPost(id)
@@ -168,7 +168,7 @@ func TestRetrierWorkSetGrowsForever(t *testing.T) {
 		{URL: "wss://ok", Status: "ok"},
 		{URL: "wss://dead", Status: "failed"},
 	}, `{"id":"abc"}`)
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fakeRebroadcaster{ok: false}}), Store: st}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: fakeRebroadcaster{ok: false}}), Store: st}
 	now := time.Now().UTC()
 	r := &Retrier{disp: d, notifier: &fakeAlerter{}, enabled: true, maxAttempts: 3,
 		base: time.Minute, max: time.Hour, now: func() time.Time { return now }}
@@ -207,7 +207,7 @@ func TestResolvedNotPublishedGivesUpOnFirstTransient(t *testing.T) {
 	id := plan(t, d, "hello")
 	sendWithoutRecording(t, d, id)
 	later := time.Now().UTC().Add(2 * time.Hour)
-	d2 := &Dispatcher{Accounts: d.Accounts, Store: d.Store, Policy: d.Policy, Clock: func() time.Time { return later }}
+	d2 := &Dispatcher{Registry: d.Registry, Store: d.Store, Policy: d.Policy, Clock: func() time.Time { return later }}
 	ctx := context.Background()
 	d2.recoverSending(ctx)
 	post, _ := d.Store.GetPost(id)

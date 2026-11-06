@@ -9,38 +9,30 @@ import (
 	"github.com/geofox/publisher/internal/unfurl"
 )
 
-// scrubLinkCards drops any client-supplied link_card from incoming overrides.
-// LinkCard is dispatcher-computed only (attachLinkCard + PlanBlueskyCard);
-// a request-supplied card must never reach an adapter or fields_json.
-func scrubLinkCards(overrides map[string]Overrides) {
-	for k, ov := range overrides {
-		if ov.LinkCard != nil {
-			ov.LinkCard = nil
-			overrides[k] = ov
-		}
+// scrubLinkCards drops any client-supplied link_card from the targets.
+// LinkCard is dispatcher-computed only (attachLinkCard + PlanTarget); a
+// request-supplied card must never reach an adapter or fields_json.
+func scrubLinkCards(targets []TargetSpec) {
+	for i := range targets {
+		targets[i].Overrides.LinkCard = nil
 	}
 }
 
-// attachLinkCard unfurls a link card for every targeted destination that
-// builds link previews itself (LinkPreview "client"): the card URL (trailing,
-// else first) of that target's effective text goes into its override's
-// LinkCard. Best-effort: on any unfurl error the post proceeds without a card
-// (a bare faceted link). Placement and trailing-strip happen in PlanTarget.
+// attachLinkCard unfurls a link card for every target whose account builds
+// link previews itself (LinkPreview "client"): the card URL (trailing,
+// else first) of that target's text goes into its LinkCard. Best-effort:
+// on any unfurl error the post proceeds without a card (a bare faceted
+// link). Placement and trailing-strip happen in PlanTarget.
 func (d *Dispatcher) attachLinkCard(ctx context.Context, spec *PostSpec) {
 	if d.Unfurler == nil {
 		return
 	}
 	cards := map[string]*unfurl.Card{} // by URL: one fetch per link
-	for _, p := range dedupStrings(spec.Platforms) {
-		if caps, _ := d.Caps(ctx, p); caps.LinkPreview != destination.LinkPreviewClient {
+	for i, t := range spec.Targets {
+		if caps := d.Caps(ctx, t.AccountID, t.Type); caps.LinkPreview != destination.LinkPreviewClient {
 			continue
 		}
-		ov := spec.Overrides[p]
-		text := spec.MasterText
-		if ov.Text != "" {
-			text = ov.Text
-		}
-		u, _, ok := unfurl.CardURL(text)
+		u, _, ok := unfurl.CardURL(spec.text(t))
 		if !ok {
 			continue
 		}
@@ -58,19 +50,8 @@ func (d *Dispatcher) attachLinkCard(ctx context.Context, spec *PostSpec) {
 			continue
 		}
 		cp := *card
-		ov.LinkCard = &cp
-		if spec.Overrides == nil {
-			spec.Overrides = map[string]Overrides{}
-		}
-		spec.Overrides[p] = ov
+		spec.Targets[i].Overrides.LinkCard = &cp
 	}
-}
-
-func finalText(spec PostSpec, plat string) string {
-	if ov, ok := spec.Overrides[plat]; ok && ov.Text != "" {
-		return ov.Text
-	}
-	return spec.MasterText
 }
 
 func ov2fields(o Overrides) map[string]any {

@@ -18,6 +18,12 @@ func openDispatchStore(t *testing.T) *store.Store {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
+	// The test accounts of the types tests name, so posts naming them save.
+	for _, typ := range []string{"nostr", "mastodon", "bluesky", "threads", "stub", "stub2", "src"} {
+		if err := ensureAccount(db, acct(typ), typ); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return db
 }
 
@@ -38,7 +44,7 @@ func seedTarget(t *testing.T, st *store.Store, id, plat, status string, n int, r
 	}
 	p := &store.Post{ID: id, CreatedAt: time.Now().UTC(), MasterText: "hi", Platforms: []string{plat},
 		Source: "test", Status: status, Targets: []store.Target{tg}}
-	if err := st.SavePost(p); err != nil {
+	if err := saveWithAccounts(st, p); err != nil {
 		t.Fatalf("SavePost: %v", err)
 	}
 }
@@ -113,7 +119,7 @@ func TestRetrierRelayLevelRetry(t *testing.T) {
 	}, `{"id":"abc"}`)
 
 	// fakeNostr lets RetryRelay "succeed" without a network.
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fakeRebroadcaster{ok: true}}), Store: st}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: fakeRebroadcaster{ok: true}}), Store: st}
 	now := time.Now().UTC().Add(10 * time.Minute)
 	r := &Retrier{disp: d, notifier: &fakeAlerter{}, enabled: true, maxAttempts: 6,
 		base: 2 * time.Minute, max: time.Hour, now: func() time.Time { return now }}
@@ -139,7 +145,7 @@ func TestRetrierRelayLevelSkipsNotDue(t *testing.T) {
 
 	// fakeRebroadcaster{ok:true}: if the down relay were (wrongly) retried it
 	// would flip to "ok"; the assertion that it stays "failed" proves the gate.
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Nostr: fakeRebroadcaster{ok: true}}), Store: st}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Nostr: fakeRebroadcaster{ok: true}}), Store: st}
 	// Only 30s after seed — well inside the 2m base backoff for retry_count=0.
 	now := t0.Add(30 * time.Second)
 	r := &Retrier{disp: d, notifier: &fakeAlerter{}, enabled: true, maxAttempts: 6,

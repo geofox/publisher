@@ -45,48 +45,67 @@ func newAccountID() string { return "acc_" + newID() }
 
 // EnvAccount is one account the environment configures.
 type EnvAccount struct {
-	Type  string
-	Label string // the destination's display name
+	Type string
+	// Key tells apart several accounts of a type in the environment
+	// (EnvKeyDefault for a type's unnumbered variables).
+	Key   string
+	Label string // the label a new row gets
 }
 
-// SeedEnvAccounts makes the owner's env-sourced accounts match the
-// environment: one enabled account per configured type (created on first
-// sight, with an id that then never changes), and every other env account
-// disabled. Disabled accounts keep their history. Returns the accounts by
-// type.
-func (s *Store) SeedEnvAccounts(ctx context.Context, owner string, configured []EnvAccount) (map[string]Account, error) {
+// SeedEnvAccounts gives every account the environment configures a stored
+// row, created on first sight with an id that then never changes (and the
+// given label). It never changes an existing row: whether an env account
+// can be used is the account registry's call, and enabled is the owner's.
+// Rows of accounts added in the app are not touched. Returns the owner's
+// env rows, oldest first.
+func (s *Store) SeedEnvAccounts(ctx context.Context, owner string, configured []EnvAccount) ([]Account, error) {
 	tx, err := s.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET enabled = 0, updated_at = ?
-		WHERE owner_id = ? AND source = 'env' AND enabled = 1`, now, owner); err != nil {
-		return nil, err
-	}
 	for _, c := range configured {
+		key := c.Key
+		if key == "" {
+			key = EnvKeyDefault
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO accounts (id, owner_id, type, label, source, env_key, enabled, created_at, updated_at)
 			VALUES (?, ?, ?, ?, 'env', ?, 1, ?, ?)
-			ON CONFLICT (owner_id, type, env_key) DO UPDATE SET enabled = 1, label = excluded.label, updated_at = excluded.updated_at`,
-			newAccountID(), owner, c.Type, c.Label, EnvKeyDefault, now, now); err != nil {
+			ON CONFLICT (owner_id, type, env_key) DO NOTHING`,
+			newAccountID(), owner, c.Type, c.Label, key, now, now); err != nil {
 			return nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	all, err := s.Accounts(ctx, owner)
-	if err != nil {
-		return nil, err
+	return s.queryAccounts(ctx, `SELECT `+accountColumns+` FROM accounts WHERE owner_id = ? AND source = 'env'
+		ORDER BY created_at, id`, owner)
+}
+
+// InsertAccount adds an account row exactly as given (its id included). An
+// empty owner is DefaultOwner, an empty source "env", and zero times now.
+// For fixtures and imports; env accounts are seeded with SeedEnvAccounts.
+func (s *Store) InsertAccount(ctx context.Context, a Account) error {
+	if a.OwnerID == "" {
+		a.OwnerID = DefaultOwner
 	}
-	out := map[string]Account{}
-	for _, a := range all {
-		if a.Enabled && a.Source == "env" && a.EnvKey == EnvKeyDefault {
-			out[a.Type] = a
-		}
+	if a.Source == "" {
+		a.Source = "env"
 	}
-	return out, nil
+	now := time.Now().UTC()
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = now
+	}
+	if a.UpdatedAt.IsZero() {
+		a.UpdatedAt = a.CreatedAt
+	}
+	_, err := s.sql.ExecContext(ctx, `INSERT INTO accounts (id, owner_id, type, label, handle, source, env_key, enabled,
+		created_at, updated_at, remote_id, default_selected, public_feed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.OwnerID, a.Type, a.Label, nullStr(a.Handle), a.Source, nullStr(a.EnvKey), a.Enabled,
+		a.CreatedAt.UTC(), a.UpdatedAt.UTC(), nullStr(a.RemoteID), a.DefaultSelected, a.PublicFeed)
+	return err
 }
 
 // Accounts lists the owner's accounts, enabled or not, oldest first.
@@ -187,24 +206,4 @@ func (s *Store) SetAccountIdentity(ctx context.Context, id, handle, remoteID str
 	_, err := s.sql.ExecContext(ctx, `UPDATE accounts SET handle = ?, remote_id = ? WHERE id = ?`,
 		nullStr(handle), nullStr(remoteID), id)
 	return err
-}
-
-// envAccountFor returns the id of the owner's env account of type typ,
-// creating it (disabled: nothing configured it) when history needs one, e.g.
-// a post that names a destination this deployment has no credentials for.
-func envAccountFor(ctx context.Context, tx *sql.Tx, owner, typ string) (string, error) {
-	var id string
-	err := tx.QueryRowContext(ctx, `SELECT id FROM accounts WHERE owner_id = ? AND type = ? AND source = 'env' AND env_key = ?`,
-		owner, typ, EnvKeyDefault).Scan(&id)
-	if err == nil {
-		return id, nil
-	}
-	if err != sql.ErrNoRows {
-		return "", err
-	}
-	now := time.Now().UTC()
-	id = newAccountID()
-	_, err = tx.ExecContext(ctx, `INSERT INTO accounts (id, owner_id, type, label, source, env_key, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'env', ?, 0, ?, ?)`, id, owner, typ, typ, EnvKeyDefault, now, now)
-	return id, err
 }

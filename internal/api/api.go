@@ -2,14 +2,15 @@ package api
 
 import (
 	"context"
-	"github.com/geofox/publisher/internal/destination"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/auth"
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/health"
 	"github.com/geofox/publisher/internal/httpx"
 	"github.com/geofox/publisher/internal/identity"
@@ -97,8 +98,14 @@ type UnfurlService interface {
 // ItemLocator finds an account's own posts by URL; implemented by
 // dispatch.Dispatcher.
 type ItemLocator interface {
-	CanLocate(name string) bool
-	Locate(ctx context.Context, name, url string) (destination.ItemRef, error)
+	CanLocate(accountID string) bool
+	Locate(ctx context.Context, accountID, url string) (destination.ItemRef, error)
+}
+
+// AccountStatus says whether accounts can be used now; implemented by
+// accounts.Registry.
+type AccountStatus interface {
+	Get(id string) (accounts.Entry, bool)
 }
 
 // API holds the dependencies for the HTTP handlers.
@@ -134,9 +141,13 @@ type API struct {
 	// avatar), shown on the accounts (GET /v1/accounts). nil → none.
 	Identity *identity.Service
 
-	// Caps returns a target's effective capabilities (the dispatcher's
+	// Caps returns an account's effective capabilities (the dispatcher's
 	// Caps). nil → the registered drivers' defaults.
-	Caps func(ctx context.Context, name string) (destination.Capabilities, bool)
+	Caps func(ctx context.Context, accountID, typ string) destination.Capabilities
+
+	// Accounts says which accounts can send now. nil → every enabled
+	// account of a registered type.
+	Accounts AccountStatus
 
 	// fetchMedia downloads a quoted post's images to copy them. nil → the
 	// SSRF-guarded client. Overridable in tests.
@@ -214,18 +225,37 @@ func (a *API) Routes() http.Handler {
 	return withSecurityHeaders(a.withHostGuard(a.withCSRFGuard(a.withGates(mux))))
 }
 
-// caps returns a target's effective capabilities: the connected account's,
-// else the registered driver's defaults, else none (no limits).
-func (a *API) caps(ctx context.Context, name string) destination.Capabilities {
+// caps returns an account's effective capabilities: the open account's,
+// else its type's defaults, else none (no limits).
+func (a *API) caps(ctx context.Context, accountID, typ string) destination.Capabilities {
 	if a.Caps != nil {
-		if c, ok := a.Caps(ctx, name); ok {
-			return c
-		}
+		return a.Caps(ctx, accountID, typ)
 	}
-	if d, ok := destination.Lookup(name); ok {
+	if d, ok := destination.Lookup(typ); ok {
 		return d.Manifest().Defaults
 	}
 	return destination.Capabilities{}
+}
+
+// accountUnusable says why an account can't send now, or "" when it can.
+func (a *API) accountUnusable(ac store.Account) string {
+	if _, ok := destination.Lookup(ac.Type); !ok {
+		return "this server has no driver for " + ac.Type
+	}
+	if a.Accounts == nil {
+		if !ac.Enabled {
+			return "this account is turned off"
+		}
+		return ""
+	}
+	e, ok := a.Accounts.Get(ac.ID)
+	switch {
+	case !ok:
+		return "this account isn't loaded yet; try again after a restart"
+	case e.Status != accounts.Connected:
+		return (&accounts.Unavailable{ID: ac.ID, Status: e.Status, Reason: e.Reason}).Error()
+	}
+	return ""
 }
 
 // displayName is a destination type's human name ("Bluesky").

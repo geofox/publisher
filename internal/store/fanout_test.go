@@ -112,7 +112,7 @@ func TestFanoutJobCarriesItemAndAccount(t *testing.T) {
 	p := &Post{ID: "fp", CreatedAt: time.Now().UTC(), Platforms: []string{"nostr"}, Source: "test", Status: "sending",
 		Targets: []Target{{Platform: "nostr", Status: "sending", Items: []Item{
 			{Ordinal: 0, Text: "gm", Status: ItemPlanned, IdemKey: "k", NextAttemptAt: &due}}}}}
-	if err := s.SavePost(p); err != nil {
+	if err := saveWithAccounts(s, p); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.GetPost("fp")

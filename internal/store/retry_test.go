@@ -17,7 +17,7 @@ func TestGaveUpColumnsAndLastAttemptLoad(t *testing.T) {
 		Targets: []Target{{Platform: "bluesky", Status: "failed",
 			Attempts: []Attempt{{AttemptNo: 1, Status: "failed", Error: "boom", AttemptedAt: time.Now().UTC()}}}},
 	}
-	if err := st.SavePost(p); err != nil {
+	if err := saveWithAccounts(st, p); err != nil {
 		t.Fatalf("SavePost: %v", err)
 	}
 	got, err := st.GetPost("p-gaveup")
@@ -39,7 +39,7 @@ func TestPostsNeedingRetryAndMarkGaveUp(t *testing.T) {
 			Platforms: []string{"bluesky"}, Source: "test", Status: status,
 			Targets: []Target{{Platform: "nostr", Status: status,
 				Relays: []RelayState{{URL: "wss://r", Status: "failed", AttemptedAt: time.Now().UTC()}}}}}
-		if err := st.SavePost(p); err != nil {
+		if err := saveWithAccounts(st, p); err != nil {
 			t.Fatalf("SavePost %s: %v", id, err)
 		}
 	}
@@ -92,7 +92,7 @@ func TestRelayRetryCount(t *testing.T) {
 		Platforms: []string{"nostr"}, Source: "test", Status: "partial",
 		Targets: []Target{{Platform: "nostr", Status: "partial", SignedEventJSON: "{}",
 			Relays: []RelayState{{URL: "wss://r1", Status: "failed"}, {URL: "wss://r2", Status: "ok"}}}}}
-	if err := st.SavePost(p); err != nil {
+	if err := saveWithAccounts(st, p); err != nil {
 		t.Fatalf("SavePost: %v", err)
 	}
 	gp, _ := st.GetPost("p-relay")
@@ -119,7 +119,7 @@ func TestAttentionFilterAndCount(t *testing.T) {
 		p := &Post{ID: id, CreatedAt: time.Now().UTC(), MasterText: "x",
 			Platforms: []string{"bluesky"}, Source: "test", Status: status,
 			Targets: []Target{{Platform: "bluesky", Status: status}}}
-		if err := st.SavePost(p); err != nil {
+		if err := saveWithAccounts(st, p); err != nil {
 			t.Fatalf("SavePost: %v", err)
 		}
 	}
@@ -159,7 +159,7 @@ func TestManualRetryClearsGaveUpAndRecordsSuccess(t *testing.T) {
 		Targets: []Target{{Platform: "mastodon", Status: "failed", FinalText: "hi",
 			Attempts: []Attempt{{AttemptNo: 1, Status: "failed", Error: "boom", AttemptedAt: time.Now()}}}},
 	}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 	got, err := db.GetPost("p1")

@@ -64,7 +64,7 @@ func TestTargetsCarryFeedExclusion(t *testing.T) {
 			{Platform: "mastodon", Status: "success", Items: []Item{{Ordinal: 0, Text: "a", Status: ItemPublished, IdemKey: "k1", RemoteURL: "https://m/1"}}},
 			{Platform: "bluesky", Status: "success", Items: []Item{{Ordinal: 0, Text: "a", Status: ItemPublished, IdemKey: "k2", RemoteURL: "https://b/1"}}},
 		}}
-	if err := s.SavePost(p); err != nil {
+	if err := saveWithAccounts(s, p); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.GetPost("fx")

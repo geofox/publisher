@@ -79,7 +79,7 @@ func stubManifest(mode destination.IdempotencyMode) destination.Manifest {
 
 func stubDispatcher(t *testing.T, acct *stubAccount) *Dispatcher {
 	t.Helper()
-	return &Dispatcher{Accounts: map[string]destination.Account{"stub": acct}, Store: openDispatchStore(t),
+	return &Dispatcher{Registry: registryOf(map[string]destination.Account{"stub": acct}), Store: openDispatchStore(t),
 		Policy: RetryPolicy{Enabled: true, MaxAttempts: 6, Base: time.Minute, Max: time.Hour}}
 }
 
@@ -88,7 +88,7 @@ func stubDispatcher(t *testing.T, acct *stubAccount) *Dispatcher {
 func TestChainUsesAccountCapsAndRefData(t *testing.T) {
 	acct := &stubAccount{manifest: stubManifest(destination.IdempotentNone)}
 	d := stubDispatcher(t, acct)
-	rec := d.Post(context.Background(), PostSpec{MasterText: "one two three four five six seven", Platforms: []string{"stub"}})
+	rec := d.Post(context.Background(), typeSpec{MasterText: "one two three four five six seven", Platforms: []string{"stub"}})
 	if rec.Status != "success" || len(acct.reqs) < 2 {
 		t.Fatalf("want a success chain, got %s with %d items", rec.Status, len(acct.reqs))
 	}
@@ -140,7 +140,7 @@ func TestIdempotencyKeys(t *testing.T) {
 			return published(n), nil
 		}}
 	d := stubDispatcher(t, acct)
-	rec := d.Post(context.Background(), marked(PostSpec{MasterText: "aaaa bbbb\n---\ncccc dddd", Platforms: []string{"stub"}}))
+	rec := d.Post(context.Background(), marked(typeSpec{MasterText: "aaaa bbbb\n---\ncccc dddd", Platforms: []string{"stub"}}))
 	if rec.Targets[0].ErrorClass != string(destination.ClassUnknownOutcome) {
 		t.Fatalf("error class = %q", rec.Targets[0].ErrorClass)
 	}
@@ -159,7 +159,7 @@ func TestIdempotencyKeys(t *testing.T) {
 	}
 
 	none := &stubAccount{manifest: stubManifest(destination.IdempotentNone)}
-	stubDispatcher(t, none).Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}})
+	stubDispatcher(t, none).Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"stub"}})
 	if none.reqs[0].IdempotencyKey != "" {
 		t.Errorf("a destination without key support must get no key")
 	}
@@ -168,7 +168,7 @@ func TestIdempotencyKeys(t *testing.T) {
 func TestRequestCarriesOnlySupportedFields(t *testing.T) {
 	acct := &stubAccount{manifest: stubManifest(destination.IdempotentNone)}
 	d := stubDispatcher(t, acct)
-	d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"},
+	d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"stub"},
 		Overrides: map[string]Overrides{"stub": {
 			Langs: []string{"fr", "en"}, Visibility: "unlisted", SpoilerText: "cw", Sensitive: true,
 			BlueskyReply: "nobody", TopicTag: "go",
@@ -192,7 +192,7 @@ func TestLegacyOverridesFailOpen(t *testing.T) {
 	acct := &stubAccount{manifest: stubManifest(destination.IdempotentNone)}
 	d := stubDispatcher(t, acct)
 	pow := -3
-	rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"},
+	rec := d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"stub"},
 		Overrides: map[string]Overrides{"stub": {ThreadsReplyControl: "bogus", POW: &pow}}})
 	if rec.Status != "success" || len(acct.reqs) != 1 {
 		t.Fatalf("post must go out; status %q, sent %d", rec.Status, len(acct.reqs))
@@ -210,7 +210,7 @@ func TestUnsupportedInteractionsAreInvalid(t *testing.T) {
 	acct := &stubAccount{manifest: stubManifest(destination.IdempotentNone)}
 	d := stubDispatcher(t, acct)
 	for _, action := range []string{actionReply, actionQuote, actionRepost} {
-		rec := d.Interact(context.Background(), InteractSpec{Action: action, SourcePlatform: "stub", Text: "hi",
+		rec := d.Interact(context.Background(), typeInteract{Action: action, SourcePlatform: "stub", Text: "hi",
 			Ref: InteractRef{URI: "at://x"}})
 		if tg := rec.Targets[0]; tg.Status != "failed" || tg.ErrorClass != string(destination.ClassInvalid) {
 			t.Errorf("%s on a destination without it: %+v", action, tg)
@@ -249,7 +249,7 @@ func TestNormalize(t *testing.T) {
 
 func TestUnconfiguredAccountIsAuth(t *testing.T) {
 	d := &Dispatcher{Store: openDispatchStore(t)}
-	rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}})
+	rec := d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"stub"}})
 	if tg := rec.Targets[0]; tg.ErrorClass != string(destination.ClassAuth) || !strings.Contains(tg.Attempts[0].Error, "not configured") {
 		t.Fatalf("target = %+v", tg)
 	}
@@ -285,7 +285,7 @@ func TestRetrierHonorsErrorClass(t *testing.T) {
 			d := stubDispatcher(t, acct)
 			al := &fakeAlerter{}
 			d.Alerter = al
-			rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}})
+			rec := d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"stub"}})
 			now := time.Now().UTC().Add(time.Hour)
 			d.Clock = func() time.Time { return now }
 			r := struct{ runDue func(context.Context) }{func(ctx context.Context) { d.passes(ctx); d.runDue(ctx) }}
@@ -333,7 +333,7 @@ func TestFailureAlertMatchesRetryClass(t *testing.T) {
 			d := stubDispatcher(t, acct)
 			al := &fakeAlerter{}
 			d.Alerter = al
-			d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}})
+			d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"stub"}})
 			if len(al.bodies) != 1 || !strings.Contains(al.bodies[0], tc.want) {
 				t.Fatalf("alert bodies = %q, want one containing %q", al.bodies, tc.want)
 			}
@@ -376,7 +376,7 @@ func TestRetrierStopsWhenIdempotencyKeyExpires(t *testing.T) {
 					return published(i), nil
 				}}
 			d := stubDispatcher(t, acct)
-			rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}})
+			rec := d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"stub"}})
 			for range tc.classes[1:] { // the later failed attempts
 				if _, err := d.Retry(context.Background(), rec.ID, nil); err != nil {
 					t.Fatal(err)

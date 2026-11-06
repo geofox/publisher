@@ -8,17 +8,13 @@ import (
 	"github.com/geofox/publisher/internal/store"
 )
 
-// RetryRelay re-delivers an archived item to one failed endpoint (a Nostr
+// RetryTargetRelay re-delivers an archived item of one target of the post
+// (0: the first target with that endpoint) to one failed endpoint (a Nostr
 // relay: the same signed event, so no re-mine and no duplicate note) and
-// updates that endpoint's status. Only destinations that deliver to several
-// endpoints (destination.Redeliverer) have endpoint rows.
-func (d *Dispatcher) RetryRelay(ctx context.Context, postID, relayURL string) (*store.Post, error) {
-	return d.RetryTargetRelay(ctx, postID, 0, relayURL)
-}
-
-// RetryTargetRelay is RetryRelay for one target of the post (0: the first
-// target with that endpoint), for posts with several Nostr accounts on the
-// same relay.
+// updates that endpoint's status. Only destinations that deliver to
+// several endpoints (destination.Redeliverer) have endpoint rows. The
+// event is already signed, so another account of the type delivers it
+// when the target's own can't be used.
 func (d *Dispatcher) RetryTargetRelay(ctx context.Context, postID string, targetID int64, relayURL string) (*store.Post, error) {
 	if d.Store == nil {
 		return nil, errors.New("retry requires a store")
@@ -51,17 +47,11 @@ func (d *Dispatcher) RetryTargetRelay(ctx context.Context, postID string, target
 	if target.SignedEventJSON == "" {
 		return nil, errors.New("no stored event to rebroadcast")
 	}
-	if !d.SendsAs(target.Platform, target.AccountID) {
-		return nil, errOtherAccount(target.Platform)
-	}
-	acct, err := d.account(target.Platform)
+	rd, release, err := d.redeliverer(target.AccountID)
 	if err != nil {
 		return nil, err
 	}
-	rd, ok := acct.(destination.Redeliverer)
-	if !ok {
-		return nil, ErrBadRelayRetry
-	}
+	defer release()
 	dl := rd.Redeliver(ctx, destination.ItemRef{ID: target.RemoteID, URL: target.RemoteURL,
 		Data: []byte(target.SignedEventJSON)}, relayURL)
 	if dl.Status != "ok" && ctx.Err() != nil {

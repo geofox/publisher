@@ -130,7 +130,7 @@ func (a *API) v1AccountViews(r *http.Request, accts []store.Account) []v1Account
 			CreatedAt: rfc3339(ac.CreatedAt), UpdatedAt: rfc3339(ac.UpdatedAt),
 		}
 		if _, ok := destination.Lookup(ac.Type); ok {
-			c := a.caps(r.Context(), ac.Type)
+			c := a.caps(r.Context(), ac.ID, ac.Type)
 			v.Capabilities = &c
 		}
 		// The identity service knows one profile per type: the env account's.
