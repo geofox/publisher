@@ -60,6 +60,13 @@ scope (`admin` includes every scope).
 forgery against a signed-in browser. Scripts and servers send no `Origin`
 and are not affected.
 
+## misdirected
+
+**421.** The request's `Host` is not one this server serves: the server
+has `ALLOWED_HOSTS` set and the name isn't on it. This stops a web page
+that points its own name at the server (DNS rebinding) from using the app
+as if it were the same site. Add the name to `ALLOWED_HOSTS`.
+
 ## invalid_json
 
 **400.** The body is empty, is not JSON, has a field the operation does

@@ -92,7 +92,13 @@ func (a *API) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusForbidden, "not authorized")
 		return
 	}
-	u, err := a.Store.UpsertUser(claims.Subject, claims.Email, claims.Name)
+	// Only a verified email is kept: it is what a session is re-checked
+	// against (sessionUser).
+	email := claims.Email
+	if !claims.EmailVerified {
+		email = ""
+	}
+	u, err := a.Store.UpsertUser(claims.Subject, email, claims.Name)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "user upsert failed")
 		return

@@ -224,6 +224,10 @@ func main() {
 		}})
 	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
 	d.Alerter = notifier
+	a.AllowedHosts = cfg.AllowedHosts
+	if !cfg.OIDCEnabled() && len(cfg.AllowedHosts) == 0 {
+		slog.Warn("OIDC is off and ALLOWED_HOSTS is unset: set ALLOWED_HOSTS to the host name you reach publisher by, so a web page can't reach it through DNS rebinding")
+	}
 	if cfg.OIDCEnabled() {
 		authn, err := auth.New(context.Background(), auth.Config{
 			Issuer:       cfg.OIDCIssuer,

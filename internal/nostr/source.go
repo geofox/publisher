@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	gonostr "fiatjaf.com/nostr"
@@ -136,11 +139,28 @@ func (p *Publisher) ResolveSource(ctx context.Context, input string) (*SourceEve
 	}
 	hints := publicRelayHints(ctx, net.DefaultResolver, ptr.RelayHints)
 	urls := p.sourceRelays(ctx, hints)
+	// The pointer's hints come from whoever made it: they are dialed only
+	// through a connection that refuses non-public addresses at dial time
+	// (the check above can be outrun by DNS rebinding). The owner's own
+	// relays may be on their network and go through the pool.
+	trusted := map[string]bool{}
+	for _, u := range p.sourceRelays(ctx, nil) {
+		trusted[u] = true
+	}
+	var own, foreign []string
+	for _, u := range urls {
+		if trusted[u] {
+			own = append(own, u)
+		} else {
+			foreign = append(foreign, u)
+		}
+	}
+	fetch := func(f gonostr.Filter) *gonostr.Event { return p.fetchFrom(ctx, own, foreign, f) }
 	id, err := gonostr.IDFromHex(ptr.IDHex)
 	if err != nil {
 		return nil, fmt.Errorf("bad event id: %w", err)
 	}
-	ev := p.fetchOne(ctx, urls, gonostr.Filter{IDs: []gonostr.ID{id}, Limit: 1})
+	ev := fetch(gonostr.Filter{IDs: []gonostr.ID{id}, Limit: 1})
 	if ev == nil {
 		return nil, fmt.Errorf("event %s not found on %d relays", ptr.IDHex[:8], len(urls))
 	}
@@ -156,7 +176,7 @@ func (p *Publisher) ResolveSource(ctx context.Context, input string) (*SourceEve
 	if ev.Kind == 1 {
 		src.ThreadRootID, src.Mentions = threadContext(ev.Tags)
 	}
-	if prof := p.fetchOne(ctx, urls, gonostr.Filter{
+	if prof := fetch(gonostr.Filter{
 		Authors: []gonostr.PubKey{ev.PubKey},
 		Kinds:   []gonostr.Kind{0},
 		Limit:   1,
@@ -272,6 +292,69 @@ func (p *Publisher) sourceRelays(ctx context.Context, hints []string) []string {
 		add(u)
 	}
 	return out
+}
+
+// fetchFrom returns the first event matching filter from the owner's relays
+// (through the pool) or the foreign ones (each through a dial-guarded
+// connection), or nil.
+func (p *Publisher) fetchFrom(ctx context.Context, own, foreign []string, filter gonostr.Filter) *gonostr.Event {
+	if len(foreign) == 0 {
+		return p.fetchOne(ctx, own, filter)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	found := make(chan *gonostr.Event, len(foreign)+1)
+	var wg sync.WaitGroup
+	run := func(f func() *gonostr.Event) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			found <- f()
+		}()
+	}
+	if len(own) > 0 {
+		run(func() *gonostr.Event { return p.fetchOne(ctx, own, filter) })
+	}
+	for _, u := range foreign {
+		run(func() *gonostr.Event { return queryGuarded(ctx, u, filter) })
+	}
+	go func() { wg.Wait(); close(found) }()
+	for ev := range found {
+		if ev != nil {
+			return ev
+		}
+	}
+	return nil
+}
+
+// guardedWS dials websockets only to public addresses, checked on the
+// address actually dialed.
+var guardedWS = &http.Client{Transport: &http.Transport{
+	DialContext: (&net.Dialer{Timeout: 7 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return err
+		}
+		if ip := net.ParseIP(host); ip == nil || netguard.IsBlockedIP(ip) {
+			return fmt.Errorf("blocked non-public relay address %s", host)
+		}
+		return nil
+	}}).DialContext,
+	TLSHandshakeTimeout: 7 * time.Second,
+}}
+
+// queryGuarded asks one relay for the first event matching filter over a
+// dial-guarded connection of its own.
+func queryGuarded(ctx context.Context, url string, filter gonostr.Filter) *gonostr.Event {
+	r := gonostr.NewRelay(ctx, url, gonostr.RelayOptions{})
+	if err := r.ConnectWithClient(ctx, guardedWS); err != nil {
+		return nil
+	}
+	defer r.Close()
+	for ev := range r.QueryEvents(filter) {
+		return &ev
+	}
+	return nil
 }
 
 // fetchOne returns the first event matching filter across urls, or nil.

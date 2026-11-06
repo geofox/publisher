@@ -26,8 +26,19 @@ func IsBlockedIP(ip net.IP) bool {
 	if ip4 := ip.To4(); ip4 != nil && cgnatRange.Contains(ip4) {
 		return true
 	}
+	// NAT64 (RFC 6052 well-known and RFC 8215 local-use prefixes): on an
+	// IPv6-only host the gateway turns these into the IPv4 address in their
+	// last 4 bytes, so judge that address.
+	if ip16 := ip.To16(); ip16 != nil && ip.To4() == nil && (nat64WKP.Contains(ip16) || nat64Local.Contains(ip16)) {
+		return IsBlockedIP(net.IP(ip16[12:16]))
+	}
 	return false
 }
+
+var (
+	nat64WKP   = &net.IPNet{IP: net.ParseIP("64:ff9b::"), Mask: net.CIDRMask(96, 128)}
+	nat64Local = &net.IPNet{IP: net.ParseIP("64:ff9b:1::"), Mask: net.CIDRMask(48, 128)}
+)
 
 // Resolver is the lookup CheckPublicURL uses (net.DefaultResolver in
 // production).

@@ -153,6 +153,10 @@ type API struct {
 	EndSession bool
 	// AppBaseURL is the public origin (scheme://host) used to build post-logout redirects.
 	AppBaseURL string
+	// AllowedHosts, when set, are the only Host names served (plus
+	// loopback names and AppBaseURL's host): a DNS-rebinding page whose name
+	// now points at this server sends its own name as Host and is refused.
+	AllowedHosts []string
 
 	// Unfurl builds bluesky link cards for the thread preview; may be nil
 	// (no cards in previews). Satisfied by *unfurl.Service.
@@ -207,7 +211,7 @@ func (a *API) Routes() http.Handler {
 	}
 	a.mountV1(mux)
 	mux.Handle("/", web.Handler())
-	return withSecurityHeaders(a.withCSRFGuard(a.withGates(mux)))
+	return withSecurityHeaders(a.withHostGuard(a.withCSRFGuard(a.withGates(mux))))
 }
 
 // caps returns a target's effective capabilities: the connected account's,

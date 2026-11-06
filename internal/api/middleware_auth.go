@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/geofox/publisher/internal/httpx"
+	"github.com/geofox/publisher/internal/store"
 )
 
 type ctxKey int
@@ -18,7 +19,7 @@ func (a *API) requireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := r.Cookie(sessionCookie)
 		if err == nil {
-			if u, err := a.Store.SessionUser(c.Value); err == nil {
+			if u, ok := a.sessionUser(c.Value); ok {
 				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userCtxKey, u)))
 				return
 			}
@@ -29,6 +30,19 @@ func (a *API) requireSession(next http.Handler) http.Handler {
 		}
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthenticated")
 	})
+}
+
+// sessionUser resolves a session cookie to its user, when the user is
+// still on the allowlist: removing someone from it ends their sessions.
+func (a *API) sessionUser(raw string) (store.User, bool) {
+	u, err := a.Store.SessionUser(raw)
+	if err != nil {
+		return store.User{}, false
+	}
+	if a.Allowlist != nil && !a.Allowlist.AllowsUser(u.Subject, u.Email) {
+		return store.User{}, false
+	}
+	return u, true
 }
 
 // wantsHTML distinguishes a browser navigation (redirect target) from a fetch()

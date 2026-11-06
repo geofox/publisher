@@ -21,8 +21,11 @@ func TestAllowlist(t *testing.T) {
 	if err := a.Check(Claims{Subject: "sub-1"}); err != nil {
 		t.Fatalf("subject match should pass: %v", err)
 	}
-	if err := a.Check(Claims{Subject: "x", Email: "ok@e.com"}); err != nil {
-		t.Fatalf("email match should pass: %v", err)
+	if err := a.Check(Claims{Subject: "x", Email: "OK@e.com", EmailVerified: true}); err != nil {
+		t.Fatalf("verified email match (any case) should pass: %v", err)
+	}
+	if err := a.Check(Claims{Subject: "x", Email: "ok@e.com"}); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("an unverified email must not pass, got %v", err)
 	}
 	if err := a.Check(Claims{Subject: "x", Email: "no@e.com"}); !errors.Is(err, ErrNotAllowed) {
 		t.Fatalf("want ErrNotAllowed, got %v", err)

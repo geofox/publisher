@@ -99,6 +99,8 @@ type Config struct {
 	OIDCScopes          []string
 	OIDCEndSession      bool
 	SessionTTL          time.Duration
+	// AllowedHosts are the Host names served (ALLOWED_HOSTS); empty = any.
+	AllowedHosts []string
 }
 
 // OIDCEnabled reports whether app-level OIDC auth is configured.
@@ -217,7 +219,9 @@ func Load() (Config, error) {
 	c.FFprobePath = getEnv("FFPROBE_PATH", "/usr/local/bin/ffprobe")
 	c.VideoWorkdir = getEnv("VIDEO_WORKDIR", "")
 
-	c.OIDCIssuer = strings.TrimRight(getEnv("OIDC_ISSUER", ""), "/")
+	// Kept as given: the issuer must match the provider's exactly, and
+	// some end in "/" (auth.New also tries the other form).
+	c.OIDCIssuer = strings.TrimSpace(getEnv("OIDC_ISSUER", ""))
 	c.OIDCClientID = getEnv("OIDC_CLIENT_ID", "")
 	c.OIDCClientSecret = getEnv("OIDC_CLIENT_SECRET", "")
 	c.OIDCRedirectURL = getEnv("OIDC_REDIRECT_URL", "")
@@ -225,6 +229,7 @@ func Load() (Config, error) {
 	c.OIDCAllowedEmails = splitCSV(getEnv("OIDC_ALLOWED_EMAILS", ""))
 	c.OIDCScopes = splitCSV(getEnv("OIDC_SCOPES", "openid,profile,email"))
 	c.OIDCEndSession = getBool("OIDC_END_SESSION", true)
+	c.AllowedHosts = splitCSV(getEnv("ALLOWED_HOSTS", ""))
 	if c.SessionTTL, err = time.ParseDuration(getEnv("SESSION_TTL", "168h")); err != nil {
 		return c, fmt.Errorf("SESSION_TTL: %w", err)
 	}

@@ -451,10 +451,11 @@ infrastructure and should be overridden.
 | `OIDC_CLIENT_SECRET` | yes* | — | Client secret (**secret**) |
 | `OIDC_REDIRECT_URL` | yes* | — | Callback URL registered with the provider, e.g. `https://publisher.example.com/auth/callback` |
 | `OIDC_ALLOWED_SUBJECTS` | yes*† | — | CSV of allowed OIDC subjects (`sub`) |
-| `OIDC_ALLOWED_EMAILS` | yes*† | — | CSV of allowed email addresses |
+| `OIDC_ALLOWED_EMAILS` | yes*† | — | CSV of allowed email addresses. Only an email the provider marks verified (`email_verified`) matches; case doesn't matter |
 | `OIDC_SCOPES` | no | `openid profile email` | Requested scopes (space- or comma-separated) |
 | `OIDC_END_SESSION` | no | `true` | On logout, also end the provider session (RP-initiated logout) when the provider advertises `end_session_endpoint` |
-| `SESSION_TTL` | no | `168h` | Server-side session lifetime |
+| `SESSION_TTL` | no | `168h` | Server-side session lifetime. Removing someone from the allowlist ends their sessions at once |
+| `ALLOWED_HOSTS` | no | (empty) | CSV of host names the server answers for (e.g. `post.example.com`); `localhost` and the health probes always pass, and other names get 421. Recommended with OIDC off: it stops DNS rebinding from a web page |
 
 \* Required only when `OIDC_ISSUER` is set.
 † At least one of `OIDC_ALLOWED_SUBJECTS` / `OIDC_ALLOWED_EMAILS` must be non-empty when OIDC is enabled.
@@ -597,7 +598,8 @@ authenticated by the service itself: every request the proxy lets through
 can do everything, token management included. (On `/v1`, a bearer token,
 when one is sent, is still checked.) Put it behind an authenticating reverse
 proxy (Authelia, oauth2-proxy, Basic Auth) or keep it on a private network /
-VPN. The `docker run` and compose examples above bind port 8080 to
+VPN, and set `ALLOWED_HOSTS` to the name you reach it by. A Basic Auth
+`Authorization` header the proxy forwards is ignored. The `docker run` and compose examples above bind port 8080 to
 `127.0.0.1` (localhost only), so nothing is exposed until you deliberately
 place a proxy in front of it.
 

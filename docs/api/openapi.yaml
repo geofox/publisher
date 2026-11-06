@@ -2995,6 +2995,7 @@ components:
             - unauthenticated
             - insufficient_scope
             - cross_origin
+            - misdirected
             - invalid_json
             - unsupported_media_type
             - too_large

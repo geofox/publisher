@@ -280,12 +280,17 @@ func (a *API) v1ListPosts(w http.ResponseWriter, r *http.Request) {
 			fieldError{Parameter: name, Code: "invalid", Detail: detail})
 	}
 	if ss := vals["status"]; len(ss) > 0 {
+		seen := map[string]bool{}
 		for _, st := range strings.Split(strings.Join(ss, ","), ",") {
 			mapped, known := v1PostStatuses[st]
 			if !known {
 				badParam("status", "status is a comma-separated list of "+strings.Join(v1PostStatusNames, ", "))
 				return
 			}
+			if seen[st] {
+				continue // a repeat adds nothing (and enough of them overflow the query)
+			}
+			seen[st] = true
 			if st == "needs_attention" {
 				q.Attention = true
 			}
