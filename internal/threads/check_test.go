@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/destination/destinationtest"
 )
 
 // graph answers /me with status and body, and the API root; it records
@@ -85,52 +87,24 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-// The account reports the expiry the token manager knows: none after a
-// seed (the provisional expiry only schedules the first refresh), the real
-// one once a refresh has set it, including after a restart.
+// The account reports the expiry it knows: none after a seed (the
+// provisional expiry only schedules the first refresh), the real one once
+// a refresh has set it, including after a restart.
 func TestCheckReportsTokenExpiry(t *testing.T) {
-	var authed []string
-	c := graph(t, 200, `{"id":"1"}`, &authed)
 	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
-	st := &fakeStore{}
-	m := newMgr(st, c, &fakeNotifier{}, "envtoken", func() time.Time { return now })
-	m.ensureSeed(now)
-	if h := (&Account{C: c}).Check(context.Background(), destination.CheckRequest{}); h.ExpiresAt != nil {
-		t.Fatalf("expires_at = %v after a seed, want unknown", h.ExpiresAt)
+	check := func(s tokenState) *time.Time {
+		t.Helper()
+		var calls atomic.Int32
+		a := openWithState(t, destinationtest.NewHost(t).AllowDial(), refreshServer(t, 200, &calls), s, now)
+		var authed []string
+		a.C.BaseURL = graph(t, 200, `{"id":"1"}`, &authed).BaseURL
+		return a.Check(context.Background(), destination.CheckRequest{}).ExpiresAt
 	}
-	// A restart before the first refresh still knows nothing.
-	m.ensureSeed(now.Add(time.Hour))
-	if h := (&Account{C: c}).Check(context.Background(), destination.CheckRequest{}); h.ExpiresAt != nil {
-		t.Fatalf("expires_at = %v after a restart, want unknown", h.ExpiresAt)
+	if exp := check(tokenState{expiresAt: now.Add(SeedProvisional), refreshedAt: now}); exp != nil {
+		t.Fatalf("expires_at = %v after a seed, want unknown", exp)
 	}
-	// After a refresh the stored expiry is real.
 	real := now.Add(60 * 24 * time.Hour)
-	st.tk.ExpiresAt, st.tk.RefreshedAt = real, now
-	m.ensureSeed(now.Add(2 * time.Hour))
-	if h := (&Account{C: c}).Check(context.Background(), destination.CheckRequest{}); h.ExpiresAt == nil || !h.ExpiresAt.Equal(real) {
-		t.Fatalf("expires_at = %v, want %v", h.ExpiresAt, real)
+	if exp := check(tokenState{expiresAt: real, refreshedAt: now}); exp == nil || !exp.Equal(real) {
+		t.Fatalf("expires_at = %v, want %v", exp, real)
 	}
 }
-
-func TestTokenManagerRecordsRefreshedExpiry(t *testing.T) {
-	t0 := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
-	cur := t0
-	fc := &expiryClient{fakeClient: fakeClient{tok: "fresh", ttl: 60 * 24 * time.Hour}}
-	m := newMgr(&fakeStore{}, fc, &fakeNotifier{}, "envtoken", func() time.Time { return cur })
-	m.ensureSeed(cur)
-	if !fc.expiry.IsZero() {
-		t.Fatalf("seed expiry = %v, want unknown", fc.expiry)
-	}
-	cur = t0.Add(2 * 24 * time.Hour) // old enough, within the refresh window
-	m.tick(context.Background())
-	if want := cur.Add(60 * 24 * time.Hour); !fc.expiry.Equal(want) {
-		t.Fatalf("refreshed expiry = %v, want %v", fc.expiry, want)
-	}
-}
-
-type expiryClient struct {
-	fakeClient
-	expiry time.Time
-}
-
-func (e *expiryClient) SetTokenExpiry(t time.Time) { e.expiry = t }

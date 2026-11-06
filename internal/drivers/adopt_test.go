@@ -2,9 +2,11 @@ package drivers
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/nostr"
@@ -17,15 +19,14 @@ import (
 // start) never brings back a relay the owner removed.
 func TestAdoptLegacySyncRelays(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(filepath.Join(t.TempDir(), "p.db"))
+	path := filepath.Join(t.TempDir(), "p.db")
+	st, err := store.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	legacy := []string{"wss://old-a.example", "wss://old-b.example"}
-	if err := st.SetSyncRelays(legacy); err != nil {
-		t.Fatal(err)
-	}
+	setLegacySyncRelays(t, path, legacy...)
 	rows, err := st.SeedEnvAccounts(ctx, store.DefaultOwner, []store.EnvAccount{
 		{Type: nostr.Type, Key: destination.EnvKeyDefault, Label: "Nostr"},
 		{Type: nostr.Type, Key: "2", Label: "Nostr 2"},
@@ -87,5 +88,22 @@ func TestAdoptLegacySyncRelays(t *testing.T) {
 	}
 	if got := list(second); !reflect.DeepEqual(got, []string{"wss://env-2.example"}) {
 		t.Errorf("after a restart the second list = %v", got)
+	}
+}
+
+// setLegacySyncRelays writes the 2.x global relay-sync list (table
+// sync_relays, which nothing writes any more) through a second connection.
+func setLegacySyncRelays(t *testing.T, path string, urls ...string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(15000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	for i, u := range urls {
+		if _, err := db.Exec(`INSERT INTO sync_relays (url, added_at) VALUES (?, ?)`, u, now.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

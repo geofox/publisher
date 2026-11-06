@@ -93,18 +93,6 @@ func (d *Dispatcher) create(ctx context.Context, rec *store.Post) error {
 	return nil
 }
 
-// notSaved is the record returned when a post couldn't be saved: nothing
-// was sent, and every target says why.
-func notSaved(rec *store.Post, err error) *store.Post {
-	rec.Status = "failed"
-	for i := range rec.Targets {
-		rec.Targets[i].Status = "failed"
-		rec.Targets[i].Attempts = []store.Attempt{{AttemptNo: 1, Status: "failed",
-			Error: "not sent: the post could not be saved: " + err.Error(), AttemptedAt: time.Now().UTC()}}
-	}
-	return rec
-}
-
 // recorded is the post as stored, or rec when it can't be read back.
 func (d *Dispatcher) recorded(ctx context.Context, rec *store.Post) *store.Post {
 	p, err := d.Store.GetPost(rec.ID)

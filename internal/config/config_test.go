@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -8,7 +9,7 @@ import (
 
 func TestAutoRetryDefaults(t *testing.T) {
 	t.Setenv("BLOSSOM_URL", "https://b.example.com")
-	c, err := Load()
+	c, err := LoadFrom(os.Getenv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -32,7 +33,7 @@ func TestAutoRetryDefaults(t *testing.T) {
 func TestAutoRetryDisabled(t *testing.T) {
 	t.Setenv("BLOSSOM_URL", "https://b.example.com")
 	t.Setenv("AUTO_RETRY_ENABLED", "false")
-	c, err := Load()
+	c, err := LoadFrom(os.Getenv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -46,7 +47,7 @@ func TestVerifyConfigDefaults(t *testing.T) {
 	t.Setenv("VERIFY_HTTP_TIMEOUT", "")
 	t.Setenv("BLOSSOM_URL", "https://blossom.example.com")
 
-	cfg, err := Load()
+	cfg, err := LoadFrom(os.Getenv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -65,7 +66,7 @@ func TestUserLanguagesParsedFromEnv(t *testing.T) {
 	t.Setenv("BLOSSOM_URL", "https://blossom.example.com")
 	t.Setenv("USER_LANGUAGES", "en, fr , de")
 
-	cfg, err := Load()
+	cfg, err := LoadFrom(os.Getenv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -81,12 +82,12 @@ func TestUserLanguagesParsedFromEnv(t *testing.T) {
 }
 
 // loadWithRequiredBase sets the always-required env vars using the valid test
-// keypair constants and then calls Load(). Any test that exercises optional
+// keypair constants and then calls LoadFrom(os.Getenv). Any test that exercises optional
 // config should call this instead of repeating the boilerplate.
 func loadWithRequiredBase(t *testing.T) (Config, error) {
 	t.Helper()
 	t.Setenv("BLOSSOM_URL", "https://b.example.com")
-	return Load()
+	return LoadFrom(os.Getenv)
 }
 
 func TestOIDCConfig(t *testing.T) {
@@ -123,7 +124,7 @@ func TestOIDCConfig(t *testing.T) {
 // the queue's tick stays here.
 func TestFanoutTickDefault(t *testing.T) {
 	t.Setenv("BLOSSOM_URL", "https://b.example.com")
-	c, err := Load()
+	c, err := LoadFrom(os.Getenv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -137,13 +138,13 @@ func TestFeedEnvVars(t *testing.T) {
 		t.Errorf("default PUBLIC_FEED_TOKEN = %q, want empty", c.PublicFeedToken)
 	}
 
-	// Verify that Load() reads the feed env vars into the correct Config fields.
+	// Verify that LoadFrom(os.Getenv) reads the feed env vars into the correct Config fields.
 	t.Setenv("BLOSSOM_URL", "https://blossom.example.com")
 	t.Setenv("PUBLIC_FEED_TOKEN", "tok")
 	t.Setenv("FEED_WEBHOOK_URL", "https://hook")
 	t.Setenv("FEED_WEBHOOK_TOKEN", "wtok")
 
-	cfg, err := Load()
+	cfg, err := LoadFrom(os.Getenv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestRetryAndGraceBounds(t *testing.T) {
 		t.Run(tc.key, func(t *testing.T) {
 			t.Setenv("BLOSSOM_URL", "https://b.example.com")
 			t.Setenv(tc.key, tc.val)
-			if _, err := Load(); err == nil {
+			if _, err := LoadFrom(os.Getenv); err == nil {
 				t.Errorf("%s=%s should be refused", tc.key, tc.val)
 			}
 		})
@@ -194,7 +195,7 @@ func TestStrictBooleans(t *testing.T) {
 		t.Run(tc.val, func(t *testing.T) {
 			baseEnv(t)
 			t.Setenv("AUTO_RETRY_ENABLED", tc.val)
-			c, err := Load()
+			c, err := LoadFrom(os.Getenv)
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
@@ -207,7 +208,7 @@ func TestStrictBooleans(t *testing.T) {
 		t.Run(key+"=flase", func(t *testing.T) {
 			baseEnv(t)
 			t.Setenv(key, "flase")
-			_, err := Load()
+			_, err := LoadFrom(os.Getenv)
 			if err == nil || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), `"flase"`) {
 				t.Fatalf("err = %v, want one naming %s and the value", err, key)
 			}
@@ -221,7 +222,7 @@ func TestLoadReportsEveryError(t *testing.T) {
 	t.Setenv("AUTO_RETRY_ENABLED", "maybe")
 	t.Setenv("POW_TIMEOUT", "soon")
 	t.Setenv("PUBLISH_WORKERS", "0")
-	_, err := Load()
+	_, err := LoadFrom(os.Getenv)
 	if err == nil {
 		t.Fatal("Load accepted invalid values")
 	}

@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -87,12 +86,9 @@ type Config struct {
 // OIDCEnabled reports whether app-level OIDC auth is configured.
 func (c Config) OIDCEnabled() bool { return c.OIDCIssuer != "" }
 
-// Load reads the configuration from the environment. Every invalid
-// variable is reported, not only the first, so one restart fixes them all.
-func Load() (Config, error) { return LoadFrom(os.Getenv) }
-
 // LoadFrom reads the configuration through getenv (os.Getenv, or a test's
-// map).
+// map). Every invalid variable is reported, not only the first, so one
+// restart fixes them all.
 func LoadFrom(getenv func(string) string) (Config, error) {
 	l := loader{getenv: getenv}
 	getEnv := l.get

@@ -750,9 +750,34 @@ One commit: every caller moves to the registry and account-keyed specs.
 
 ### Task A2.7: cleanup
 
-- [ ] Delete what the switch left unused: old driver constructors,
+- [x] Delete what the switch left unused: old driver constructors,
   `ConnectedIDs`, `LegacyItemKey` outside the v4 migration and reads, the
   old config plumbing. `go vet` clean and no unused exported helpers left.
+
+### As built (A2.7)
+
+- **Removed:** `threads.TokenManager` (the registry's refresh loop and
+  `accounts.RefreshDue`, which also sets `publisher_token_expiry_seconds`,
+  do its work; `threads/refresh.go` keeps `SeedProvisional` and
+  `SeedHash`); `drivers.OpenEnv`, `errNoSave` and `envHost` (tests open
+  env accounts through each driver with `destinationtest.NewHost`); the
+  store's global relay-sync functions (`SyncRelays`, `SetSyncRelays`,
+  `AddSyncRelay`, `RemoveSyncRelay`, `SeedSyncRelaysIfEmpty`, and the
+  unused `AddAccountSyncRelay`/`RemoveAccountSyncRelay`): table
+  `sync_relays` is only read by `AdoptLegacySyncRelays`, and tests write
+  it with SQL; `config.Load` (callers use `LoadFrom(os.Getenv)`).
+- **Moved to tests:** the inline drive (`drive`, `driveTarget`,
+  `beginInline`, `endInline`, `notSaved`, `runDue`) to
+  `dispatch/inline_test.go`. Production only enqueues; it was reachable
+  before only through reflection. The workers still skip a post a test
+  drives inline (`inlinePosts`), and `memMedia` stays (tests hand media
+  in memory).
+- **Kept on purpose:** `bluesky.New`, `mastodon.New`, `threads.New` (test
+  conveniences over `Open` with a trusted network, 69 call sites);
+  `destination.MergeState`, `OptStrings`, `Unregister` (contract and test
+  helpers); `LegacyItemKey` (v4 migration; tests building 2.x items).
+  `ConnectedIDs` was already gone. Every `config.Config` field is read.
+- `deadcode ./...` now reports a subset of what it reported on `main`.
 
 ### Task A2.8: e2e
 

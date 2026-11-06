@@ -31,8 +31,7 @@ func TestIssuerTrailingSlash(t *testing.T) {
 	} {
 		t.Setenv(k, v)
 	}
-	_ = os.Getenv
-	cfg, err := config.Load()
+	cfg, err := config.LoadFrom(os.Getenv)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,8 @@ package threads
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -20,7 +22,19 @@ const (
 // SeedProvisional is the expiry recorded for a token whose real expiry is
 // unknown (one pasted or set in the environment): short enough that the
 // first refresh, a day later, learns the real one.
-const SeedProvisional = seedProvisional
+const SeedProvisional = 11 * 24 * time.Hour
+
+const (
+	minTokenAge   = 24 * time.Hour      // Threads refuses to refresh a younger token
+	refreshWindow = 10 * 24 * time.Hour // refresh once within this of expiry
+)
+
+// SeedHash identifies an environment token without keeping it: the stored
+// token's seed hash says which environment token it descends from.
+func SeedHash(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
 
 var (
 	_ destination.Refresher = (*Account)(nil)

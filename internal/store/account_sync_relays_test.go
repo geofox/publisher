@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestAccountSyncRelays(t *testing.T) {
@@ -17,14 +18,11 @@ func TestAccountSyncRelays(t *testing.T) {
 	if err := s.SeedAccountSyncRelaysIfEmpty(ctx, a, []string{"wss://9"}); err != nil {
 		t.Fatal(err)
 	}
-	_ = s.AddAccountSyncRelay(ctx, a, "wss://3")
-	_ = s.AddAccountSyncRelay(ctx, a, "wss://3")
-	_ = s.AddAccountSyncRelay(ctx, b, "wss://x")
-	_ = s.RemoveAccountSyncRelay(ctx, a, "wss://1")
 	got, err := s.AccountSyncRelays(ctx, a)
-	if want := []string{"wss://2", "wss://3"}; err != nil || !reflect.DeepEqual(got, want) {
+	if want := []string{"wss://1", "wss://2"}; err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("a = %v, %v; want %v", got, err, want)
 	}
+	_ = s.SetAccountSyncRelays(ctx, b, []string{"wss://x"})
 	if err := s.SetAccountSyncRelays(ctx, a, []string{"wss://3", "wss://4"}); err != nil {
 		t.Fatal(err)
 	}
@@ -48,9 +46,7 @@ func TestAccountSyncRelays(t *testing.T) {
 func TestAdoptLegacySyncRelays(t *testing.T) {
 	s := openEngineStore(t)
 	ctx := context.Background()
-	if err := s.SetSyncRelays([]string{"wss://old1", "wss://old2"}); err != nil {
-		t.Fatal(err)
-	}
+	setLegacySyncRelays(t, s, "wss://old1", "wss://old2")
 	a := seedTestAccount(t, s, "nostr", "a")
 	if ok, err := s.AdoptLegacySyncRelays(ctx, a); err != nil || !ok {
 		t.Fatalf("adopt = %v, %v", ok, err)
@@ -64,7 +60,7 @@ func TestAdoptLegacySyncRelays(t *testing.T) {
 	}
 	// With nothing to adopt, the seed applies.
 	b := seedTestAccount(t, s, "nostr", "b")
-	_ = s.SetSyncRelays(nil)
+	setLegacySyncRelays(t, s)
 	if ok, _ := s.AdoptLegacySyncRelays(ctx, b); ok {
 		t.Fatal("adopted an empty list")
 	}
@@ -79,4 +75,18 @@ func seedTestAccount(t *testing.T, s *Store, typ, key string) string {
 		t.Fatal(err)
 	}
 	return id
+}
+
+// setLegacySyncRelays sets the global list as 2.x kept it, in order.
+func setLegacySyncRelays(t *testing.T, s *Store, urls ...string) {
+	t.Helper()
+	if _, err := s.sql.Exec(`DELETE FROM sync_relays`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for i, u := range urls {
+		if _, err := s.sql.Exec(`INSERT INTO sync_relays (url, added_at) VALUES (?, ?)`, u, now.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

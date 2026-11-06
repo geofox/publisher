@@ -23,9 +23,9 @@ import (
 // The engine. A post is written whole, every item planned, before anything
 // is sent. Items are then claimed one at a time (store.ClaimItem), published,
 // and their results recorded with the retry decision (store.RecordItemResult).
-// "Publish now" drives the new post's items inline, so the caller gets the
-// outcome; everything else (scheduled posts, retries, items a stopped process
-// left in flight) is claimed by the background workers Run starts.
+// Every item (a new post, a scheduled one, a retry, what a stopped process
+// left in flight) is claimed by the background workers Run starts; the
+// caller follows the outcome through the post and its events.
 
 // RetryPolicy decides when a failed item is tried again.
 type RetryPolicy struct {
@@ -58,10 +58,10 @@ const (
 // engine is the Dispatcher's run state. The zero value is ready.
 type engine struct {
 	mu       sync.Mutex
-	inline   map[string]int // posts being driven inline, by drive count
+	inline   map[string]int // posts a test drives inline (inline_test.go), by drive count
 	recover  sync.Once      // startup recovery
 	stopping bool
-	active   sync.WaitGroup // workers and inline drives
+	active   sync.WaitGroup // workers (and a test's inline drives)
 	kickOnce sync.Once
 	kickCh   chan struct{}
 }
@@ -85,31 +85,6 @@ func (d *Dispatcher) kick() {
 func (d *Dispatcher) kicks() <-chan struct{} {
 	d.eng.kickOnce.Do(func() { d.eng.kickCh = make(chan struct{}, 1) })
 	return d.eng.kickCh
-}
-
-// beginInline registers an inline drive of postID; false once shutting down.
-func (d *Dispatcher) beginInline(postID string) bool {
-	d.eng.mu.Lock()
-	defer d.eng.mu.Unlock()
-	if d.eng.stopping {
-		return false
-	}
-	if d.eng.inline == nil {
-		d.eng.inline = map[string]int{}
-	}
-	d.eng.inline[postID]++
-	d.eng.active.Add(1)
-	return true
-}
-
-func (d *Dispatcher) endInline(postID string) {
-	d.eng.mu.Lock()
-	if d.eng.inline[postID]--; d.eng.inline[postID] <= 0 {
-		delete(d.eng.inline, postID)
-	}
-	d.eng.mu.Unlock()
-	d.eng.active.Done()
-	d.kick() // what the drive left (a retry later, say) is the workers' now
 }
 
 func (d *Dispatcher) inlinePosts() []string {
@@ -222,22 +197,6 @@ func (d *Dispatcher) worker(ctx context.Context) {
 		case <-timer.C:
 		}
 	}
-}
-
-// runDue claims and publishes due items one after another until none is
-// due, and returns how many it ran: one worker's loop, synchronously.
-func (d *Dispatcher) runDue(ctx context.Context) int {
-	n := 0
-	for !d.isStopping() {
-		now := d.now()
-		c, err := d.Store.ClaimItem(ctx, now, store.ClaimFilter{Exclude: d.inlinePosts(), MissedBefore: d.missedBefore(now)})
-		if err != nil || c == nil {
-			return n
-		}
-		d.runClaim(ctx, c, nil, true)
-		n++
-	}
-	return n
 }
 
 func (d *Dispatcher) missedBefore(now time.Time) time.Time {
@@ -401,62 +360,6 @@ type memMedia struct {
 	post   []Img                   // by post media index
 	source []Img                   // a quote's re-hosted source media, by source index
 	thumbs map[string]*unfurl.Card // link cards fetched at planning, by thumbnail URL
-}
-
-// drive publishes postID's due items now: targets in parallel, each
-// target's items in order. It returns when none of them is due. persist,
-// when set, saves the post or makes its items due: it runs after the post
-// is registered as driven inline, so no worker claims its items first, and
-// it runs even during shutdown (the next start sends what it saved).
-func (d *Dispatcher) drive(ctx context.Context, postID string, mm *memMedia, persist func() error) error {
-	// A send, once started, finishes and is recorded even if the request
-	// that asked for it goes away (a closed tab, a proxy timeout): a
-	// canceled record would leave the item sending until the next start.
-	ctx = context.WithoutCancel(ctx)
-	if !d.beginInline(postID) {
-		if persist != nil {
-			if err := persist(); err != nil {
-				return err
-			}
-		}
-		slog.WarnContext(ctx, "engine: shutting down; post left to the next start", "post_id", postID)
-		return nil
-	}
-	defer d.endInline(postID)
-	if persist != nil {
-		if err := persist(); err != nil {
-			return err
-		}
-	}
-	post, err := d.Store.GetPost(postID)
-	if err != nil {
-		slog.ErrorContext(ctx, "engine: load post failed", "post_id", postID, "err", err)
-		return nil
-	}
-	var wg sync.WaitGroup
-	for _, tg := range post.Targets {
-		wg.Add(1)
-		go func(tg store.Target) {
-			defer wg.Done()
-			d.driveTarget(ctx, postID, tg, mm)
-		}(tg)
-	}
-	wg.Wait()
-	return nil
-}
-
-func (d *Dispatcher) driveTarget(ctx context.Context, _ string, tg store.Target, mm *memMedia) {
-	for !d.isStopping() {
-		c, err := d.Store.ClaimItem(ctx, d.now(), store.ClaimFilter{TargetID: tg.ID})
-		if err != nil {
-			slog.ErrorContext(ctx, "engine: claim failed", "target_id", tg.ID, "err", err)
-			break
-		}
-		if c == nil {
-			break
-		}
-		d.runClaim(ctx, c, mm, false)
-	}
 }
 
 // runClaim publishes a claimed item and records the result. auto marks a
