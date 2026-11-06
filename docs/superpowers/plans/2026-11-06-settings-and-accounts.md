@@ -107,15 +107,15 @@ visible change except strict booleans and the clearer env errors.
 **Files:** `internal/config/config.go`, `config_test.go`,
 `.github/workflows/ci.yml`, `publish.yml`, new `CHANGELOG.md`.
 
-- [ ] `getBool(k, d) (bool, error)`: `1/true/yes/on`, `0/false/no/off` in
+- [x] `getBool(k, d) (bool, error)`: `1/true/yes/on`, `0/false/no/off` in
   any case, spaces trimmed; anything else is an error naming the variable
   and the accepted values. Call sites: `AUTO_RETRY_ENABLED`,
   `NOSTR_PRIMARY_FANOUT`, `OIDC_END_SESSION`.
-- [ ] `config.Load` collects every invalid variable and returns them all
+- [x] `config.Load` collects every invalid variable and returns them all
   at once (`errors.Join`), so one restart fixes them all.
-- [ ] CI runs `go test -race ./...`.
-- [ ] `CHANGELOG.md` with an "Unreleased" section.
-- [ ] Tests: each spelling; empty takes the default; `flase` fails with the
+- [x] CI runs `go test -race ./...`.
+- [x] `CHANGELOG.md` with an "Unreleased" section.
+- [x] Tests: each spelling; empty takes the default; `flase` fails with the
   variable's name; two invalid variables are both reported.
 
 ### Task A1.2: contract v2 and `Open` for every driver
@@ -128,14 +128,14 @@ they implement it.
 `internal/destination/destinationtest/host.go`, the four driver packages,
 `internal/drivers/drivers.go`, tests.
 
-- [ ] `ContractVersion = 2`; manifests say `Contract: 2`; `Register`
+- [x] `ContractVersion = 2`; manifests say `Contract: 2`; `Register`
   panics on contract 1 (test).
-- [ ] `Driver.Open(ctx, OpenRequest) (Account, error)`;
+- [x] `Driver.Open(ctx, OpenRequest) (Account, error)`;
   `OpenRequest{AccountID, Method, Config map[string]any, Secrets
   map[string]string, Tuning, Host AccountHost}`. No network I/O in `Open`.
-- [ ] `Tuning{PublishTimeout, POWTimeout, RelayCacheTTL, VerifyTimeout
+- [x] `Tuning{PublishTimeout, POWTimeout, RelayCacheTTL, VerifyTimeout
   time.Duration; PLCDirectoryURL string}`.
-- [ ] `AccountHost`:
+- [x] `AccountHost`:
   - `Save(ctx, StateUpdate{Secrets map[string]string; Config
     map[string]any}) error` — one atomic, durable write of new secrets and
     config together (a token refresh writes the token and its expiry in one
@@ -147,34 +147,34 @@ they implement it.
     (owner-typed addresses). The host may tighten a policy, never loosen it
     (C4 makes every database account's transports `NetOwner` whatever the
     driver asks).
-- [ ] **Drivers take every transport from the host.** go-mastodon's
+- [x] **Drivers take every transport from the host.** go-mastodon's
   `http.Client`, Bluesky's API and upload clients, Threads' client, and the
   Nostr relay pool's WebSocket dialer come from `Host.HTTPClient` /
   `Host.Dialer`. First step: confirm the Nostr library's pool and
   `RelayConnect` accept a custom dialer or HTTP client; if not, wrap them
   (record which here). With `NetTrusted` the host returns today's clients,
   so nothing changes in A1.
-- [ ] `EnvSource{FromEnv(getenv) ([]EnvAccount, error); EnvVars()
+- [x] `EnvSource{FromEnv(getenv) ([]EnvAccount, error); EnvVars()
   []string}`; `EnvAccount{Key, Label, Method, Config, Secrets}`.
   `EnvVars` names the variables, so a `not_configured` reason can say
   "set MASTODON_TOKEN and MASTODON_BASE_URL".
-- [ ] `Identity.RemoteID`; `Checker`, `CheckRequest{Authenticated}`,
+- [x] `Identity.RemoteID`; `Checker`, `CheckRequest{Authenticated}`,
   `Health{OK, Reachable, AuthOK *bool, Message, ExpiresAt *time.Time}`;
   `Refresher{NextRefresh(now) time.Time; Refresh(ctx) error}`;
   `SourceResolver{ResolveSource(ctx, input) (ResolvedSource, error)}`
   with `ResolvedSource{Ref SourceRef; Preview SourcePreview; Actions
   SourceActions}` carrying what `resolve.Preview` and `resolve.Caps` carry
   today, so `/v1/resolve` keeps its shape.
-- [ ] `destination.TypesInOrder()`: registration order. `drivers.Register`
+- [x] `destination.TypesInOrder()`: registration order. `drivers.Register`
   registers Bluesky, Mastodon, Threads, Nostr (the composer's order today);
   `Types()` stays sorted for existing callers.
-- [ ] Each driver's `Open` checks required config and secrets (`invalid`
+- [x] Each driver's `Open` checks required config and secrets (`invalid`
   naming the field) and builds today's client from them. The old
   constructors stay until A2's cleanup.
-- [ ] `destinationtest.Host`: in-memory `AccountHost` for driver tests;
+- [x] `destinationtest.Host`: in-memory `AccountHost` for driver tests;
   its transports fail the test on any request unless the test installs a
   handler.
-- [ ] Tests: `Open` never dials; missing fields → `invalid`; JSON round
+- [x] Tests: `Open` never dials; missing fields → `invalid`; JSON round
   trips of the new types; registration order.
 
 ### Task A1.3: drivers read their own env
@@ -182,30 +182,30 @@ they implement it.
 **Files:** each driver's new `env.go` and tests,
 `internal/drivers/env.go`, `internal/config`, `cmd/publisher/main.go`.
 
-- [ ] **Nostr:** `NSEC_HEX` → one account (`default`); `OWNER_PUBKEY`
+- [x] **Nostr:** `NSEC_HEX` → one account (`default`); `OWNER_PUBKEY`
   optional (derived), must match when set; `OWNER_PUBKEY` without
   `NSEC_HEX` is an error. Config from `NIP65_BOOTSTRAP_RELAY`,
   `FALLBACK_RELAYS`, `PRIMARY_RELAYS`, `NOSTR_PRIMARY_FANOUT` (strict),
   `POW_DIFFICULTY_DEFAULT`, `POW_DIFFICULTY_MAX`, and `SYNC_RELAYS` as
   `sync_relays_seed`; today's defaults unchanged. Secret `secret_key`.
-- [ ] **Bluesky:** `BLUESKY_APP_PASSWORD` → one account;
+- [x] **Bluesky:** `BLUESKY_APP_PASSWORD` → one account;
   `BLUESKY_IDENTIFIER` required with it; `BLUESKY_PDS_URL` as `pds_url`.
-- [ ] **Mastodon:** `MASTODON_TOKEN` → one account; `MASTODON_BASE_URL`
+- [x] **Mastodon:** `MASTODON_TOKEN` → one account; `MASTODON_BASE_URL`
   required with it (today a token without a base URL fails every send).
-- [ ] **Threads:** `THREADS_ACCESS_TOKEN` → one account; `THREADS_USER_ID`
+- [x] **Threads:** `THREADS_ACCESS_TOKEN` → one account; `THREADS_USER_ID`
   as `user_id` (default `me`).
-- [ ] `drivers.EnvAccounts(getenv) ([]TypedEnvAccount, error)` calls every
+- [x] `drivers.EnvAccounts(getenv) ([]TypedEnvAccount, error)` calls every
   registered `EnvSource` and joins all errors. `drivers.EnvMediaSigner(
   accounts)` returns the env Nostr key pair for Blossom upload signing (or
   none), so `main.go` doesn't name the type.
-- [ ] `config.Config` loses the destination fields; their tests move to
+- [x] `config.Config` loses the destination fields; their tests move to
   the drivers, case for case.
-- [ ] `main.go` builds today's `map[type]Account` from `EnvAccounts` and
+- [x] `main.go` builds today's `map[type]Account` from `EnvAccounts` and
   `Driver.Open` with a legacy host (today's clients). `NSEC_HEX` and
   `BLOSSOM_URL` stay required in A1 (A2.6 lifts that). The Threads token
   manager still gets the Threads client (one temporary type assertion in
   `main.go`, removed in A2.3).
-- [ ] Tests per driver: unset → none; complete → one with the expected
+- [x] Tests per driver: unset → none; complete → one with the expected
   config and secrets; each partial combination → the named error.
 
 ### Task A1.4: identity, checks and source resolution on the accounts
@@ -216,27 +216,69 @@ until A2.4 switches to these.
 **Files:** driver packages (`source.go`, new `check.go`, `identity`
 methods), tests.
 
-- [ ] `RemoteID`: Bluesky the DID, Mastodon the account URL, Threads the
+- [x] `RemoteID`: Bluesky the DID, Mastodon the account URL, Threads the
   user id, Nostr the public key (hex).
-- [ ] `Check(Authenticated: false)`: Bluesky `GET <pds>/xrpc/_health`,
+- [x] `Check(Authenticated: false)`: Bluesky `GET <pds>/xrpc/_health`,
   Mastodon `GET <instance>/api/v1/instance`, Threads `GET
   https://graph.threads.net/`, Nostr a WebSocket open on the bootstrap
   relay; no credential is sent. `Authenticated: true`: Bluesky
   `getSession`, Mastodon `verify_credentials`, Threads `/me?fields=id`,
   Nostr none (`AuthOK` nil). The Threads account reports `ExpiresAt` from
   its token state.
-- [ ] `SourceResolver` on Bluesky, Mastodon and Nostr accounts: the
+- [x] `SourceResolver` on Bluesky, Mastodon and Nostr accounts: the
   adapters' code moves into the drivers (Mastodon resolves through its own
   instance). Threads has none.
-- [ ] Tests: remote ids from recorded responses; unauthenticated checks
+- [x] Tests: remote ids from recorded responses; unauthenticated checks
   send no credential; a 401 on an authenticated check gives
   `AuthOK=false`; resolver tests moved from `resolve`.
 
 ### Task A1.5: docs, PR, review
 
-- [ ] README: `MASTODON_BASE_URL` required with `MASTODON_TOKEN`,
+- [x] README: `MASTODON_BASE_URL` required with `MASTODON_TOKEN`,
   `OWNER_PUBKEY` optional, strict booleans. CHANGELOG.
 - [ ] Open PR A1; 2 QA + 1 security reviews; fix; hand over.
+
+### As built (A1)
+
+- **Network access is one value.** `AccountHost.Net(policy)` returns
+  `destination.Net{DialContext, Proxy, CheckRedirect}`, with `Transport` and
+  `Client` helpers, instead of `HTTPClient` and `Dialer`. Every HTTP client
+  and transport the drivers make is built from it: Bluesky's API and upload
+  clients, go-mastodon's transport (under the rate-limit and idempotency
+  wrappers) and Mastodon's own client, Threads' client, and the Nostr
+  account's plain HTTP client (its check).
+- **The Nostr relay pool can't take the host's network yet.**
+  `fiatjaf.com/nostr`'s `Pool.EnsureRelay` always calls `relay.Connect`
+  without a client; `Relay.ConnectWithClient` exists. C4 gives the Nostr
+  account its own relay map built on `ConnectWithClient`; until then its
+  WebSockets dial with the library's defaults.
+- **Env accounts.** Each driver's `FromEnv` (`env.go`) returns its accounts;
+  `drivers.EnvAccounts` joins every driver's errors with the config's.
+  `BLUESKY_PDS_URL` is required with `BLUESKY_APP_PASSWORD`, like the
+  identifier (a password without it failed every send; C7's discovery can
+  relax this). `drivers.OpenEnv` opens them, one per type, on a host that
+  reaches the network with `NetTrusted` (every address is the operator's)
+  and refuses `Save` until A2 stores state. `main.go` still type-asserts the
+  clients for the identity service, the token manager and readiness; A2.3
+  and A2.4 remove that.
+- **Checks.** `destination.CheckReachable`, `CheckedAuth` and `NetProblem`
+  are shared. `AuthOK=false` only for a refusal of the credentials: Bluesky
+  401, `AuthenticationRequired`, `AccountTakedown`, `AccountDeactivated`,
+  `ExpiredToken`, `InvalidToken` (an expired cached session is replaced once
+  first); Mastodon and Threads when their error classifier says `auth`
+  (Threads Graph codes 190, 102, 10, 200–299). A rate limit or an outage
+  leaves it unset. Messages name the kind of failure, never the request.
+  Threads reports `ExpiresAt` from the token manager, which records it on
+  the client (`SetTokenExpiry`) until the `Refresher` replaces the manager.
+- **Remote ids.** Mastodon's is the ActivityPub actor id (`uri`, Mastodon
+  4.2 and later), else the profile `url`.
+- **Source resolution** moved into the drivers with its tests;
+  `resolve.AccountAdapter` renames fields for `/v1/resolve`. A network
+  without an account resolves to `not_configured`.
+- **CI** runs `go test -race -gcflags=all=-d=checkptr=0`: checkptr trips in
+  `fiatjaf.com/nostr`'s `writeJSONString` (no data race was found). The
+  thread planner's timing test allows ten times longer under the race
+  detector.
 
 ---
 
@@ -1300,7 +1342,11 @@ Made by this plan; the spec is updated to match.
 | §2.4: `nostr_relay` readiness check kept | Dropped; each Nostr account's check covers its relay. |
 | §2.6: field code `duplicate_account` | Today's `duplicate` kept for the same account twice; `duplicate_account` is C's 409. |
 | §2.6: `profile` object | Flat `display_name`, `avatar` (as today) plus `profile_url`. |
-| §4.2: `SaveSecrets` and `SaveConfig` | One atomic `Save(StateUpdate)`; `Dialer` added for WebSockets. |
+| §4.2: `SaveSecrets` and `SaveConfig` | One atomic `Save(StateUpdate)`. |
+| §4.2: `HTTPClient(policy)` (and plan A1.2's `Dialer`) | `Net(policy)`: one dialer, proxy and redirect rule every client, transport and WebSocket is built from. |
+| §4.2: Nostr's unauthenticated check opens a WebSocket | The home relay's NIP-11 document over HTTP, through the host's network (the library's WebSocket can't use it yet). |
+| §4.3 (plan A1.3): `BLUESKY_PDS_URL` optional | Required with `BLUESKY_APP_PASSWORD` until PDS discovery (C7). |
+| Plan A1.4: Mastodon `RemoteID` is the account URL | The ActivityPub actor id (`uri`), else the profile URL. |
 | §4.3: `ResolveSource` returns `SourceRef` | Returns `ResolvedSource` (reference, preview, actions). |
 | §6.1: redirect URI from the request origin | `PUBLIC_URL`, else the OIDC app base URL, else connect refused. |
 | §7.6: BUD-11 server tag always | Only with the media store's own key. |
