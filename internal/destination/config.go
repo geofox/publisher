@@ -1,16 +1,19 @@
 package destination
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
+	"time"
 )
 
 // Config values reach a driver either as Go values (from FromEnv) or
-// decoded from JSON (float64 numbers, []any lists). These accessors read
-// both. A missing key is the zero value; a value of the wrong kind is an
-// error naming the key.
+// decoded from JSON (float64 or json.Number numbers, []any lists, RFC 3339
+// strings for times). These accessors read both. A missing key is the zero
+// value; a value of the wrong kind is an error that describes the problem
+// without the key, for InvalidField(key, err.Error()).
 
 // ConfigString reads a string.
 func ConfigString(cfg map[string]any, key string) (string, error) {
@@ -20,7 +23,7 @@ func ConfigString(cfg map[string]any, key string) (string, error) {
 	case string:
 		return v, nil
 	default:
-		return "", fmt.Errorf("%s: want a string, got %T", key, v)
+		return "", fmt.Errorf("want a string, got %s", kindOf(v))
 	}
 }
 
@@ -45,39 +48,39 @@ func ConfigStrings(cfg map[string]any, key string) ([]string, error) {
 		for i, e := range v {
 			s, ok := e.(string)
 			if !ok {
-				return nil, fmt.Errorf("%s[%d]: want a string, got %T", key, i, e)
+				return nil, fmt.Errorf("item %d: want a string, got %s", i+1, kindOf(e))
 			}
 			out = append(out, s)
 		}
 		return out, nil
 	default:
-		return nil, fmt.Errorf("%s: want a list of strings, got %T", key, v)
+		return nil, fmt.Errorf("want a list of strings, got %s", kindOf(v))
 	}
 }
 
 // ConfigInt reads a whole number; ok is false when the key is absent.
 func ConfigInt(cfg map[string]any, key string) (n int, ok bool, err error) {
+	var f float64
 	switch v := cfg[key].(type) {
 	case nil:
 		return 0, false, nil
 	case int:
 		return v, true, nil
 	case int64:
-		return int(v), true, nil
+		f = float64(v)
 	case float64:
-		if v != math.Trunc(v) || math.Abs(v) > math.MaxInt32 {
-			return 0, false, fmt.Errorf("%s: want a whole number, got %v", key, v)
+		f = v
+	case json.Number:
+		if f, err = v.Float64(); err != nil {
+			return 0, false, errors.New("want a whole number")
 		}
-		return int(v), true, nil
-	case string:
-		i, err := strconv.Atoi(strings.TrimSpace(v))
-		if err != nil {
-			return 0, false, fmt.Errorf("%s: want a whole number, got %q", key, v)
-		}
-		return i, true, nil
 	default:
-		return 0, false, fmt.Errorf("%s: want a whole number, got %T", key, v)
+		return 0, false, fmt.Errorf("want a whole number, got %s", kindOf(v))
 	}
+	if f != math.Trunc(f) || math.Abs(f) > math.MaxInt32 {
+		return 0, false, fmt.Errorf("want a whole number, got %v", f)
+	}
+	return int(f), true, nil
 }
 
 // ConfigBool reads a boolean; ok is false when the key is absent.
@@ -88,7 +91,45 @@ func ConfigBool(cfg map[string]any, key string) (b bool, ok bool, err error) {
 	case bool:
 		return v, true, nil
 	default:
-		return false, false, fmt.Errorf("%s: want true or false, got %T", key, v)
+		return false, false, fmt.Errorf("want true or false, got %s", kindOf(v))
+	}
+}
+
+// ConfigTime reads a time (a time.Time, or an RFC 3339 string as JSON
+// stores it); ok is false when the key is absent.
+func ConfigTime(cfg map[string]any, key string) (t time.Time, ok bool, err error) {
+	switch v := cfg[key].(type) {
+	case nil:
+		return time.Time{}, false, nil
+	case time.Time:
+		return v, true, nil
+	case string:
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			return time.Time{}, false, errors.New("want a time (RFC 3339)")
+		}
+		return t, true, nil
+	default:
+		return time.Time{}, false, fmt.Errorf("want a time, got %s", kindOf(v))
+	}
+}
+
+// kindOf names a config value's kind in the owner's terms, never its
+// value (a misplaced secret must not reach an error message).
+func kindOf(v any) string {
+	switch v.(type) {
+	case string:
+		return "text"
+	case bool:
+		return "true/false"
+	case int, int64, float64, json.Number:
+		return "a number"
+	case []any, []string:
+		return "a list"
+	case map[string]any:
+		return "an object"
+	default:
+		return fmt.Sprintf("%T", v)
 	}
 }
 

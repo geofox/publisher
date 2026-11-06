@@ -17,11 +17,28 @@ func EnvString(getenv func(string) string, name, def string) string {
 	return def
 }
 
-// EnvList is a comma-separated variable (or def when empty), trimmed, with
-// empty entries dropped.
+// EnvSecret is a credential variable exactly as set, spaces included
+// (a token is compared and hashed as given, as Publisher always has), or ""
+// when it is empty or only spaces.
+func EnvSecret(getenv func(string) string, name string) string {
+	v := getenv(name)
+	if strings.TrimSpace(v) == "" {
+		return ""
+	}
+	return v
+}
+
+// EnvList is a comma-separated variable, trimmed, with empty entries
+// dropped; def when the variable is unset or empty. A variable set to
+// spaces only is an empty list, not the default (how an operator turns a
+// default list off).
 func EnvList(getenv func(string) string, name, def string) []string {
+	v := getenv(name)
+	if v == "" {
+		v = def
+	}
 	var out []string
-	for _, p := range strings.Split(EnvString(getenv, name, def), ",") {
+	for _, p := range strings.Split(v, ",") {
 		if p = strings.TrimSpace(p); p != "" {
 			out = append(out, p)
 		}

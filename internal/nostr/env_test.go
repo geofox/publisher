@@ -109,8 +109,11 @@ func TestFromEnvErrors(t *testing.T) {
 		{"bad key", map[string]string{"NSEC_HEX": "zz"}, []string{"NSEC_HEX"}},
 		// The library pads short keys with zeros: "1" would be secret key 1,
 		// which anyone can compute.
-		{"short key", map[string]string{"NSEC_HEX": "1"}, []string{"NSEC_HEX", "64-character"}},
-		{"truncated key", map[string]string{"NSEC_HEX": envNSEC[1:]}, []string{"NSEC_HEX", "64-character"}},
+		{"short key", map[string]string{"NSEC_HEX": "1"}, []string{"NSEC_HEX", "64-character", "leading zeros"}},
+		{"truncated key", map[string]string{"NSEC_HEX": envNSEC[1:]}, []string{"NSEC_HEX", "64-character", "leading zeros"}},
+		{"long key", map[string]string{"NSEC_HEX": envNSEC + "00"}, []string{"NSEC_HEX", "64-character"}},
+		{"negative pow", map[string]string{"NSEC_HEX": envNSEC, "POW_DIFFICULTY_DEFAULT": "-1"}, []string{"POW_DIFFICULTY_DEFAULT", "negative"}},
+		{"negative pow max", map[string]string{"NSEC_HEX": envNSEC, "POW_DIFFICULTY_MAX": "-1"}, []string{"POW_DIFFICULTY_MAX", "negative"}},
 		{"key in quotes", map[string]string{"NSEC_HEX": `"` + envNSEC + `"`}, []string{"NSEC_HEX"}},
 		{"nsec instead of hex", map[string]string{"NSEC_HEX": "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5"},
 			[]string{"NSEC_HEX", "nak key decode"}},
@@ -136,6 +139,33 @@ func TestFromEnvErrors(t *testing.T) {
 				t.Errorf("error %q contains the secret key", err)
 			}
 		})
+	}
+}
+
+// A list variable set to spaces only is an empty list, as in 1.x, not the
+// default (the author's relays).
+func TestFromEnvBlankListIsEmpty(t *testing.T) {
+	got, err := Driver{}.FromEnv(envOf(map[string]string{"NSEC_HEX": envNSEC, "FALLBACK_RELAYS": " ", "SYNC_RELAYS": " "}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{ConfigFallbackRelays, ConfigSyncRelaysSeed} {
+		if l, _ := got[0].Config[k].([]string); len(l) != 0 {
+			t.Errorf("%s = %v, want empty", k, l)
+		}
+	}
+}
+
+// Open names the field that is wrong.
+func TestOpenNamesNegativePOWField(t *testing.T) {
+	for _, field := range []string{ConfigPOWDefault, ConfigPOWMax} {
+		_, err := Driver{}.Open(context.Background(), destination.OpenRequest{
+			Config:  map[string]any{ConfigBootstrapRelay: "wss://r.example", field: -1},
+			Secrets: map[string]string{SecretKey: envNSEC},
+			Host:    destinationtest.NewHost(t)})
+		if err == nil || !strings.HasPrefix(err.Error(), field+":") {
+			t.Errorf("%s: err = %v", field, err)
+		}
 	}
 }
 

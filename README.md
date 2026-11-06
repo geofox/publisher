@@ -414,16 +414,16 @@ reported at once. Boolean variables take `true/false`, `1/0`, `yes/no` or
 
 | Var | Required | Default | Purpose |
 |---|---|---|---|
-| `NSEC_HEX` | yes | — | 64-char hex secret key (**secret**). Convert `nsec1…` via `nak key decode` |
+| `NSEC_HEX` | yes | — | Secret key as exactly 64 hex characters (**secret**). Convert `nsec1…` via `nak key decode`; if a tool printed it without its leading zeros, add them back |
 | `OWNER_PUBKEY` | no | (derived) | 64-char hex pubkey. Optional: it is derived from `NSEC_HEX`. If set, it must match, or the process refuses to start |
 | `BLOSSOM_URL` | yes | — | Blossom media server base URL, e.g. `https://blossom.example.com` |
 | `NIP65_BOOTSTRAP_RELAY` | no | `wss://relay.geoffrey.one` | Where to fetch the author's `kind:10002` relay list |
-| `FALLBACK_RELAYS` | no | `wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io` | Used when NIP-65 returns no write-relays |
+| `FALLBACK_RELAYS` | no | `wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io` | Used when NIP-65 returns no write-relays. Set it to a single space for none |
 | `SYNC_RELAYS` | no | `wss://nos.lol,wss://relay.damus.io,wss://nostr.wine,wss://nostr.land,wss://relay.nostr.band,wss://purplepag.es,wss://relay.snort.social,wss://nostr.mom` | Default relay set for the relay-sync tool |
 | `RELAY_CACHE_TTL` | no | `1h` | TTL for cached `kind:10002` lookups |
 | `PUBLISH_TIMEOUT` | no | `10s` | Per-relay connect+publish timeout |
-| `POW_DIFFICULTY_DEFAULT` | no | `16` | Default leading-zero-bit PoW target |
-| `POW_DIFFICULTY_MAX` | no | `28` | Hard cap on per-request PoW override |
+| `POW_DIFFICULTY_DEFAULT` | no | `16` | Default leading-zero-bit PoW target; `0` turns proof of work off (a negative value stops startup) |
+| `POW_DIFFICULTY_MAX` | no | `28` | Hard cap on per-request PoW override (not negative) |
 | `POW_TIMEOUT` | no | `30s` | Per-publish mining timeout |
 | `SCHEDULE_GRACE` | no | `2h` | Grace window for firing overdue scheduled posts (must be positive) |
 | `AUTO_RETRY_ENABLED` | no | `true` | Master switch for automatic retries (failed parts and relay deliveries) |

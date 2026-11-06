@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -67,7 +68,14 @@ type Account struct {
 	HTTP *http.Client
 }
 
+// Close implements io.Closer: it stops the account's relay pool.
+func (a *Account) Close() error {
+	a.P.Close()
+	return nil
+}
+
 var (
+	_ io.Closer               = (*Account)(nil)
 	_ destination.Account     = (*Account)(nil)
 	_ destination.Reposter    = (*Account)(nil)
 	_ destination.Redeliverer = (*Account)(nil)

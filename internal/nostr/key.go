@@ -13,6 +13,9 @@ var (
 	errKeyIsNsec = errors.New("this is an nsec1… key: give its 64-character hex form (convert it with `nak key decode`)")
 	// errKeyNotHex: anything else that isn't exactly 64 hex characters.
 	errKeyNotHex = errors.New("not a 64-character hex secret key (convert an nsec1… key with `nak key decode`)")
+	// errKeyShort: hex, but shorter. Some tools print a key without its
+	// leading zeros; Publisher no longer adds them itself.
+	errKeyShort = errors.New("not a 64-character hex secret key: it is shorter; if a tool dropped the key's leading zeros, add them back in front")
 )
 
 // ParseSecretKey reads a secret key given as exactly 64 hex characters.
@@ -25,6 +28,9 @@ func ParseSecretKey(s string) (gonostr.SecretKey, error) {
 		return gonostr.SecretKey{}, errKeyIsNsec
 	}
 	if len(s) != 64 {
+		if len(s) < 64 && isHex(s) {
+			return gonostr.SecretKey{}, errKeyShort
+		}
 		return gonostr.SecretKey{}, errKeyNotHex
 	}
 	if _, err := hex.DecodeString(s); err != nil {
@@ -35,4 +41,13 @@ func ParseSecretKey(s string) (gonostr.SecretKey, error) {
 		return gonostr.SecretKey{}, errKeyNotHex
 	}
 	return sk, nil
+}
+
+func isHex(s string) bool {
+	for _, c := range s {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", c) {
+			return false
+		}
+	}
+	return s != ""
 }

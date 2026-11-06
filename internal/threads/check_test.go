@@ -60,6 +60,7 @@ func TestCheck(t *testing.T) {
 		{"reachable", 200, `{"id":"1"}`, false, true, true, nil},
 		{"valid token", 200, `{"id":"1"}`, true, true, true, &yes},
 		{"expired token", 400, `{"error":{"code":190,"error_subcode":463}}`, true, false, true, &no},
+		{"unauthorized", 401, `{"error":{"code":190}}`, true, false, true, &no},
 		{"throttled", 400, `{"error":{"code":4}}`, true, false, true, nil},
 		{"server error", 500, `{}`, true, false, false, nil},
 	} {
@@ -77,21 +78,37 @@ func TestCheck(t *testing.T) {
 			if h.ExpiresAt != nil {
 				t.Errorf("expiry %v reported before the token manager set one", h.ExpiresAt)
 			}
+			if tc.name == "throttled" && !strings.Contains(h.Message, "rate limiting") {
+				t.Errorf("a Graph rate limit reads as %q", h.Message)
+			}
 		})
 	}
 }
 
-// The account reports the expiry the token manager recorded, on seeding
-// and on every refresh.
+// The account reports the expiry the token manager knows: none after a
+// seed (the provisional expiry only schedules the first refresh), the real
+// one once a refresh has set it, including after a restart.
 func TestCheckReportsTokenExpiry(t *testing.T) {
 	var authed []string
 	c := graph(t, 200, `{"id":"1"}`, &authed)
 	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
-	m := newMgr(&fakeStore{}, c, &fakeNotifier{}, "envtoken", func() time.Time { return now })
+	st := &fakeStore{}
+	m := newMgr(st, c, &fakeNotifier{}, "envtoken", func() time.Time { return now })
 	m.ensureSeed(now)
-	h := (&Account{C: c}).Check(context.Background(), destination.CheckRequest{})
-	if h.ExpiresAt == nil || !h.ExpiresAt.Equal(now.Add(seedProvisional)) {
-		t.Fatalf("expires_at = %v, want the provisional %v", h.ExpiresAt, now.Add(seedProvisional))
+	if h := (&Account{C: c}).Check(context.Background(), destination.CheckRequest{}); h.ExpiresAt != nil {
+		t.Fatalf("expires_at = %v after a seed, want unknown", h.ExpiresAt)
+	}
+	// A restart before the first refresh still knows nothing.
+	m.ensureSeed(now.Add(time.Hour))
+	if h := (&Account{C: c}).Check(context.Background(), destination.CheckRequest{}); h.ExpiresAt != nil {
+		t.Fatalf("expires_at = %v after a restart, want unknown", h.ExpiresAt)
+	}
+	// After a refresh the stored expiry is real.
+	real := now.Add(60 * 24 * time.Hour)
+	st.tk.ExpiresAt, st.tk.RefreshedAt = real, now
+	m.ensureSeed(now.Add(2 * time.Hour))
+	if h := (&Account{C: c}).Check(context.Background(), destination.CheckRequest{}); h.ExpiresAt == nil || !h.ExpiresAt.Equal(real) {
+		t.Fatalf("expires_at = %v, want %v", h.ExpiresAt, real)
 	}
 }
 
@@ -101,8 +118,8 @@ func TestTokenManagerRecordsRefreshedExpiry(t *testing.T) {
 	fc := &expiryClient{fakeClient: fakeClient{tok: "fresh", ttl: 60 * 24 * time.Hour}}
 	m := newMgr(&fakeStore{}, fc, &fakeNotifier{}, "envtoken", func() time.Time { return cur })
 	m.ensureSeed(cur)
-	if !fc.expiry.Equal(t0.Add(seedProvisional)) {
-		t.Fatalf("seed expiry = %v", fc.expiry)
+	if !fc.expiry.IsZero() {
+		t.Fatalf("seed expiry = %v, want unknown", fc.expiry)
 	}
 	cur = t0.Add(2 * 24 * time.Hour) // old enough, within the refresh window
 	m.tick(context.Background())

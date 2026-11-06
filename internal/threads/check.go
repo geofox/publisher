@@ -15,8 +15,11 @@ var _ destination.Checker = (*Account)(nil)
 func (a *Account) Check(ctx context.Context, req destination.CheckRequest) destination.Health {
 	var h destination.Health
 	if req.Authenticated {
-		_, err := a.C.Me(ctx)
-		h = destination.CheckedAuth(err, err != nil && destination.ClassOf(classify(err)) == destination.ClassAuth)
+		var err error
+		if _, err = a.C.Me(ctx); err != nil {
+			err = classify(err) // Graph codes: 190 refuses the token, 4 is a rate limit
+		}
+		h = destination.CheckedAuth(err, destination.ClassOf(err) == destination.ClassAuth)
 	} else {
 		h = destination.CheckReachable(ctx, a.C.HTTP, apiRoot(a.C.BaseURL), nil)
 	}

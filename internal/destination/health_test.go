@@ -2,9 +2,11 @@ package destination
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +27,19 @@ func TestCheckedAuth(t *testing.T) {
 	}
 	if h := CheckedAuth(&HTTPError{StatusCode: 429}, false); !h.Reachable {
 		t.Errorf("a rate-limited server is reachable: %+v", h)
+	}
+	// A network's own rate-limit code on another status (Threads answers
+	// 400 or 403 with Graph code 4, 17, 32 or 613) reads as a rate limit.
+	graph := &Error{Class: ClassRateLimited, Err: &HTTPError{StatusCode: 400}}
+	if h := CheckedAuth(graph, false); !h.Reachable || h.AuthOK != nil || !strings.Contains(h.Message, "rate limiting") {
+		t.Errorf("Graph rate limit: %+v", h)
+	}
+	// A 200 whose body isn't the JSON expected (an HTML page from a proxy)
+	// came from a server that answered.
+	var v struct{}
+	decodeErr := json.Unmarshal([]byte("<html>"), &v)
+	if h := CheckedAuth(decodeErr, false); h.OK || !h.Reachable || h.AuthOK != nil || h.Message != "the server's answer could not be read" {
+		t.Errorf("unreadable answer: %+v", h)
 	}
 }
 

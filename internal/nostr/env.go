@@ -19,9 +19,13 @@ const (
 var _ destination.EnvSource = Driver{}
 
 // EnvVars implements destination.EnvSource.
-func (Driver) EnvVars() []string {
-	return []string{"NSEC_HEX", "OWNER_PUBKEY", "NIP65_BOOTSTRAP_RELAY", "FALLBACK_RELAYS", "PRIMARY_RELAYS",
-		"NOSTR_PRIMARY_FANOUT", "POW_DIFFICULTY_DEFAULT", "POW_DIFFICULTY_MAX", "SYNC_RELAYS"}
+func (Driver) EnvVars() []destination.EnvVar {
+	vars := []destination.EnvVar{{Name: "NSEC_HEX", Required: true}}
+	for _, n := range []string{"OWNER_PUBKEY", "NIP65_BOOTSTRAP_RELAY", "FALLBACK_RELAYS", "PRIMARY_RELAYS",
+		"NOSTR_PRIMARY_FANOUT", "POW_DIFFICULTY_DEFAULT", "POW_DIFFICULTY_MAX", "SYNC_RELAYS"} {
+		vars = append(vars, destination.EnvVar{Name: n})
+	}
+	return vars
 }
 
 // FromEnv implements destination.EnvSource: NSEC_HEX configures one
@@ -62,10 +66,14 @@ func (Driver) FromEnv(getenv func(string) string) ([]destination.EnvAccount, err
 	powDefault, err := destination.EnvInt(getenv, "POW_DIFFICULTY_DEFAULT", DefaultPOW)
 	if err != nil {
 		errs = append(errs, err)
+	} else if powDefault < 0 {
+		errs = append(errs, errors.New("POW_DIFFICULTY_DEFAULT must not be negative (0 turns proof of work off)"))
 	}
 	powMax, err := destination.EnvInt(getenv, "POW_DIFFICULTY_MAX", DefaultPOWMax)
 	if err != nil {
 		errs = append(errs, err)
+	} else if powMax < 0 {
+		errs = append(errs, errors.New("POW_DIFFICULTY_MAX must not be negative (0 turns proof of work off)"))
 	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)

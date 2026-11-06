@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 
 	gonostr "fiatjaf.com/nostr"
 
 	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/netguard"
 	"github.com/geofox/publisher/internal/nostr"
 )
 
@@ -98,27 +98,23 @@ func OpenEnv(ctx context.Context, accts []EnvAccount, ids map[string]string, tun
 // (part A2) stores it. No driver saves state in A1.
 var errNoSave = errors.New("this account can't save state yet")
 
-// envHost is the host of an account the environment configures. Every
-// address such an account reaches was set by the operator (the variables,
-// a network's fixed API host), so the network is reached as Publisher
-// always has, with NetTrusted. Accounts added in the app get a host that
-// enforces NetOwner (part C).
+// envHost is the host of an account the environment configures. The
+// operator set every address in the account's config (the variables) and
+// its network's API hosts are fixed, so NetAccount reaches them as
+// Publisher always has. Addresses from content (NetContent) are reached
+// through the network guard: public addresses only. Accounts added in the
+// app get a host that guards their own addresses too (part C).
 type envHost struct{ log *slog.Logger }
 
 func (envHost) Save(context.Context, destination.StateUpdate) error { return errNoSave }
 
-// Net gives NetTrusted its usual network. NetOwner is refused until the
-// network guard exists (part C4): no driver asks for it in A1, and a host
-// may tighten a policy but never loosen it.
-func (envHost) Net(p destination.NetPolicy) destination.Net {
-	if p == destination.NetTrusted {
+// Net implements destination.AccountHost. A kind it doesn't know gets the
+// guarded network: a host may tighten, never loosen.
+func (envHost) Net(kind destination.NetPolicy) destination.Net {
+	if kind == destination.NetAccount {
 		return destination.TrustedNet()
 	}
-	return destination.Net{DialContext: func(context.Context, string, string) (net.Conn, error) {
-		return nil, errOwnerNet
-	}}
+	return destination.ContentNet(netguard.IsBlockedIP)
 }
-
-var errOwnerNet = errors.New("addresses typed in the app need the network guard, which this version doesn't have")
 
 func (h envHost) Logger() *slog.Logger { return h.log }

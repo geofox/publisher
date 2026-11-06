@@ -32,5 +32,5 @@ func (Driver) Open(_ context.Context, req destination.OpenRequest) (destination.
 	case pw == "":
 		return nil, destination.InvalidField(SecretAppPassword, "required")
 	}
-	return &Account{C: NewWithNet(pds, id, pw, req.Host.Net(destination.NetTrusted))}, nil
+	return &Account{C: NewWithNet(pds, id, pw, req.Host.Net(destination.NetAccount))}, nil
 }

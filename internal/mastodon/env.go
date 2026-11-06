@@ -10,13 +10,15 @@ import (
 var _ destination.EnvSource = Driver{}
 
 // EnvVars implements destination.EnvSource.
-func (Driver) EnvVars() []string { return []string{"MASTODON_TOKEN", "MASTODON_BASE_URL"} }
+func (Driver) EnvVars() []destination.EnvVar {
+	return []destination.EnvVar{{Name: "MASTODON_TOKEN", Required: true}, {Name: "MASTODON_BASE_URL", Required: true}}
+}
 
 // FromEnv implements destination.EnvSource: MASTODON_TOKEN configures one
 // account and needs MASTODON_BASE_URL with it. Without the token the URL is
 // ignored.
 func (Driver) FromEnv(getenv func(string) string) ([]destination.EnvAccount, error) {
-	token := destination.EnvString(getenv, "MASTODON_TOKEN", "")
+	token := destination.EnvSecret(getenv, "MASTODON_TOKEN")
 	if token == "" {
 		return nil, nil
 	}

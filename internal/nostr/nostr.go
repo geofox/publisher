@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -81,6 +82,9 @@ type Config struct {
 	PublishTimeout       time.Duration
 	PrimaryFanout        bool     // when true, publish synchronously to PrimaryRelays only
 	PrimaryRelays        []string // the primary relay set (e.g. the owner's own relay)
+	// ContentClient dials relays named by content (the hints in a pasted
+	// nevent); nil: public addresses only, through the network guard.
+	ContentClient *http.Client
 }
 
 // publishPool is the subset of *gonostr.Pool that Publisher needs; an
@@ -112,6 +116,14 @@ func New(cfg Config) *Publisher {
 		cfg:   cfg,
 		pool:  gonostr.NewPool(),
 		cache: map[gonostr.PubKey]relayCacheEntry{},
+	}
+}
+
+// Close stops the relay pool and its connections. The Publisher can't be
+// used after it.
+func (p *Publisher) Close() {
+	if c, ok := p.pool.(interface{ Close(string) }); ok {
+		c.Close("account closed")
 	}
 }
 

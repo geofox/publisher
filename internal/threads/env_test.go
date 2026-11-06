@@ -46,3 +46,19 @@ func TestFromEnv(t *testing.T) {
 		}
 	}
 }
+
+// The token is kept exactly as set. The token manager recognizes the env
+// token by its hash; trimming it would read as a rotated token on upgrade
+// and replace the refreshed token in the database with the old one.
+func TestFromEnvKeepsTokenAsSet(t *testing.T) {
+	got, err := Driver{}.FromEnv(envOf(map[string]string{"THREADS_ACCESS_TOKEN": "EAAtok \n"}))
+	if err != nil || len(got) != 1 {
+		t.Fatalf("FromEnv = %v, %v", got, err)
+	}
+	if tok := got[0].Secrets[SecretAccessToken]; seedHash(tok) != seedHash("EAAtok \n") {
+		t.Errorf("token = %q: its hash no longer matches the one stored by earlier versions", tok)
+	}
+	if got, err := (Driver{}).FromEnv(envOf(map[string]string{"THREADS_ACCESS_TOKEN": "  "})); err != nil || got != nil {
+		t.Errorf("a token of spaces only should mean unset: %v, %v", got, err)
+	}
+}

@@ -40,6 +40,11 @@ const (
 
 // Account is one connected identity on a destination type. Implementations
 // must be safe for concurrent use.
+//
+// An account that holds connections or goroutines (a relay pool) also
+// implements io.Closer. The host calls Close once nothing uses the account
+// any more: it was reopened with new state, disabled or removed, or the
+// server is stopping. No other method is called after Close.
 type Account interface {
 	// Manifest describes the account's destination type.
 	Manifest() Manifest

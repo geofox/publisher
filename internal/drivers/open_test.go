@@ -3,6 +3,8 @@ package drivers
 import (
 	"context"
 	"errors"
+	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -54,10 +56,18 @@ func TestOpen(t *testing.T) {
 			if _, ok := acct.(destination.SourceResolver); ok != (c.typ != "threads") {
 				t.Errorf("SourceResolver = %v", ok)
 			}
+			// The account's own clients use NetAccount; only Nostr also
+			// reaches addresses from content (relay hints in a pasted link).
 			for _, p := range host.Policies() {
-				if p != destination.NetTrusted {
-					t.Errorf("asked for policy %v; an account from the environment reaches operator-set addresses", p)
+				if p != destination.NetAccount && !(p == destination.NetContent && c.typ == "nostr") {
+					t.Errorf("asked for policy %v", p)
 				}
+			}
+			if !slices.Contains(host.Policies(), destination.NetAccount) {
+				t.Error("no client was built from the host's network")
+			}
+			if c, ok := acct.(io.Closer); ok {
+				_ = c.Close()
 			}
 			// Every required field missing in turn.
 			for k := range c.config {

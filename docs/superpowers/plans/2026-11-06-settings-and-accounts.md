@@ -240,36 +240,79 @@ methods), tests.
 
 ### As built (A1)
 
-- **Network access is one value.** `AccountHost.Net(policy)` returns
+- **Network access is one value.** `AccountHost.Net(kind)` returns
   `destination.Net{DialContext, Proxy, CheckRedirect}`, with `Transport` and
   `Client` helpers, instead of `HTTPClient` and `Dialer`. Every HTTP client
   and transport the drivers make is built from it: Bluesky's API and upload
   clients, go-mastodon's transport (under the rate-limit and idempotency
-  wrappers) and Mastodon's own client, Threads' client, and the Nostr
-  account's plain HTTP client (its check).
+  wrappers) and Mastodon's own client, Threads' client, the Nostr account's
+  plain HTTP client (its check) and its WebSockets to relays named by
+  content. A `Net` without a dialer refuses every connection.
+- **The driver says where an address came from; the host decides the
+  rules.** The policies are `NetAccount` (the account's own configured
+  addresses and its network's fixed API hosts) and `NetContent` (addresses
+  from content or other servers, such as relay hints in a pasted nevent),
+  not `NetTrusted`/`NetOwner`: a driver can't know who typed an address,
+  only the host knows how the account was set up. The env host trusts
+  `NetAccount` (`TrustedNet`) and serves `NetContent`, and any kind it
+  doesn't know, through `destination.ContentNet(netguard.IsBlockedIP)`:
+  public addresses only, checked on the address dialed, no proxy. C4's
+  database host guards `NetAccount` too.
+- **Transports** speak HTTP/2 with a ping after 30 s of silence (closed
+  after 15 s without an answer). go-mastodon's transport and Bluesky's
+  upload client were HTTP/1.1 before, and the upload client had no proxy;
+  clients that used Go's default transport dial with a 10 s timeout
+  instead of 30 s (CHANGELOG).
+- **Redirects** (`SafeRedirect`, every `TrustedNet` and `ContentNet`): at
+  most 10, never https to http, and a request body is replayed only to the
+  first request's host or its subdomains (Go's rule for keeping
+  `Authorization`). C4 tightens this for database accounts.
+- **Saved state is a patch.** `StateUpdate` merges key by key (absent keys
+  kept, `""` or nil deletes); `destination.MergeState` does it, and
+  `destinationtest.Host` applies it (`WithState`, `State`). Hosts in A2 and
+  C use the same function.
 - **The Nostr relay pool can't take the host's network yet.**
   `fiatjaf.com/nostr`'s `Pool.EnsureRelay` always calls `relay.Connect`
   without a client; `Relay.ConnectWithClient` exists. C4 gives the Nostr
   account its own relay map built on `ConnectWithClient`; until then its
-  WebSockets dial with the library's defaults.
+  pool's WebSockets dial with the library's defaults. Relays named by
+  content already dial through the host's `NetContent`.
+- **Closing.** An account holding connections implements `io.Closer`
+  (Nostr closes its pool); the registry closes the old account on a lease
+  swap (A2.2).
 - **Env accounts.** Each driver's `FromEnv` (`env.go`) returns its accounts;
-  `drivers.EnvAccounts` joins every driver's errors with the config's.
+  `drivers.EnvAccounts` joins the drivers' errors, and `main.go` joins
+  those with the config's. Credentials are kept exactly as set
+  (`EnvSecret`): the Threads token manager knows the env token by its hash,
+  and a trimmed token would read as a new one on upgrade. A list variable
+  set to spaces is an empty list (as in 1.x). `EnvVars` returns
+  `[]EnvVar{Name, Required}`. `NSEC_HEX` must be exactly 64 hex characters
+  (`nostr.ParseSecretKey`; errors never contain the value), and a negative
+  `POW_DIFFICULTY_*` is a startup error naming the variable.
   `BLUESKY_PDS_URL` is required with `BLUESKY_APP_PASSWORD`, like the
   identifier (a password without it failed every send; C7's discovery can
   relax this). `drivers.OpenEnv` opens them, one per type, on a host that
-  reaches the network with `NetTrusted` (every address is the operator's)
-  and refuses `Save` until A2 stores state. `main.go` still type-asserts the
+  refuses `Save` until A2 stores state. `main.go` still type-asserts the
   clients for the identity service, the token manager and readiness; A2.3
   and A2.4 remove that.
+- **Config values.** `ConfigString`, `ConfigStrings`, `ConfigInt` (also
+  `json.Number`; no text), `ConfigBool` and `ConfigTime` (RFC 3339 or
+  `time.Time`); their errors name neither the key (`InvalidField` adds it)
+  nor the value.
 - **Checks.** `destination.CheckReachable`, `CheckedAuth` and `NetProblem`
   are shared. `AuthOK=false` only for a refusal of the credentials: Bluesky
   401, `AuthenticationRequired`, `AccountTakedown`, `AccountDeactivated`,
   `ExpiredToken`, `InvalidToken` (an expired cached session is replaced once
-  first); Mastodon and Threads when their error classifier says `auth`
-  (Threads Graph codes 190, 102, 10, 200–299). A rate limit or an outage
-  leaves it unset. Messages name the kind of failure, never the request.
-  Threads reports `ExpiresAt` from the token manager, which records it on
-  the client (`SetTokenExpiry`) until the `Refresher` replaces the manager.
+  first); Mastodon 401, 403 or 422 with Mastodon's JSON error body (a
+  proxy's or firewall's page doesn't count); Threads when its error
+  classifier says `auth` (Graph codes 190, 102, 10, 200–299). A rate limit
+  (429, or Graph codes 4, 17, 32, 613) or an outage leaves it unset, and a
+  2xx that isn't JSON is reachable. `Health` documents the rule the
+  registry follows: only `AuthOK == true` clears needs_reconnect. Messages
+  name the kind of failure, never the request. Threads reports `ExpiresAt`
+  from the token manager, which records it on the client
+  (`SetTokenExpiry`) until the `Refresher` replaces the manager; while the
+  stored expiry is only a seed's provisional one, it reports none.
 - **Remote ids.** Mastodon's is the ActivityPub actor id (`uri`, Mastodon
   4.2 and later), else the profile `url`.
 - **Source resolution** moved into the drivers with its tests;
@@ -1344,6 +1387,10 @@ Made by this plan; the spec is updated to match.
 | §2.6: `profile` object | Flat `display_name`, `avatar` (as today) plus `profile_url`. |
 | §4.2: `SaveSecrets` and `SaveConfig` | One atomic `Save(StateUpdate)`. |
 | §4.2: `HTTPClient(policy)` (and plan A1.2's `Dialer`) | `Net(policy)`: one dialer, proxy and redirect rule every client, transport and WebSocket is built from. |
+| Plan A1.2: `NetTrusted` / `NetOwner` | `NetAccount` / `NetContent`: the driver says where an address came from, the host decides how far it is trusted. |
+| §4.2: `Save` semantics unstated | A patch merged key by key (`MergeState`). |
+| Plan A1.2: `EnvVars() []string` | `EnvVars() []EnvVar{Name, Required}`. |
+| §4.3: `Identity.RemoteID` as `json:"remote_id"` | `omitempty` added (a network may not report one). |
 | §4.2: Nostr's unauthenticated check opens a WebSocket | The home relay's NIP-11 document over HTTP, through the host's network (the library's WebSocket can't use it yet). |
 | §4.3 (plan A1.3): `BLUESKY_PDS_URL` optional | Required with `BLUESKY_APP_PASSWORD` until PDS discovery (C7). |
 | Plan A1.4: Mastodon `RemoteID` is the account URL | The ActivityPub actor id (`uri`), else the profile URL. |

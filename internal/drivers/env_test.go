@@ -2,9 +2,11 @@ package drivers
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/geofox/publisher/internal/destination"
 )
@@ -102,12 +104,24 @@ func TestEnvHost(t *testing.T) {
 	if err := h.Save(context.Background(), destination.StateUpdate{}); err == nil {
 		t.Error("Save succeeded")
 	}
-	if n := h.Net(destination.NetTrusted); n.DialContext == nil || n.Proxy == nil {
-		t.Error("trusted net has no dialer or proxy")
+	if n := h.Net(destination.NetAccount); n.DialContext == nil || n.Proxy == nil {
+		t.Error("the account's network has no dialer or proxy")
 	}
-	// A host may tighten a policy, never loosen it: without the network
-	// guard, owner-typed addresses are refused.
-	if _, err := h.Net(destination.NetOwner).DialContext(context.Background(), "tcp", "127.0.0.1:1"); err == nil {
-		t.Error("NetOwner dialed")
+	// Addresses from content go through the guard: loopback, private and
+	// metadata addresses are refused, with no proxy to dial past it. So is
+	// a kind the host doesn't know (a host tightens, never loosens).
+	for _, kind := range []destination.NetPolicy{destination.NetContent, destination.NetPolicy(99)} {
+		n := h.Net(kind)
+		if n.Proxy != nil {
+			t.Errorf("kind %d: a proxy would dial past the guard", kind)
+		}
+		for _, addr := range []string{"127.0.0.1:1", "10.0.0.1:443", "169.254.169.254:80", "100.64.0.1:80"} {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_, err := n.DialContext(ctx, "tcp", addr)
+			cancel()
+			if !errors.Is(err, destination.ErrBlockedAddress) {
+				t.Errorf("kind %d: dial %s: err = %v, want ErrBlockedAddress", kind, addr, err)
+			}
+		}
 	}
 }

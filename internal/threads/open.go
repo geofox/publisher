@@ -22,5 +22,5 @@ func (Driver) Open(_ context.Context, req destination.OpenRequest) (destination.
 	if token == "" {
 		return nil, destination.InvalidField(SecretAccessToken, "required")
 	}
-	return &Account{C: NewWithNet(token, userID, req.Host.Net(destination.NetTrusted))}, nil
+	return &Account{C: NewWithNet(token, userID, req.Host.Net(destination.NetAccount))}, nil
 }

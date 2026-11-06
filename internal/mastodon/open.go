@@ -25,5 +25,5 @@ func (Driver) Open(_ context.Context, req destination.OpenRequest) (destination.
 	case token == "":
 		return nil, destination.InvalidField(SecretAccessToken, "required")
 	}
-	return NewAccount(NewWithNet(base, token, req.Host.Net(destination.NetTrusted))), nil
+	return NewAccount(NewWithNet(base, token, req.Host.Net(destination.NetAccount))), nil
 }

@@ -34,6 +34,8 @@ const (
 // The relay pool dials with the Nostr library's own client: its Pool always
 // connects with the default HTTP client, so the host's network policy can't
 // reach it yet (part C gives the account its own relay map for that).
+// Relays named by content (pasted links) are dialed through the host's
+// NetContent network.
 func (Driver) Open(_ context.Context, req destination.OpenRequest) (destination.Account, error) {
 	keyHex := req.Secrets[SecretKey]
 	if keyHex == "" {
@@ -79,10 +81,13 @@ func (Driver) Open(_ context.Context, req destination.OpenRequest) (destination.
 	if !ok {
 		powMax = DefaultPOWMax
 	}
-	if powDefault < 0 || powMax < 0 {
+	if powDefault < 0 {
 		return nil, destination.InvalidField(ConfigPOWDefault, "must not be negative")
 	}
-	return &Account{HTTP: req.Host.Net(destination.NetTrusted).Client(10 * time.Second), P: New(Config{
+	if powMax < 0 {
+		return nil, destination.InvalidField(ConfigPOWMax, "must not be negative")
+	}
+	return &Account{HTTP: req.Host.Net(destination.NetAccount).Client(10 * time.Second), P: New(Config{
 		NSEC:                 sk,
 		OwnerPubkey:          gonostr.GetPublicKey(sk),
 		NIP65BootstrapRelay:  home,
@@ -94,5 +99,6 @@ func (Driver) Open(_ context.Context, req destination.OpenRequest) (destination.
 		PublishTimeout:       req.Tuning.PublishTimeout,
 		PrimaryFanout:        fanout,
 		PrimaryRelays:        primary,
+		ContentClient:        req.Host.Net(destination.NetContent).Client(0),
 	})}, nil
 }

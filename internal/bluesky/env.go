@@ -10,15 +10,16 @@ import (
 var _ destination.EnvSource = Driver{}
 
 // EnvVars implements destination.EnvSource.
-func (Driver) EnvVars() []string {
-	return []string{"BLUESKY_APP_PASSWORD", "BLUESKY_IDENTIFIER", "BLUESKY_PDS_URL"}
+func (Driver) EnvVars() []destination.EnvVar {
+	return []destination.EnvVar{{Name: "BLUESKY_APP_PASSWORD", Required: true},
+		{Name: "BLUESKY_IDENTIFIER", Required: true}, {Name: "BLUESKY_PDS_URL", Required: true}}
 }
 
 // FromEnv implements destination.EnvSource: BLUESKY_APP_PASSWORD configures
 // one account and needs BLUESKY_IDENTIFIER and BLUESKY_PDS_URL with it.
 // Without the password the other two are ignored.
 func (Driver) FromEnv(getenv func(string) string) ([]destination.EnvAccount, error) {
-	pw := destination.EnvString(getenv, "BLUESKY_APP_PASSWORD", "")
+	pw := destination.EnvSecret(getenv, "BLUESKY_APP_PASSWORD")
 	if pw == "" {
 		return nil, nil
 	}

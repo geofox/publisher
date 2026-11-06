@@ -141,7 +141,9 @@ func TestCheckUnreachable(t *testing.T) {
 	srv.Close()
 	for _, auth := range []bool{false, true} {
 		h := newCheckedAccount(url).Check(context.Background(), destination.CheckRequest{Authenticated: auth})
-		if h.OK || h.Reachable || h.AuthOK != nil || h.Message != "the server refused the connection" {
+		// The port was just closed; the message depends on what the system
+		// says about it, so only its presence is checked.
+		if h.OK || h.Reachable || h.AuthOK != nil || h.Message == "" {
 			t.Errorf("authenticated=%v: health = %+v", auth, h)
 		}
 	}

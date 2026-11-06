@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,15 +24,26 @@ type CheckRequest struct {
 	// Authenticated lets the check use the account's credentials. A false
 	// value asks for reachability only (readiness probes), with no
 	// credential sent.
-	Authenticated bool
+	Authenticated bool `json:"authenticated"`
 }
 
 // Health is the outcome of a check.
+//
+// OK means the check passed; it says nothing about the credentials unless
+// AuthOK is set. Only AuthOK == true proves they work, and only AuthOK ==
+// false proves the network refused them: an unauthenticated check, a
+// timeout, a rate limit or an outage leaves AuthOK nil. So a host clears
+// "needs reconnecting" only on AuthOK == true, and sets it only on false.
 type Health struct {
-	OK        bool `json:"ok"`
+	// OK: the server answered and, for an authenticated check, accepted
+	// the credentials.
+	OK bool `json:"ok"`
+	// Reachable: the server answered at all (any status below 500).
 	Reachable bool `json:"reachable"`
-	// AuthOK is set by authenticated checks: false means the network
-	// refused the credentials.
+	// AuthOK is set by authenticated checks that got an answer about the
+	// credentials: true means they work, false that the network refused
+	// them. Nil means unknown (a network without credentials to check,
+	// such as Nostr's relays, leaves it nil).
 	AuthOK  *bool  `json:"auth_ok,omitempty"`
 	Message string `json:"message,omitempty"`
 	// ExpiresAt is when the credentials stop working, when known.
@@ -85,14 +97,25 @@ func CheckedAuth(err error, refused bool) Health {
 		return Health{Reachable: true, AuthOK: &no, Message: "the network refused the credentials; connect the account again"}
 	}
 	var he *HTTPError
-	if errors.As(err, &he) {
-		h := Health{Reachable: he.StatusCode < 500, Message: fmt.Sprintf("the server answered %d", he.StatusCode)}
-		if he.StatusCode == http.StatusTooManyRequests {
-			h.Message = "the server is rate limiting this account; try again later"
-		}
-		return h
+	hasStatus := errors.As(err, &he)
+	switch {
+	case ClassOf(err) == ClassRateLimited:
+		// A 429, or a network's own rate-limit code on another status.
+		return Health{Reachable: true, Message: "the server is rate limiting this account; try again later"}
+	case hasStatus:
+		return Health{Reachable: he.StatusCode < 500, Message: fmt.Sprintf("the server answered %d", he.StatusCode)}
+	case isDecodeError(err):
+		return Health{Reachable: true, Message: "the server's answer could not be read"}
 	}
 	return Health{Message: NetProblem(err)}
+}
+
+// isDecodeError reports whether err is a response that arrived but wasn't
+// the JSON expected (an HTML error page with status 200).
+func isDecodeError(err error) bool {
+	var syn *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	return errors.As(err, &syn) || errors.As(err, &typ) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 // NetProblem describes a failure to reach a server in a few words, without

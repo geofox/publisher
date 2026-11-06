@@ -51,24 +51,31 @@ func TestIdentityRemoteID(t *testing.T) {
 
 func TestCheck(t *testing.T) {
 	yes, no := true, false
+	const account, refusal, page = `{"id":"1","acct":"me"}`, `{"error":"The access token is invalid"}`, `<html>Forbidden</html>`
 	for _, tc := range []struct {
 		name      string
 		status    int
+		body      string
 		auth      bool
 		ok        bool
 		reachable bool
 		authOK    *bool
 	}{
-		{"reachable", 200, false, true, true, nil},
-		{"valid token", 200, true, true, true, &yes},
-		{"revoked token", 401, true, false, true, &no},
-		{"forbidden", 403, true, false, true, &no},
-		{"rate limited", 429, true, false, true, nil},
-		{"server error", 503, true, false, false, nil},
+		{"reachable", 200, account, false, true, true, nil},
+		{"valid token", 200, account, true, true, true, &yes},
+		{"revoked token", 401, refusal, true, false, true, &no},
+		{"disabled login", 403, `{"error":"Your login is currently disabled"}`, true, false, true, &no},
+		{"app-only token", 422, `{"error":"This method requires an authenticated user"}`, true, false, true, &no},
+		// A firewall or proxy page says nothing about the token.
+		{"firewall page", 403, page, true, false, true, nil},
+		{"proxy sign-in", 401, page, true, false, true, nil},
+		{"rate limited", 429, refusal, true, false, true, nil},
+		{"server error", 503, refusal, true, false, false, nil},
+		{"not JSON", 200, page, true, false, true, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var authed []string
-			srv := instance(t, tc.status, `{"id":"1","acct":"me"}`, &authed)
+			srv := instance(t, tc.status, tc.body, &authed)
 			h := NewAccount(New(srv.URL, "tok")).Check(context.Background(), destination.CheckRequest{Authenticated: tc.auth})
 			if h.OK != tc.ok || h.Reachable != tc.reachable || (h.AuthOK == nil) != (tc.authOK == nil) ||
 				h.AuthOK != nil && *h.AuthOK != *tc.authOK {

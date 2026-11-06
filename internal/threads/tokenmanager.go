@@ -81,11 +81,21 @@ func (m *TokenManager) ensureSeed(now time.Time) {
 			slog.Error("threads token seed failed", "err", err)
 			return
 		}
-		m.setToken(m.seed, now.Add(seedProvisional))
+		m.setToken(m.seed, time.Time{}) // the real expiry is unknown until the first refresh
 		slog.Info("threads token seeded from env")
 		return
 	}
-	m.setToken(cur.Token, cur.ExpiresAt)
+	m.setToken(cur.Token, knownExpiry(cur))
+}
+
+// knownExpiry is the stored token's expiry, or zero while it is only the
+// provisional one a seed records (which schedules the first refresh but
+// says nothing about the token).
+func knownExpiry(t *store.ThreadsToken) time.Time {
+	if t.ExpiresAt.Equal(t.RefreshedAt.Add(seedProvisional)) {
+		return time.Time{}
+	}
+	return t.ExpiresAt
 }
 
 // expiryRecorder is implemented by clients that report their token's
