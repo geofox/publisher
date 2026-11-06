@@ -12,6 +12,8 @@ embedded assets. Only the network edge is fake:
   reply to, quote or repost (see `ResolveSource` in `harness/fakes.go` for
   the URLs they accept); Threads has no lookup, as in production;
 - a fake Blossom server, served on the same origin, stores uploads in memory.
+- relay sync (scan, pull, push) reaches no relay: every relay is reported
+  in step and nothing is copied.
 
 Nothing leaves the machine: no relays, no platform APIs, no DNS.
 

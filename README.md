@@ -288,8 +288,8 @@ handled on the next start as described above.
   time the post went live on any platform), `text`, optional `media[]`, optional
   `interaction` (for quotes/reposts), and `links[]` — one `{platform, url,
   account, handle}` per account where the post is public and successfully
-  published (`account` is the account's id; `handle` is empty until its network
-  first answered). An account whose `public_feed` is off is left out. Replies,
+  published (`account` is the account's id; `handle` is absent until its
+  network first answered). An account whose `public_feed` is off is left out. Replies,
   and any post with no public copy, are omitted. `limit` defaults to 20, max
   100.
 

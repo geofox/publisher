@@ -43,7 +43,7 @@ func TestV1AccountStatusOrderAndFlags(t *testing.T) {
 	if b := byID[bsky]; b.Status != "connected" || b.StatusReason != "" || !b.DefaultSelected || !b.PublicFeed {
 		t.Errorf("bluesky = %+v", b)
 	}
-	if m := byID[masto]; m.Status != "disabled" || m.StatusReason != "turned off in the app" || m.Enabled {
+	if m := byID[masto]; m.Status != "disabled" || m.StatusReason != "you turned it off; turn it on again to use it" || m.Enabled {
 		t.Errorf("turned-off mastodon = %+v", m)
 	}
 	// Registry order: networks in their fixed order, then oldest first.
@@ -135,6 +135,8 @@ func TestV1PatchAccount(t *testing.T) {
 		{`{"label":"   "}`, "/label", "required"},
 		{`{"label":"` + strings.Repeat("é", 65) + `"}`, "/label", "too_long"},
 		{`{"label":"a\u0007b"}`, "/label", "invalid"},
+		{`{"label":"Personal \u202ekrow\u202c"}`, "/label", "invalid"}, // looks like "Personal work"
+		{`{"label":"\u200b"}`, "/label", "invalid"},
 		{`{"label":null}`, "/label", "invalid"},
 		{`{"label":7}`, "/label", "invalid"},
 		{`{"enabled":null}`, "/enabled", "invalid"},
@@ -149,6 +151,12 @@ func TestV1PatchAccount(t *testing.T) {
 	// 64 characters is fine, counted as characters, not bytes.
 	wantStatus(t, e.do(req{method: "PATCH", path: path, body: `{"label":"` + strings.Repeat("é", 64) + `"}`}), 200)
 	wantProblem(t, e.do(req{method: "PATCH", path: path, body: `{"type":"bluesky"}`, badRequest: true}), 400, codeInvalidJSON)
+	// The body is an object: null, an array or a string isn't a change.
+	for _, body := range []string{`null`, ` [] `, `"x"`, "\n 7"} {
+		if p := wantProblem(t, e.do(req{method: "PATCH", path: path, body: body, badRequest: true}), 400, codeInvalidJSON); !strings.Contains(p.Detail, "JSON object") {
+			t.Errorf("%q: %+v", body, p)
+		}
+	}
 	wantProblem(t, e.do(req{method: "PATCH", path: "/v1/accounts/acc_nope", body: `{"label":"x"}`}), 404, codeNotFound)
 	if en, _ := e.st.Account(context.Background(), store.DefaultOwner, masto); en.Type != "mastodon" {
 		t.Fatalf("account = %+v", en)

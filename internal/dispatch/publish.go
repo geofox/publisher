@@ -69,6 +69,9 @@ func (d *Dispatcher) acquire(id, typ string) (destination.Account, func(), error
 		}
 		return nil, nil, &destination.Error{Class: destination.ClassAuth, Err: u}
 	}
+	if errors.Is(err, accounts.ErrClosed) {
+		return nil, nil, &destination.Error{Class: destination.ClassTransient, Err: err}
+	}
 	return nil, nil, &destination.Error{Class: destination.ClassAuth, Err: err}
 }
 
@@ -140,7 +143,7 @@ func (d *Dispatcher) displayName(id, typ string) string {
 	switch {
 	case e.Row.Handle != "":
 		return name + " (" + e.Row.Handle + ")"
-	case label == "" || label == name:
+	case label == "" || strings.EqualFold(label, name): // a row labeled by its type in lower case says nothing more
 		return name
 	default:
 		return name + " (" + label + ")"

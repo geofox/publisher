@@ -89,6 +89,18 @@ func TestAdoptLegacySyncRelays(t *testing.T) {
 	if got := list(second); !reflect.DeepEqual(got, []string{"wss://env-2.example"}) {
 		t.Errorf("after a restart the second list = %v", got)
 	}
+	// The owner empties both lists; they stay empty after a restart.
+	for _, id := range []string{first, second} {
+		if err := st.SetAccountSyncRelays(ctx, id, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := AdoptLegacy(ctx, st, all, env); err != nil {
+		t.Fatal(err)
+	}
+	if a, b := list(first), list(second); len(a)+len(b) != 0 {
+		t.Errorf("emptied lists came back after a restart: %v, %v", a, b)
+	}
 }
 
 // setLegacySyncRelays writes the 2.x global relay-sync list (table

@@ -179,6 +179,12 @@ CREATE TABLE nostr_fanout (
   created_at        TIMESTAMP NOT NULL
 , item_id INTEGER REFERENCES target_items(id));
 
+-- table nostr_sync_relay_lists
+CREATE TABLE nostr_sync_relay_lists (
+  account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+  created_at TIMESTAMP NOT NULL
+);
+
 -- table nostr_sync_relays
 CREATE TABLE nostr_sync_relays (
   account_id TEXT NOT NULL REFERENCES accounts(id),

@@ -478,7 +478,9 @@ const lockedWaitMax = 15 * time.Minute
 // attempt is counted and nothing gives up, and it is due again after a wait
 // that grows with how long the post has waited (one minute at first, at
 // most lockedWaitMax), whether or not automatic retries are on. It stays
-// planned, so its post stays sending and no failure is reported.
+// planned, so its post stays sending and no failure is reported, and an
+// item.waiting event gives the reason. If the post was canceled meanwhile,
+// the item ends canceled instead (the store decides, in the transaction).
 func (d *Dispatcher) wait(ctx context.Context, c *store.Claim, post *store.Post, why string, now time.Time) {
 	waited := time.Duration(0)
 	if post != nil {
@@ -491,8 +493,15 @@ func (d *Dispatcher) wait(ctx context.Context, c *store.Claim, post *store.Post,
 	next := now.Add(min(max(waited, time.Minute), lockedWaitMax))
 	res := store.ItemResult{Claim: *c, Status: store.ItemPlanned, NotSent: true, NextAttemptAt: &next, At: now,
 		ErrorClass: string(destination.ClassTransient), Error: why + "; it is sent once the account opens"}
-	if _, err := d.recordResult(ctx, res); err != nil {
+	out, err := d.recordResult(ctx, res)
+	if err != nil {
 		slog.ErrorContext(ctx, "engine: record wait failed", "platform", c.Platform, "account", c.AccountID, "err", err)
+		return
+	}
+	if out.ItemStatus != store.ItemPlanned {
+		slog.InfoContext(ctx, "engine: item canceled while its account was locked", "platform", c.Platform,
+			"account", c.AccountID, "ordinal", c.Ordinal)
+		d.settled(ctx, c, out, "")
 		return
 	}
 	slog.WarnContext(ctx, "engine: item waits for its account", "platform", c.Platform, "account", c.AccountID,

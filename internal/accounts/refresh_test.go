@@ -134,16 +134,22 @@ func TestRefreshSuccess(t *testing.T) {
 }
 
 // An account that can't send isn't refreshed.
-func TestRefreshSkipsUnavailable(t *testing.T) {
+func TestRefreshKeepsTurnedOffAccountAlive(t *testing.T) {
 	ra := &refreshAcct{}
 	h, _ := refreshHarness(t, ra)
 	ra.next = h.clock.Now().Add(-time.Minute)
 	r, _ := h.Get("acc_t")
 	r.Row.Enabled = false
-	_ = h.Update("acc_t", r.Row)
+	r.Row.UpdatedAt = r.Row.UpdatedAt.Add(time.Second)
+	if err := h.Update("acc_t", r.Row); err != nil {
+		t.Fatal(err)
+	}
+	if en, _ := h.Get("acc_t"); en.Status != Disabled {
+		t.Fatalf("status %s, want disabled", en.Status)
+	}
 	h.RefreshDue(context.Background())
-	if ra.calls != 0 {
-		t.Error("a disabled account was refreshed")
+	if ra.calls != 1 {
+		t.Errorf("a turned-off account was refreshed %d times, want 1: its token would expire unseen", ra.calls)
 	}
 }
 

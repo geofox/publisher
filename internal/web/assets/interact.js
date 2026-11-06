@@ -97,7 +97,7 @@ function actionRow(s) {
 // network's account, then the progress modal.
 async function doRepost(s, btn) {
   const acct = accountFor(s.platform);
-  if (!acct) { flash("No " + (PLAT_LABEL[s.platform] || s.platform) + " account is configured"); return; }
+  if (!acct) { flash("No " + (PLAT_LABEL[s.platform] || s.platform) + " account is connected"); return; }
   btn.disabled = true;
   try {
     const post = await sendPost({ repost: { url: s.input }, targets: [{ account: acct.id }] }, "interact");

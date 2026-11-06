@@ -152,7 +152,10 @@ func (r *Registry) applyHealth(ctx context.Context, id string, l *lease, h desti
 		e.refused = !*h.AuthOK
 		e.refusedReason = ""
 		if e.refused {
-			e.refusedReason = h.Message
+			e.refusedReason = "the network refused its credentials"
+			if h.Message != "" {
+				e.refusedReason += ": " + h.Message
+			}
 		}
 	}
 	e.nextCheck = now.Add(checkEvery)

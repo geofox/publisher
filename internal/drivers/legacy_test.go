@@ -24,7 +24,7 @@ func (s *tokenStore) SaveThreadsToken(tok string, exp time.Time, hash string, re
 	return nil
 }
 
-var threadsRow = store.Account{ID: "acc_t", Type: threads.Type, Source: "env", EnvKey: "default"}
+var threadsRow = store.Account{ID: "acc_t", OwnerID: store.DefaultOwner, Type: threads.Type, Source: "env", EnvKey: "default"}
 
 func restore(t *testing.T, l LegacyState, envToken string) (map[string]string, map[string]any) {
 	t.Helper()
@@ -135,5 +135,33 @@ func TestLegacyStateOtherTypes(t *testing.T) {
 	}
 	if err := l.Save(context.Background(), row, destination.StateUpdate{}); !errors.Is(err, ErrStateUnsupported) {
 		t.Errorf("save = %v", err)
+	}
+}
+
+// The one saved Threads token belongs to the operator's unnumbered env
+// account: another Threads account (a numbered one, another owner's, one
+// added in the app) neither reads it nor writes over it.
+func TestLegacyStateOnlyTheEnvThreadsAccount(t *testing.T) {
+	saved := &store.ThreadsToken{Token: "tokA-refreshed", ExpiresAt: time.Now().Add(50 * 24 * time.Hour),
+		SeedHash: threads.SeedHash("tokA"), RefreshedAt: time.Now()}
+	for _, row := range []store.Account{
+		{ID: "acc_2", OwnerID: store.DefaultOwner, Type: threads.Type, Source: "env", EnvKey: "2"},
+		{ID: "acc_o", OwnerID: "own_other", Type: threads.Type, Source: "env", EnvKey: "default"},
+		{ID: "acc_w", OwnerID: store.DefaultOwner, Type: threads.Type, Source: "web", EnvKey: ""},
+	} {
+		ts := &store.ThreadsToken{}
+		*ts = *saved
+		st := &tokenStore{tk: ts}
+		l := LegacyState{Store: st}
+		s, _, err := l.Restore(context.Background(), row, map[string]string{threads.SecretAccessToken: "tokA"}, nil)
+		if err != nil || s[threads.SecretAccessToken] != "tokA" {
+			t.Errorf("%s: restore = %v, %v; want its own token, not the saved one", row.ID, s, err)
+		}
+		if err := l.Save(context.Background(), row, destination.StateUpdate{Secrets: map[string]string{threads.SecretAccessToken: "tokB"}}); !errors.Is(err, ErrStateUnsupported) {
+			t.Errorf("%s: save = %v, want ErrStateUnsupported", row.ID, err)
+		}
+		if st.writes != 0 || st.tk.Token != "tokA-refreshed" {
+			t.Errorf("%s: the saved token was written: %+v (%d writes)", row.ID, st.tk, st.writes)
+		}
 	}
 }

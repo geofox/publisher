@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/geofox/publisher/internal/accounts"
@@ -188,8 +187,8 @@ func checkAccountPatch(in v1AccountPatchIn) (store.AccountMeta, []fieldError) {
 				add("/label", "required", "a label can't be empty")
 			case utf8.RuneCountInString(s) > maxAccountLabel:
 				add("/label", "too_long", "at most 64 characters")
-			case strings.ContainsFunc(s, unicode.IsControl):
-				add("/label", "invalid", "no control characters")
+			case nameProblem(s) != "":
+				add("/label", "invalid", nameProblem(s))
 			default:
 				m.Label = &s
 			}

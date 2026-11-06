@@ -20,6 +20,7 @@ const (
 	EventPostUpdated   = "post.updated"   // status, schedule or visibility changed
 	EventPostCompleted = "post.completed" // nothing left to send (until a retry)
 	EventItemSending   = "item.sending"
+	EventItemWaiting   = "item.waiting" // put back unsent: its account is locked
 	EventItemPublished = "item.published"
 	EventItemPartial   = "item.partial"
 	EventItemFailed    = "item.failed"

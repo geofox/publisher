@@ -751,6 +751,7 @@ func TestV1TokenValidation(t *testing.T) {
 		{"json with charset", `{"name":"x","scopes":["admin"]}`, "application/json; charset=utf-8", 201, ""},
 		{"jsonp", `{"name":"x","scopes":["admin"]}`, "application/jsonp", 415, codeUnsupportedMediaType},
 		{"control char", `{"name":"a\u0000b","scopes":["admin"]}`, "", 422, codeValidation},
+		{"bidi override", `{"name":"ci \u202etoor\u202c","scopes":["admin"]}`, "", 422, codeValidation},
 		{"lowercase t and z", `{"name":"x","scopes":["admin"],"expires_at":"2099-01-01t00:00:00z"}`, "", 201, ""},
 		{"too large", `{"name":"` + strings.Repeat("a", maxV1Body) + `","scopes":["admin"]}`, "", 413, codeTooLarge},
 	}

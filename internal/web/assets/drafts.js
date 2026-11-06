@@ -4,7 +4,7 @@ import { cpIndex } from "./textpos.js";
 import { loadDraft, markDirty, mediaReady, newKey, resetComposer, rerenderComposer } from "./compose.js";
 import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
 import { flash, el, v1, problemError, confirmModal, ORDER, pressable } from "./common.js";
-import { accountByID, loadAccounts } from "./accounts.js";
+import { accountByID, loadAccounts, defaultPlatforms } from "./accounts.js";
 import { fromV1 } from "./interact.js";
 
 // Drafts live on the server (/v1/drafts). A draft holds a POST /v1/posts
@@ -374,7 +374,7 @@ function clearComposer() {
   state.draftETag = "";
   state.dirty = false;
   state.anchors = {};
-  state.platforms = new Set(ORDER);
+  state.platforms = defaultPlatforms(ORDER);
   resetComposer();
   const num = document.getElementById("threadnum"); if (num) num.checked = true;
   rerenderComposer();

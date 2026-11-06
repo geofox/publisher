@@ -1,7 +1,7 @@
 import { test, expect, openApp, switchTab, marker } from "./fixtures";
 test("translating a History post into Compose doesn't inherit the old schedule / visibility / CW", async ({ page, request }) => {
-  const accounts = (await (await request.get("/v1/accounts")).json()).data as { id: string; type: string; enabled: boolean }[];
-  const masto = accounts.find(a => a.enabled && a.type === "mastodon")!;
+  const accounts = (await (await request.get("/v1/accounts")).json()).data as { id: string; type: string; status: string }[];
+  const masto = accounts.find(a => a.status === "connected" && a.type === "mastodon")!;
   const m = marker("tr");
   const r = await request.post("/v1/posts", { headers: { "Content-Type": "application/json", Prefer: "wait=10" },
     data: { content: { text: `Old post ${m}` }, targets: [{ account: masto.id }] } });

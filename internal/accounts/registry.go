@@ -114,6 +114,7 @@ type Registry struct {
 	mu      sync.RWMutex
 	entries map[string]*entry
 	order   []string
+	closed  bool
 
 	reopenMu sync.Mutex // one Reopen at a time
 
@@ -155,7 +156,7 @@ func (e *entry) status() (Status, string) {
 	case e.base != Connected:
 		return e.base, e.baseReason
 	case !e.row.Enabled:
-		return Disabled, "turned off in the app"
+		return Disabled, "you turned it off; turn it on again to use it"
 	case e.refused:
 		return NeedsReconnect, e.refusedReason
 	default:
@@ -263,12 +264,7 @@ func (r *Registry) Load(ctx context.Context) error {
 			e.live.retire()
 		}
 	}
-	for _, id := range r.ids() {
-		if en, _ := r.Get(id); en.Status != Connected {
-			r.log.Warn("account not available", "account", id, "type", en.Row.Type, "status", en.Status, "reason", en.Reason)
-		}
-	}
-	return nil
+	return nil // the caller logs each account's status (cmd/publisher logStart)
 }
 
 // build opens one account, or says why it can't be opened.
@@ -306,10 +302,23 @@ func (r *Registry) build(ctx context.Context, row store.Account) (*lease, Status
 	return &lease{acct: acct}, Connected, ""
 }
 
-// envFor is the environment's account for an env row.
+// envFor is the environment's account for an env row. The environment's
+// accounts are the operator's: another owner's row never opens with them.
 func (r *Registry) envFor(row store.Account) *EnvAccount {
+	if row.OwnerID != store.DefaultOwner {
+		return nil
+	}
+	key := row.EnvKey
+	if key == "" {
+		key = destination.EnvKeyDefault
+	}
 	for i := range r.opt.Env {
-		if e := &r.opt.Env[i]; e.Type == row.Type && e.Key == row.EnvKey {
+		e := &r.opt.Env[i]
+		ek := e.Key
+		if ek == "" {
+			ek = destination.EnvKeyDefault
+		}
+		if e.Type == row.Type && ek == key {
 			return e
 		}
 	}
@@ -401,6 +410,9 @@ func (r *Registry) OfType(owner, typ string) []Entry {
 func (r *Registry) Acquire(id string) (destination.Account, func(), error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if r.closed {
+		return nil, nil, ErrClosed
+	}
 	e, ok := r.entries[id]
 	if !ok {
 		return nil, nil, ErrNoAccount
@@ -538,6 +550,7 @@ func (r *Registry) Close() {
 	entries := r.entries
 	r.entries = map[string]*entry{}
 	r.order = nil
+	r.closed = true
 	r.mu.Unlock()
 	for _, e := range entries {
 		if e.live != nil {

@@ -389,7 +389,7 @@ func TestNeedsReconnectOnlyWhenConfirmed(t *testing.T) {
 	h.ReportAuthFailure("acc_b")
 	h.wait()
 	e, _ := h.Get("acc_b")
-	if e.Status != NeedsReconnect || e.Reason != "refused" {
+	if e.Status != NeedsReconnect || e.Reason != "the network refused its credentials: refused" {
 		t.Fatalf("after a refusing check: %s %q", e.Status, e.Reason)
 	}
 	if _, _, err := h.Acquire("acc_b"); err == nil {
@@ -538,5 +538,29 @@ func TestCloseClosesAccounts(t *testing.T) {
 	h.Close()
 	if a.closed.Load() != 1 {
 		t.Errorf("closed %d times", a.closed.Load())
+	}
+	// A send that comes too late is told the server is stopping, not that
+	// the account is gone.
+	if _, _, err := h.Acquire("acc_m"); !errors.Is(err, ErrClosed) {
+		t.Errorf("Acquire after Close = %v, want ErrClosed", err)
+	}
+}
+
+// The environment's credentials are the operator's: an env row of
+// another owner never opens with them, and an env row stored without a
+// key is the unnumbered account.
+func TestEnvCredentialsOnlyForTheOperator(t *testing.T) {
+	other := row("acc_other", "mastodon", "env", "default", 0, true)
+	other.OwnerID = "own_other"
+	blank := row("acc_blank", "bluesky", "env", "", time.Second, true)
+	h := newHarness(t, []store.Account{other, blank}, []EnvAccount{env("mastodon", "default"), env("bluesky", "default")})
+	if en, _ := h.Get("acc_other"); en.Status != NotConfigured {
+		t.Errorf("another owner's env row = %s, want not_configured", en.Status)
+	}
+	if len(h.open["acc_other"]) != 0 {
+		t.Error("another owner's env row was opened with the operator's credentials")
+	}
+	if en, _ := h.Get("acc_blank"); en.Status != Connected {
+		t.Errorf("env row with no key = %s %q, want connected", en.Status, en.Reason)
 	}
 }

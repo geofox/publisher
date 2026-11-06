@@ -22,6 +22,7 @@ import (
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/mastodon"
 	"github.com/geofox/publisher/internal/nostr"
+	"github.com/geofox/publisher/internal/relaysync"
 	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/threads"
 )
@@ -462,4 +463,25 @@ func (b *fakeBlossom) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
 	}
+}
+
+// fakeSyncer stands in for relay sync (production always has one), so
+// GET /v1/instance says relay sync is available while a Nostr account is
+// connected. It reaches no relay: every relay is in step, nothing copied.
+type fakeSyncer struct{}
+
+func (fakeSyncer) Scan(_ context.Context, _ relaysync.Owner, targets []relaysync.Target) []relaysync.RelayDiff {
+	out := make([]relaysync.RelayDiff, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, relaysync.RelayDiff{URL: t.URL, Group: t.Group, Status: "ok"})
+	}
+	return out
+}
+
+func (fakeSyncer) Apply(_ context.Context, _ relaysync.Owner, targets []relaysync.Target, direction string) []relaysync.ApplyResult {
+	out := make([]relaysync.ApplyResult, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, relaysync.ApplyResult{URL: t.URL, Direction: direction, Status: "ok"})
+	}
+	return out
 }

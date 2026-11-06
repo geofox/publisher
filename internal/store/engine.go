@@ -143,7 +143,7 @@ func (s *Store) SetItemRef(ctx context.Context, itemID int64, ref json.RawMessag
 // ItemResult is the outcome of one attempt at a claimed item.
 type ItemResult struct {
 	Claim
-	Status              string // published | partial | failed | unknown
+	Status              string // published | partial | failed | unknown | planned (waits for its account)
 	RemoteID, RemoteURL string
 	Ref                 json.RawMessage // replaces the item's ref when set
 	Error, ErrorClass   string
@@ -167,7 +167,8 @@ type ItemResult struct {
 type Outcome struct {
 	PostBefore, PostAfter string // the post's status
 	TargetStatus          string
-	GaveUp                bool // this result stamped the target's gave_up_at
+	ItemStatus            string // the item's status as recorded
+	GaveUp                bool   // this result stamped the target's gave_up_at
 }
 
 // RecordItemResult records an attempt at a claimed item in one transaction:
@@ -202,6 +203,13 @@ func (s *Store) RecordItemResult(ctx context.Context, r ItemResult) (Outcome, er
 	if r.NextAttemptAt != nil && !canceled {
 		next = r.NextAttemptAt.UTC()
 	}
+	// An item put back to wait for its account would never be claimed
+	// again (it has no retry time): the cancel ends it like the post's
+	// other planned items.
+	if canceled && r.Status == ItemPlanned {
+		r.Status, r.Error, r.ErrorClass = ItemCanceled, "", ""
+	}
+	out.ItemStatus = r.Status
 	live := r.Status == ItemPublished || r.Status == ItemPartial
 	res, err := tx.ExecContext(ctx, `UPDATE target_items SET status = ?,
 		  remote_id = COALESCE(NULLIF(?, ''), remote_id), remote_url = COALESCE(NULLIF(?, ''), remote_url),
@@ -282,8 +290,15 @@ func emitItemResult(ctx context.Context, tx *sql.Tx, r ItemResult, before postSt
 	ord := r.Ordinal
 	base := EventData{TargetID: r.TargetID, AccountID: account, Platform: r.Platform, Ordinal: &ord}
 	typ := map[string]string{ItemPublished: EventItemPublished, ItemPartial: EventItemPartial,
-		ItemFailed: EventItemFailed, ItemUnknown: EventItemUnknown, ItemCanceled: EventItemCanceled}[r.Status]
-	if typ != "" && !r.NotSent {
+		ItemFailed: EventItemFailed, ItemUnknown: EventItemUnknown, ItemCanceled: EventItemCanceled,
+		ItemPlanned: EventItemWaiting}[r.Status]
+	// An item re-queued unsent after a restart changed nothing a reader
+	// follows; one that waits for its account, ends canceled or is given
+	// up unsent did.
+	if r.NotSent && r.Status == ItemFailed {
+		typ = ""
+	}
+	if typ != "" {
 		d := base
 		d.Status, d.RemoteURL, d.ErrorClass, d.Error = r.Status, url, r.ErrorClass, Scrub(r.Error)
 		if err := emit(ctx, tx, r.PostID, typ, d, at); err != nil {

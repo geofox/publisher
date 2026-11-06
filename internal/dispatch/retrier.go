@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -47,6 +48,7 @@ type Retrier struct {
 	tick        time.Duration
 	now         func() time.Time
 	running     atomic.Bool
+	noAccount   lastingWarn // relay retries that wait for an account
 }
 
 func NewRetrier(d *Dispatcher, n Notifier, enabled bool, maxAttempts int, base, max, tick time.Duration) *Retrier {
@@ -85,20 +87,30 @@ func (r *Retrier) runDue(ctx context.Context) {
 		slog.Error("retrier: candidate query failed", "err", err)
 		return
 	}
+	waiting := 0
 	for _, id := range ids {
 		if ctx.Err() != nil {
 			return // shutting down
 		}
-		r.processPost(ctx, id)
+		waiting += r.processPost(ctx, id)
+	}
+	switch now := r.now(); {
+	case waiting > 0 && r.noAccount.on(now):
+		slog.Warn("retrier: no account can deliver to relays now; relay retries wait", "relays", waiting)
+	case waiting == 0 && r.noAccount.off(now, 0):
+		slog.Info("retrier: no relay retry waits for an account any more")
 	}
 }
 
-func (r *Retrier) processPost(ctx context.Context, id string) {
+// processPost retries the post's due relays. It returns how many wait
+// because no account can deliver to relays now (nothing is counted
+// against them).
+func (r *Retrier) processPost(ctx context.Context, id string) (waiting int) {
 	ctx = logging.With(ctx, "post_id", id)
 	post, err := r.disp.Store.GetPost(id)
 	if err != nil {
 		slog.ErrorContext(ctx, "retrier: load failed", "err", err)
-		return
+		return 0
 	}
 	now := r.now()
 	var exhausted []string
@@ -124,7 +136,9 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 			if !r.relayDue(rl, now) || ctx.Err() != nil {
 				continue
 			}
-			if _, err := r.disp.RetryTargetRelay(ctx, id, t.ID, rl.URL); err != nil {
+			if _, err := r.disp.RetryTargetRelay(ctx, id, t.ID, rl.URL); errors.Is(err, ErrNoRedeliverer) {
+				waiting++
+			} else if err != nil {
 				slog.ErrorContext(ctx, "retrier: relay retry failed", "relay", rl.URL, "err", err)
 			} else {
 				slog.InfoContext(ctx, "retrier: rebroadcast to relay", "relay", rl.URL)
@@ -134,6 +148,7 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 	if len(exhausted) > 0 {
 		r.alertGaveUp(ctx, id, exhausted)
 	}
+	return waiting
 }
 
 // keyMargin is how long before the server forgets an idempotency key the

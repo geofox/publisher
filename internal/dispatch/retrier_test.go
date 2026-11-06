@@ -1,11 +1,15 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -130,6 +134,44 @@ func TestRetrierRelayLevelRetry(t *testing.T) {
 		if rl.URL == "wss://down" && rl.Status != "ok" {
 			t.Errorf("down relay should have been rebroadcast to ok, got %q", rl.Status)
 		}
+	}
+}
+
+// With no account that can deliver to relays, a relay retry waits: no
+// retry is counted, nothing is logged as an error, and the wait is logged
+// when it starts and then every quarter hour, not on every tick.
+func TestRetrierRelayRetryWaitsForAnAccount(t *testing.T) {
+	st := openDispatchStore(t)
+	seedTarget(t, st, "rl3", "nostr", "partial", 1, []store.RelayState{
+		{URL: "wss://ok3", Status: "ok"},
+		{URL: "wss://down3", Status: "failed"},
+	}, `{"id":"w"}`)
+	reg := legacyAccounts(legacy{Nostr: fakeRebroadcaster{ok: true}})
+	reg.set(acct("nostr"), accounts.Locked, "")
+	d := &Dispatcher{Registry: reg, Store: st}
+	now := time.Now().UTC().Add(10 * time.Minute)
+	r := &Retrier{disp: d, notifier: &fakeAlerter{}, enabled: true, maxAttempts: 6,
+		base: 2 * time.Minute, max: time.Hour, now: func() time.Time { return now }}
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(prev)
+	for range 31 { // half an hour of one-minute ticks
+		r.runDue(context.Background())
+		now = now.Add(time.Minute)
+	}
+	gp, _ := st.GetPost("rl3")
+	if rl := gp.Targets[0].Relays[1]; rl.Status != "failed" || rl.RetryCount != 0 || rl.GaveUpAt != nil {
+		t.Fatalf("relay while waiting = %+v", rl)
+	}
+	if n, e := strings.Count(logs.String(), "relay retries wait"), strings.Count(logs.String(), "level=ERROR"); n != 3 || e != 0 {
+		t.Errorf("logged the wait %d times (want 3) and %d errors:\n%s", n, e, logs.String())
+	}
+	reg.set(acct("nostr"), accounts.Connected, "")
+	r.runDue(context.Background())
+	gp, _ = st.GetPost("rl3")
+	if rl := gp.Targets[0].Relays[1]; rl.Status != "ok" || !strings.Contains(logs.String(), "no relay retry waits") {
+		t.Errorf("after the account is back: relay %+v; logs:\n%s", rl, logs.String())
 	}
 }
 

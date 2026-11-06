@@ -3,8 +3,8 @@ import { test, expect, openApp, switchTab, marker } from "./fixtures";
 test.use({ timezoneId: "America/New_York" });
 
 test("History 'change time' names and reads the device's time zone", async ({ page, request }) => {
-  const accounts = (await (await request.get("/v1/accounts")).json()).data as { id: string; type: string; enabled: boolean }[];
-  const masto = accounts.find(a => a.enabled && a.type === "mastodon")!;
+  const accounts = (await (await request.get("/v1/accounts")).json()).data as { id: string; type: string; status: string }[];
+  const masto = accounts.find(a => a.status === "connected" && a.type === "mastodon")!;
   const m = marker("tz");
   const r = await request.post("/v1/posts", { headers: { "Content-Type": "application/json" },
     data: { content: { text: `${m}` }, targets: [{ account: masto.id }], schedule: { at: "2027-01-10T09:00:00Z" } } });

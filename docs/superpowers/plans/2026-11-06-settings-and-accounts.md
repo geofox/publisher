@@ -839,6 +839,47 @@ One commit: every caller moves to the registry and account-keyed specs.
 - [ ] Rehearsal steps in the PR body.
 - [ ] Open PR A2; 2 QA + 1 security reviews; fix; hand over.
 
+### As built (A2.9): review fixes
+
+- **Names** (`api.nameProblem`): account labels and token names refuse
+  control, format (bidi, zero-width, BOM), separator, private-use,
+  surrogate and noncharacter code points, and need one visible
+  character; ZWJ/ZWNJ after a visible character pass (emoji, Persian).
+- **Env credentials are the operator's:** `envFor` opens an env row with
+  the environment's credentials only when its owner is `DefaultOwner`
+  (an empty key reads as the unnumbered one); the 2.x Threads token goes
+  only to the operator's unnumbered Threads row.
+- **Turned off still renews** the Threads token (`refreshOne` runs for
+  `connected` and `disabled`).
+- **Waits:** a waiting item is an `item.waiting` event (status `planned`,
+  the reason); a cancel that lands while it is claimed ends it
+  `canceled` (`RecordItemResult` turns a planned result on a canceled
+  post into canceled), and the post settles. An item given up unsent
+  (`release`) is now an `item.unknown` event; only the restart re-queue
+  stays silent.
+- **Relay-sync lists** (v11, amended before release):
+  `nostr_sync_relay_lists` marks an account whose list exists, even
+  emptied, so adopt and seed run once (`SeedAccountSyncRelaysOnce`).
+  Part C's account delete must delete its row too.
+- **No account for relays:** fan-out jobs that wait are deferred a minute
+  (`DeferFanout`, no attempt counted) so they don't hold the head of the
+  queue; the fan-out and the retrier log the wait when it starts and then
+  every 15 minutes (`lastingWarn`), and once when it ends.
+- **Small:** `Acquire` after `Close` is `ErrClosed` (transient, not an
+  auth give-up); `displayName` ignores a label that repeats the type in
+  any case; the registry no longer logs each unavailable account (the
+  start log does); reasons say what to do ("you turned it off; turn it on
+  again to use it", "the network refused its credentials: …"); a JSON body
+  that isn't an object is `400 invalid_json`.
+- **Web:** a new post selects the networks with a connected account that
+  new posts select, once, when the accounts first load (never on a
+  reload), and `accountFor` prefers that account; the video preset stays
+  hidden without a media store; the Tools tab says relay sync needs a
+  Nostr account (`features.relay_sync`). `web-account-defaults.spec.ts`.
+- **Docs:** `enabled` is only the owner's switch (CHANGELOG Breaking:
+  pick targets by `status`), `admin` lacks `accounts:write`, `order -1`,
+  the PATCH answer, `invalid_state` for relays, feed `handle` absent.
+
 ---
 
 # PR A3 — The composer, History and Interact by account
@@ -1319,7 +1360,9 @@ tests, tests.
   no idempotent route can return a secret or a capability. `:reveal` has
   its own route entry, never idempotent, `no-store`.
 - [ ] `GET`/`PATCH`/`DELETE`, `:check`, `:reveal`, `:adopt` per spec
-  §5.3–5.6 (reveal and delete bound to the account by their nonce).
+  §5.3–5.6 (reveal and delete bound to the account by their nonce). A
+  delete also removes the account's `nostr_sync_relays` and
+  `nostr_sync_relay_lists` rows (both reference `accounts`).
 - [ ] Proxy mode through `NoProxy` (B2): credential writes, adopt, reveal,
   and later connect, settings secrets and instance settings. A table test
   over `v1Routes()` checks every flagged route.

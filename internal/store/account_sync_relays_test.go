@@ -11,11 +11,11 @@ func TestAccountSyncRelays(t *testing.T) {
 	s := openEngineStore(t)
 	ctx := context.Background()
 	a, b := seedTestAccount(t, s, "nostr", "a"), seedTestAccount(t, s, "nostr", "b")
-	if err := s.SeedAccountSyncRelaysIfEmpty(ctx, a, []string{"wss://1", "", "wss://2"}); err != nil {
+	if err := s.SeedAccountSyncRelaysOnce(ctx, a, []string{"wss://1", "", "wss://2"}); err != nil {
 		t.Fatal(err)
 	}
 	// A list that has relays is never re-seeded.
-	if err := s.SeedAccountSyncRelaysIfEmpty(ctx, a, []string{"wss://9"}); err != nil {
+	if err := s.SeedAccountSyncRelaysOnce(ctx, a, []string{"wss://9"}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.AccountSyncRelays(ctx, a)
@@ -38,6 +38,26 @@ func TestAccountSyncRelays(t *testing.T) {
 	}
 	if got, _ := s.AccountSyncRelays(ctx, b); len(got) != 0 {
 		t.Fatalf("b after clearing = %v", got)
+	}
+	// An emptied list stays empty: neither the seed nor the 2.x list
+	// comes back.
+	setLegacySyncRelays(t, s, "wss://old")
+	if err := s.SeedAccountSyncRelaysOnce(ctx, b, []string{"wss://9"}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.AdoptLegacySyncRelays(ctx, b); err != nil || ok {
+		t.Fatalf("adopt after clearing = %v, %v", ok, err)
+	}
+	if got, _ := s.AccountSyncRelays(ctx, b); len(got) != 0 {
+		t.Fatalf("b after clearing and a restart = %v", got)
+	}
+	// A seed of nothing is still the account's list.
+	c := seedTestAccount(t, s, "nostr", "c")
+	if err := s.SeedAccountSyncRelaysOnce(ctx, c, nil); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.AdoptLegacySyncRelays(ctx, c); ok {
+		t.Fatal("adopted the 2.x list after an empty seed")
 	}
 }
 

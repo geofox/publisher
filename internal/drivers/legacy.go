@@ -40,8 +40,13 @@ func (l LegacyState) now() time.Time {
 	return time.Now().UTC()
 }
 
+// legacyThreads reports whether row is the Threads account 2.x kept its
+// token for: the operator's, from the unnumbered variables. There is one
+// saved token, so no other account may read or write it (another would
+// publish with that account's token, or overwrite it).
 func legacyThreads(row store.Account) bool {
-	return row.Type == threads.Type && row.Source == "env"
+	return row.Type == threads.Type && row.Source == "env" &&
+		row.EnvKey == destination.EnvKeyDefault && row.OwnerID == store.DefaultOwner
 }
 
 // Restore returns the state the account opens with. For the Threads
@@ -116,16 +121,16 @@ func (l LegacyState) Save(_ context.Context, row store.Account, u destination.St
 // belongs to one account.
 type LegacyStore interface {
 	AdoptLegacySyncRelays(ctx context.Context, accountID string) (bool, error)
-	SeedAccountSyncRelaysIfEmpty(ctx context.Context, accountID string, urls []string) error
+	SeedAccountSyncRelaysOnce(ctx context.Context, accountID string, urls []string) error
 }
 
 // AdoptLegacy gives state 2.x kept for the one account of a type to the
 // env account that owns it now: the relay-sync list goes to the Nostr
 // account of the unnumbered variables (2.x's one account; else the first
-// env Nostr account) when that account has none yet. Then each env Nostr
-// account without a list starts with its SYNC_RELAYS. rows are the env
-// rows (SeedEnvAccounts); env says which rows the environment configures.
-// Idempotent.
+// env Nostr account) when that account never had one. Then each env
+// Nostr account that never had a list starts with its SYNC_RELAYS. rows
+// are the env rows (SeedEnvAccounts); env says which rows the environment
+// configures. Idempotent: a list the owner changed, even emptied, stays.
 func AdoptLegacy(ctx context.Context, st LegacyStore, rows []store.Account, env []EnvAccount) error {
 	var errs []error
 	heir := ""
@@ -151,7 +156,7 @@ func AdoptLegacy(ctx context.Context, st LegacyStore, rows []store.Account, env 
 				continue
 			}
 			seed, _ := destination.ConfigStrings(e.Config, nostr.ConfigSyncRelaysSeed)
-			if err := st.SeedAccountSyncRelaysIfEmpty(ctx, row.ID, seed); err != nil {
+			if err := st.SeedAccountSyncRelaysOnce(ctx, row.ID, seed); err != nil {
 				errs = append(errs, fmt.Errorf("relay-sync list: %w", err))
 			}
 		}

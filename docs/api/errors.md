@@ -139,8 +139,10 @@ previous page unchanged; cursors are opaque.
 
 **409.** The request is valid but the resource is not in a state that
 allows it: rescheduling a post that isn't scheduled, hiding one still to be
-sent, canceling a post with nothing left to cancel, or retrying one with
-nothing to retry. `detail` says which.
+sent, canceling a post with nothing left to cancel, retrying one with
+nothing to retry, or a relay operation on a Nostr account that isn't
+connected now (or while a scan or sync of its relays is running). `detail`
+says which.
 
 ## idempotency_key_invalid
 

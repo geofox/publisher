@@ -108,6 +108,7 @@ func run() error {
 	a.Dispatch = eng
 	a.Caps = eng.Caps
 	a.Accounts = eng
+	a.Sync = fakeSyncer{}
 	a.UserLanguages = []string{"en", "fr"}
 	a.Ready = &health.Checker{Local: []health.Check{health.Database(st, store.LatestSchemaVersion())}}
 

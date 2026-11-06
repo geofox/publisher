@@ -16,7 +16,8 @@ import "context"
 //   - The relay-sync list belongs to a Nostr account (nostr_sync_relays).
 //     The registry adopts the old global list (sync_relays) for the env
 //     Nostr account; the old table stays for older binaries and a
-//     rollback.
+//     rollback. nostr_sync_relay_lists has a row for each account whose
+//     list exists, even emptied, so it is adopted or seeded only once.
 //   - v4 backfilled nostr_fanout.item_id, but EnqueueFanout never wrote it,
 //     so every job queued since lacks it; the same backfill runs again.
 func migrateAccountsByID(ctx context.Context, tx execer) error {
@@ -30,6 +31,10 @@ CREATE TABLE nostr_sync_relays (
   url        TEXT NOT NULL,
   added_at   TIMESTAMP NOT NULL,
   PRIMARY KEY (account_id, url)
+);
+CREATE TABLE nostr_sync_relay_lists (
+  account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+  created_at TIMESTAMP NOT NULL
 );
 UPDATE nostr_fanout SET item_id = (
   SELECT ti.id FROM target_items ti JOIN post_targets pt ON pt.id = ti.target_id

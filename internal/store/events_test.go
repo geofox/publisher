@@ -115,7 +115,7 @@ func TestEventsLogFailures(t *testing.T) {
 	}
 }
 
-// A claim released unsent logs nothing about the item.
+// A claim re-queued unsent after a restart logs nothing about the item.
 func TestEventsSkipNotSent(t *testing.T) {
 	s := openEngineStore(t)
 	now := time.Now().UTC()

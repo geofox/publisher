@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +63,16 @@ func TestRecoveredKeyWindowStartsAtTheSend(t *testing.T) {
 	d2.runDue(context.Background())
 	if len(acct.reqs) != 2 {
 		t.Errorf("sent %d times; want 2 (no send past the key's window from the first send)", len(acct.reqs))
+	}
+	// Given up unsent, the item is unknown, and a stream reader is told.
+	evs, _ := d.Store.EventsSince(context.Background(), store.EventFilter{OwnerID: store.DefaultOwner, PostID: id})
+	if last := evs[len(evs)-1]; last.Type != store.EventPostUpdated && last.Type != store.EventPostCompleted {
+		t.Errorf("last event %+v", last)
+	}
+	if !slices.ContainsFunc(evs, func(e store.Event) bool {
+		return e.Type == store.EventItemUnknown && strings.Contains(e.Data.Error, "no longer remembers its idempotency key")
+	}) {
+		t.Errorf("no item.unknown event for the item given up unsent")
 	}
 }
 

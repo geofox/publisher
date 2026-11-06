@@ -15,6 +15,12 @@ the `edge` image.
   (`media[].at`); the old `media[].part` is refused with code `replaced`.
   Each account can have its own breaks and media positions
   (`targets[].thread`). Stored drafts are converted at the first start.
+- **`enabled` on an account is now only your switch.** It used to be
+  false for a network whose variables weren't set; after the upgrade
+  every account starts with `enabled: true`, and `status` says whether it
+  can be used. A caller that picked targets with `enabled` must use
+  `status == "connected"` instead, or a post naming an account that
+  isn't configured is refused (`account_disabled`).
 
 ### Changed
 
@@ -95,6 +101,15 @@ the `edge` image.
   `public_feed` flags; `GET /v1/accounts/{id}` has an `ETag`.
 - `POST /v1/resolve` takes `account`, the account to look the post up
   with.
+- A post can't name an account that isn't connected (`account_disabled`,
+  saying why). When an account stops being usable after a post was
+  accepted, a locked account's items wait for it, each wait an
+  `item.waiting` event with the reason, and any other account's items fail
+  (retry them by hand once it's back). Canceling the post ends a waiting
+  item.
+- An item the engine gives up unsent because the network may already have
+  it (its idempotency key expired) is now an `item.unknown` event; it used
+  to change without one.
 - The `/v1/events` stream's `post` field is absent on the new account
   events, which only a caller with `accounts:read` receives.
 - Alerts name the account, not only its network: "Mastodon
@@ -109,7 +124,13 @@ the `edge` image.
   on, and sets whether new posts select it and whether its posts go to the
   public feed. It needs the new `accounts:write` scope, which `admin`
   doesn't include and only the signed-in owner can grant to a token. Each
-  change is an `account.updated` event naming the fields that changed.
+  change is an `account.updated` event naming the fields that changed. A
+  turned-off account still renews its Threads token, so it works when
+  turned on again.
+- The composer selects, for a new post, the networks with a connected
+  account that new posts select (`default_selected`), and posts from that
+  account. The Tools tab says relay sync needs a Nostr account instead of
+  showing an error.
 
 ### Security
 

@@ -1,9 +1,13 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -139,11 +143,66 @@ func TestLockedAccountWaits(t *testing.T) {
 	}
 }
 
+// A wait is an item.waiting event with the reason, and a cancel that
+// lands while the item is claimed ends it canceled: put back with no
+// retry time, it would never be claimed again and the post would stay
+// sending.
+func TestLockedWaitEventAndCancel(t *testing.T) {
+	d, reg, _, _ := twoStubs(t, destination.IdempotentKey)
+	al := &fakeAlerter{}
+	d.Alerter = al
+	reg.set("acc_a", accounts.Locked, "its saved state could not be read")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	rec := d.planPost(ctx, "lc", PostSpec{MasterText: "hi", Targets: []TargetSpec{{AccountID: "acc_a", Type: "stub"}, {AccountID: "acc_b", Type: "stub"}}}, &now, "sending")
+	if err := d.create(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := d.Store.GetPost("lc")
+	claim := func() *store.Claim {
+		c, err := d.Store.ClaimItem(ctx, now, store.ClaimFilter{TargetID: saved.Targets[0].ID})
+		if err != nil || c == nil {
+			t.Fatal(c, err)
+		}
+		return c
+	}
+	d.runClaim(ctx, claim(), nil, true)
+	evs, _ := d.Store.EventsSince(ctx, store.EventFilter{OwnerID: store.DefaultOwner, PostID: "lc"})
+	last := evs[len(evs)-1]
+	if last.Type != store.EventItemWaiting || last.Data.Status != store.ItemPlanned || last.Data.AccountID != "acc_a" ||
+		!strings.Contains(last.Data.Error, "saved state") {
+		t.Fatalf("last event = %+v", last)
+	}
+
+	now = now.Add(lockedWaitMax)
+	c := claim()
+	if err := d.Store.CancelPost(ctx, "lc", now); err != nil {
+		t.Fatal(err)
+	}
+	d.runClaim(ctx, c, nil, true)
+	post, _ := d.Store.GetPost("lc")
+	it := post.Targets[0].Items[0]
+	if post.Status != "canceled" || it.Status != store.ItemCanceled || it.NextAttemptAt != nil || it.Error != "" {
+		t.Fatalf("post %q, item %+v", post.Status, it)
+	}
+	evs, _ = d.Store.EventsSince(ctx, store.EventFilter{OwnerID: store.DefaultOwner, PostID: "lc", After: last.ID})
+	var types []string
+	for _, e := range evs {
+		types = append(types, e.Type)
+	}
+	if !slices.Contains(types, store.EventItemCanceled) || !slices.Contains(types, store.EventPostCompleted) {
+		t.Errorf("events after the cancel = %v", types)
+	}
+	if len(al.bodies) != 0 {
+		t.Errorf("alerts %v", al.bodies)
+	}
+}
+
 // A disabled account's item fails as auth, saying why, without a network
 // call, and the registry isn't asked to check its credentials.
 func TestDisabledAccountFailsWithoutSending(t *testing.T) {
 	d, reg, a, b := twoStubs(t, destination.IdempotentKey)
-	reg.set("acc_a", accounts.Disabled, "turned off in the app")
+	reg.set("acc_a", accounts.Disabled, "you turned it off; turn it on again to use it")
 	rec := d.PostSpec(context.Background(), "ds", PostSpec{MasterText: "hi", Targets: []TargetSpec{
 		{AccountID: "acc_a", Type: "stub"}, {AccountID: "acc_b", Type: "stub"}}})
 	if len(a.reqs) != 0 || len(b.reqs) != 1 || rec.Status != "partial" {
@@ -300,10 +359,37 @@ func TestFanoutByAccount(t *testing.T) {
 
 	reg.set("acc_n2", accounts.Disabled, "")
 	_ = st.EnqueueFanout("fp", itemID, `{"id":"e3"}`, []string{"wss://c"})
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(prev)
+	now := time.Now()
+	f.now = func() time.Time { return now }
 	f.runDue(ctx)
-	jobs, _ := st.DueFanout(time.Now(), 10)
+	// It waits uncounted, behind jobs that are due.
+	if jobs, _ := st.DueFanout(now, 10); len(jobs) != 0 {
+		t.Fatalf("the waiting job is still due: %+v", jobs)
+	}
+	jobs, _ := st.DueFanout(now.Add(fanoutWait), 10)
 	if len(own.calls)+len(other.calls) != 2 || len(jobs) != 1 || jobs[0].RetryCount != 0 {
 		t.Fatalf("with no account: delivered %d, due %+v; want the job waiting, uncounted", len(own.calls)+len(other.calls), jobs)
+	}
+	// An hour of passes logs the wait at its start and then every quarter
+	// hour, not on every pass.
+	for range 60 {
+		now = now.Add(fanoutWait)
+		f.runDue(ctx)
+	}
+	if n := strings.Count(logs.String(), "jobs wait"); n != 5 {
+		t.Errorf("logged the wait %d times in an hour; want 5:\n%s", n, logs.String())
+	}
+	reg.set("acc_n2", accounts.Connected, "")
+	for range 3 {
+		now = now.Add(fanoutWait)
+		f.runDue(ctx)
+	}
+	if len(other.calls) != 2 || strings.Count(logs.String(), "no job waits") != 1 {
+		t.Errorf("after the account is back: delivered %v; logs:\n%s", other.calls, logs.String())
 	}
 	if reg.held() != 0 {
 		t.Errorf("%d leases still held", reg.held())
@@ -339,5 +425,65 @@ func TestInteractionActsOnTheSourceAccount(t *testing.T) {
 		if isAction != (tg.AccountID == "acc_b") {
 			t.Errorf("%s: isAction %v", tg.AccountID, isAction)
 		}
+	}
+}
+
+// closedRegistry is a registry closed under a send (the server stopping).
+type closedRegistry struct{ *testRegistry }
+
+func (closedRegistry) Acquire(string) (destination.Account, func(), error) {
+	return nil, nil, accounts.ErrClosed
+}
+
+// A send that meets a closed registry fails as transient, so it is tried
+// again after the restart instead of giving up as if its credentials were
+// refused.
+func TestAcquireAfterCloseIsTransient(t *testing.T) {
+	d := &Dispatcher{Registry: closedRegistry{registryOf(nil)}}
+	_, _, err := d.acquire("acc_a", "stub")
+	var de *destination.Error
+	if !errors.As(err, &de) || de.Class != destination.ClassTransient {
+		t.Fatalf("acquire = %v, want a transient error", err)
+	}
+}
+
+// namedDriver is a registered type, so messages use its name.
+type namedDriver struct{}
+
+func (namedDriver) Manifest() destination.Manifest {
+	m := stubManifest(destination.IdempotentKey)
+	m.Type, m.Name = "named", "Named"
+	return m
+}
+
+func (namedDriver) Open(context.Context, destination.OpenRequest) (destination.Account, error) {
+	return nil, errors.New("not opened in tests")
+}
+
+var registerNamed sync.Once
+
+// Messages name an account by its type's name, with its handle or a label
+// that says more; a label that only repeats the type, in any case, adds
+// nothing.
+func TestDisplayName(t *testing.T) {
+	registerNamed.Do(func() { destination.Register(namedDriver{}) })
+	reg := registryOf(nil).add("acc_1", "named", nil)
+	d := &Dispatcher{Registry: reg}
+	for _, c := range []struct{ label, handle, want string }{
+		{"named", "", "Named"},
+		{"NAMED", "", "Named"},
+		{"Work", "", "Named (Work)"},
+		{"Work", "@me@x.example", "Named (@me@x.example)"},
+		{"", "", "Named"},
+	} {
+		row := reg.rows["acc_1"]
+		row.Label, row.Handle = c.label, c.handle
+		reg.rows["acc_1"] = row
+		if got := d.displayName("acc_1", "named"); got != c.want {
+			t.Errorf("label %q handle %q: %q, want %q", c.label, c.handle, got, c.want)
+		}
+	}
+	if got := d.displayName("acc_unknown", "named"); got != "Named" {
+		t.Errorf("unknown account: %q", got)
 	}
 }

@@ -102,6 +102,13 @@ func (s *Store) MarkFanoutRetry(id int64, next time.Time) error {
 	return err
 }
 
+// DeferFanout moves a job's next try to next without counting an attempt:
+// nothing was sent.
+func (s *Store) DeferFanout(id int64, next time.Time) error {
+	_, err := s.sql.Exec(`UPDATE nostr_fanout SET next_attempt_at=? WHERE id=?`, next.UTC(), id)
+	return err
+}
+
 // MarkFanoutGaveUp stops retrying a job after the cap.
 func (s *Store) MarkFanoutGaveUp(id int64) error {
 	_, err := s.sql.Exec(`UPDATE nostr_fanout SET status='gave_up' WHERE id=?`, id)

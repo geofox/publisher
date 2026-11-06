@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/geofox/publisher/internal/store"
@@ -155,8 +154,8 @@ func (a *API) v1CreateToken(w http.ResponseWriter, r *http.Request) {
 		errs = append(errs, fieldError{Pointer: "/name", Code: "required", Detail: "name the token, for example after the script that uses it"})
 	case utf8.RuneCountInString(name) > maxTokenName:
 		errs = append(errs, fieldError{Pointer: "/name", Code: "too_long", Detail: "at most 100 characters"})
-	case strings.ContainsFunc(name, unicode.IsControl):
-		errs = append(errs, fieldError{Pointer: "/name", Code: "invalid", Detail: "no control characters"})
+	case nameProblem(name) != "":
+		errs = append(errs, fieldError{Pointer: "/name", Code: "invalid", Detail: nameProblem(name)})
 	}
 	var scopes []string
 	if len(req.Scopes) == 0 {

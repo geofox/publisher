@@ -57,6 +57,10 @@ func (u *Unavailable) Error() string {
 // ErrNoAccount: no account has that id.
 var ErrNoAccount = errors.New("no such account")
 
+// ErrClosed: the registry was closed (the server is stopping); the
+// account may be fine, so a send that meets it is tried again.
+var ErrClosed = errors.New("accounts are closed: the server is stopping")
+
 // IsUnavailable reports whether err says an account can't be used, and
 // returns the details.
 func IsUnavailable(err error) (*Unavailable, bool) {

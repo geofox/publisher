@@ -57,9 +57,14 @@ func (r *Registry) RefreshDue(ctx context.Context) {
 	}
 }
 
+// refreshOne renews one account's credentials when they are due. A
+// turned-off account is renewed too (and its expiry reported): turning an
+// account off stops posting, and credentials left to expire (a Threads
+// token) can't be renewed afterwards. An account that isn't open, or
+// whose credentials the network refused, is left alone.
 func (r *Registry) refreshOne(ctx context.Context, id string, soonest map[string]time.Time) {
 	en, ok := r.Get(id)
-	if !ok || en.Status != Connected {
+	if !ok || en.Status != Connected && en.Status != Disabled {
 		return
 	}
 	l, release := r.leaseAny(id)
@@ -71,7 +76,10 @@ func (r *Registry) refreshOne(ctx context.Context, id string, soonest map[string
 	refreshed := false
 	if rf, ok := l.acct.(destination.Refresher); ok {
 		r.mu.RLock()
-		retryAt := r.entries[id].refresh.retryAt
+		var retryAt time.Time
+		if e, ok := r.entries[id]; ok {
+			retryAt = e.refresh.retryAt
+		}
 		r.mu.RUnlock()
 		if next := rf.NextRefresh(now); !next.IsZero() && !now.Before(next) && !now.Before(retryAt) {
 			refreshed = r.refresh(ctx, id, en, rf, l)
