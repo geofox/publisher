@@ -42,21 +42,34 @@ var v1Scopes = []string{scopePostsRead, scopePostsWrite, scopeMediaWrite, scopeD
 var adminImplies = []string{scopePostsRead, scopePostsWrite, scopeMediaWrite, scopeDraftsRead, scopeDraftsWrite,
 	scopeAccountsRead}
 
+// privilegedScopes are the scopes a new token can only get with the
+// owner's fresh re-authentication (token.create_privileged): admin, and
+// every scope added since step 4.
+var privilegedScopes = []string{scopeAdmin, scopeAccountsWrite}
+
 // sessionOnlyScopes are the scopes only a signed-in owner (a session, or
 // the reverse proxy when sign-in is off) may grant to a new token: a
 // token, admin included, can't hand them out.
 var sessionOnlyScopes = []string{scopeAccountsWrite}
 
 // principal is who is calling: the owner in a browser session, a token, or
-// (with OIDC off) whoever the reverse proxy let through.
+// (in proxy mode) whoever the reverse proxy let through.
 type principal struct {
 	Kind    string // "session", "token" or "proxy"
 	ID      string // the user's or the token's id; "proxy" otherwise
 	OwnerID string
-	Scopes  []string // nil: every scope (a session or the proxy)
+	Scopes  []string // nil: every scope (a session)
 	User    *store.User
 	Token   *store.APIToken
+	// Session is the browser session (Kind "session").
+	Session *store.Session
 }
+
+// proxyScopes are what the reverse proxy's callers may do (proxy mode):
+// the scopes from before step 4's settings, named one by one, so a scope
+// added later is never granted to whoever reaches the proxy.
+var proxyScopes = []string{scopePostsRead, scopePostsWrite, scopeMediaWrite, scopeDraftsRead, scopeDraftsWrite,
+	scopeAccountsRead, scopeAccountsWrite, scopeAdmin}
 
 // key identifies the principal for per-caller state (idempotency keys).
 func (p principal) key() string { return p.Kind + ":" + p.ID }
@@ -79,6 +92,9 @@ type v1Route struct {
 	Scope        string // "" = any authenticated caller
 	Idempotent   bool   // a create that honors Idempotency-Key
 	Public       bool   // no authentication (the OpenAPI document)
+	// SessionOnly: only a signed-in browser session may call it (a token
+	// gets 403 session_required; the proxy, 403 sign_in_required).
+	SessionOnly bool
 	// Actions are the custom methods (AIP-136) a POST route serves as
 	// Path:action, documented one by one; the handler splits them off,
 	// since a ServeMux wildcard must be a whole segment.
@@ -97,6 +113,17 @@ func (a *API) v1Routes() []v1Route {
 		{Method: "GET", Path: "/v1/accounts/{id}", Scope: scopeAccountsRead, Handler: a.v1Account},
 		{Method: "PATCH", Path: "/v1/accounts/{id}", Scope: scopeAccountsWrite, Handler: a.v1PatchAccount},
 		{Method: "GET", Path: "/v1/me", Handler: a.v1Me},
+		// The signed-in owner's ways of signing in and sessions.
+		{Method: "GET", Path: "/v1/me/sign-in", SessionOnly: true, Handler: a.v1SignIn},
+		{Method: "POST", Path: "/v1/me/passkeys:begin", SessionOnly: true, Handler: a.v1BeginPasskey},
+		{Method: "POST", Path: "/v1/me/passkeys", SessionOnly: true, Handler: a.v1AddPasskey},
+		{Method: "PATCH", Path: "/v1/me/passkeys/{id}", SessionOnly: true, Handler: a.v1RenamePasskey},
+		{Method: "DELETE", Path: "/v1/me/passkeys/{id}", SessionOnly: true, Handler: a.v1RemovePasskey},
+		{Method: "PUT", Path: "/v1/me/password", SessionOnly: true, Handler: a.v1SetPassword},
+		{Method: "DELETE", Path: "/v1/me/password", SessionOnly: true, Handler: a.v1RemovePassword},
+		{Method: "GET", Path: "/v1/me/sessions", SessionOnly: true, Handler: a.v1ListSessions},
+		{Method: "DELETE", Path: "/v1/me/sessions/{id}", SessionOnly: true, Handler: a.v1EndSession},
+		{Method: "GET", Path: "/v1/me/sign-in-events", SessionOnly: true, Handler: a.v1SignInEvents},
 		{Method: "GET", Path: "/v1/tokens", Scope: scopeAdmin, Handler: a.v1ListTokens},
 		// Not idempotent: the response carries a secret we never store.
 		{Method: "POST", Path: "/v1/tokens", Scope: scopeAdmin, Handler: a.v1CreateToken},
@@ -148,7 +175,7 @@ func (a *API) mountV1(mux *http.ServeMux) {
 			h = a.withIdempotency(h)
 		}
 		if !rt.Public {
-			h = a.v1Auth(rt.Scope, h)
+			h = a.v1Auth(rt.Scope, rt.SessionOnly, h)
 		}
 		mux.Handle(rt.Method+" "+rt.Path, v1Headers(v1Recover(h)))
 		if _, seen := allow[rt.Path]; !seen {
@@ -184,10 +211,18 @@ func v1Headers(next http.Handler) http.Handler {
 
 // v1Auth authenticates the request and checks scope. A bearer token wins
 // over a session cookie: a script that sends one means it.
-func (a *API) v1Auth(scope string, next http.Handler) http.Handler {
+func (a *API) v1Auth(scope string, sessionOnly bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, ok := a.v1Principal(w, r)
 		if !ok {
+			return
+		}
+		if sessionOnly && p.Kind != "session" {
+			if p.Kind == "proxy" {
+				problem(w, r, http.StatusForbidden, codeSignInRequired, "set up sign-in (AUTH_MODE=local, or OIDC) to do this; the reverse proxy alone can't")
+				return
+			}
+			problem(w, r, http.StatusForbidden, codeSessionRequired, "only the owner, signed in in a browser, can do this; a token can't")
 			return
 		}
 		if scope != "" && !p.can(scope) {
@@ -201,10 +236,10 @@ func (a *API) v1Auth(scope string, next http.Handler) http.Handler {
 
 func (a *API) v1Principal(w http.ResponseWriter, r *http.Request) (principal, bool) {
 	h := r.Header.Get("Authorization")
-	if _, found := bearerToken(h); h != "" && !found && !a.authEnabled() {
-		// OIDC off: the proxy in front is the gate, and one that uses Basic
-		// auth has the browser send its Authorization on every request.
-		// Only a Bearer token is ours to read.
+	if _, found := bearerToken(h); h != "" && !found && a.mode() == ModeProxy {
+		// Proxy mode: the proxy in front is the gate, and one that uses
+		// Basic auth has the browser send its Authorization on every
+		// request. Only a Bearer token is ours to read.
 		h = ""
 	}
 	if h != "" {
@@ -230,14 +265,14 @@ func (a *API) v1Principal(w http.ResponseWriter, r *http.Request) (principal, bo
 		}
 		return principal{Kind: "token", ID: t.ID, OwnerID: t.OwnerID, Scopes: scopes, Token: &t}, true
 	}
-	if !a.authEnabled() {
-		// OIDC off: the reverse proxy in front is the gate, as for the rest
-		// of the app.
-		return principal{Kind: "proxy", ID: "proxy", OwnerID: store.DefaultOwner}, true
+	if a.mode() == ModeProxy {
+		// Proxy mode: the reverse proxy in front is the gate, as for the
+		// rest of the app.
+		return principal{Kind: "proxy", ID: "proxy", OwnerID: store.DefaultOwner, Scopes: proxyScopes}, true
 	}
-	if c, err := r.Cookie(sessionCookie); err == nil && a.Store != nil {
-		if u, ok := a.sessionUser(c.Value); ok {
-			return principal{Kind: "session", ID: u.ID, OwnerID: store.DefaultOwner, User: &u}, true
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		if s, u, ok := a.sessionUser(c.Value); ok {
+			return principal{Kind: "session", ID: u.ID, OwnerID: store.DefaultOwner, User: &u, Session: &s}, true
 		}
 	}
 	w.Header().Set("WWW-Authenticate", `Bearer realm="publisher"`)

@@ -28,9 +28,19 @@ info:
     Send `Authorization: Bearer <token>`, or use the browser session the web
     app signs in with. A bearer header wins over a session cookie. Tokens
     carry scopes; each operation names the one it needs (`admin` includes
-    every scope but `accounts:write`). A session can do everything. When the server runs without
-    OIDC, the reverse proxy in front of it is the gate and every request
-    has every scope (a bearer token, if sent, is still checked).
+    every scope but `accounts:write`). A session can do everything.
+
+    The server signs the owner in with OIDC (`auth: oidc` in
+    `/v1/instance`) or with its own passkeys and password (`auth: local`).
+    In `proxy` mode it has no sign-in: the reverse proxy in front of it is
+    the gate and every request has the scopes listed in `Scope` (a bearer
+    token, if sent, is still checked); what needs a signed-in owner
+    answers `403 sign_in_required`.
+
+    Some operations need the owner to confirm it's them just now: they
+    take a `Publisher-Reauth` nonce and answer `403 reauth_required`
+    without one. Operations under `/v1/me/` other than `GET /v1/me` take a
+    browser session only (`403 session_required` for a token).
   license:
     name: See the repository
     url: https://github.com/geofox/publisher
@@ -46,6 +56,8 @@ tags:
     description: Destination types and the accounts that publish to them.
   - name: tokens
     description: API tokens and the caller's identity.
+  - name: sign-in
+    description: How the owner signs in, where they are signed in, and what happened (browser sessions only).
   - name: posts
     description: Posts and what became of them on each account.
   - name: media
@@ -271,6 +283,347 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         default:
           $ref: "#/components/responses/Problem"
+  /v1/me/sign-in:
+    get:
+      operationId: getSignIn
+      tags: [sign-in]
+      summary: How the owner signs in
+      description: |
+        A signed-in browser session only. In `local` mode: the owner's
+        passkeys and whether a password is set. With OIDC or behind the
+        proxy the lists are empty: the identity provider (or the proxy)
+        handles sign-in.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The sign-in methods.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignIn"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/me/passkeys:begin:
+    post:
+      operationId: beginPasskey
+      tags: [sign-in]
+      summary: Start adding a passkey
+      description: |
+        `local` mode, a signed-in browser session, re-authenticated for
+        `signin.add` (the nonce is spent here). Answers the options to pass
+        to `navigator.credentials.create()` and sets a short-lived
+        `publisher_ceremony` cookie; finish with `POST /v1/me/passkeys`
+        within five minutes. Needs `PUBLIC_URL` (`409 invalid_state`
+        without it). At most 20 starts a minute from one address (`429
+        rate_limited`).
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Reauth"
+      responses:
+        "200":
+          description: The creation options.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyOptions"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/me/passkeys:
+    post:
+      operationId: addPasskey
+      tags: [sign-in]
+      summary: Finish adding a passkey
+      description: |
+        `local` mode, the session that started it. `credential` is the
+        browser's `PublicKeyCredential` as JSON (`toJSON()`). A credential
+        that doesn't check out answers `422 validation_failed` on
+        `/credential`, with no more detail; a request that is unknown,
+        expired or another session's, `409 invalid_state`. The passkey must
+        be discoverable and verify the user.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyFinish"
+      responses:
+        "201":
+          description: The passkey.
+          headers:
+            Location:
+              description: The passkey's URL.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Passkey"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/me/passkeys/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^pk_"
+          examples: [pk_3f2a9c0d1e4b5a6c7d8e]
+    patch:
+      operationId: renamePasskey
+      tags: [sign-in]
+      summary: Rename a passkey
+      description: "`local` mode, a signed-in browser session."
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: 1 to 60 characters, no control characters; spaces are collapsed.
+      responses:
+        "200":
+          description: The passkey.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Passkey"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+    delete:
+      operationId: removePasskey
+      tags: [sign-in]
+      summary: Remove a passkey
+      description: |
+        `local` mode, re-authenticated for `signin.remove`. Every other
+        session is signed out. The last way to sign in can't be removed
+        (`409 last_sign_in_method`).
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Reauth"
+      responses:
+        "204":
+          description: Removed.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/me/password:
+    put:
+      operationId: setPassword
+      tags: [sign-in]
+      summary: Set or change the password
+      description: |
+        `local` mode, re-authenticated for `password.set`. Changing a
+        password also needs the current one (`current_password`; a wrong
+        one counts towards the password throttle). Every other session is
+        signed out.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Reauth"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  writeOnly: true
+                  description: 12 characters to 1024 bytes.
+                current_password:
+                  type: string
+                  writeOnly: true
+      responses:
+        "204":
+          description: Set.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        default:
+          $ref: "#/components/responses/Problem"
+    delete:
+      operationId: removePassword
+      tags: [sign-in]
+      summary: Remove the password
+      description: |
+        `local` mode, re-authenticated for `signin.remove`. Only with a
+        passkey left (`409 last_sign_in_method`). Every other session is
+        signed out.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Reauth"
+      responses:
+        "204":
+          description: Removed.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/me/sessions:
+    get:
+      operationId: listSessions
+      tags: [sign-in]
+      summary: Where the owner is signed in
+      description: A signed-in browser session only. Newest first; `current` marks the caller's.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Session"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/me/sessions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^ses_"
+    delete:
+      operationId: endSession
+      tags: [sign-in]
+      summary: Sign a session out
+      description: A signed-in browser session only; it may end itself.
+      security:
+        - session: []
+      responses:
+        "204":
+          description: Signed out.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/me/sign-in-events:
+    get:
+      operationId: listSignInEvents
+      tags: [sign-in]
+      summary: Recent sign-ins and changes to how you sign in
+      description: |
+        A signed-in browser session only. The last 50, newest first:
+        sign-ins, failed attempts (at most 100 are recorded in ten
+        minutes), sign-in methods added, changed or removed, and tokens
+        created. They are not in the `/v1/events` stream.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The events.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SignInEvent"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        default:
+          $ref: "#/components/responses/Problem"
   /v1/tokens:
     get:
       operationId: listTokens
@@ -316,8 +669,13 @@ paths:
         time it is shown: the server keeps only a hash.
 
         A token creating a token must give it an expiry no later than its
-        own, and can't give it `accounts:write` (`422 exceeds_caller`);
-        sign in to create such a token.
+        own, and can't give it `accounts:write` (`422 exceeds_caller`).
+
+        A token holding `admin` or `accounts:write` can be created only by
+        the owner signed in in a browser, re-authenticated for
+        `token.create_privileged` (`Publisher-Reauth`): a token gets `403
+        session_required`, and behind the reverse proxy alone, `403
+        sign_in_required`.
 
         Not idempotent, deliberately: replaying the response would mean
         storing the secret. A retried create makes a second token; revoke
@@ -325,6 +683,8 @@ paths:
       security:
         - bearer: [admin]
         - session: []
+      parameters:
+        - $ref: "#/components/parameters/Reauth"
       requestBody:
         required: true
         content:
@@ -1787,12 +2147,25 @@ components:
       type: apiKey
       in: cookie
       name: publisher_session
-      description: The web app's session, set by signing in (`/auth/login`).
+      description: The web app's session, set by signing in (OIDC, or a passkey or password in `local` mode).
     feedToken:
       type: http
       scheme: bearer
       description: The public feed's own token (`PUBLIC_FEED_TOKEN`); it can do nothing else.
   parameters:
+    Reauth:
+      name: Publisher-Reauth
+      in: header
+      required: false
+      description: |
+        A re-authentication nonce for this operation: the owner confirmed
+        it's them just now (`POST /auth/reauth` with a passkey or the
+        password, or a fresh OIDC login). Good once, for five minutes, in
+        the session that asked for it. Without a valid one: `403
+        reauth_required`, naming the `operation` to re-authenticate for.
+      schema:
+        type: string
+        maxLength: 128
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -1888,6 +2261,35 @@ components:
         type: string
         pattern: '^"[0-9]+"$'
   responses:
+    SessionOnly:
+      description: |
+        Only a signed-in browser session can do this: `session_required`
+        for a token, `sign_in_required` behind the reverse proxy alone
+        (`AUTH_MODE=proxy`), or `cross_origin`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ReauthRequired:
+      description: |
+        `reauth_required` (re-authenticate for the problem's `operation`
+        and send the nonce in `Publisher-Reauth`), or as for a
+        session-only operation: `session_required`, `sign_in_required`,
+        `cross_origin`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    RateLimited:
+      description: Too many attempts (`rate_limited`); `Retry-After` says when to try again.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     PreconditionFailed:
       description: |
         The resource changed since you read it (`precondition_failed`); the
@@ -3159,10 +3561,19 @@ components:
             - upstream_failed
             - insufficient_storage
             - internal
+            - rate_limited
+            - reauth_required
+            - session_required
+            - sign_in_required
+            - last_sign_in_method
+            - gone
         errors:
           type: array
           items:
             $ref: "#/components/schemas/FieldError"
+        operation:
+          type: string
+          description: "`reauth_required` only: the operation to re-authenticate for (`signin.add`, `signin.remove`, `password.set`, `token.create_privileged`)."
     FieldError:
       type: object
       additionalProperties: false
@@ -3191,8 +3602,9 @@ components:
       type: string
       description: |
         `admin` includes every scope listed before `accounts:write`. Scopes
-        added since must be granted by name, and only the signed-in owner
-        (not a token) can create a token holding `accounts:write`.
+        added since must be granted by name. Only the signed-in owner, just
+        re-authenticated, can create a token holding `admin` or
+        `accounts:write`.
       enum: ["posts:read", "posts:write", "media:write", "drafts:read", "drafts:write", "accounts:read", "accounts:write", admin]
     Instance:
       type: object
@@ -3204,8 +3616,17 @@ components:
           description: The server build ("dev" for a local build).
         auth:
           type: string
-          enum: [oidc, proxy]
-          description: "`oidc`: the server signs people in. `proxy`: the reverse proxy in front is the gate."
+          enum: [oidc, local, proxy]
+          description: |
+            How the owner signs in. `oidc`: through an identity provider.
+            `local`: with a passkey or password kept by this server.
+            `proxy`: the server has no sign-in of its own; the reverse proxy
+            in front is the gate.
+        sign_in_recommended:
+          type: boolean
+          description: |
+            Present (true) in `proxy` mode: the web app offers to set up
+            sign-in, without which credentials can't be managed in the app.
         features:
           type: object
           additionalProperties: false
@@ -3639,6 +4060,129 @@ components:
         - name: n8n cross-posting
           scopes: ["posts:write", "media:write"]
           expires_at: "2027-11-05T00:00:00Z"
+    SignIn:
+      type: object
+      additionalProperties: false
+      required: [mode, passkeys, password, passkeys_available]
+      properties:
+        mode:
+          type: string
+          enum: [oidc, local, proxy]
+        passkeys:
+          type: array
+          items:
+            $ref: "#/components/schemas/Passkey"
+        password:
+          type: object
+          additionalProperties: false
+          required: [set, updated_at]
+          properties:
+            set:
+              type: boolean
+            updated_at:
+              $ref: "#/components/schemas/NullableTimestamp"
+        passkeys_available:
+          type: boolean
+          description: Passkeys can be added here (`local` mode with `PUBLIC_URL`).
+    Passkey:
+      type: object
+      additionalProperties: false
+      required: [id, name, created_at, last_used_at, synced]
+      properties:
+        id:
+          type: string
+          pattern: "^pk_"
+        name:
+          type: string
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        last_used_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        synced:
+          type: boolean
+          description: The passkey may be copied to the owner's other devices (backup eligible).
+    PasskeyOptions:
+      type: object
+      description: |
+        `PublicKeyCredentialCreationOptions` (or, for a sign-in,
+        `PublicKeyCredentialRequestOptions`) under `publicKey`, binary
+        members base64url-encoded, ready for `PublicKeyCredential.parse…FromJSON()`.
+      additionalProperties: true
+      required: [publicKey]
+      properties:
+        publicKey:
+          type: object
+          additionalProperties: true
+          required: [challenge]
+          properties:
+            challenge:
+              type: string
+    PasskeyFinish:
+      type: object
+      additionalProperties: false
+      required: [credential]
+      properties:
+        name:
+          type: string
+          description: What to call it ("Passkey" when empty).
+        credential:
+          type: object
+          additionalProperties: true
+          description: The browser's `PublicKeyCredential.toJSON()`.
+    Session:
+      type: object
+      additionalProperties: false
+      required: [id, current, method, user_agent, addr, created_at, last_seen_at, expires_at]
+      properties:
+        id:
+          type: string
+          pattern: "^ses_"
+        current:
+          type: boolean
+          description: The session making this request.
+        method:
+          type: string
+          description: How it signed in (`passkey`, `password`, `setup`, `oidc`).
+        user_agent:
+          type: string
+          description: The browser's User-Agent when it signed in, cut to 200 characters.
+        addr:
+          type: string
+          description: The address it signed in from.
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        last_seen_at:
+          description: Updated at most once a minute.
+          $ref: "#/components/schemas/NullableTimestamp"
+        expires_at:
+          $ref: "#/components/schemas/Timestamp"
+    SignInEvent:
+      type: object
+      additionalProperties: false
+      required: [id, type, created_at]
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+          enum: [login.succeeded, login.failed, signin.added, signin.removed, signin.changed, token.created]
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        method:
+          type: string
+          description: "`passkey`, `password`, `setup` or `oidc`."
+        addr:
+          type: string
+        passkey:
+          type: string
+          description: The passkey's id.
+        token:
+          type: string
+          description: The token's id (`token.created`).
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
     Me:
       type: object
       additionalProperties: false
@@ -3647,7 +4191,7 @@ components:
         kind:
           type: string
           enum: [session, token, proxy]
-          description: "`session`: signed in. `token`: a bearer token. `proxy`: OIDC is off and the reverse proxy let the request through."
+          description: "`session`: signed in. `token`: a bearer token. `proxy`: the server has no sign-in of its own (`AUTH_MODE=proxy`) and the reverse proxy let the request through."
         scopes:
           type: array
           items:

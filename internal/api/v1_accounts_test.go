@@ -179,7 +179,8 @@ func TestV1AccountsWriteScope(t *testing.T) {
 	if len(p.Errors) != 1 || p.Errors[0].Pointer != "/scopes/0" || p.Errors[0].Code != "exceeds_caller" {
 		t.Fatalf("errors = %+v", p.Errors)
 	}
-	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"settings","scopes":["accounts:write"]}`})
+	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"settings","scopes":["accounts:write"]}`,
+		header: e.reauth(opTokenPrivileged)})
 	wantStatus(t, r, 201)
 	var tok v1CreatedTokenBody
 	r.json(&tok)
@@ -200,7 +201,8 @@ func TestV1AccountUpdatedEvent(t *testing.T) {
 	bsky := e.acct("bluesky")
 	last, _ := e.st.LastEventID(context.Background())
 	after := "/v1/events?after=" + strconv64(last)
-	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"w","scopes":["accounts:write"]}`})
+	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"w","scopes":["accounts:write"]}`,
+		header: e.reauth(opTokenPrivileged)})
 	var tok v1CreatedTokenBody
 	r.json(&tok)
 	wantStatus(t, e.do(req{method: "PATCH", path: "/v1/accounts/" + bsky, auth: tok.Secret,

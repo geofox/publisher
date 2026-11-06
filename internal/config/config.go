@@ -331,7 +331,8 @@ func (l *loader) publicURL(k string) string {
 	if strings.Contains(h, ":") {
 		h = "[" + h + "]"
 	}
-	if p := u.Port(); p != "" && !(u.Scheme == "https" && p == "443") {
+	// The form a browser sends in Origin: no default port.
+	if p := u.Port(); p != "" && !(u.Scheme == "https" && p == "443") && !(u.Scheme == "http" && p == "80") {
 		h = net.JoinHostPort(strings.Trim(h, "[]"), p)
 	}
 	return u.Scheme + "://" + h

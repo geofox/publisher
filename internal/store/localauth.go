@@ -71,6 +71,22 @@ func (s *Store) LocalUser(ctx context.Context) (User, error) {
 	return scanUser(s.sql.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE subject = ? AND source = 'local'`, LocalSubject))
 }
 
+// EnsureLocalUser returns the local owner, creating its row (without any
+// way to sign in) when missing: a first passkey needs its user handle
+// before it exists.
+func (s *Store) EnsureLocalUser(ctx context.Context) (User, error) {
+	tx, err := s.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	u, err := localUserTx(ctx, tx, time.Now().UTC())
+	if err != nil {
+		return User{}, err
+	}
+	return u, tx.Commit()
+}
+
 // localUserTx returns the local owner, creating it.
 func localUserTx(ctx context.Context, tx *sql.Tx, now time.Time) (User, error) {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO users (id, subject, name, created_at, source) VALUES (?, ?, 'Owner', ?, 'local')

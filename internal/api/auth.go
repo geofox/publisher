@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/geofox/publisher/internal/httpx"
+	"github.com/geofox/publisher/internal/store"
 )
 
 const (
@@ -52,8 +54,14 @@ func (a *API) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAuthCallback verifies the login-state cookie + ID token, applies the
-// allowlist, creates a session, and sets the session cookie.
+// allowlist, creates a session, and sets the session cookie. A login
+// started for re-authentication (its state is held on the server) is
+// finished by finishOIDCReauth instead.
 func (a *API) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	if x, ok := a.oidcReauth.take(r.URL.Query().Get("state")); ok {
+		a.finishOIDCReauth(w, r, x)
+		return
+	}
 	c, err := r.Cookie(loginStateCookie)
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "missing login state")
@@ -106,6 +114,11 @@ func (a *API) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		email = ""
 	}
 	u, err := a.Store.UpsertUser(claims.Subject, email, claims.Name)
+	if errors.Is(err, store.ErrNotOIDCUser) {
+		slog.Warn("oidc identity holds the local owner's subject; refused", "subject", claims.Subject)
+		httpx.WriteError(w, http.StatusForbidden, "not authorized")
+		return
+	}
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "user upsert failed")
 		return
@@ -142,5 +155,40 @@ func (a *API) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
-// authEnabled reports whether OIDC auth is active for this API instance.
-func (a *API) authEnabled() bool { return a.Auth != nil && a.Allowlist != nil }
+// Sign-in modes (AUTH_MODE).
+const (
+	ModeOIDC  = "oidc"
+	ModeLocal = "local"
+	ModeProxy = "proxy"
+)
+
+// mode is how callers sign in: Mode, or for an API built without one
+// (tests), OIDC when an authenticator is set, else proxy. Every gate asks
+// it: a mode that isn't proxy is never open.
+func (a *API) mode() string {
+	if a.Mode != "" {
+		return a.Mode
+	}
+	if a.Auth != nil && a.Allowlist != nil {
+		return ModeOIDC
+	}
+	return ModeProxy
+}
+
+// checkMode panics when the mode lacks what it needs: a server that can't
+// check sign-ins must not start serving.
+func (a *API) checkMode() {
+	switch a.mode() {
+	case ModeOIDC:
+		if a.Auth == nil || a.Allowlist == nil {
+			panic("api: AUTH_MODE=oidc without an authenticator and allowlist")
+		}
+	case ModeLocal:
+		if a.Local == nil {
+			panic("api: AUTH_MODE=local without the local sign-in service")
+		}
+	case ModeProxy:
+	default:
+		panic("api: unknown AUTH_MODE " + a.mode())
+	}
+}

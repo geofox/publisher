@@ -20,6 +20,7 @@ func TestPublicURL(t *testing.T) {
 		"https://post.example.com:8443/": "https://post.example.com:8443",
 		"http://localhost:4174":          "http://localhost:4174",
 		"http://LOCALHOST":               "http://localhost",
+		"http://localhost:80/":           "http://localhost",
 		"https://[2001:db8::1]:8443":     "https://[2001:db8::1]:8443",
 	} {
 		c, err := load(map[string]string{"PUBLIC_URL": in})

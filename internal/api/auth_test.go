@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/geofox/publisher/internal/auth"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -35,7 +36,7 @@ func TestLoginDisabledReturns404(t *testing.T) {
 
 func TestRequireSessionPageVsXHR(t *testing.T) {
 	db, _ := storeOpen(t)
-	a := &API{Store: db}
+	a := &API{Store: db, Mode: ModeOIDC, Allowlist: auth.NewAllowlist([]string{"sub-1"}, nil)}
 	h := a.requireSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
