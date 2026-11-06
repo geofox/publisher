@@ -12,6 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/rivo/uniseg"
+
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/resolve"
@@ -55,7 +57,11 @@ type v1CreatePostReq struct {
 }
 
 type v1CreateContent struct {
-	Text           *string         `json:"text"`
+	Text *string `json:"text"`
+	// Breaks are hand-made thread breaks: code point positions in text,
+	// ascending, each starting a new post on every account that posts the
+	// shared text (and has no breaks of its own).
+	Breaks         []int           `json:"breaks"`
 	Media          []v1CreateMedia `json:"media"`
 	ContentWarning *string         `json:"content_warning"`
 	Sensitive      *bool           `json:"sensitive"`
@@ -65,9 +71,11 @@ type v1CreateContent struct {
 type v1CreateMedia struct {
 	ID  string  `json:"id"`
 	Alt *string `json:"alt"` // null or absent: the media object's own alt
-	// Part is the part of the text (0-based; parts are split by lines of
-	// "---") the media goes with. Default 0. A part past the last is the
-	// last; an account whose text has its own parts counts its own.
+	// At is a code point position in the text: the media goes with the
+	// post that holds it. Default 0 (the first post).
+	At *int `json:"at"`
+	// Part was the "---" part the media went with; it is refused (with a
+	// pointer to at) rather than ignored.
 	Part *int `json:"part"`
 }
 
@@ -84,6 +92,20 @@ type v1CreateTarget struct {
 	Account string           `json:"account"`
 	Options map[string]any   `json:"options"`
 	Content *v1TargetContent `json:"content"`
+	Thread  *v1TargetThread  `json:"thread"`
+}
+
+// v1TargetThread is how one account's thread breaks, against the text it
+// posts (its own, or the shared text).
+type v1TargetThread struct {
+	// Breaks replace the shared breaks for this account: [] posts the
+	// text unbroken (still split to the account's limit); null or absent
+	// takes the shared breaks, or none when the account has its own text.
+	Breaks *[]int `json:"breaks"`
+	// MediaAt places the media in this account's text, one position per
+	// media in content.media. Absent: the shared positions, or the first
+	// post when the account has its own text.
+	MediaAt []int `json:"media_at"`
 }
 
 type v1CreateThreading struct {
@@ -103,8 +125,8 @@ type createPlan struct {
 	media   []*store.MediaObject // the post's media, in order
 	// mediaReq is each media's index in the request.
 	mediaReq []int
-	// mediaPart is the part (of the text's "---" parts) each media goes with.
-	mediaPart []int
+	// mediaAt is each media's position in the shared text.
+	mediaAt []int
 	// ix is the reply, quote or repost, with the post it acts on.
 	ix     *dispatch.InteractSpec
 	source *resolve.SourceRef
@@ -193,7 +215,8 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 			add("/content/text", "too_long", "at most 50000 characters")
 		}
 	}
-	text, sharedBreaks, sharedParts := thread.FromMarkers(text)
+	rawText := text
+	checkBreaks(rawText, req.Content.Breaks, "/content/breaks", add)
 	checkCW := func(ptr string, cw *string) {
 		if cw != nil && utf8.RuneCountInString(*cw) > maxCWRunes {
 			add(ptr, "too_long", "at most 1000 characters")
@@ -250,12 +273,13 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 					add(ptr+"/alt", "invalid", msg)
 				}
 			}
-			part := 0
 			if cm.Part != nil {
-				part = *cm.Part
-				if part < 0 || part >= maxThreadParts {
-					add(ptr+"/part", "invalid", "a part from 0 to 99")
-				}
+				add(ptr+"/part", "replaced", "parts are gone: place the media with at, a position in the text")
+			}
+			at := 0
+			if cm.At != nil {
+				at = *cm.At
+				checkAt(rawText, at, ptr+"/at", add)
 			}
 			alt := m.Alt
 			if cm.Alt != nil {
@@ -268,7 +292,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 			}
 			plan.media = append(plan.media, m)
 			plan.mediaReq = append(plan.mediaReq, j)
-			plan.mediaPart = append(plan.mediaPart, part)
+			plan.mediaAt = append(plan.mediaAt, at)
 			plan.spec.MediaRecords = append(plan.spec.MediaRecords, mediaRecord(m, len(plan.spec.MediaRecords), alt))
 		}
 		switch {
@@ -330,18 +354,15 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 		seenAcct[ac.ID], seenType[ac.Type] = true, true
 		caps := a.caps(ctx, ac.Type)
 		name := drv.Manifest().Name
-		pt := plannedTarget{account: ac, caps: caps, text: text, textPtr: "/content/text", reqPtr: ptr}
-		parts := sharedParts
-		pt.layout.Breaks = sharedBreaks
+		pt := plannedTarget{account: ac, caps: caps, text: rawText, textPtr: "/content/text", reqPtr: ptr}
+		own := false
 		ov := dispatch.Overrides{}
 		cw, sensitive, langs := req.Content.ContentWarning, req.Content.Sensitive, req.Content.Languages
 		if c := t.Content; c != nil {
 			if c.Text != nil {
 				// The engine reads an empty override as "inherit", so a
 				// blank one would preview empty and publish the shared text.
-				own, breaks, ownParts := thread.FromMarkers(*c.Text)
-				pt.text, ov.Text, pt.textPtr = own, own, ptr+"/content/text"
-				pt.layout.Breaks, parts = breaks, ownParts
+				pt.text, ov.Text, pt.textPtr, own = *c.Text, *c.Text, ptr+"/content/text", true
 				switch {
 				case strings.TrimSpace(*c.Text) == "":
 					add(ptr+"/content/text", "empty", "leave text out (or null) to post the shared text")
@@ -401,8 +422,10 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 				break
 			}
 		}
-		for _, mp := range plan.mediaPart {
-			pt.layout.MediaAt = append(pt.layout.MediaAt, parts[min(mp, len(parts)-1)])
+		pt.layout = targetLayout(req, t, own, pt.text, plan, ptr, add)
+		pt.text = thread.NormalizeNewlines(pt.text, pt.layout.Breaks, pt.layout.MediaAt)
+		if own {
+			ov.Text = pt.text
 		}
 		pt.ov = ov
 		plan.targets = append(plan.targets, pt)
@@ -432,7 +455,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 		}
 	}
 
-	plan.spec.MasterText = text
+	plan.spec.MasterText = thread.NormalizeNewlines(rawText)
 	plan.spec.Source = "api"
 	if _, _, n := req.interaction(); n > 0 {
 		a.checkInteraction(req, plan, add)
@@ -451,6 +474,11 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 		if len(cp.Segs) > maxThreadParts {
 			add(pt.textPtr, "too_many_parts", "the text makes "+strconv.Itoa(len(cp.Segs))+
 				" thread parts on "+pt.account.ID+"; at most 100")
+		}
+		for i, it := range cp.Items {
+			for _, pb := range it.Problems {
+				add(pt.textPtr, "refused_by_destination", "post "+strconv.Itoa(i+1)+" on "+pt.account.ID+" "+pb)
+			}
 		}
 	}
 	return plan, errs, nil
@@ -685,7 +713,14 @@ type v1PreviewTarget struct {
 	Type    string `json:"type"`
 	// Role is what the account gets: post, reply, quote, repost, or
 	// link_quote (a quote's copy on another network).
-	Role     string          `json:"role"`
+	Role string `json:"role"`
+	// Text is the text the items' ranges are in: the account's own or the
+	// shared text (a Bluesky link card's URL taken off its end), or the
+	// copy a link-quote posts.
+	Text string `json:"text"`
+	// Limit is the most one post may count on this account (0: no limit),
+	// after a content warning the destination counts in.
+	Limit    int             `json:"limit"`
 	Items    []v1PreviewItem `json:"items"`
 	LinkCard *v1PreviewCard  `json:"link_card"`
 	Warnings []string        `json:"warnings"`
@@ -695,6 +730,16 @@ type v1PreviewTarget struct {
 type v1PreviewItem struct {
 	Text  string `json:"text"`
 	Media []int  `json:"media"`
+	// Range is the code points of the target's text the post carries
+	// (counter excluded); a media-only post's is empty at the end.
+	Range [2]int `json:"range"`
+	// Break says what starts the post: "manual" (a hand-made break),
+	// "auto" (split to the limit) or "none" (the first post).
+	Break string `json:"break"`
+	// Length is the post as the destination counts it.
+	Length int `json:"length"`
+	// Problems are what the destination would refuse about the post.
+	Problems []string `json:"problems"`
 }
 
 type v1PreviewCard struct {
@@ -761,6 +806,7 @@ func (a *API) v1PreviewPost(w http.ResponseWriter, r *http.Request) {
 		cp := dispatch.PlanTarget(pt.caps, dispatch.TargetInput{Text: pt.text, Card: card, Layout: plan.layoutOf(pt),
 			Number: plan.spec.Number, ContentWarning: pt.ov.ContentWarning})
 		vt := v1PreviewTarget{Account: pt.account.ID, Type: pt.account.Type, Role: "post", Items: []v1PreviewItem{},
+			Text: cp.Text, Limit: dispatch.Rules(pt.caps, plan.spec.Number, pt.ov.ContentWarning).Limit,
 			Warnings: append(append([]string{}, pt.warnings...), cp.Warnings...), Media: []v1PreviewNote{}}
 		if ix := plan.ix; ix != nil {
 			vt.Role = ix.Action
@@ -776,25 +822,29 @@ func (a *API) v1PreviewPost(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if ix.Action == "repost" {
-				vt.Items = append(vt.Items, v1PreviewItem{Text: "", Media: []int{}})
+				vt.Text = ""
+				vt.Items = append(vt.Items, v1PreviewItem{Text: "", Media: []int{}, Break: "none", Problems: []string{}})
 				out.Targets = append(out.Targets, vt)
 				continue
 			}
 		}
-		if len(cp.Segs) <= 1 {
-			all := make([]int, len(plan.media))
-			for i := range all {
-				all[i] = i
+		for i, it := range cp.Items {
+			brk := "auto"
+			switch {
+			case i == 0:
+				brk = "none"
+			case it.Manual:
+				brk = "manual"
 			}
-			vt.Items = append(vt.Items, v1PreviewItem{Text: cp.Text, Media: all})
-		} else {
-			for i, seg := range cp.Segs {
-				it := v1PreviewItem{Text: seg, Media: []int{}}
-				if i < len(cp.Plan) && cp.Plan[i] != nil {
-					it.Media = cp.Plan[i]
-				}
-				vt.Items = append(vt.Items, it)
+			vi := v1PreviewItem{Text: it.Text, Media: it.Media, Range: [2]int{it.From, it.To}, Break: brk,
+				Length: it.Length, Problems: it.Problems}
+			if vi.Media == nil {
+				vi.Media = []int{}
 			}
+			if vi.Problems == nil {
+				vi.Problems = []string{}
+			}
+			vt.Items = append(vt.Items, vi)
 		}
 		if c := cp.Card; c != nil {
 			vt.LinkCard = &v1PreviewCard{Item: c.Segment, URL: c.URI, Title: c.Title, Description: c.Description,
@@ -806,4 +856,102 @@ func (a *API) v1PreviewPost(w http.ResponseWriter, r *http.Request) {
 		out.Targets = append(out.Targets, vt)
 	}
 	writeV1(w, http.StatusOK, out)
+}
+
+// ─── Thread layout ───────────────────────────────────────────────────────
+
+// urlInText finds the URLs a break must not fall inside.
+var urlInText = regexp.MustCompile(`https?://[^\s<>"]+`)
+
+// breakable answers, for each code point position in text, whether a break
+// may go there: between graphemes and not inside a URL.
+func breakable(text string) []bool {
+	n := utf8.RuneCountInString(text)
+	ok := make([]bool, n+1)
+	pos := 0
+	g := uniseg.NewGraphemes(text)
+	for g.Next() {
+		ok[pos] = true
+		pos += utf8.RuneCountInString(g.Str())
+	}
+	ok[n] = true
+	for _, loc := range urlInText.FindAllStringIndex(text, -1) {
+		a := utf8.RuneCountInString(text[:loc[0]])
+		b := a + utf8.RuneCountInString(text[loc[0]:loc[1]])
+		for i := a + 1; i < b; i++ {
+			ok[i] = false
+		}
+	}
+	return ok
+}
+
+// checkBreaks validates hand-made breaks in text: strictly ascending,
+// inside the text, between graphemes and outside URLs, at most one fewer
+// than the parts a thread may have.
+func checkBreaks(text string, breaks []int, ptr string, add func(ptr, code, detail string)) {
+	if len(breaks) == 0 {
+		return
+	}
+	if len(breaks) >= maxThreadParts {
+		add(ptr, "too_many", "at most 99 breaks")
+		return
+	}
+	ok := breakable(text)
+	n := len(ok) - 1
+	prev := 0
+	for i, b := range breaks {
+		p := ptr + "/" + strconv.Itoa(i)
+		switch {
+		case b <= 0 || b >= n:
+			add(p, "out_of_range", "a break is a code point position inside the text, from 1 to "+strconv.Itoa(max(n-1, 1)))
+		case b <= prev:
+			add(p, "not_ascending", "breaks must be in ascending order, each once")
+		case !ok[b]:
+			add(p, "inside_grapheme", "a break can't split a character or a link")
+		}
+		prev = max(prev, b)
+	}
+}
+
+// checkAt validates a media position in text: from 0 to the text's length.
+func checkAt(text string, at int, ptr string, add func(ptr, code, detail string)) {
+	if n := utf8.RuneCountInString(text); at < 0 || at > n {
+		add(ptr, "out_of_range", "a code point position in the text, from 0 to "+strconv.Itoa(n))
+	}
+}
+
+// targetLayout is one target's breaks and media positions in the text it
+// posts (pt.text, not yet normalized): its own thread fields where it has
+// them, else the shared ones when it posts the shared text, else none. The
+// slices are the target's own.
+func targetLayout(req *v1CreatePostReq, t v1CreateTarget, own bool, text string, plan *createPlan,
+	ptr string, add func(ptr, code, detail string)) thread.Layout {
+	lay := thread.Layout{Breaks: []int{}}
+	if !own {
+		lay.Breaks = append(lay.Breaks, req.Content.Breaks...)
+	}
+	lay.MediaAt = make([]int, len(plan.media))
+	if !own {
+		copy(lay.MediaAt, plan.mediaAt)
+	}
+	th := t.Thread
+	if th == nil {
+		return lay
+	}
+	if th.Breaks != nil {
+		checkBreaks(text, *th.Breaks, ptr+"/thread/breaks", add)
+		lay.Breaks = append([]int{}, *th.Breaks...)
+	}
+	if th.MediaAt != nil {
+		if len(th.MediaAt) != len(req.Content.Media) {
+			add(ptr+"/thread/media_at", "length_mismatch", "one position per media in content.media ("+
+				strconv.Itoa(len(req.Content.Media))+")")
+			return lay
+		}
+		for j, k := range plan.mediaReq {
+			checkAt(text, th.MediaAt[k], ptr+"/thread/media_at/"+strconv.Itoa(k), add)
+			lay.MediaAt[j] = th.MediaAt[k]
+		}
+	}
+	return lay
 }

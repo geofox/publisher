@@ -315,6 +315,10 @@ func TestFromMarkers(t *testing.T) {
 			t.Errorf("part %d starts at %d, in post %d", i, at, j)
 		}
 	}
+	// Markers that break nothing (first, last, doubled) are dropped.
+	if text, breaks, _ := FromMarkers("---\none\n---\n---\ntwo\n---"); text != "one\ntwo\n" || !reflect.DeepEqual(breaks, []int{4}) {
+		t.Fatalf("edges: %q %v", text, breaks)
+	}
 	if text, breaks, parts := FromMarkers("no markers"); text != "no markers" || breaks != nil || !reflect.DeepEqual(parts, []int{0}) {
 		t.Fatalf("got %q %v %v", text, breaks, parts)
 	}

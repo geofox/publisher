@@ -140,6 +140,11 @@ func (a *API) checkDraft(ctx context.Context, owner string, in *v1DraftIn) ([]fi
 		}
 	}
 	checkText("/post/content/text", p.Content.Text)
+	sharedText := ""
+	if p.Content.Text != nil {
+		sharedText = *p.Content.Text
+	}
+	checkBreaks(sharedText, p.Content.Breaks, "/post/content/breaks", add)
 	checkCW("/post/content/content_warning", p.Content.ContentWarning)
 	checkLangs("/post/content/languages", p.Content.Languages)
 	if p.Draft != nil {
@@ -166,8 +171,11 @@ func (a *API) checkDraft(ctx context.Context, owner string, in *v1DraftIn) ([]fi
 					add(ptr+"/alt", "invalid", msg)
 				}
 			}
-			if cm.Part != nil && (*cm.Part < 0 || *cm.Part >= maxThreadParts) {
-				add(ptr+"/part", "invalid", "a part from 0 to 99")
+			if cm.Part != nil {
+				add(ptr+"/part", "replaced", "parts are gone: place the media with at, a position in the text")
+			}
+			if cm.At != nil {
+				checkAt(sharedText, *cm.At, ptr+"/at", add)
 			}
 		}
 	}
@@ -220,6 +228,21 @@ func (a *API) checkDraft(ctx context.Context, owner string, in *v1DraftIn) ([]fi
 				}
 				checkCW(ptr+"/content/content_warning", c.ContentWarning)
 				checkLangs(ptr+"/content/languages", c.Languages)
+			}
+			if th := t.Thread; th != nil {
+				text := sharedText
+				if t.Content != nil && t.Content.Text != nil {
+					text = *t.Content.Text
+				}
+				if th.Breaks != nil {
+					checkBreaks(text, *th.Breaks, ptr+"/thread/breaks", add)
+				}
+				if th.MediaAt != nil && len(th.MediaAt) != len(p.Content.Media) {
+					add(ptr+"/thread/media_at", "length_mismatch", "one position per media in content.media")
+				}
+				for k, at := range th.MediaAt {
+					checkAt(text, at, ptr+"/thread/media_at/"+strconv.Itoa(k), add)
+				}
 			}
 		}
 	}

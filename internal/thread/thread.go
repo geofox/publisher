@@ -564,11 +564,26 @@ func FromMarkers(text string) (out string, breaks []int, parts []int) {
 	if partHasText {
 		parts = append(parts, partStart)
 	}
+	// Markers at the very start or end, or next to each other, made no
+	// break the old splitter honoured; the API refuses such positions.
+	out = b.String()
+	total := len([]rune(out))
+	kept := breaks[:0]
+	for _, at := range breaks {
+		if at > 0 && at < total && (len(kept) == 0 || at > kept[len(kept)-1]) {
+			kept = append(kept, at)
+		}
+	}
+	breaks = kept
 	if len(breaks) == 0 {
-		return text, nil, []int{0}
+		breaks = nil
+		if len(parts) == 0 {
+			parts = []int{0}
+		}
+		return out, nil, parts
 	}
 	if len(parts) == 0 {
 		parts = []int{0}
 	}
-	return b.String(), breaks, parts
+	return out, breaks, parts
 }

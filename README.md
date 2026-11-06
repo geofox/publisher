@@ -63,7 +63,17 @@ every route, request and response against it. It has:
   (`GET /v1/accounts`) and the media. Each account can override the text,
   content warning, sensitivity and languages, and set its destination's
   options (`GET /v1/destinations`; `visibility` on Mastodon). Text too long
-  for an account becomes a thread there. The answer is `202` at once and
+  for an account becomes a thread there.
+- **Threads** are planned on positions in the text, never on markers: a
+  line of `---` is ordinary text. `content.breaks` lists where you want a
+  new post (Unicode code point offsets into `content.text`, ascending),
+  and a media item's `at` puts it on the post holding that position. An
+  account can set its own `thread.breaks` (`[]` for none) on the shared
+  text, or its own text with its own `thread.breaks` and `thread.media_at`.
+  Any post still over the limit is split automatically (paragraphs, then
+  sentences, then words), counted the way that platform counts.
+  `POST /v1/posts:preview` answers each post's `range`, `length` and
+  whether its break was `manual` or `auto`. The answer is `202` at once and
   the engine sends the post; add `Prefer: wait=30` to get `201` with the
   outcome when it settles within 30 seconds (60 at most). Send an
   `Idempotency-Key` so a retried request can't post twice. A video must

@@ -132,7 +132,9 @@ test("a draft keeps its targets, numbering and tags", async ({ page }) => {
   const list = await (await page.request.get(`/v1/drafts?q=${m}&tag=work`)).json();
   expect(list.data).toHaveLength(1);
   const d = await (await page.request.get(`/v1/drafts/${list.data[0].id}`)).json();
-  expect(d.post.content.text).toBe(`Settings ${m}\n---\nsecond`);
+  // The composer's "---" line is sent as a break, not as text.
+  expect(d.post.content.text).toBe(`Settings ${m}\nsecond`);
+  expect(d.post.content.breaks).toEqual([`Settings ${m}\n`.length]);
   expect(d.post.targets).toHaveLength(3);
   expect(d.post.threading).toEqual({ numbering: false });
 

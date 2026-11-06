@@ -50,6 +50,52 @@ export function masterParts() {
   return blocks.filter(Boolean);
 }
 
+// fromMarkers mirrors Go thread.FromMarkers: the text without its lines of
+// "---", the breaks they made (code point positions) and where each
+// non-empty part starts, for media placed by part.
+export function fromMarkers(text) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const out = []; const breaks = []; const parts = [];
+  let n = 0, partStart = 0, partHasText = false;
+  lines.forEach((ln, i) => {
+    if (ln.trim() === "---") {
+      if (partHasText) parts.push(partStart);
+      breaks.push(n); partStart = n; partHasText = false;
+      return;
+    }
+    if (ln.trim() !== "") partHasText = true;
+    out.push(ln + (i < lines.length - 1 ? "\n" : ""));
+    n += Array.from(ln).length + (i < lines.length - 1 ? 1 : 0);
+  });
+  if (partHasText) parts.push(partStart);
+  const txt = out.join("");
+  const total = Array.from(txt).length;
+  const kept = breaks.filter((b, i, a) => b > 0 && b < total && (i === 0 || b > a[i - 1]) && a.indexOf(b) === i);
+  if (!parts.length) parts.push(0);
+  return { text: kept.length ? txt : String(text || "").replace(/\r\n/g, "\n"), breaks: kept, parts };
+}
+
+// toMarkers is the other way round, for the composer while it still edits
+// breaks as lines of "---": the text with a marker line at each break.
+export function toMarkers(text, breaks) {
+  const cps = Array.from(String(text || ""));
+  const bs = (breaks || []).filter(b => b > 0 && b < cps.length);
+  if (!bs.length) return String(text || "");
+  let out = "", from = 0;
+  for (const b of bs) {
+    const head = cps.slice(from, b).join("");
+    out += head + (head.endsWith("\n") ? "" : "\n") + "---\n";
+    from = b;
+  }
+  return out + cps.slice(from).join("");
+}
+
+// partAt is the 0-based part of a text broken at breaks that position at
+// falls in.
+export function partAt(breaks, at) {
+  return (breaks || []).filter(b => b <= at).length;
+}
+
 export function effectiveText(p) { return state.ov[p].text != null ? state.ov[p].text : state.master; }
 
 // The original's text and author as a link-quote copies them; these mirror Go
@@ -219,7 +265,16 @@ export function v1Target(p, { repost = false } = {}) {
   const ov = state.ov[p], options = {}, content = {};
   // The server refuses a blank override; the composer treats one as "use the
   // shared text".
-  if (ov.text != null && ov.text.trim() !== "") content.text = ov.text;
+  if (ov.text != null && ov.text.trim() !== "") {
+    const own = fromMarkers(ov.text);
+    content.text = own.text;
+    const th = {};
+    if (own.breaks.length) th.breaks = own.breaks;
+    // Its own text places media by its own parts.
+    const parts = state.interaction ? [] : postMedia().map(mediaPart);
+    if (parts.some(k => k > 0)) th.media_at = parts.map(k => own.parts[Math.min(k, own.parts.length - 1)]);
+    if (Object.keys(th).length) t.thread = th;
+  }
   if (p === "bluesky") {
     options.reply_gate = ov.reply || "";
     options.disable_quotes = !!ov.disable_quotes;
@@ -264,14 +319,17 @@ export function mediaPart(img) {
 // the reply/quote it makes.
 export function v1PostBody() {
   const it = state.interaction;
+  const shared = it ? { text: state.master, breaks: [], parts: [0] } : fromMarkers(state.master);
   const media = postMedia().map(i => {
     const m = { id: i.media_id, alt: i.alt || "" };
     const part = it ? 0 : mediaPart(i);
-    if (part > 0) m.part = part;
+    if (part > 0) m.at = shared.parts[Math.min(part, shared.parts.length - 1)];
     return m;
   });
+  const content = { text: shared.text, media };
+  if (shared.breaks.length) content.breaks = shared.breaks;
   const body = {
-    content: { text: state.master, media },
+    content,
     targets: ORDER.filter(p => state.platforms.has(p)).map(p => v1Target(p)),
     threading: { numbering: document.getElementById("threadnum")?.checked ?? true },
   };

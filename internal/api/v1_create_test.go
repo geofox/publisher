@@ -7,6 +7,8 @@ import (
 	"image/color"
 	"image/png"
 	"mime/multipart"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +29,18 @@ func (e *v1Env) withEngine() *dispatch.Dispatcher {
 		return "https://blossom.test/" + sha, true, nil
 	}}
 	return d
+}
+
+// seedAccounts adds accounts of more types to the env.
+func (e *v1Env) seedAccounts(types ...string) {
+	e.t.Helper()
+	envs := []store.EnvAccount{{Type: "bluesky", Label: "Bluesky"}, {Type: "mastodon", Label: "Mastodon"}}
+	for _, typ := range types {
+		envs = append(envs, store.EnvAccount{Type: typ, Label: typ})
+	}
+	if _, err := e.st.SeedEnvAccounts(context.Background(), store.DefaultOwner, envs); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 // acct returns the env's account id of a type.
@@ -180,8 +194,16 @@ func TestV1CreatePostValidation(t *testing.T) {
 			[]string{"/schedule/at:in_past"}},
 		{"bad time", `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `"}],"schedule":{"at":"soon"}}`,
 			[]string{"/schedule/at:invalid_time"}},
-		{"bad part", `{"content":{"text":"x","media":[{"id":"` + img + `","part":100}]},"targets":[{"account":"` + bsky + `"}]}`,
-			[]string{"/content/media/0/part:invalid"}},
+		{"part is replaced", `{"content":{"text":"x","media":[{"id":"` + img + `","part":1}]},"targets":[{"account":"` + bsky + `"}]}`,
+			[]string{"/content/media/0/part:replaced"}},
+		{"bad breaks", `{"content":{"text":"abc def https://example.com/x 👨‍👩‍👧 end","breaks":[0,4,4,20,33,99]},"targets":[{"account":"` + bsky + `"}]}`,
+			[]string{"/content/breaks/0:out_of_range", "/content/breaks/2:not_ascending", "/content/breaks/3:inside_grapheme",
+				"/content/breaks/4:inside_grapheme", "/content/breaks/5:out_of_range"}},
+		{"bad media position", `{"content":{"text":"abc","media":[{"id":"` + img + `","at":4}]},"targets":[{"account":"` + bsky + `"}]}`,
+			[]string{"/content/media/0/at:out_of_range"}},
+		{"bad target thread", `{"content":{"text":"abc def","media":[{"id":"` + img + `"}]},"targets":[{"account":"` + bsky +
+			`","content":{"text":"xy"},"thread":{"breaks":[5],"media_at":[0,1]}}]}`,
+			[]string{"/targets/0/thread/breaks/0:out_of_range", "/targets/0/thread/media_at:length_mismatch"}},
 	}
 	for _, c := range cases {
 		for _, path := range []string{"/v1/posts", "/v1/posts:preview"} {
@@ -503,24 +525,56 @@ func TestSniffType(t *testing.T) {
 
 // A media's part places it on that part of the thread, in the preview and
 // in the post as saved.
-func TestV1CreatePostMediaPart(t *testing.T) {
+// TestV1CreatePostBreaksAndPositions: shared breaks apply to every account
+// on the shared text; an account's own breaks replace them ([] for none);
+// media go with the post holding their position; an account with its own
+// text has its own breaks and positions; "---" is text.
+func TestV1CreatePostBreaksAndPositions(t *testing.T) {
 	e := newV1Env(t, true)
 	e.withEngine()
+	e.seedAccounts("nostr", "threads")
 	a, b := e.upload("a"), e.upload("b")
-	body := `{"content":{"text":"one\n---\ntwo\n---\nthree","media":[{"id":"` + a + `"},{"id":"` + b + `","part":2}]},
-		"targets":[{"account":"` + e.acct("bluesky") + `"},{"account":"` + e.acct("mastodon") + `","content":{"text":"just one"}}]}`
+	text := "one\n\ntwo\n\nthree ---"
+	two, three := strings.Index(text, "two"), strings.Index(text, "three")
+	body := `{"content":{"text":"one\n\ntwo\n\nthree ---","breaks":[` + strconv.Itoa(two) + `,` + strconv.Itoa(three) + `],
+		"media":[{"id":"` + a + `"},{"id":"` + b + `","at":` + strconv.Itoa(three+1) + `}]},
+		"targets":[{"account":"` + e.acct("bluesky") + `"},
+		  {"account":"` + e.acct("nostr") + `","thread":{"breaks":[]}},
+		  {"account":"` + e.acct("threads") + `","thread":{"breaks":[` + strconv.Itoa(three) + `]}},
+		  {"account":"` + e.acct("mastodon") + `","content":{"text":"just\none"},"thread":{"breaks":[5],"media_at":[5,0]}}]}`
 	r := e.do(req{method: "POST", path: "/v1/posts:preview", body: body})
 	wantStatus(t, r, 200)
 	var pv v1PreviewBody
 	r.json(&pv)
-	bs := pv.Targets[0].Items
-	if len(bs) != 3 || len(bs[0].Media) != 1 || bs[0].Media[0] != 0 || len(bs[1].Media) != 0 || len(bs[2].Media) != 1 || bs[2].Media[0] != 1 {
-		t.Fatalf("bluesky preview items = %+v", bs)
+	texts := func(items []v1PreviewItem) (out []string) {
+		for _, it := range items {
+			out = append(out, it.Text)
+		}
+		return out
 	}
-	// An account whose text has one part gets both on it.
-	if ms := pv.Targets[1].Items; len(ms) != 1 || len(ms[0].Media) != 2 {
-		t.Fatalf("mastodon preview items = %+v", ms)
+	bs := pv.Targets[0]
+	if got := texts(bs.Items); !slices.Equal(got, []string{"one", "two", "three ---"}) {
+		t.Fatalf("bluesky = %q", got)
 	}
+	if bs.Items[0].Break != "none" || bs.Items[1].Break != "manual" || bs.Items[1].Range != [2]int{two, two + 3} ||
+		bs.Text != "one\n\ntwo\n\nthree ---" || bs.Limit != 300 {
+		t.Fatalf("bluesky = %+v", bs)
+	}
+	if !slices.Equal(bs.Items[0].Media, []int{0}) || len(bs.Items[1].Media) != 0 || !slices.Equal(bs.Items[2].Media, []int{1}) {
+		t.Fatalf("bluesky media = %+v", bs.Items)
+	}
+	if got := texts(pv.Targets[1].Items); len(got) != 1 || got[0] != "one\n\ntwo\n\nthree ---" {
+		t.Fatalf("nostr = %q", got)
+	}
+	if got := texts(pv.Targets[2].Items); !slices.Equal(got, []string{"one\n\ntwo", "three ---"}) {
+		t.Fatalf("threads = %q", got)
+	}
+	ms := pv.Targets[3]
+	if got := texts(ms.Items); !slices.Equal(got, []string{"just", "one"}) || !slices.Equal(ms.Items[0].Media, []int{1}) ||
+		!slices.Equal(ms.Items[1].Media, []int{0}) {
+		t.Fatalf("mastodon = %+v", ms.Items)
+	}
+
 	r = e.do(req{method: "POST", path: "/v1/posts", body: body})
 	wantStatus(t, r, 202)
 	var p v1PostBody
@@ -532,6 +586,44 @@ func TestV1CreatePostMediaPart(t *testing.T) {
 	items := got.Targets[0].Items
 	if len(items) != 3 || len(items[0].Media) != 1 || len(items[1].Media) != 0 || len(items[2].Media) != 1 || items[2].Media[0] != 1 {
 		t.Fatalf("bluesky items = %+v", items)
+	}
+	if items[1].Range == nil || *items[1].Range != [2]int{two, two + 3} {
+		t.Fatalf("stored range = %v", items[1].Range)
+	}
+	r = e.do(req{method: "GET", path: "/v1/posts/" + p.ID})
+	wantStatus(t, r, 200)
+	if !strings.Contains(r.Body.String(), `"range":[`+strconv.Itoa(two)+`,`+strconv.Itoa(two+3)+`]`) {
+		t.Fatalf("GET has no range: %s", r.Body.String())
+	}
+}
+
+// TestV1CreatePostCRLF: positions count a CRLF text as sent; the text is
+// posted with LF and the positions follow.
+func TestV1CreatePostCRLF(t *testing.T) {
+	e := newV1Env(t, true)
+	e.withEngine()
+	body := `{"content":{"text":"one\r\ntwo\r\nthree","breaks":[10]},"targets":[{"account":"` + e.acct("bluesky") + `"}]}`
+	r := e.do(req{method: "POST", path: "/v1/posts:preview", body: body})
+	wantStatus(t, r, 200)
+	var pv v1PreviewBody
+	r.json(&pv)
+	it := pv.Targets[0].Items
+	if len(it) != 2 || it[0].Text != "one\ntwo" || it[1].Text != "three" || it[1].Range != [2]int{8, 13} {
+		t.Fatalf("items = %+v", it)
+	}
+}
+
+// TestV1CreatePostTooManyLinks: a post the destination would refuse for
+// its links is refused before it is saved.
+func TestV1CreatePostTooManyLinks(t *testing.T) {
+	e := newV1Env(t, true)
+	e.withEngine()
+	e.seedAccounts("threads")
+	links := "https://a.example/1 https://a.example/2 https://a.example/3 https://a.example/4 https://a.example/5 https://a.example/6"
+	body := `{"content":{"text":"` + links + `"},"targets":[{"account":"` + e.acct("threads") + `"}]}`
+	p := wantProblem(t, e.do(req{method: "POST", path: "/v1/posts", body: body, badRequest: true}), 422, codeValidation)
+	if len(p.Errors) != 1 || p.Errors[0].Pointer != "/content/text" || p.Errors[0].Code != "refused_by_destination" {
+		t.Fatalf("errors = %+v", p.Errors)
 	}
 }
 

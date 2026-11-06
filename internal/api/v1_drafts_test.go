@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func TestV1DraftLifecycle(t *testing.T) {
 	e.withEngine()
 	med := e.upload("dot")
 	bsky := e.acct("bluesky")
-	post := `{"content":{"text":"First line\n\nmore","media":[{"id":"` + med + `","part":1}]},` +
+	post := `{"content":{"text":"First line\n\nmore","media":[{"id":"` + med + `","at":11}]},` +
 		`"targets":[{"account":"` + bsky + `","options":{"reply_gate":"following"}}],"threading":{"numbering":false}}`
 	d, etag := e.newDraft(`{"tags":["#Work","work"],"post":` + post + `}`)
 	if !strings.HasPrefix(d.ID, "drf_") || etag != `"1"` || d.Title != "First line" || len(d.Tags) != 1 || d.Tags[0] != "work" {
@@ -43,7 +44,7 @@ func TestV1DraftLifecycle(t *testing.T) {
 	if _, ok := got["schedule"]; ok {
 		t.Fatalf("post has unset fields: %s", d.Post)
 	}
-	if !strings.Contains(string(d.Post), `"part":1`) || !strings.Contains(string(d.Post), `"reply_gate":"following"`) {
+	if !strings.Contains(string(d.Post), `"at":11`) || !strings.Contains(string(d.Post), `"reply_gate":"following"`) {
 		t.Fatalf("post = %s", d.Post)
 	}
 
@@ -328,11 +329,12 @@ func TestConvertOldDrafts(t *testing.T) {
 	if err := json.Unmarshal(d.Post, &p); err != nil {
 		t.Fatal(err)
 	}
-	if d.Title != "one" || d.Tags[0] != "t" || *p.Content.Text != "one\n---\ntwo" {
+	// The "---" line is a break now, the part a position.
+	if d.Title != "one" || d.Tags[0] != "t" || *p.Content.Text != "one\ntwo" || !slices.Equal(p.Content.Breaks, []int{4}) {
 		t.Fatalf("draft = %+v %s", d, d.Post)
 	}
-	if len(p.Content.Media) != 2 || p.Content.Media[0].ID == p.Content.Media[1].ID || p.Content.Media[0].Part != nil ||
-		p.Content.Media[1].Part == nil || *p.Content.Media[1].Part != 1 || *p.Content.Media[1].Alt != "b" {
+	if len(p.Content.Media) != 2 || p.Content.Media[0].ID == p.Content.Media[1].ID || p.Content.Media[0].At != nil ||
+		p.Content.Media[1].At == nil || *p.Content.Media[1].At != 4 || p.Content.Media[1].Part != nil || *p.Content.Media[1].Alt != "b" {
 		t.Fatalf("media = %s", d.Post)
 	}
 	// What the old routes took from the client is checked: no outside

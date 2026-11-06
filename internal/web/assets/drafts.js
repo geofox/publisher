@@ -1,5 +1,5 @@
 "use strict";
-import { state, v1PostBody, clearImages } from "./state.js";
+import { state, v1PostBody, clearImages, toMarkers, partAt } from "./state.js";
 import { loadDraft, markDirty, mediaReady, newKey, resetComposer, rerenderComposer } from "./compose.js";
 import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
 import { flash, el, v1, problemError, confirmModal, ORDER } from "./common.js";
@@ -118,7 +118,7 @@ function renderTagFilters() {
 function ovFromTarget(p, t) {
   const o = {}, opts = t.options || {}, c = t.content || {};
   const langs = Array.isArray(c.languages) ? c.languages : [];
-  o.text = typeof c.text === "string" ? c.text : null;
+  o.text = typeof c.text === "string" ? toMarkers(c.text, t.thread && t.thread.breaks) : null;
   if (p === "bluesky") {
     o.reply = opts.reply_gate || "";
     o.disable_quotes = !!opts.disable_quotes;
@@ -188,7 +188,8 @@ async function specFromDraft(d, etag) {
       alt: typeof cm.alt === "string" ? cm.alt : (m.alt || ""),
       duration_secs: m.duration_secs || 0, poster_url: m.poster_url || "",
     });
-    if (cm.part > 0) anchors[id] = cm.part;
+    const part = Number.isInteger(cm.at) ? partAt(c.breaks, cm.at) : 0;
+    if (part > 0) anchors[id] = part;
   }
   const { interaction, lost } = await sourceInteraction(post, platforms);
   const notes = [];
@@ -199,7 +200,7 @@ async function specFromDraft(d, etag) {
   if (lost) notes.push(lost);
   return {
     id: d.id, etag,
-    master_text: typeof c.text === "string" ? c.text : "",
+    master_text: typeof c.text === "string" ? toMarkers(c.text, c.breaks) : "",
     platforms: interaction ? [interaction.platform, ...platforms.filter(p => p !== interaction.platform)] : platforms,
     overrides, media, anchors, interaction,
     number: post.threading ? !!post.threading.numbering : true,

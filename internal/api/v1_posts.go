@@ -112,10 +112,12 @@ type v1DeliveryBody struct {
 }
 
 type v1ItemBody struct {
-	Ordinal       int              `json:"ordinal"`
-	Status        string           `json:"status"`
-	Text          string           `json:"text"`
-	Media         []int            `json:"media"`
+	Ordinal int    `json:"ordinal"`
+	Status  string `json:"status"`
+	Text    string `json:"text"`
+	Media   []int  `json:"media"`
+	// Range is the code points of the target's text the item posts.
+	Range         *[2]int          `json:"range,omitempty"`
 	URL           string           `json:"url,omitempty"`
 	RemoteID      string           `json:"remote_id,omitempty"`
 	Error         string           `json:"error,omitempty"`
@@ -193,7 +195,7 @@ func v1Post(p store.Post, full bool) v1PostBody {
 			items, attempts := []v1ItemBody{}, []v1AttemptBody{}
 			for _, it := range t.Items {
 				ib := v1ItemBody{
-					Ordinal: it.Ordinal, Status: it.Status, Text: it.Text, Media: it.Media, URL: it.RemoteURL,
+					Ordinal: it.Ordinal, Status: it.Status, Text: it.Text, Media: it.Media, Range: it.Range, URL: it.RemoteURL,
 					RemoteID: it.RemoteID, Error: it.Error, ErrorClass: it.ErrorClass, Attempts: it.AttemptCount,
 					NextAttemptAt: rfc3339ptr(it.NextAttemptAt), PublishedAt: rfc3339ptr(it.PublishedAt),
 					Deliveries: []v1DeliveryBody{},

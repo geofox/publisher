@@ -1,6 +1,6 @@
 "use strict";
 import { el, $, gcount, graphemes, META, v1 } from "./common.js";
-import { state, focusedPlatform, postedText, mediaPart } from "./state.js";
+import { state, focusedPlatform, postedText, mediaPart, fromMarkers } from "./state.js";
 import { accountFor } from "./accounts.js";
 import { brandTile, icon } from "./brands.js";
 import { requestPlan } from "./plan.js";
@@ -161,18 +161,19 @@ export async function threadPreview(container, text, platform, number, isStale =
   // after yours, as in the single-post card.
   const sent = []; // previewMedia index of each media sent
   const reqMedia = [];
+  const marked = fromMarkers(text);
   state.images.forEach((img, k) => {
     if (!img.media_id || (img.video && img.phase !== "ready")) return;
     const m = { id: img.media_id };
     const part = state.interaction ? 0 : mediaPart(img);
-    if (part > 0) m.part = part;
+    if (part > 0) m.at = marked.parts[Math.min(part, marked.parts.length - 1)];
     reqMedia.push(m);
     sent.push(k);
   });
   let data;
   try {
     data = await v1("/v1/posts:preview", { method: "POST", body: {
-      content: { text, media: reqMedia },
+      content: marked.breaks.length ? { text: marked.text, breaks: marked.breaks, media: reqMedia } : { text, media: reqMedia },
       targets: [{ account: acct.id }],
       threading: { numbering: number },
     } });

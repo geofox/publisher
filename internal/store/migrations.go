@@ -28,6 +28,7 @@ var migrations = []migration{
 	{version: 6, name: "events", up: migrateEvents},
 	{version: 7, name: "media_objects", up: migrateMediaObjects},
 	{version: 8, name: "drafts_v1", up: migrateDraftsV1},
+	{version: 9, name: "draft_breaks", up: migrateDraftBreaks},
 }
 
 // migrateDraftsV1 (v8) gives drafts the /v1 shape: body_json holds the
