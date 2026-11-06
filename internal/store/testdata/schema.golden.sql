@@ -22,6 +22,12 @@ CREATE INDEX idx_idempotency_keys_expires ON idempotency_keys(expires_at);
 -- index idx_item_deliveries_item
 CREATE INDEX idx_item_deliveries_item ON item_deliveries(item_id);
 
+-- index idx_login_failures_addr_at
+CREATE INDEX idx_login_failures_addr_at ON login_failures(addr, at);
+
+-- index idx_login_failures_at
+CREATE INDEX idx_login_failures_at ON login_failures(at);
+
 -- index idx_media_objects_owner
 CREATE INDEX idx_media_objects_owner ON media_objects(owner_id, created_at);
 
@@ -34,6 +40,15 @@ CREATE INDEX idx_nostr_fanout_due ON nostr_fanout(status, next_attempt_at);
 -- index idx_posts_created
 CREATE INDEX idx_posts_created ON posts(created_at DESC);
 
+-- index idx_reauth_nonces_session
+CREATE INDEX idx_reauth_nonces_session ON reauth_nonces(session_id);
+
+-- index idx_sessions_public_id
+CREATE UNIQUE INDEX idx_sessions_public_id ON sessions(public_id);
+
+-- index idx_sessions_user
+CREATE INDEX idx_sessions_user ON sessions(user_id);
+
 -- index idx_target_attempts_target
 CREATE INDEX idx_target_attempts_target ON target_attempts(target_id);
 
@@ -42,6 +57,9 @@ CREATE INDEX idx_target_items_due ON target_items(status, next_attempt_at);
 
 -- index idx_targets_post
 CREATE INDEX idx_targets_post ON post_targets(post_id);
+
+-- index idx_webauthn_credentials_user
+CREATE INDEX idx_webauthn_credentials_user ON webauthn_credentials(user_id);
 
 -- table accounts
 CREATE TABLE accounts (
@@ -120,6 +138,12 @@ CREATE TABLE idempotency_keys (
   PRIMARY KEY (principal, key)
 );
 
+-- table instance_meta
+CREATE TABLE instance_meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 -- table item_deliveries
 CREATE TABLE item_deliveries (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,6 +155,12 @@ CREATE TABLE item_deliveries (
   retry_count  INTEGER NOT NULL DEFAULT 0,
   gave_up_at   TIMESTAMP,
   UNIQUE(item_id, endpoint)
+);
+
+-- table login_failures
+CREATE TABLE login_failures (
+  addr TEXT NOT NULL,
+  at   TIMESTAMP NOT NULL
 );
 
 -- table media
@@ -199,6 +229,13 @@ CREATE TABLE owners (
   created_at TIMESTAMP NOT NULL
 );
 
+-- table password_credentials
+CREATE TABLE password_credentials (
+  user_id    TEXT PRIMARY KEY REFERENCES users(id),
+  phc        TEXT NOT NULL,
+  updated_at TIMESTAMP NOT NULL
+);
+
 -- table post_targets
 CREATE TABLE "post_targets" (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -227,6 +264,15 @@ CREATE TABLE posts (
   status        TEXT NOT NULL
 , scheduled_at TIMESTAMP, hidden INTEGER NOT NULL DEFAULT 0, interaction_json TEXT, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id), canceled_at TIMESTAMP);
 
+-- table reauth_nonces
+CREATE TABLE reauth_nonces (
+  nonce_hash TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  operation  TEXT NOT NULL,
+  target     TEXT NOT NULL DEFAULT '',
+  expires_at TIMESTAMP NOT NULL
+);
+
 -- table schema_migrations
 CREATE TABLE schema_migrations (
   version    INTEGER PRIMARY KEY,
@@ -240,6 +286,13 @@ CREATE TABLE sessions (
   user_id    TEXT NOT NULL REFERENCES users(id),
   created_at TIMESTAMP NOT NULL,
   expires_at TIMESTAMP NOT NULL
+, public_id TEXT, last_seen_at TIMESTAMP, method TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '', addr TEXT NOT NULL DEFAULT '');
+
+-- table setup_tokens
+CREATE TABLE setup_tokens (
+  token_hash TEXT PRIMARY KEY,
+  expires_at TIMESTAMP NOT NULL,
+  used_at    TIMESTAMP
 );
 
 -- table sync_relays
@@ -298,5 +351,22 @@ CREATE TABLE users (
   name         TEXT,
   created_at   TIMESTAMP NOT NULL,
   last_seen_at TIMESTAMP
-, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id));
+, owner_id TEXT NOT NULL DEFAULT 'own_default' REFERENCES owners(id), source TEXT NOT NULL DEFAULT 'oidc');
+
+-- table webauthn_credentials
+CREATE TABLE webauthn_credentials (
+  id               TEXT PRIMARY KEY,
+  user_id          TEXT NOT NULL REFERENCES users(id),
+  rp_id            TEXT NOT NULL,
+  credential_id    BLOB NOT NULL UNIQUE,
+  public_key       BLOB NOT NULL,
+  sign_count       INTEGER NOT NULL DEFAULT 0,
+  flags            INTEGER NOT NULL DEFAULT 0,
+  transports       TEXT NOT NULL DEFAULT '',
+  aaguid           BLOB,
+  attestation_type TEXT NOT NULL DEFAULT '',
+  name             TEXT NOT NULL,
+  created_at       TIMESTAMP NOT NULL,
+  last_used_at     TIMESTAMP
+);
 
