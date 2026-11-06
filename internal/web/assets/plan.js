@@ -1,16 +1,15 @@
 "use strict";
 // plan.js keeps the server's plan of the composer: POST /v1/posts:preview for
-// every selected platform, refreshed (debounced) whenever the composer
+// every selected account, refreshed (debounced) whenever the composer
 // changes. The server's planner is the single source of truth for how a post
 // splits, so thread counts, the thread notice and the editor read it from
 // here rather than estimating in the browser.
-import { ORDER, v1 } from "./common.js";
+import { v1 } from "./common.js";
 import { state, postedText, v1PostBody } from "./state.js";
-import { accountFor } from "./accounts.js";
 
-// current is the last plan the server answered: {key, byType, error}.
-// byType maps a destination type onto its preview target.
-let current = { key: "", byType: {}, error: null };
+// current is the last plan the server answered: {key, byAccount, error}.
+// byAccount maps an account id onto its preview target.
+let current = { key: "", byAccount: {}, error: null };
 let pendingKey = "";
 let timer = null;
 let seq = 0;
@@ -21,7 +20,7 @@ if (typeof window !== "undefined") window.addEventListener("online", () => { ret
 
 // planBody is the composer as a preview body: v1PostBody without the
 // schedule or the draft (neither changes the split, and a past schedule
-// would refuse the whole preview). In a reply or a quote each platform
+// would refuse the whole preview). In a reply or a quote each account
 // previews the text it will post (the commentary, or the copy), so no source
 // needs resolving.
 export function planBody() {
@@ -33,19 +32,14 @@ export function planBody() {
     delete body.reply_to;
     delete body.quote;
     for (const t of body.targets) {
-      const p = typeFor(t.account);
-      const txt = p ? postedText(p) : "";
-      if (p && txt.trim() && txt !== state.master) {
+      const txt = postedText(t.account);
+      if (txt.trim() && txt !== state.master) {
         t.content = { ...(t.content || {}), text: txt };
         delete t.thread; // a copy is split automatically
       }
     }
   }
   return body;
-}
-
-function typeFor(accountId) {
-  return ORDER.find(p => { const a = accountFor(p); return a && a.id === accountId; }) || "";
 }
 
 // hasContent reports whether there is anything to plan.
@@ -63,7 +57,7 @@ export function requestPlan() {
   clearTimeout(timer);
   if (!body.targets.length || !hasContent(body)) {
     pendingKey = "";
-    set({ key, byType: {}, error: null });
+    set({ key, byAccount: {}, error: null });
     return;
   }
   pendingKey = key;
@@ -75,9 +69,9 @@ async function fetchPlan(body, key) {
   let next;
   try {
     const data = await v1("/v1/posts:preview", { method: "POST", body });
-    const byType = {};
-    for (const t of (data && data.targets) || []) byType[t.type] = t;
-    next = { key, byType, error: null };
+    const byAccount = {};
+    for (const t of (data && data.targets) || []) byAccount[t.account] = t;
+    next = { key, byAccount, error: null };
     retryDelay = 0;
   } catch (e) {
     if (!e.status) {
@@ -88,7 +82,7 @@ async function fetchPlan(body, key) {
       retryTimer = setTimeout(requestPlan, retryDelay);
       return;
     }
-    next = { key, byType: {}, error: e };
+    next = { key, byAccount: {}, error: e };
   }
   if (mine !== seq) return; // a newer request owns the plan
   if (pendingKey === key) pendingKey = "";
@@ -100,17 +94,17 @@ function set(next) {
   document.dispatchEvent(new CustomEvent("plan"));
 }
 
-// planFor answers platform p's preview target when the plan is for the
+// planFor answers account id's preview target when the plan is for the
 // composer as it is now, else null (still loading, refused, or stale).
-export function planFor(p) {
+export function planFor(id) {
   if (current.key !== JSON.stringify(planBody())) return null;
-  return current.byType[p] || null;
+  return current.byAccount[id] || null;
 }
 
-// lastPlanFor answers platform p's preview target from the last plan, even
+// lastPlanFor answers account id's preview target from the last plan, even
 // if the composer changed since: for counts that may lag a keystroke.
-export function lastPlanFor(p) {
-  return current.byType[p] || null;
+export function lastPlanFor(id) {
+  return current.byAccount[id] || null;
 }
 
 // planError is the problem the last plan was refused with, when it is for

@@ -4,6 +4,7 @@
   "description": "Playwright end-to-end suite for the Publisher web app (see README.md)",
   "scripts": {
     "test": "playwright test",
+    "unit": "node --test \"unit/*.test.mjs\"",
     "report": "playwright show-report"
   },
   "devDependencies": {

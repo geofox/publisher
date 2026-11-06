@@ -967,6 +967,69 @@ Spec §2.7, §11 (composer e2e). No migration.
   one each until C). CHANGELOG.
 - [ ] Open PR A3; 2 QA + 1 security reviews; fix; hand over.
 
+### As built (A3)
+
+- **Modules.** `accounts.js` holds the list (sorted by `order`, then
+  `ORDER` for `order -1`, then `created_at`), fires a `document`
+  `accounts` event on each successful read, and names accounts:
+  `labelsFor` (short handle, the full handle when two of a network
+  collide, else the owner's label or the network), `nameOf` ("Mastodon
+  @me@host", the network alone when the owner has one account there),
+  `accessibleName` ("Mastodon, @me@host"). The new pure `snapshot.js`
+  (`primaryIn`, `cleanOv`, `upgrade`) converts snapshots; unit tests in
+  `e2e/unit/*.test.mjs` run with `node --test` (no dependency; a CI step
+  in the e2e job, `npm run unit`).
+- **Snapshot v3** (recovery and `specFromDraft`): `targets` (account
+  ids), `overrides` by account id, `interaction.{account, platform,
+  prevTargets}`. v1/v2 map each network to `primaryIn`: the first
+  connected account with `default_selected`, else the first connected
+  one (deviation: the plan said "first connected"; the default-selected
+  one is what the composer posted from before). A network with no
+  connected account is dropped and counted (`dropped`), and the restore
+  says how many were left out. Renamed option keys (`bluesky_reply` →
+  `reply`, …) are renamed on the way.
+- **Restore** waits for `loadAccounts()`; a failed read flashes and
+  doesn't restore (try again). A reply or quote is resolved again by its
+  acting account.
+- **Boot.** `main.js readAccounts` retries a failed first read (2 s,
+  doubling to 60 s) while no read ever succeeded; the composer shows
+  "Reading your accounts…", the error with **Try again**, or the empty
+  state ("No accounts yet: set them in the server's environment").
+  `#chips[data-state]` says which. Post with nothing selected before any
+  read, or with an unavailable account selected, reads again first.
+- **Selection.** `state.targets` (ids) + `state.chosen`: defaults
+  (`defaultTargets()`) apply once, when the accounts first load, unless
+  the owner already chose. Toggling a row now fires `change` on `#chips`,
+  so autosave and the dirty mark follow (they didn't before: a small fix).
+  An unavailable selected account can still be unticked.
+- **Rows.** Grouped by network (`role=group`), a header with **Select
+  all/Clear** when a network has several; reason as visible text linked
+  by `aria-describedby`; avatar with a 14 px network mark. Layout fix:
+  `.compose-left/.compose-right/.composer-card/.editor{min-width:0}`
+  (the tab row used to widen the page on a phone).
+- **Tabs.** WAI-ARIA tabs with automatic activation, roving `tabindex`,
+  arrows/Home/End; the row scrolls (`nowrap`, `overflow-x:auto`) and
+  scrolls the active tab into view. Alt+1 Shared, Alt+2…9 accounts.
+- **History** pills are one per target (`data-account`) plus grey pills
+  for the owner's networks the post didn't go to; detail rows carry
+  `data-account`; `#hacct` filters by account (hidden under two
+  accounts).
+- **Interact** shows `#srcacct` when the source's network has several
+  connected accounts; changing it resolves again with `account`.
+- **Tools** relays: `#syncacct` picks the Nostr account (hidden with
+  one); none connected shows the "needs a connected Nostr account" note.
+- **e2e:** `accounts.spec.ts` (11 tests: two Mastodon accounts with own
+  tabs, limits 500/1000, own wording and posts; retry of one account;
+  v2 snapshot and v2 reply restore; a two-account draft; grouped rows
+  with a reason and Select all; the Interact picker; tab keys; History
+  filter; `@mobile` tab row), `regress-web-acc.spec.ts` (Post and Try
+  again after a failed boot read). The harness gives each account a
+  handle; "Mastodon (long posts)" is not selected by default. Mutation
+  checks: removing the collision label, the per-account limit, the
+  History filter, the resolve `account`, the detail row's account, the
+  v2 mapping, the return to the previous selection, Try again, and
+  Post's read each fail a test.
+
 ---
 # PR B — Sign-in without OIDC
 

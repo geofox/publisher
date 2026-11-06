@@ -132,6 +132,7 @@
           <button            data-status="attention" type="button">attention <span class="attn-badge" hidden></span></button>
           <button            data-status="sent"      type="button">sent</button>
         </div>
+        <select id="hacct" aria-label="posts of account" hidden></select>
         <input id="hsearch" type="search" placeholder="search…" aria-label="search posts">
         <button id="refresh" class="ghost sm" type="button">↻</button>
       </div>
@@ -144,6 +145,7 @@
     <!-- ── Tools ────────────────────────────────────────────────────────── -->
     <section id="tools" class="view" hidden>
       <div class="sec-head"><span class="lbl">sync relays</span><span class="muted">home: relay.geoffrey.one</span></div>
+      <div id="syncacct" class="sync-acct" hidden></div>
       <div id="syncrelays"></div>
       <div class="sec-head" id="reconcile-head"><span class="lbl">reconcile</span></div>
       <button id="syncscan" class="ghost sm" type="button"></button>

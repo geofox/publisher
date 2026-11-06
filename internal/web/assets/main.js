@@ -1,8 +1,8 @@
 "use strict";
-import { $, META, ORDER } from "./common.js";
-import { state, defaultOv } from "./state.js";
-import { composeInit, applyIdentity, rerenderComposer, setAccountsReloader } from "./compose.js";
-import { loadAccounts, reloadAccounts, accountFor, identityFromAccounts, loadInstance, defaultPlatforms } from "./accounts.js";
+import { $ } from "./common.js";
+import { state, selected } from "./state.js";
+import { composeInit, applyIdentity, rerenderComposer, setAccountsReloader, setAccountsPhase } from "./compose.js";
+import { loadAccounts, reloadAccounts, accounts, accountsLoaded, byId, identity, loadInstance, defaultTargets } from "./accounts.js";
 import { historyInit, loadHistory } from "./history.js";
 import { toolsInit, loadTools, relaySyncOff } from "./tools.js";
 import { verifyInit } from "./verify.js";
@@ -20,7 +20,7 @@ async function loadConfig() {
     const data = await loadInstance();
     if (Array.isArray(data.user_languages) && data.user_languages.length) {
       state.userLanguages = data.user_languages;
-      ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
+      state.ov = {}; // each account's settings start from these languages
     }
     if (Array.isArray(data.translate_targets)) {
       state.translateTargets = data.translate_targets;
@@ -39,31 +39,43 @@ function noMediaStore() {
   if (meta) meta.textContent = "no media store on this server (set BLOSSOM_URL)";
 }
 
-// applyAccounts takes each type's name and text limit from its account, so
-// the composer counts against what the server splits by (a Mastodon instance
-// announces its own limit), and swaps the placeholder author for the
-// accounts' profiles. Types with no account keep the built-in META values.
+// applyAccounts runs after each successful read of the accounts (the
+// "accounts" event): the selection keeps only accounts that still exist, a
+// new post gets the default selection, and the composer redraws with each
+// account's limits, handle and status, under the owner's profile.
 function applyAccounts() {
-  for (const p of ORDER) {
-    const a = accountFor(p);
-    if (!a || !META[p]) continue;
-    if (typeof a.label === "string" && a.label) META[p].label = a.label;
-    const max = a.capabilities && a.capabilities.text && a.capabilities.text.max_length;
-    if (Number.isInteger(max) && max >= 0) META[p].limit = max;
-  }
+  for (const id of [...state.targets]) if (!byId(id)) state.targets.delete(id);
+  selectDefaults();
+  setAccountsPhase("ready");
   if (!composed) return; // composeInit draws with them
-  applyIdentity(identityFromAccounts(ORDER));
+  applyIdentity(identity());
   rerenderComposer();
 }
 let composed = false;
 
-// selectDefaults selects, for a new post nobody has touched yet, the
-// networks with a connected account that new posts select. It runs once,
-// when the accounts first load: a later reload never changes a selection.
+// selectDefaults selects, for a post whose accounts nobody has chosen yet,
+// the connected accounts that new posts select. Once there are accounts it
+// runs once: a later reload never changes a selection.
 function selectDefaults() {
-  if (state.dirty || state.activeDraftId || state.interaction) return;
-  state.platforms = defaultPlatforms(ORDER);
-  if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || state.focus;
+  if (state.chosen) return;
+  state.targets = new Set(defaultTargets());
+  if (accounts().length) state.chosen = true;
+  if (!state.targets.has(state.focus)) state.focus = selected()[0] || "";
+}
+
+// readAccounts reads the accounts; while none could ever be read it says so
+// in the composer and tries again, later each time (up to a minute).
+let retryDelay = 0, retryTimer = null;
+function readAccounts(read = loadAccounts) {
+  return read().then(list => { retryDelay = 0; clearTimeout(retryTimer); return list; }, e => {
+    if (!accountsLoaded()) {
+      setAccountsPhase("error", e.message || "the server didn't answer");
+      retryDelay = Math.min(retryDelay ? retryDelay * 2 : 2000, 60000);
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => readAccounts().catch(() => {}), retryDelay);
+    }
+    throw e;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -84,16 +96,19 @@ function switchTab(view) {
 
 async function init() {
   await loadConfig();
-  // The accounts carry the effective limits and live profiles; profiles can
-  // take a few seconds on a cold cache. Wait briefly so the composer starts
-  // with the right limits; if they are slower, it takes them on arrival.
-  const accounts = loadAccounts().then(selectDefaults).then(applyAccounts).catch(() => { /* keep built-ins and placeholders */ });
-  await Promise.race([accounts, new Promise(r => setTimeout(r, 1500))]);
+  // Every successful read of the accounts (here, a Post, a draft, a
+  // restore) is applied as it arrives.
+  document.addEventListener("accounts", applyAccounts);
+  // The accounts carry the limits, statuses and profiles. Wait briefly so
+  // the composer starts with them; if they are slower, it takes them on
+  // arrival.
+  const first = readAccounts().catch(() => { /* shown in the composer; tried again */ });
+  await Promise.race([first, new Promise(r => setTimeout(r, 1500))]);
   composeInit();
   composed = true;
-  accounts.then(applyAccounts); // now with the profiles, drawn into the composer
-  // A Post that finds no account asks again first (they may have failed to load).
-  setAccountsReloader(() => reloadAccounts().then(applyAccounts));
+  if (accountsLoaded()) { applyIdentity(identity()); rerenderComposer(); }
+  // A Post that finds no usable account asks again first.
+  setAccountsReloader(() => readAccounts(reloadAccounts));
   historyInit();
   toolsInit();
   verifyInit();

@@ -171,13 +171,20 @@ main{
 .master:focus{outline:none}
 /* ── Thread editor (editor.js) ──────────────────────────────────────────── */
 .editor{display:flex;flex-direction:column;gap:8px}
-.ed-tabs{display:flex;gap:6px;flex-wrap:wrap}
+/* One tab per account: the row scrolls sideways when they don't fit
+   (editor.js keeps the active tab in view). */
+.ed-tabs{display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;padding-bottom:3px}
 .ed-tabs:has(.ed-tab:only-child){display:none}
 .ed-tab{
   font:inherit;font-size:12.5px;cursor:pointer;padding:5px 11px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;
   border:.5px solid var(--line-2);background:var(--surface);color:var(--ink-2);
 }
 .ed-tab.on{color:var(--ink);font-weight:600;border-color:var(--pa,var(--indigo));background:color-mix(in srgb,var(--pa,var(--indigo)) 12%,var(--card))}
+.ed-tab,.ed-compare{flex:none;white-space:nowrap}
+.ed-tab .brand-tile{flex:none}
+.ed-tab-lbl{max-width:24ch;overflow:hidden;text-overflow:ellipsis}
+.ed-tab:focus-visible{outline:2px solid var(--indigo);outline-offset:1px}
+.pp-name{font-size:13px;font-weight:600;color:var(--ink);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ed-tab-meta{display:inline-flex;gap:3px}
 .ed-tab-n{font-size:10.5px;font-weight:600;color:var(--indigo);background:var(--indigo-soft);border-radius:999px;padding:0 6px}
 .ed-tab-mode{font-size:11px;color:var(--amber)}
@@ -270,6 +277,21 @@ main{
 .target-row.off .t-count{color:var(--faint)}
 .target-row.locked{cursor:default}
 .target-row.barred{cursor:not-allowed;opacity:.55}
+/* Accounts grouped by network; one that can't be posted to says why. */
+.target-group + .target-group{border-top:.5px solid var(--line)}
+.tg-head{display:flex;align-items:center;gap:8px;padding:9px 14px 1px}
+.tg-name{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2)}
+.tg-n{font-size:11px}
+.tg-all{margin-left:auto}
+.t-label{font-size:12.5px;color:var(--ink-2);min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.t-reason{font-size:12px;line-height:1.35;color:var(--amber);margin-top:2px;overflow-wrap:anywhere}
+.target-row.unavailable{cursor:not-allowed}
+.target-row.unavailable.off{opacity:.7}
+.target-row.unavailable.off .ios-switch{visibility:hidden}
+.targets-empty{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0;padding:14px;font-size:13.5px}
+.acct-tile{position:relative;flex:none;display:inline-block;width:29px;height:29px}
+.acct-av{display:block;width:29px;height:29px;border-radius:50%;object-fit:cover;background:var(--surface)}
+.acct-tile .acct-mark{position:absolute;right:-4px;bottom:-4px;box-shadow:0 0 0 2px var(--card)}
 
 /* brand tile (logo chip) — flex centering + inset highlight */
 .brand-tile{
@@ -369,6 +391,9 @@ textarea.master,.verify-input{}
 
 /* ── Compose layout (drafts sidebar + two-column composer) ──────────────── */
 .compose-grid{display:grid;grid-template-columns:1fr;gap:0}
+/* Grid items may shrink below their content (the editor's tab row scrolls
+   instead of widening the page). */
+.compose-left,.compose-right,.composer-card,.editor{min-width:0}
 @media(min-width:760px){
   .compose-grid{grid-template-columns:1fr 360px;gap:26px;align-items:start}
   .compose-right{position:sticky;top:8px}
@@ -495,6 +520,15 @@ textarea.master,.verify-input{}
   background:var(--card);border:.5px solid var(--line-2);border-radius:10px;
 }
 #hsearch:focus{outline:none;border-color:var(--indigo);box-shadow:0 0 0 3px var(--accent-dim)}
+#hacct{
+  max-width:16rem;font:inherit;font-size:14px;padding:7px 10px;color:var(--ink);
+  background:var(--card);border:.5px solid var(--line-2);border-radius:10px;
+}
+#hacct[hidden]{display:none}
+.sync-acct{margin:6px 0 10px}
+.sync-acct[hidden]{display:none}
+.sync-acct label,.src-acct{display:flex;align-items:center;gap:8px}
+.src-acct{margin-top:10px}
 
 /* ── History two-column grid ────────────────────────────────────────────── */
 .history-grid{display:grid;grid-template-columns:1fr;gap:0}

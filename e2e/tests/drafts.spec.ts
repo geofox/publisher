@@ -1,5 +1,5 @@
 import path from "node:path";
-import { test, expect, openApp, switchTab, marker } from "./fixtures";
+import { test, expect, ACCOUNT_ROWS, openApp, rowOf, switchTab, marker } from "./fixtures";
 
 test("saves a draft, survives a reload, reopens it and deletes it", async ({ page, fakes }) => {
   const m = marker("draft");
@@ -14,7 +14,7 @@ test("saves a draft, survives a reload, reopens it and deletes it", async ({ pag
 
   // A fresh page load reads drafts from the server, not from memory.
   await page.reload();
-  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
   await page.locator("#master").fill(""); // nothing unsaved → no discard prompt
   await page.locator("#draft-list .draft-row", { hasText: m }).click();
   // The "---" line became a break: two cards, two posts.
@@ -71,7 +71,8 @@ test("schedules a post for later and cancels it from History", async ({ page, fa
   await expect(detail.locator(".lbl", { hasText: "result · canceled" })).toBeVisible();
   const row = detail.locator(".res", { has: page.locator(".bdg", { hasText: "mastodon" }) });
   await row.getByRole("button", { name: "Retry" }).click();
-  await expect(detail.locator(".res .bdg", { hasText: "Mastodon ✓" })).toBeVisible();
+  // History names the account (the harness has several Mastodon ones).
+  await expect(detail.locator(".res .bdg", { hasText: /^Mastodon @me@one\.e2e\.invalid ✓$/ })).toBeVisible();
   await expect(page.locator(".hitem", { hasText: m }).locator(".pill.s", { hasText: "Mastodon" })).toBeVisible();
   const sent = await fakes.calls();
   expect(sent.map(c => c.platform)).toEqual(["mastodon"]);
@@ -88,7 +89,7 @@ test("posts a saved draft with its image, and the draft is used up", async ({ pa
 
   // Reopened from the server, the image is a stored attachment, not a file.
   await page.reload();
-  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
   await page.locator("#draft-list .draft-row", { hasText: m }).click();
   await expect(page.locator("#images .thumb")).toHaveCount(1);
   await expect(page.locator("#images .thumb").getByPlaceholder("alt text")).toHaveValue("A saved gradient");
@@ -143,7 +144,7 @@ test("a draft keeps its targets, numbering and tags", async ({ page }) => {
   expect(d.post.threading).toEqual({ numbering: false });
 
   await page.reload();
-  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
   await expect(page.locator("#threadnum")).toBeChecked();
   await page.locator("#draft-list .draft-row", { hasText: m }).click();
   const cards = page.locator("#editor .ed-shared textarea.ec-text");
@@ -151,8 +152,8 @@ test("a draft keeps its targets, numbering and tags", async ({ page }) => {
   await expect(cards.nth(0)).toHaveValue(`Settings ${m}`);
   await expect(cards.nth(1)).toHaveValue("second");
   await expect(page.locator("#threadnum")).not.toBeChecked();
-  await expect(page.locator("#chips .target-row.p-threads")).toHaveClass(/\boff\b/);
-  await expect(page.locator("#chips .target-row.p-bluesky")).not.toHaveClass(/\boff\b/);
+  await expect(await rowOf(page, "Threads")).toHaveClass(/\boff\b/);
+  await expect(await rowOf(page, "Bluesky")).not.toHaveClass(/\boff\b/);
   await expect(page.locator("#draft-tags-input .tag-chip")).toHaveText(["#work ✕"]);
 });
 
@@ -199,7 +200,7 @@ test("a scheduled draft reopens scheduled, and New clears it", async ({ page }) 
   await expect(page.locator("#draft-list .draft-row", { hasText: m })).toBeVisible();
 
   await page.reload();
-  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
   await page.locator("#draft-list .draft-row", { hasText: m }).click();
   await expect(page.locator("#schedat")).toHaveValue(later);
   await expect(page.locator("#submit")).toHaveText("Schedule");

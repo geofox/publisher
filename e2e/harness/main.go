@@ -142,20 +142,25 @@ type harnessAccount struct {
 	NotDefault bool
 	// MaxLength replaces the driver's text limit (0 keeps it).
 	MaxLength int
+	// Handle is stored as the account's handle (the fakes report no
+	// profile, so it stays).
+	Handle string
 }
 
 // harnessAccounts are the accounts every spec runs with, in registry order
-// within a type: the first connected account of each type is the one the
-// composer (one row per type until part A3) posts as, so specs written
-// for one account per type see the four they expect.
+// within a type. A new post selects one account per network (the others
+// are NotDefault), so specs written for one account per network see the
+// four they expect. The two Mastodon accounts share a user name on two
+// servers (the composer must tell their tabs apart).
 var harnessAccounts = []harnessAccount{
-	{Type: nostr.Type, Key: destination.EnvKeyDefault, Label: "Nostr"},
-	{Type: mastodon.Type, Key: destination.EnvKeyDefault, Label: "Mastodon"},
-	{Type: mastodon.Type, Key: "2", Label: "Mastodon (long posts)", MaxLength: 1000},
-	{Type: mastodon.Type, Key: "old", Label: "Mastodon (old)", NotConfigured: true},
-	{Type: bluesky.Type, Key: destination.EnvKeyDefault, Label: "Bluesky"},
-	{Type: bluesky.Type, Key: "2", Label: "Bluesky (alt)", NotDefault: true},
-	{Type: threads.Type, Key: destination.EnvKeyDefault, Label: "Threads"},
+	{Type: nostr.Type, Key: destination.EnvKeyDefault, Label: "Nostr",
+		Handle: "npub1e2e0harness0account0000000000000000000000000000000000000qq"},
+	{Type: mastodon.Type, Key: destination.EnvKeyDefault, Label: "Mastodon", Handle: "@me@one.e2e.invalid"},
+	{Type: mastodon.Type, Key: "2", Label: "Mastodon (long posts)", MaxLength: 1000, NotDefault: true, Handle: "@me@two.e2e.invalid"},
+	{Type: mastodon.Type, Key: "old", Label: "Mastodon (old)", NotConfigured: true, Handle: "@old@one.e2e.invalid"},
+	{Type: bluesky.Type, Key: destination.EnvKeyDefault, Label: "Bluesky", Handle: "me.bsky.e2e.invalid"},
+	{Type: bluesky.Type, Key: "2", Label: "Bluesky (alt)", NotDefault: true, Handle: "alt.bsky.e2e.invalid"},
+	{Type: threads.Type, Key: destination.EnvKeyDefault, Label: "Threads", Handle: "me_e2e"},
 }
 
 // seedAccounts stores the accounts as a start does (store.SeedEnvAccounts,
@@ -181,12 +186,17 @@ func seedAccounts(ctx context.Context, st *store.Store, accts []harnessAccount) 
 	}
 	off := false
 	for _, a := range accts {
-		if !a.NotDefault {
-			continue
-		}
 		for _, r := range rows {
-			if r.Type == a.Type && r.EnvKey == a.Key {
+			if r.Type != a.Type || r.EnvKey != a.Key {
+				continue
+			}
+			if a.NotDefault {
 				if _, err := st.UpdateAccountMeta(ctx, store.DefaultOwner, r.ID, store.AccountMeta{DefaultSelected: &off}); err != nil {
+					return nil, err
+				}
+			}
+			if a.Handle != "" {
+				if err := st.SetAccountIdentity(ctx, r.ID, a.Handle, ""); err != nil {
 					return nil, err
 				}
 			}

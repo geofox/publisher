@@ -147,7 +147,7 @@ test("an item that may have been posted waits for the owner, who sends it again 
   await switchTab(page, "history");
   await page.locator(".hitem", { hasText: m }).click();
   const detail = page.locator("#hdetail");
-  await expect(detail.getByText("Check Bluesky: did this part go out?")).toBeVisible();
+  await expect(detail.getByText("Check Bluesky me.bsky.e2e.invalid: did this part go out?")).toBeVisible();
   await expect(detail.locator(".retry-status", { hasText: "it may have been posted: the server stopped while sending" })).toBeVisible();
   await detail.getByRole("button", { name: "It wasn't: send it again" }).click();
   await expect(detail.locator(".lbl", { hasText: "result · published" })).toBeVisible();

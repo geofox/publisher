@@ -1,4 +1,4 @@
-import { test, expect, openApp, switchTab } from "./fixtures";
+import { test, expect, ACCOUNT_ROWS, openApp, switchTab } from "./fixtures";
 
 test("boots with all four platforms and switches tabs @mobile", async ({ page }) => {
   await openApp(page);
@@ -13,7 +13,7 @@ test("a stale in-flight post from an earlier visit is dropped quietly", async ({
   await page.goto("/");
   await page.evaluate(() => localStorage.setItem("inflight_post_v1", "pst_doesnotexist"));
   await page.reload();
-  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
   await expect.poll(() => page.evaluate(() => localStorage.getItem("inflight_post_v1"))).toBeNull();
   await expect(page.locator(".pmodal")).toHaveCount(0);
 });

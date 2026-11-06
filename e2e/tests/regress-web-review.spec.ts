@@ -1,4 +1,4 @@
-import { test, expect, openApp, marker } from "./fixtures";
+import { test, expect, ACCOUNT_ROWS, openApp, marker } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 async function saveDraft(page: Page, text: string) {
@@ -18,7 +18,7 @@ test("edits discarded with New are not offered back for recovery", async ({ page
   await page.locator("#draft-new").click(); // confirm "discard" accepted
   await expect(page.locator("#master")).toHaveValue("");
   await page.reload();
-  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
   await page.waitForTimeout(300);
   await expect(page.locator("#draft-recovery-banner"), "discarded edits must not be offered back").toBeHidden();
 });
@@ -33,7 +33,7 @@ test("a deleted draft's edits are not offered back for recovery", async ({ page 
   await page.locator("#draft-delete").click();
   await expect(page.locator("#draft-list .draft-row", { hasText: m })).toHaveCount(0);
   await page.reload();
-  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
   await page.waitForTimeout(300);
   await expect(page.locator("#draft-recovery-banner"), "a deleted draft must not be offered back").toBeHidden();
 });
@@ -47,7 +47,7 @@ test("restored edits of an open draft count as unsaved, even after Replace", asy
   await page.locator("#master").fill(`edited ${m}`);
   await page.waitForTimeout(600);
   await page.reload();
-  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
   await expect(page.locator("#draft-recovery-banner")).toBeVisible();
   await page.locator("#master").fill("typed meanwhile");
   await page.waitForTimeout(400);

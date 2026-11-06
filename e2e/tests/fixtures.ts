@@ -71,6 +71,20 @@ export async function accountLabelled(request: APIRequestContext, label: string)
   return a!;
 }
 
+/**
+ * A Mastodon post as POST /v1/resolve answers it, looked up by (and to be
+ * answered from) the harness's "Mastodon" account, for specs that answer
+ * /v1/resolve themselves.
+ */
+export async function mastodonSource(request: APIRequestContext) {
+  const account = (await accountLabelled(request, "Mastodon")).id;
+  return {
+    platform: "mastodon", url: "https://mastodon.example/@a/1", text: "source post",
+    author: { name: "A", handle: "@a@mastodon.example" }, media: [], created_at: null, account,
+    actions: { reply: { allowed: true }, repost: { allowed: true }, quote: { allowed: true } },
+  };
+}
+
 /** A short unique marker so a test can find its own posts and calls. */
 export function marker(label: string) {
   return `${label}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -99,10 +113,39 @@ export const test = base.extend<{ fakes: Fakes; consoleErrors: string[] }>({
 
 export { expect };
 
-/** Open the app and wait until boot (config fetch + compose init) is done. */
+/** The composer's rows: one per harness account (harnessAccounts in e2e/harness/main.go). */
+export const ACCOUNT_ROWS = 7;
+
+/** Open the app and wait until boot (config fetch, accounts, compose init) is done. */
 export async function openApp(page: Page) {
   await page.goto("/");
-  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
+}
+
+/**
+ * The harness's account ids by label ("Mastodon (long posts)") and, for the
+ * account a new post selects on each network, by network ("mastodon"): the
+ * four that specs written for one account per network use.
+ */
+export async function harnessIds(request: APIRequestContext): Promise<Record<string, string>> {
+  const all = await listAccounts(request);
+  const out: Record<string, string> = {};
+  for (const a of all) out[a.label] = a.id;
+  for (const a of all) if (a.default_selected && a.status === "connected" && !(a.type in out)) out[a.type] = a.id;
+  return out;
+}
+
+/** The composer's target row for the harness account with this label. */
+export async function rowOf(page: Page, label: string) {
+  const a = await accountLabelled(page.request, label);
+  return page.locator(`#chips .target-row[data-account="${a.id}"]`);
+}
+
+/** The thread editor's tab for the harness account with this label ("shared" for the shared text). */
+export async function tabOf(page: Page, label: string) {
+  if (label === "shared") return page.locator(`#editor .ed-tab[data-tab="shared"]`);
+  const a = await accountLabelled(page.request, label);
+  return page.locator(`#editor .ed-tab[data-tab="${a.id}"]`);
 }
 
 export async function switchTab(page: Page, view: "compose" | "history" | "tools" | "verify" | "interact" | "tokens") {

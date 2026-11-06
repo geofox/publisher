@@ -1,11 +1,12 @@
 "use strict";
-import { state, v1PostBody, clearImages } from "./state.js";
+import { state, v1PostBody, clearImages, setTargets } from "./state.js";
 import { cpIndex } from "./textpos.js";
 import { loadDraft, markDirty, mediaReady, newKey, resetComposer, rerenderComposer } from "./compose.js";
 import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
-import { flash, el, v1, problemError, confirmModal, ORDER, pressable } from "./common.js";
-import { accountByID, loadAccounts, defaultPlatforms } from "./accounts.js";
+import { flash, el, v1, problemError, confirmModal, pressable } from "./common.js";
+import { byId, typeOf, loadAccounts, defaultTargets, networkName } from "./accounts.js";
 import { fromV1 } from "./interact.js";
+import { upgrade, VERSION } from "./snapshot.js";
 
 // Drafts live on the server (/v1/drafts). A draft holds a POST /v1/posts
 // body; the composer turns itself into one to save (v1PostBody) and reads
@@ -116,8 +117,8 @@ function renderTagFilters() {
   }
 }
 
-// ovFromTarget reads a target back into the composer's per-platform card:
-// the reverse of state.js v1Target.
+// ovFromTarget reads a target back into its account's settings (p: the
+// account's network): the reverse of state.js v1Target.
 // u16 turns the API's code point positions in text into the composer's
 // UTF-16 offsets.
 function u16(text, positions) {
@@ -156,22 +157,47 @@ function ovFromTarget(p, t, shared) {
 
 // sourceInteraction resolves the post a draft replies to or quotes, for the
 // composer's interaction mode; null (with a note) when it can't be read.
-async function sourceInteraction(post, platforms) {
+// The draft's account on the source's network acts.
+async function sourceInteraction(post, targets) {
   const action = post.quote ? "quote" : post.reply_to ? "reply" : "";
   if (!action) return { interaction: null };
-  return resolveInteraction(action, (post.quote || post.reply_to).url, platforms);
+  return resolveInteraction(action, (post.quote || post.reply_to).url, [], "", targets);
+}
+
+// resolve asks POST /v1/resolve about url, looked up by account (one on
+// the post's network) or, without one, by the server's pick.
+function resolve(url, account) {
+  return v1("/v1/resolve", { method: "POST", body: account ? { url, account } : { url } });
 }
 
 // resolveInteraction reads the post at url again for a reply or quote.
-async function resolveInteraction(action, url, platforms) {
+// actor is the account that acted before (a snapshot's), else the first of
+// candidates on the post's network acts, else the server's pick. prev is
+// the selection to return to afterwards.
+async function resolveInteraction(action, url, prev, actor = "", candidates = []) {
   try {
-    const src = fromV1(await v1("/v1/resolve", { method: "POST", body: { url } }));
+    let r;
+    try {
+      r = await resolve(url, actor);
+    } catch (e) {
+      // That account can't look it up any more (turned off, say): the
+      // server picks.
+      if (!actor || !(e.status >= 400 && e.status < 500)) throw e;
+      actor = "";
+      r = await resolve(url, "");
+    }
+    if (!actor) {
+      const mine = candidates.find(id => typeOf(id) === r.platform);
+      if (mine && mine !== r.account) r = await resolve(url, mine);
+    }
+    const src = fromV1(r);
+    if (!src.account) throw new Error("no " + networkName(src.platform) + " account is connected");
     return {
       interaction: {
-        action, platform: src.platform,
+        action, account: src.account, platform: src.platform,
         sourcePreview: src.preview, sourceURL: src.preview.web_url, sourceAuthor: src.preview.author_handle,
         sourceInput: url, caps: src.caps,
-        prevPlatforms: new Set(platforms.length ? platforms : ORDER),
+        prevTargets: new Set(prev && prev.length ? prev : defaultTargets()),
       },
     };
   } catch (e) {
@@ -180,18 +206,20 @@ async function resolveInteraction(action, url, platforms) {
   }
 }
 
-// specFromDraft turns a /v1 draft into what the composer's loadDraft reads.
+// specFromDraft turns a /v1 draft into what the composer's loadDraft reads
+// (a version-3 snapshot, snapshot.js): every account it names that is still
+// here, each with its own settings.
 async function specFromDraft(d, etag) {
   const accountsRead = await loadAccounts().then(() => true, () => false);
   const post = d.post || {}, c = post.content || {};
-  const platforms = [], overrides = {}, ownMedia = {};
+  const targets = [], overrides = {}, ownMedia = {};
   let skipped = 0;
   for (const t of post.targets || []) {
-    const a = accountByID(t.account);
-    if (!a || !ORDER.includes(a.type) || platforms.includes(a.type)) { skipped++; continue; }
-    platforms.push(a.type);
-    overrides[a.type] = ovFromTarget(a.type, t, typeof c.text === "string" ? c.text : "");
-    if (Array.isArray((t.thread || {}).media_at)) ownMedia[a.type] = t.thread.media_at;
+    const a = byId(t.account);
+    if (!a || targets.includes(a.id)) { skipped++; continue; }
+    targets.push(a.id);
+    overrides[a.id] = ovFromTarget(a.type, t, typeof c.text === "string" ? c.text : "");
+    if (Array.isArray((t.thread || {}).media_at)) ownMedia[a.id] = t.thread.media_at;
   }
   const objects = new Map((d.media || []).map(m => [m.id, m]));
   const media = [], anchors = {};
@@ -215,19 +243,19 @@ async function specFromDraft(d, etag) {
       ov.mediaAt[id] = u16(ov.text, [at[k]])[0];
     }
   });
-  const { interaction, lost } = await sourceInteraction(post, platforms);
+  const { interaction, lost } = await sourceInteraction(post, targets);
   const notes = [];
   if (!accountsRead && (post.targets || []).length) {
     notes.push("The accounts couldn't be read: check where this goes before saving or posting");
-  } else if (skipped) notes.push(skipped + " of the draft's accounts aren't available here and were left out");
+  } else if (skipped) notes.push(skipped + " of the draft's accounts are gone and were left out");
   if (missing) notes.push(missing + " attachment(s) were deleted and left out");
   if (lost) notes.push(lost);
   return {
     id: d.id, etag,
-    v: 2,
+    v: VERSION,
     master_text: sharedText,
     breaks: Array.isArray(c.breaks) ? u16(sharedText, c.breaks) : [],
-    platforms: interaction ? [interaction.platform, ...platforms.filter(p => p !== interaction.platform)] : platforms,
+    targets: interaction ? [interaction.account, ...targets.filter(id => id !== interaction.account)] : targets,
     overrides, media, anchors, interaction,
     number: post.threading ? !!post.threading.numbering : true,
     scheduled_at: post.schedule && post.schedule.at,
@@ -374,7 +402,7 @@ function clearComposer() {
   state.draftETag = "";
   state.dirty = false;
   state.anchors = {};
-  state.platforms = defaultPlatforms(ORDER);
+  setTargets(defaultTargets());
   resetComposer();
   const num = document.getElementById("threadnum"); if (num) num.checked = true;
   rerenderComposer();
@@ -438,28 +466,39 @@ function maybeShowRecoveryBanner() {
     try { await restore(); } finally { r.disabled = false; }
   });
   const restore = async () => {
-    const all = recovered.images || [];
+    // The snapshot names accounts (an older one, networks): it needs them
+    // read, which a blip at start may not have done.
+    let list;
+    try { list = await loadAccounts(); } catch (e) {
+      flash("Not restored yet: your accounts couldn't be read (" + e.message + "): try again", 8000);
+      return;
+    }
+    const snap = upgrade(recovered, list);
+    const all = snap.images || [];
     const refs = all.filter(i => i.blossom_url);
-    // A reply or quote in progress stays one: its post is read again. If
-    // it can't be, restoring would make it a standalone post: don't.
+    // A reply or quote in progress stays one: its post is read again, by
+    // the account that was acting. If it can't be, restoring would make it
+    // a standalone post: don't.
     let interaction = null;
-    const it = recovered.interaction;
+    const it = snap.interaction;
     if (it && it.sourceInput && (it.action === "reply" || it.action === "quote")) {
-      const res = await resolveInteraction(it.action, it.sourceInput, it.prevPlatforms || []);
+      const res = await resolveInteraction(it.action, it.sourceInput, it.prevTargets, it.account, snap.targets);
       if (!res.interaction) {
         flash("Not restored: the post this " + it.action + " answers couldn't be read (" + (res.error || "try again") + ")", 8000);
         return;
       }
       interaction = res.interaction;
     }
+    const left = snap.dropped.length;
     // Reference attachments (uploaded images, ready videos) hydrate like a
     // loaded draft; fresh local-File images cannot survive localStorage.
     // Edits to an open draft go back into it (its etag finds it changed).
-    loadDraft({ ...recovered, interaction, id: recovered.draft_id || null, etag: recovered.etag || "", media: refs,
+    loadDraft({ ...snap, interaction, id: snap.draft_id || null, etag: snap.etag || "", media: refs,
+      notice: left ? left + (left === 1 ? " of its accounts isn't" : " of its accounts aren't") + " available here and " + (left === 1 ? "was" : "were") + " left out" : "",
       // Once it has loaded (after "Replace?" when Compose wasn't empty):
       // the restored edits are unsaved.
       onLoaded: () => {
-        renderTagChips(Array.isArray(recovered.tags) ? recovered.tags : []);
+        renderTagChips(Array.isArray(snap.tags) ? snap.tags : []);
         markDirty();
         banner.hidden = true;
         renderList(); refreshActiveControls();
