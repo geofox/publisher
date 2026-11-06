@@ -199,6 +199,29 @@ func TestRoutesGatesOnWhenAuthEnabled(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/healthz: code=%d want 200", rec.Code)
 	}
+
+	// The manifest and its icons load without a session (Chrome and Edge
+	// fetch them without cookies), as a no-cors subresource would ask.
+	for _, p := range []string{"/manifest.json", "/icon-32.png", "/icon-180.png", "/icon-192.png", "/icon-512.png"} {
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodGet, p, nil)
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Body.Len() == 0 {
+			t.Fatalf("%s: code=%d len=%d want 200 with a body", p, rec.Code, rec.Body.Len())
+		}
+	}
+
+	// Everything else in the web app stays gated, including near misses.
+	for _, p := range []string{"/main.js", "/app.css", "/index.html", "/icon-999.png", "/manifest.json/../main.js"} {
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodGet, p, nil)
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: code=%d want 401", p, rec.Code)
+		}
+	}
 }
 
 // TestCallbackRejectsStateMismatch verifies that a mismatched state parameter
