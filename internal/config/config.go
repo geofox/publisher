@@ -3,6 +3,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -81,6 +86,66 @@ type Config struct {
 	SessionTTL          time.Duration
 	// AllowedHosts are the Host names served (ALLOWED_HOSTS); empty = any.
 	AllowedHosts []string
+
+	// PublicURL is the origin the owner's browser uses (PUBLIC_URL), as
+	// scheme://host[:port] without a trailing slash; "" when unset. It is
+	// an allowed host, the app's base URL, the passkey relying party and
+	// the default base of OIDC_REDIRECT_URL.
+	PublicURL string
+	// AuthMode is AUTH_MODE as given: oidc, local, proxy, or "" (resolved
+	// at start from OIDC_ISSUER and the database's birth version; see
+	// ResolveAuthMode).
+	AuthMode string
+	// TrustedProxies are the reverse proxies whose X-Forwarded-For is
+	// believed (TRUSTED_PROXIES).
+	TrustedProxies []netip.Prefix
+	// SetupTokenFile, when set, receives the first-run setup URL instead
+	// of the log (SETUP_TOKEN_FILE).
+	SetupTokenFile string
+}
+
+// Auth modes (AUTH_MODE).
+const (
+	AuthOIDC  = "oidc"
+	AuthLocal = "local"
+	AuthProxy = "proxy"
+)
+
+// LocalAuthSchema is the first schema version created by a build with
+// local sign-in: a database born at it or later defaults to AUTH_MODE=local.
+const LocalAuthSchema = 12
+
+// ResolveAuthMode is the mode the server runs in: AUTH_MODE when set;
+// otherwise oidc with OIDC_ISSUER, local for a database created by a build
+// with local sign-in (createdSchema >= LocalAuthSchema), and proxy for an
+// older one, which keeps an existing deployment without OIDC working as
+// before.
+func (c Config) ResolveAuthMode(createdSchema int) string {
+	switch {
+	case c.AuthMode != "":
+		return c.AuthMode
+	case c.OIDCEnabled():
+		return AuthOIDC
+	case createdSchema >= LocalAuthSchema:
+		return AuthLocal
+	}
+	return AuthProxy
+}
+
+// CheckLocal reports why local sign-in can't use PUBLIC_URL, or nil: a
+// passkey's relying party must be a domain name, never an IP address.
+func (c Config) CheckLocal() error {
+	if c.PublicURL == "" {
+		return nil
+	}
+	u, err := url.Parse(c.PublicURL)
+	if err != nil {
+		return fmt.Errorf("PUBLIC_URL: %w", err)
+	}
+	if _, err := netip.ParseAddr(strings.Trim(u.Hostname(), "[]")); err == nil {
+		return errors.New("PUBLIC_URL: local sign-in needs a domain name, not an IP address (passkeys refuse IP addresses); use a name such as post.example.com, or http://localhost")
+	}
+	return nil
 }
 
 // OIDCEnabled reports whether app-level OIDC auth is configured.
@@ -149,16 +214,44 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	c.OIDCIssuer = strings.TrimSpace(getEnv("OIDC_ISSUER", ""))
 	c.OIDCClientID = getEnv("OIDC_CLIENT_ID", "")
 	c.OIDCClientSecret = getEnv("OIDC_CLIENT_SECRET", "")
+	c.PublicURL = l.publicURL("PUBLIC_URL")
 	c.OIDCRedirectURL = getEnv("OIDC_REDIRECT_URL", "")
+	if c.OIDCRedirectURL == "" && c.PublicURL != "" && c.OIDCIssuer != "" {
+		c.OIDCRedirectURL = c.PublicURL + "/auth/callback"
+	}
 	c.OIDCAllowedSubjects = splitCSV(getEnv("OIDC_ALLOWED_SUBJECTS", ""))
 	c.OIDCAllowedEmails = splitCSV(getEnv("OIDC_ALLOWED_EMAILS", ""))
 	c.OIDCScopes = splitCSV(getEnv("OIDC_SCOPES", "openid,profile,email"))
 	c.OIDCEndSession = l.bool("OIDC_END_SESSION", true)
 	c.AllowedHosts = splitCSV(getEnv("ALLOWED_HOSTS", ""))
 	c.SessionTTL, _ = l.duration("SESSION_TTL", "168h")
+	c.AuthMode = strings.ToLower(strings.TrimSpace(getEnv("AUTH_MODE", "")))
+	switch c.AuthMode {
+	case "", AuthProxy:
+	case AuthOIDC:
+		if !c.OIDCEnabled() {
+			l.fail("AUTH_MODE=oidc needs OIDC_ISSUER (and the other OIDC_* variables)")
+		}
+	case AuthLocal:
+		if err := c.CheckLocal(); err != nil {
+			l.errs = append(l.errs, err)
+		}
+	default:
+		l.fail("AUTH_MODE must be oidc, local or proxy (or unset), not %q", c.AuthMode)
+	}
+	if c.OIDCEnabled() && (c.AuthMode == AuthLocal || c.AuthMode == AuthProxy) {
+		l.fail("OIDC_ISSUER is set but AUTH_MODE=%s: unset OIDC_ISSUER, or set AUTH_MODE=oidc", c.AuthMode)
+	}
+	c.TrustedProxies = l.prefixes("TRUSTED_PROXIES")
+	c.SetupTokenFile = strings.TrimSpace(getEnv("SETUP_TOKEN_FILE", ""))
+	if c.SetupTokenFile != "" {
+		if fi, err := os.Stat(filepath.Dir(c.SetupTokenFile)); err != nil || !fi.IsDir() {
+			l.fail("SETUP_TOKEN_FILE: the directory %s must exist", filepath.Dir(c.SetupTokenFile))
+		}
+	}
 	if c.OIDCEnabled() {
 		if c.OIDCClientID == "" || c.OIDCClientSecret == "" || c.OIDCRedirectURL == "" {
-			l.fail("OIDC_ISSUER is set; OIDC_CLIENT_ID, OIDC_CLIENT_SECRET and OIDC_REDIRECT_URL are required")
+			l.fail("OIDC_ISSUER is set; OIDC_CLIENT_ID, OIDC_CLIENT_SECRET and OIDC_REDIRECT_URL (or PUBLIC_URL) are required")
 		}
 		if len(c.OIDCAllowedSubjects) == 0 && len(c.OIDCAllowedEmails) == 0 {
 			l.fail("OIDC enabled but no allowlist: set OIDC_ALLOWED_SUBJECTS and/or OIDC_ALLOWED_EMAILS")
@@ -203,6 +296,63 @@ func (l *loader) duration(k, d string) (time.Duration, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// publicURL reads an origin: https://host[:port], or http://localhost[:port]
+// (browsers treat localhost as secure). No path, query, fragment or user.
+func (l *loader) publicURL(k string) string {
+	v := strings.TrimSpace(l.getenv(k))
+	if v == "" {
+		return ""
+	}
+	u, err := url.Parse(v)
+	if err != nil || u.Host == "" || u.Opaque != "" {
+		l.fail("%s must be an origin such as https://post.example.com, not %q", k, v)
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	switch {
+	case u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery || (u.Path != "" && u.Path != "/"):
+		l.fail("%s must be an origin only (scheme, host and port), such as https://post.example.com", k)
+		return ""
+	case u.Scheme == "https":
+	case u.Scheme == "http" && host == "localhost":
+	default:
+		l.fail("%s must use https (http only for localhost): sessions and passkeys need a secure context", k)
+		return ""
+	}
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+			l.fail("%s has an invalid port %q", k, p)
+			return ""
+		}
+	}
+	h := host
+	if strings.Contains(h, ":") {
+		h = "[" + h + "]"
+	}
+	if p := u.Port(); p != "" && !(u.Scheme == "https" && p == "443") {
+		h = net.JoinHostPort(strings.Trim(h, "[]"), p)
+	}
+	return u.Scheme + "://" + h
+}
+
+// prefixes reads a comma-separated list of CIDRs or addresses.
+func (l *loader) prefixes(k string) []netip.Prefix {
+	var out []netip.Prefix
+	for _, s := range splitCSV(l.getenv(k)) {
+		if p, err := netip.ParsePrefix(s); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		if a, err := netip.ParseAddr(s); err == nil {
+			a = a.Unmap()
+			out = append(out, netip.PrefixFrom(a, a.BitLen()))
+			continue
+		}
+		l.fail("%s: %q is neither an address nor a CIDR such as 172.16.0.0/12", k, s)
+	}
+	return out
 }
 
 func (l *loader) bool(k string, d bool) bool {
