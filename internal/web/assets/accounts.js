@@ -120,13 +120,24 @@ export function customLabel(a) {
   return l && l !== networkName(a.type) ? l : "";
 }
 
-// labelsFor gives each account of ids a short label for tabs and columns
-// (which show the network's mark beside it): its short handle, or its full
-// handle when another account of the same network would read the same
-// (@me@one.example, @me@two.example), or its label when it has no handle
-// yet.
+// fitHandle shortens a full handle to about max characters by cutting the
+// user name, keeping the server that tells two apart:
+// "@averyveryverylongname@one.example" → "@averyveryv…@one.example".
+export function fitHandle(h, max = 24) {
+  if (!h || h.length <= max) return h || "";
+  const m = /^(@?[^@\s]+)(@[^@\s]+)$/.exec(h);
+  if (m && m[2].length <= max - 4) return m[1].slice(0, max - m[2].length - 1) + "…" + m[2];
+  return h.slice(0, max - 1) + "…";
+}
+
+// labelsFor gives each account of ids a short label for tabs, chips and
+// columns (which show the network's mark beside it): the network's name
+// when the owner has only that account there (or the owner's own label for
+// it); else its short handle, or its full handle when another account of the
+// same network would read the same (@me@one.example, @me@two.example), or
+// its label when it has no handle yet.
 export function labelsFor(ids) {
-  const out = {}, short = {}, seen = {};
+  const out = byKey(), short = byKey(), seen = byKey();
   for (const id of ids) {
     const a = byId(id);
     short[id] = a ? shortHandleOf(a) : "";
@@ -136,11 +147,14 @@ export function labelsFor(ids) {
     const a = byId(id);
     if (!a) { out[id] = "account"; continue; }
     const s = short[id];
-    if (s) out[id] = seen[a.type + " " + s] > 1 ? handleOf(a) : s;
+    if (ofType(a.type).length < 2) out[id] = customLabel(a) || networkName(a.type);
+    else if (s) out[id] = seen[a.type + " " + s] > 1 ? fitHandle(handleOf(a)) : s;
     else out[id] = customLabel(a) || networkName(a.type);
   }
   return out;
 }
+
+const byKey = () => Object.create(null);
 
 // who is what tells an account apart from the others of its network: its
 // handle, else the label the owner gave it; "" when it has neither.
@@ -164,21 +178,27 @@ export function nameOf(id) {
   return ofType(a.type).length < 2 ? networkName(a.type) : withNetwork(a, " ");
 }
 
-// accessibleName is how assistive technology names an account:
-// "Mastodon, @me@host".
+// accessibleName is how assistive technology names an account: the
+// network, the owner's label and the handle, each once ("Mastodon,
+// @me@host"; "Mastodon (long posts), @me@two.host"; "Threads, Work").
 export function accessibleName(id) {
   const a = byId(id);
-  return a ? withNetwork(a, ", ") : "account";
+  if (!a) return "account";
+  const net = networkName(a.type), label = customLabel(a);
+  const head = label && label.toLowerCase().includes(net.toLowerCase()) ? label : net;
+  return [head, head === label ? "" : label, handleOf(a)].filter(Boolean).join(", ");
 }
 
-// identity is the composer header's author: the first account, in order,
-// with a display name; else the first handle.
+// identity is the composer header's author: the first connected account,
+// in order, with a display name; else the first handle (an account that
+// can't be used may show a profile it no longer has).
 export function identity() {
   const id = { name: "", avatar: "", monogram: "" };
-  const named = all.find(a => a.display_name);
+  const live = connected();
+  const named = live.find(a => a.display_name);
   if (named) { id.name = named.display_name; id.avatar = named.avatar || ""; }
-  if (!id.name) { const h = all.find(a => a.handle); if (h) { id.name = handleOf(h); id.avatar = h.avatar || ""; } }
-  if (!id.avatar) { const av = all.find(a => a.avatar); if (av) id.avatar = av.avatar; }
+  if (!id.name) { const h = live.find(a => a.handle); if (h) { id.name = handleOf(h); id.avatar = h.avatar || ""; } }
+  if (!id.avatar) { const av = live.find(a => a.avatar); if (av) id.avatar = av.avatar; }
   const first = [...id.name].find(c => c !== "@" && c !== " ");
   id.monogram = first ? first.toUpperCase() : "";
   return id;

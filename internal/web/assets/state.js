@@ -29,7 +29,7 @@ export const state = {
   // Whether the selection was set (by hand, a draft, a reply…): once it
   // is, the accounts' defaults (main.js selectDefaults) no longer apply.
   chosen: false,
-  ov: {},              // account id → its settings (ovOf)
+  ov: Object.create(null), // account id → its settings (ovOf; see byKey)
   images: [],
   focus: "",           // the account shown in the live preview
   // null = normal compose; else {action, account (the one that replies or
@@ -54,11 +54,26 @@ export const state = {
   anchors: {},         // image id → its position in master (UTF-16); it goes with the post holding it
 };
 
+// byKey is an empty object for values keyed by account id: no prototype,
+// so no id ("__proto__", "constructor") can read or replace Object's.
+export function byKey() { return Object.create(null); }
+
 // ovOf is account id's settings, made from its network's defaults the first
-// time they are asked for (the account's type must be known by then: the
-// composer only names accounts it has read).
+// time they are asked for. Asked before the accounts were read (a reply
+// started after a failed read), the network isn't known yet: its defaults
+// (languages, proof of work…) are added once it is.
+const untyped = new WeakSet();
 export function ovOf(id) {
-  return state.ov[id] || (state.ov[id] = defaultOv(typeOf(id)));
+  const type = typeOf(id);
+  let ov = state.ov[id];
+  if (!ov) {
+    ov = state.ov[id] = defaultOv(type);
+    if (!type) untyped.add(ov);
+  } else if (type && untyped.has(ov)) {
+    for (const [k, v] of Object.entries(defaultOv(type))) if (!(k in ov)) ov[k] = v;
+    untyped.delete(ov);
+  }
+  return ov;
 }
 
 // selected is the selected accounts in the app's order.

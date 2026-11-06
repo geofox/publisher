@@ -1,5 +1,5 @@
 import { test, expect, ACCOUNT_ROWS, openApp, switchTab, marker, listAccounts, type Call } from "./fixtures";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 // The web app picks accounts, not networks (step 4, part A3): two accounts
 // of a network each get a row, a tab, a Compare column, a limit, their own
@@ -322,8 +322,8 @@ test("the tab row scrolls on a phone and keeps the active tab in view @mobile", 
   await page.locator("#master").fill("Some words for every account");
   const tabs = page.locator("#editor .ed-tabs");
   await expect(page.locator("#editor .ed-tab")).toHaveCount(7);
-  // The page itself never scrolls sideways.
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  // The page never scrolls sideways (main is what scrolls; body doesn't).
+  expect(await page.locator("main").evaluate(m => m.scrollWidth <= m.clientWidth)).toBe(true);
   const wide = await tabs.evaluate(t => t.scrollWidth > t.clientWidth);
   const last = page.locator("#editor .ed-tab").last();
   await last.click();
@@ -334,4 +334,196 @@ test("the tab row scrolls on a phone and keeps the active tab in view @mobile", 
     return !!row && !!t && t.x >= row.x - 1 && t.x + t.width <= row.x + row.width + 1;
   }).toBe(true);
   if (test.info().project.name === "mobile-chromium") expect(wide, "seven tabs don't fit a phone's width").toBe(true);
+});
+
+test("an account id that names an Object property doesn't break the composer", async ({ page }) => {
+  // Ids are "acc_" + hex today; the composer keys its maps by id, so it
+  // must not depend on that.
+  await page.route("**/v1/accounts?*", async r => {
+    const res = await r.fetch();
+    const body = await res.json();
+    for (const id of ["__proto__", "constructor"]) {
+      body.data.push({ ...body.data.find((a: { label: string }) => a.label === "Mastodon"), id, label: id, handle: `@${id}@x.example`, default_selected: false });
+    }
+    await r.fulfill({ response: res, json: body });
+  });
+  await page.goto("/");
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS + 2);
+  await page.locator("#master").fill("Words");
+  await expect(page.locator("#targets-meta")).toHaveText("4 selected");
+  expect(await page.evaluate(() => ({} as Record<string, unknown>).polluted)).toBeUndefined();
+});
+
+test("unsaved work for a network whose account can't post comes back on it, and Post says so", async ({ page }) => {
+  const m = marker("v2off");
+  // Threads' only account needs reconnecting (its token expired, say).
+  await page.route("**/v1/accounts?*", async r => {
+    const res = await r.fetch();
+    const body = await res.json();
+    for (const a of body.data) if (a.type === "threads") { a.status = "needs_reconnect"; a.status_reason = "sign in again"; }
+    await r.fulfill({ response: res, json: body });
+  });
+  await openApp(page);
+  await page.evaluate(m => localStorage.setItem("compose_recovery_v1", JSON.stringify({
+    v: 2, master_text: `Shared ${m}`, breaks: [], platforms: ["threads"], delay_seconds: 0, images: [], anchors: {}, number: true,
+    overrides: { threads: { text: `Threads words ${m}`, reply_control: "mentioned_only" } },
+  })), m);
+  await page.reload();
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
+  await page.locator("#draft-recovery-restore").click();
+  await expect(page.locator("#master")).toHaveValue(`Shared ${m}`);
+  // Threads alone, as it was: not the defaults in its place.
+  await expect(page.locator("#targets-meta")).toHaveText("1 selected");
+  await expect(row(page, ids.threads)).toHaveAttribute("aria-checked", "true");
+  await expect(row(page, ids.threads)).toHaveClass(/\bunavailable\b/);
+  await tab(page, ids.threads).click();
+  await expect(own(page)).toHaveValue(`Threads words ${m}`);
+  await page.locator("#submit").click();
+  await expect(page.locator(".toast").last()).toContainText("isn't connected: untick it");
+});
+
+test("ticking an account while unsaved work is offered keeps it for later", async ({ page }) => {
+  const m = marker("pending");
+  await openApp(page);
+  await page.evaluate(m => localStorage.setItem("compose_recovery_v1", JSON.stringify({
+    v: 3, master_text: `Offered ${m}`, breaks: [], targets: [], overrides: {}, images: [], anchors: {}, number: true,
+  })), m);
+  await page.reload();
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
+  await expect(page.locator("#draft-recovery-banner")).toBeVisible();
+  await row(page, ids.nostr).click();
+  await row(page, ids.long).click();
+  // Nothing typed: not unsaved work, and what was offered is still stored.
+  await expect(page.locator("#draft-status")).not.toHaveText("unsaved changes");
+  await page.waitForTimeout(400); // the autosave's debounce
+  expect(await page.evaluate(() => localStorage.getItem("compose_recovery_v1"))).toContain(m);
+  // An option changed on the empty composer (the autosave runs) keeps it too.
+  const card = page.locator(`#cards .ocard[data-account="${ids.main}"]`);
+  await card.locator(".ocard-summary").click();
+  await card.getByLabel("sensitive").check();
+  await page.waitForTimeout(400);
+  expect(await page.evaluate(() => localStorage.getItem("compose_recovery_v1"))).toContain(m);
+  await page.reload();
+  await expect(page.locator("#draft-recovery-banner")).toBeVisible();
+});
+
+test("Interact: an account that can't read the post leaves the card acting as the one that could", async ({ page, fakes, consoleErrors }) => {
+  const m = marker("pickfail");
+  let hold: (() => void) | null = null;
+  await page.route("**/v1/resolve", async r => {
+    const body = r.request().postDataJSON();
+    if (body.account !== ids.long) return r.continue();
+    await new Promise<void>(res => { hold = res; });
+    await r.fulfill({ status: 422, contentType: "application/problem+json",
+      body: JSON.stringify({ title: "unresolvable", detail: "that server doesn't have it", errors: [{ pointer: "/url", code: "unresolvable" }] }) });
+  });
+  await openApp(page);
+  await switchTab(page, "interact");
+  await page.locator("#srcinput").fill("https://elsewhere.example/@someone/42");
+  const pick = page.locator("#srcacct");
+  await expect(pick).toHaveValue(ids.main);
+  await pick.selectOption(ids.long);
+  // While the other account looks it up, the actions wait.
+  const reply = page.locator(".act-btn", { hasText: "Reply" });
+  await expect(reply).toBeDisabled();
+  await expect.poll(() => hold !== null).toBe(true);
+  hold!();
+  await expect(page.locator("#srcstatus")).toContainText("Mastodon @me@two.e2e.invalid couldn't read it");
+  await expect(pick).toHaveValue(ids.main);
+  await expect(reply).toBeEnabled();
+  await reply.click();
+  await expect(row(page, ids.main)).toHaveAttribute("aria-checked", "true");
+  await expect(row(page, ids.long)).toHaveAttribute("aria-checked", "false");
+  await page.locator("#master").fill(`From the main account ${m}`);
+  await page.locator("#submit").click();
+  const [sent] = await fakes.waitForCalls(m, 1);
+  expect(sent).toMatchObject({ account: ids.main, action: "reply" });
+  // The refused lookup logs its 422.
+  consoleErrors.splice(0, consoleErrors.length, ...consoleErrors.filter(e => !/status of 422/.test(e)));
+});
+
+test("a restore whose accounts are all gone selects none in their place", async ({ page }) => {
+  const m = marker("gone");
+  await openApp(page);
+  await page.evaluate(m => localStorage.setItem("compose_recovery_v1", JSON.stringify({
+    v: 3, master_text: `For a deleted account ${m}`, breaks: [], targets: ["acc_0000deleted"], overrides: {}, images: [], anchors: {}, number: true,
+  })), m);
+  await page.reload();
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
+  await page.locator("#draft-recovery-restore").click();
+  await expect(page.locator("#master")).toHaveValue(`For a deleted account ${m}`);
+  await expect(page.locator("#targets-meta")).toHaveText("0 selected");
+  await expect(page.locator(".toast").last()).toContainText("left out");
+});
+
+test("editing below the thread editor doesn't scroll the page back up to it @mobile", async ({ page }) => {
+  await openApp(page);
+  await page.locator("#master").fill("Words that take room. ".repeat(20));
+  await page.waitForTimeout(700); // the preview's plan arrives and the editor redraws
+  // What the owner works on stays on screen, about where it was: what
+  // changes above it (a tab more) may move it a little; the page must not
+  // jump up to the editor's tabs.
+  const y = async (l: Locator) => Math.round((await l.boundingBox())!.y);
+  const steady = async (l: Locator, before: number) => {
+    await page.waitForTimeout(700);
+    expect(Math.abs((await y(l)) - before)).toBeLessThanOrEqual(40);
+    await expect(l).toBeInViewport();
+  };
+  // Tick an account.
+  const r = row(page, ids.long);
+  await r.scrollIntoViewIfNeeded();
+  expect(await page.locator("main").evaluate(m => m.scrollTop)).toBeGreaterThan(0);
+  let before = await y(r);
+  await r.click();
+  await steady(r, before);
+  // Type a content warning in an account's options.
+  const card = page.locator(`#cards .ocard[data-account="${ids.main}"]`);
+  await card.locator(".ocard-summary").scrollIntoViewIfNeeded();
+  await card.locator(".ocard-summary").click();
+  const cw = card.getByLabel("CW");
+  await cw.scrollIntoViewIfNeeded();
+  before = await y(cw);
+  await cw.pressSequentially("spoilers");
+  await steady(cw, before);
+});
+
+test("one account per network: tabs read the network, Compare stays in reach", async ({ page }) => {
+  // The owner's setup today: one account per network, labelled by it.
+  await page.route("**/v1/accounts?*", async r => {
+    const res = await r.fetch();
+    const body = await res.json();
+    body.data = body.data.filter((a: { label: string }) => ["Nostr", "Mastodon", "Bluesky", "Threads"].includes(a.label));
+    await r.fulfill({ response: res, json: body });
+  });
+  await page.goto("/");
+  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await page.locator("#master").fill("Words");
+  const labels = page.locator("#editor .ed-tab .ed-tab-lbl");
+  await expect(labels).toHaveCount(5);
+  expect((await labels.allTextContents()).sort()).toEqual(["Bluesky", "Mastodon", "Nostr", "Shared", "Threads"]);
+  await expect(tab(page, ids.main)).toHaveAccessibleName("Mastodon, @me@one.e2e.invalid");
+  // Compare isn't one of the tabs, and isn't scrolled out of sight with them.
+  const compare = page.locator("#editor .ed-compare");
+  await expect(compare).toBeInViewport({ ratio: 1 });
+  await expect(page.locator("#editor [role=tablist] .ed-compare")).toHaveCount(0);
+});
+
+test("an account's own label is part of its name for assistive technology", async ({ page }) => {
+  await openApp(page);
+  await expect(row(page, ids.long)).toHaveAccessibleName("Mastodon (long posts), @me@two.e2e.invalid");
+  await expect(row(page, ids.alt)).toHaveAccessibleName("Bluesky (alt), alt.bsky.e2e.invalid");
+  await expect(row(page, ids.main)).toHaveAccessibleName("Mastodon, @me@one.e2e.invalid");
+});
+
+test("Interact: the account picker keeps the keyboard when an arrow key changes it", async ({ page }) => {
+  await openApp(page);
+  await switchTab(page, "interact");
+  await page.locator("#srcinput").fill("https://elsewhere.example/@someone/42");
+  const pick = page.locator("#srcacct");
+  await expect(pick).toHaveValue(ids.main);
+  await pick.focus();
+  await pick.selectOption(ids.long); // as an arrow key does: a change event
+  await expect(page.locator("#srccard .src-text")).toHaveText(`A post looked up by ${ids.long}`);
+  await expect(page.locator("#srcacct")).toBeFocused();
+  await expect(page.locator(".act-btn", { hasText: "Reply" })).toBeEnabled();
 });

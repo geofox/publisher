@@ -5,11 +5,11 @@
 // splits, so thread counts, the thread notice and the editor read it from
 // here rather than estimating in the browser.
 import { v1 } from "./common.js";
-import { state, postedText, v1PostBody } from "./state.js";
+import { state, byKey, postedText, v1PostBody } from "./state.js";
 
 // current is the last plan the server answered: {key, byAccount, error}.
 // byAccount maps an account id onto its preview target.
-let current = { key: "", byAccount: {}, error: null };
+let current = { key: "", byAccount: byKey(), error: null };
 let pendingKey = "";
 let timer = null;
 let seq = 0;
@@ -57,7 +57,7 @@ export function requestPlan() {
   clearTimeout(timer);
   if (!body.targets.length || !hasContent(body)) {
     pendingKey = "";
-    set({ key, byAccount: {}, error: null });
+    set({ key, byAccount: byKey(), error: null });
     return;
   }
   pendingKey = key;
@@ -69,7 +69,7 @@ async function fetchPlan(body, key) {
   let next;
   try {
     const data = await v1("/v1/posts:preview", { method: "POST", body });
-    const byAccount = {};
+    const byAccount = byKey();
     for (const t of (data && data.targets) || []) byAccount[t.account] = t;
     next = { key, byAccount, error: null };
     retryDelay = 0;
@@ -82,7 +82,7 @@ async function fetchPlan(body, key) {
       retryTimer = setTimeout(requestPlan, retryDelay);
       return;
     }
-    next = { key, byAccount: {}, error: e };
+    next = { key, byAccount: byKey(), error: e };
   }
   if (mine !== seq) return; // a newer request owns the plan
   if (pendingKey === key) pendingKey = "";

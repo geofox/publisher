@@ -36,8 +36,9 @@ the `edge` image.
   Shared and Alt+2…Alt+9 the account tabs, and the arrow keys move along
   the tab row. A new post selects the connected accounts with
   `default_selected`. Unsaved work the browser kept from before is
-  restored onto the account that stands for each network (a network with
-  no connected account is left out, saying so).
+  restored onto the account that stands for each network; one whose
+  account can't post now comes back selected and says why (a network
+  where you have no account is left out, saying so).
 - An OIDC email allowlist (`OIDC_ALLOWED_EMAILS`) matches only an email
   the identity provider says is verified. Stored emails are cleared once,
   so an unverified one stops passing; a refused sign-in logs the subject

@@ -25,10 +25,22 @@ export function primaryIn(list, type) {
   return c.find(a => a.default_selected) || c[0] || null;
 }
 
+// standIn is the account a network named by an older snapshot comes back
+// as: its primary account (primaryIn), else its first account in any state
+// but deleted, which comes back selected and unavailable, saying why, as
+// the network did before (Post refuses until it is unticked); null when
+// the owner has no account there.
+export function standIn(list, type) {
+  return primaryIn(list, type) || (list || []).find(a => a.type === type && a.status !== "deleted") || null;
+}
+
 // cleanOv checks one target's settings: known shapes only, old key names
 // renamed, and (version 1) its own text's "---" lines turned into breaks.
 export function cleanOv(src, markers = false) {
   const ov = { ...src };
+  // Parsed JSON can carry these as own keys; copied onto the composer's
+  // settings (Object.assign) "__proto__" would replace their prototype.
+  for (const k of ["__proto__", "constructor", "prototype"]) delete ov[k];
   for (const [from, to] of RENAMED) {
     if (!(from in ov)) continue;
     if (!(to in src)) ov[to] = ov[from];
@@ -53,10 +65,11 @@ export function cleanOv(src, markers = false) {
 }
 
 // upgrade turns a snapshot of any version into version 3, for the owner's
-// accounts list (in order). A network maps to its primary account
-// (primaryIn); an account id that isn't in list, or a network with no
-// connected account, is left out and counted in `dropped` (the ids or
-// network names). Fields it doesn't know are kept as they are.
+// accounts list (in order). A network maps to the account that stands in
+// for it (standIn); an account id that isn't in list, or a network where
+// the owner has no account, is left out and counted in `dropped` (the ids
+// or network names). A reply's acting account must be connected
+// (primaryIn). Fields it doesn't know are kept as they are.
 export function upgrade(spec, list) {
   const s = isObj(spec) ? spec : {};
   const v = s.v === 3 ? 3 : s.v === 2 ? 2 : 1;
@@ -97,7 +110,7 @@ export function upgrade(spec, list) {
     }
   } else {
     for (const type of Array.isArray(s.platforms) ? s.platforms : []) {
-      const a = primaryIn(list, type);
+      const a = standIn(list, type);
       if (a) add(type, a.id);
       else dropped.push(String(type));
     }
@@ -118,7 +131,7 @@ export function upgrade(spec, list) {
       const a = primaryIn(list, interaction.platform);
       interaction.account = a ? a.id : "";
       const prev = Array.isArray(it.prevPlatforms) ? it.prevPlatforms : [];
-      interaction.prevTargets = uniq(prev.map(t => primaryIn(list, t)).filter(Boolean).map(x => x.id));
+      interaction.prevTargets = uniq(prev.map(t => standIn(list, t)).filter(Boolean).map(x => x.id));
     }
   }
 

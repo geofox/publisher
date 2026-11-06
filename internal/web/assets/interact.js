@@ -6,6 +6,8 @@ import { loadAccounts, connected, networkName, nameOf } from "./accounts.js";
 import { brandTile } from "./brands.js";
 
 let _seq = 0;
+// shown is the source post the card shows (null: none).
+let shown = null;
 
 // fromV1 reads a POST /v1/resolve answer into the shape the composer keeps
 // for a source post: account is the one that looked it up, and replies,
@@ -33,7 +35,11 @@ export function fromV1(r) {
 // without one, the server picks the first connected one.
 async function resolveInput(input, account = "") {
   const card = $("#srccard"), status = $("#srcstatus");
-  if (!account) card.innerHTML = "";
+  // Another account picked: the card stays, but its actions wait for that
+  // account's answer (until then they would act as the one shown).
+  const prev = account ? shown : null;
+  if (prev) setActionsWaiting(card, true);
+  else { card.innerHTML = ""; shown = null; }
   const seq = ++_seq; // before the empty case too: a lookup in flight is now stale
   if (!input.trim()) { card.innerHTML = ""; status.textContent = ""; return; }
   status.textContent = "Resolving…";
@@ -47,6 +53,15 @@ async function resolveInput(input, account = "") {
     data.input = input.trim();
   } catch (e) {
     if (seq !== _seq) return;
+    if (prev) {
+      // That account couldn't read it: the card and picker go back to the
+      // account that did.
+      setActionsWaiting(card, false);
+      const pick = $("#srcacct");
+      if (pick) pick.value = prev.account;
+      status.textContent = "✗ " + nameOf(account) + " couldn't read it: " + e.message;
+      return;
+    }
     status.textContent = "✗ " + e.message;
     return;
   }
@@ -55,7 +70,19 @@ async function resolveInput(input, account = "") {
   // The picker needs the accounts (they may not have loaded yet).
   await loadAccounts().catch(() => {});
   if (seq !== _seq) return;
+  shown = data;
+  const picking = document.activeElement && document.activeElement.id === "srcacct";
   card.replaceChildren(renderSource(data));
+  setActionsWaiting(card, false);
+  // Arrow keys on the picker change it: the keyboard stays there.
+  if (picking) $("#srcacct")?.focus();
+}
+
+// setActionsWaiting disables the card's actions while another account looks
+// the post up, and gives back the ones the post allows.
+function setActionsWaiting(card, waiting) {
+  card.setAttribute("aria-busy", waiting ? "true" : "false");
+  for (const b of card.querySelectorAll(".act-btn")) b.disabled = waiting || b.classList.contains("blocked");
 }
 
 // renderSource builds the preview card, the acting-account picker (when

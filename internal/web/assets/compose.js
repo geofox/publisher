@@ -1,10 +1,10 @@
 "use strict";
 import { el, $, wcount, flash, confirmModal, v1, problemError, TZ, whenText, localInput, pressable, asDialog } from "./common.js";
-import { state, postedText, v1PostBody, ovOf, selected, setTargets, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen } from "./state.js";
+import { state, byKey, postedText, v1PostBody, ovOf, selected, setTargets, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen } from "./state.js";
 import { renderPreview } from "./preview.js";
 import { openDetail } from "./history.js";
 import { accounts, byId, typeOf, isConnected, defaultTargets, accountsLoaded, networkName, nameOf, accessibleName,
-  handleOf, customLabel, isOpaque, shortId } from "./accounts.js";
+  handleOf, customLabel, isOpaque, shortId, fitHandle } from "./accounts.js";
 import { followPost } from "./follow.js";
 import { brandTile, icon } from "./brands.js";
 import { planFor, lastPlanFor, planError } from "./plan.js";
@@ -156,8 +156,12 @@ function accountTile(a, size = 29) {
 // autosave (it listens for change events in the composer).
 function toggled(focusId) {
   renderChips(); renderCards(); renderEditor(); renderPreview();
+  // A change to something worth keeping (text, attachments, an open draft,
+  // a reply): autosave and the unsaved mark follow. Ticking accounts on an
+  // empty composer is not unsaved work.
   const c = $("#chips");
-  if (c) c.dispatchEvent(new Event("change", { bubbles: true }));
+  const worth = state.master || state.images.length || state.activeDraftId || state.interaction;
+  if (c && worth) c.dispatchEvent(new Event("change", { bubbles: true }));
   // The row was drawn again: keep the keyboard where it was.
   if (focusId) document.querySelector(`#chips [data-account="${CSS.escape(focusId)}"]`)?.focus({ preventScroll: true });
 }
@@ -185,7 +189,8 @@ function targetRow(a) {
   if (on && ti.threaded) top.append(threadBadge(id));
   const main = el("div", { class: "target-main" }, top);
   const handle = handleOf(a);
-  if (handle) main.append(el("div", { class: "t-handle", text: handle, title: a.handle }));
+  // A long one is cut in the user name, keeping the server.
+  if (handle) main.append(el("div", { class: "t-handle", text: fitHandle(handle, 36), title: a.handle }));
   let reason = null;
   if (why) {
     reason = el("div", { class: "t-reason", id: "why-" + id, text: why });
@@ -220,25 +225,34 @@ function targetRow(a) {
 
 function renderChips() {
   const c = $("#chips"); if (!c) return;
+  const hadFocus = c.contains(document.activeElement);
   c.replaceChildren();
   const list = accounts();
+  // What the empty states say, also told to assistive technology (a live
+  // region that outlives the redraws).
+  let live = $("#chips-status");
+  if (!live) { live = el("span", { id: "chips-status", class: "sr-only", role: "status" }); c.after(live); }
   if (!list.length) {
     const phase = accountsPhase.phase === "ready" ? "empty" : accountsPhase.phase;
     c.dataset.state = phase;
-    if (phase === "loading") c.append(el("p", { class: "targets-empty muted", text: "Reading your accounts…" }));
+    let say;
+    if (phase === "loading") c.append(el("p", { class: "targets-empty muted", text: say = "Reading your accounts…" }));
     else if (phase === "error") {
+      const again = el("button", { class: "ghost sm", type: "button", text: "Try again",
+        onclick: () => {
+          if (!reloadAccounts) return;
+          setAccountsPhase("loading");
+          reloadAccounts().catch(() => {}); // a failure shows the error again
+        } });
       c.append(el("div", { class: "targets-empty" },
-        el("span", { class: "bad", text: "Couldn't read your accounts: " + accountsPhase.error }),
-        el("button", { class: "ghost sm", type: "button", text: "Try again",
-          onclick: () => {
-            if (!reloadAccounts) return;
-            setAccountsPhase("loading");
-            reloadAccounts().catch(() => {}); // a failure shows the error again
-          } })));
+        el("span", { class: "bad", text: say = "Couldn't read your accounts: " + accountsPhase.error }), again));
+      if (hadFocus) again.focus({ preventScroll: true }); // the keyboard stays on Try again
     } else {
       c.append(el("p", { class: "targets-empty muted",
-        text: "No accounts yet: set them in the server's environment (see the README), then restart it." }));
+        text: say = "No accounts yet: set them in the server's environment (see the README), then restart it." }));
     }
+    if (hadFocus && !c.contains(document.activeElement)) { c.tabIndex = -1; c.focus({ preventScroll: true }); }
+    live.textContent = say;
     renderTargetsMeta();
     renderThreadNotice();
     return;
@@ -277,6 +291,9 @@ function renderChips() {
     for (const a of g.accts) box.append(targetRow(a));
     c.append(box);
   }
+  live.textContent = "";
+  // The keyboard was on Try again (or the loading line): on to the first row.
+  if (hadFocus && !c.contains(document.activeElement)) c.querySelector(".target-row")?.focus({ preventScroll: true });
   renderTargetsMeta();
   renderThreadNotice();
 }
@@ -384,7 +401,7 @@ export function startInteraction(src, action) {
     state.breaks = [];
     state.tab = "shared";
     clearImages();
-    state.ov = {}; // drop stale per-account settings
+    state.ov = byKey(); // drop stale per-account settings
     setTargets([src.account]);
     state.focus = src.account;
     detachDraft(); // the reply is a new post: it must not save over, or use up, the draft that was open
@@ -454,7 +471,7 @@ export function loadDraft(input) {
       state.tab = "shared";
       // The settings, schedule and tags were made for the post it replaces:
       // a translation starts from the defaults, like a new post.
-      state.ov = {};
+      state.ov = byKey();
       clearImages();
       const sched = $("#schedat"); if (sched) sched.value = "";
       if (input.lang) {
@@ -484,16 +501,18 @@ export function loadDraft(input) {
     state.tab = "shared";
     clearImages();
     // The accounts it names that are still here (the caller said which
-    // weren't); with none, the defaults. A reply or quote keeps its acting
-    // account.
+    // weren't: `dropped`). The defaults only when it named none: when every
+    // one it named is gone, nothing is selected, so Post can't go somewhere
+    // the owner didn't pick. A reply or quote keeps its acting account.
     let named = (input.targets || []).filter(id => byId(id));
     const actor = input.interaction && input.interaction.account;
     if (actor) named = [actor, ...named.filter(id => id !== actor)];
-    setTargets(named.length ? named : defaultTargets());
+    const hadTargets = (input.targets || []).length > 0 || (input.dropped || []).length > 0;
+    setTargets(named.length || hadTargets ? named : defaultTargets());
     if (!state.targets.has(state.focus)) state.focus = selected()[0] || "";
     // Each account's network defaults, then its saved settings (checked by
     // snapshot.js cleanOv).
-    state.ov = {};
+    state.ov = byKey();
     for (const [id, ov] of Object.entries(input.overrides || {})) {
       if (!byId(id) || !ov || typeof ov !== "object") continue;
       Object.assign(ovOf(id), ov);
@@ -1017,7 +1036,11 @@ function renderMeta() {
   if (!sum) return;
   sum.innerHTML = "";
   const plats = selected();
-  if (plats.length === 0) { sum.append(el("span", { class: "bad", text: "⚠ no accounts selected" })); return; }
+  if (plats.length === 0) {
+    // Before the accounts are read, the rows say so (loading or the error).
+    if (accountsLoaded()) sum.append(el("span", { class: "bad", text: "⚠ no accounts selected" }));
+    return;
+  }
   sum.append(el("span", { text: `→ ${plats.length} target${plats.length > 1 ? "s" : ""} · ${state.images.length} image${state.images.length === 1 ? "" : "s"}` }));
   // A refusal the server would give on Post (a 422), from the last plan.
   const err = planError();
@@ -1072,7 +1095,7 @@ export function resetComposer() {
   state.anchors = {};
   state.tab = "shared";
   state.interaction = null;
-  state.ov = {};
+  state.ov = byKey();
   const sched = $("#schedat"); if (sched) { sched.value = ""; updateSched(); }
   // A posted draft's tags don't carry over to the next one.
   const tags = document.querySelector("#draft-tags-input .tag-chips"); if (tags) tags.replaceChildren();

@@ -319,9 +319,9 @@ later release, and the composer, History and Interact already handle
 them: each account gets its own tab, limit, wording and post.
 
 The composer's **thread editor** has a tab for the shared text and one
-per selected account. A tab is named by the account's short handle
-(`@me`), or its full handle when two of the same network would read the
-same. The shared text is a stack of cards, one per post
+per selected account. A tab is named by its network when that is your
+only account there, else by the account's short handle (`@me`), or its
+full handle when two of the same network would read the same. The shared text is a stack of cards, one per post
 you break by hand: Ctrl/⌘+Enter (or ✂ split) starts a new post at the
 cursor, Backspace at the start of a card joins it to the one above, and a
 line of `---` becomes a break as soon as you start the next line. An

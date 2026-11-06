@@ -1,6 +1,6 @@
 "use strict";
 import { $ } from "./common.js";
-import { state, selected } from "./state.js";
+import { state, byKey, selected } from "./state.js";
 import { composeInit, applyIdentity, rerenderComposer, setAccountsReloader, setAccountsPhase } from "./compose.js";
 import { loadAccounts, reloadAccounts, accounts, accountsLoaded, byId, identity, loadInstance, defaultTargets } from "./accounts.js";
 import { historyInit, loadHistory } from "./history.js";
@@ -20,7 +20,7 @@ async function loadConfig() {
     const data = await loadInstance();
     if (Array.isArray(data.user_languages) && data.user_languages.length) {
       state.userLanguages = data.user_languages;
-      state.ov = {}; // each account's settings start from these languages
+      state.ov = byKey(); // each account's settings start from these languages
     }
     if (Array.isArray(data.translate_targets)) {
       state.translateTargets = data.translate_targets;

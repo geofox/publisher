@@ -79,7 +79,7 @@ function followPost(id, until) {
 function patchRow(p) {
   const i = hposts.findIndex(x => x.id === p.id);
   if (i >= 0) hposts[i] = p;
-  const node = $(`.hitem[data-id="${p.id}"]`);
+  const node = $(`.hitem[data-id="${CSS.escape(p.id)}"]`);
   if (node) node.replaceWith(historyItem(p, node.classList.contains("active")));
 }
 
@@ -186,7 +186,7 @@ function confirmHide(p) {
     onConfirm: async () => {
       try {
         await v1(postPath(p.id), { method: "PATCH", body: { hidden: true } });
-        const node = $(`.hitem[data-id="${p.id}"]`);
+        const node = $(`.hitem[data-id="${CSS.escape(p.id)}"]`);
         if (node) node.remove();
         hposts = hposts.filter(x => x.id !== p.id);
         const det = $("#hdetail");

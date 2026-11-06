@@ -30,6 +30,9 @@ function renderPicker() {
   host.hidden = list.length < 2;
   if (list.length < 2) return;
   const sel = el("select", { "aria-label": "Nostr account", onchange: e => {
+    // A load, scan or sync in progress works on the account it started
+    // with: switching now would show its result under the other one.
+    if (syncBusy) { e.target.value = nostrId; flash("Wait until the relay work in progress finishes"); return; }
     nostrId = e.target.value;
     const out = $("#syncout"); if (out) out.innerHTML = "";
     loadSyncRelays();

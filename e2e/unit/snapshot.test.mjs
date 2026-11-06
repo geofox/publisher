@@ -3,7 +3,7 @@
 // (keyed by account id). Run: node --test e2e/unit/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { upgrade, cleanOv, primaryIn, VERSION } from "../../internal/web/assets/snapshot.js";
+import { upgrade, cleanOv, primaryIn, standIn, VERSION } from "../../internal/web/assets/snapshot.js";
 import { fromMarkers } from "../../internal/web/assets/textpos.js";
 
 const acct = (id, type, extra = {}) => ({ id, type, status: "connected", default_selected: true, ...extra });
@@ -25,6 +25,23 @@ test("primaryIn prefers a connected account that new posts select", () => {
   assert.equal(primaryIn(quiet, "mastodon").id, "a");
 });
 
+test("standIn: the primary account, else any that isn't deleted, else none", () => {
+  assert.equal(standIn(list, "mastodon").id, "acc_m2");
+  assert.equal(standIn(list, "threads").id, "acc_t1");
+  assert.equal(standIn([acct("x", "threads", { status: "deleted" })], "threads"), null);
+  assert.equal(standIn(list, "unknown"), null);
+});
+
+test("a network where the owner has no account is left out, saying so", () => {
+  const snap = upgrade({ v: 2, master_text: "x", platforms: ["bluesky", "unknown"], overrides: { unknown: { text: "own" } },
+    interaction: { action: "reply", platform: "threads", sourceInput: "u", prevPlatforms: ["bluesky"] } }, list);
+  assert.deepEqual(snap.targets, ["acc_b1"]);
+  assert.deepEqual(snap.dropped, ["unknown"]);
+  assert.deepEqual(Object.keys(snap.overrides), []);
+  // A reply needs a connected account to act: none on Threads.
+  assert.equal(snap.interaction.account, "");
+});
+
 test("version 1: breaks from --- lines, media by part number, networks to accounts", () => {
   const master = "one\n---\ntwo\n---\nthree";
   const own = "mine\n---\nmore";
@@ -43,8 +60,11 @@ test("version 1: breaks from --- lines, media by part number, networks to accoun
   assert.equal(snap.v, VERSION);
   assert.equal(snap.master_text, conv.text);
   assert.deepEqual(snap.breaks, conv.breaks);
-  assert.deepEqual(snap.targets, ["acc_m2", "acc_b1"]);
-  assert.deepEqual(snap.dropped, ["threads"]);
+  // Threads' account isn't connected: it comes back selected (and shows
+  // why it can't post), with its settings.
+  assert.deepEqual(snap.targets, ["acc_m2", "acc_b1", "acc_t1"]);
+  assert.deepEqual(snap.dropped, []);
+  assert.equal(snap.overrides.acc_t1.reply_control, "followers_only");
   assert.equal("platforms" in snap, false);
   const mineConv = fromMarkers(own);
   assert.equal(snap.overrides.acc_m2.text, mineConv.text);
@@ -57,7 +77,7 @@ test("version 1: breaks from --- lines, media by part number, networks to accoun
   assert.equal("img2" in snap.anchors, false);
   assert.equal(snap.anchors.img3, conv.parts[conv.parts.length - 1]);
   assert.deepEqual(snap.interaction, {
-    action: "reply", sourceInput: "https://m.example/@a/1", platform: "mastodon", account: "acc_m2", prevTargets: ["acc_b1"],
+    action: "reply", sourceInput: "https://m.example/@a/1", platform: "mastodon", account: "acc_m2", prevTargets: ["acc_b1", "acc_t1"],
   });
 });
 
@@ -127,4 +147,16 @@ test("anything that isn't a snapshot becomes an empty version 3", () => {
     assert.equal(snap.interaction, null);
   }
   assert.deepEqual(upgrade({ v: 2, platforms: ["mastodon"] }, []).dropped, ["mastodon"]);
+});
+
+test("cleanOv: keys that would reach a prototype are dropped", () => {
+  const parsed = JSON.parse('{"text":"x","__proto__":{"polluted":1},"constructor":{"a":1},"prototype":{}}');
+  const ov = cleanOv(parsed);
+  assert.equal(Object.getPrototypeOf(ov), Object.prototype);
+  assert.deepEqual(Object.keys(ov).filter(k => ["__proto__", "constructor", "prototype"].includes(k)), []);
+  const target = { langs: "en" };
+  Object.assign(target, ov);
+  assert.equal(target.polluted, undefined);
+  assert.equal(Object.getPrototypeOf(target), Object.prototype);
+  assert.equal(target.text, "x");
 });

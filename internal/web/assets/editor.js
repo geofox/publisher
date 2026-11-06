@@ -30,7 +30,9 @@ const MAX_BREAKS = 99;
 
 let hooks = { changed() {}, tab() {} };
 let root = null;
-let sharedPane = null, platformPane = null, tabsRow = null;
+let sharedPane = null, platformPane = null, tabsRow = null, compareBtn = null;
+// The tab the row last brought into view (it does again only on a change).
+let shownTab = null;
 // The word picked on an account's tab, for "Break here": {p, at}.
 let picked = null;
 
@@ -42,9 +44,13 @@ export function editorInit(h) {
   if (!root) return;
   tabsRow = el("div", { class: "ed-tabs", role: "tablist", "aria-label": "Thread: shared text and each account" });
   tabsRow.addEventListener("keydown", onTabKey);
-  sharedPane = el("div", { class: "ed-pane ed-shared", id: "ed-pane-shared", role: "tabpanel" });
+  // Compare sits beside the tab list, not in it: it isn't a tab, and the
+  // list scrolls sideways when its tabs don't fit.
+  compareBtn = el("button", { class: "ed-compare", type: "button", title: "Every account's thread side by side (Alt+C)",
+    hidden: true, onclick: openCompare }, "⇆ Compare");
+  sharedPane = el("div", { class: "ed-pane ed-shared", id: "ed-pane-shared", role: "tabpanel", "aria-labelledby": "ed-tab-shared" });
   platformPane = el("div", { class: "ed-pane ed-platform", id: "ed-pane-account", role: "tabpanel", hidden: true });
-  root.replaceChildren(tabsRow, sharedPane, platformPane);
+  root.replaceChildren(el("div", { class: "ed-tabbar" }, tabsRow, compareBtn), sharedPane, platformPane);
   document.addEventListener("plan", onPlan);
   document.addEventListener("keydown", onKey);
   renderEditor();
@@ -197,6 +203,7 @@ function postsOf(p) {
 
 function renderTabs() {
   const had = tabsRow.contains(document.activeElement);
+  const left = tabsRow.scrollLeft; // where the owner scrolled the row to
   tabsRow.replaceChildren();
   const keys = tabKeys();
   const ids = selected();
@@ -207,7 +214,7 @@ function renderTabs() {
     const b = el("button", {
       title: k > 0 && k < 10 ? `${name || label} (Alt+${k})` : name || label,
       class: "ed-tab" + (on ? " on" : "") + (key === "shared" ? "" : " p-" + typeOf(key)),
-      type: "button", role: "tab", "aria-selected": on ? "true" : "false",
+      type: "button", role: "tab", "aria-selected": on ? "true" : "false", id: key === "shared" ? "ed-tab-shared" : "ed-tab-" + key,
       "aria-controls": key === "shared" ? "ed-pane-shared" : "ed-pane-account",
       "aria-label": name || null, tabindex: on ? "0" : "-1",
       "data-tab": key, "data-account": key === "shared" ? null : key, onclick: () => setTab(key),
@@ -226,17 +233,23 @@ function renderTabs() {
     if (m !== "shared") extra.append(el("span", { class: "ed-tab-mode", title: m === "text" ? "own text" : "own breaks", text: m === "text" ? "✎" : "✂" }));
     tab(id, labels[id], extra, accessibleName(id));
   }
-  if (ids.length > 1) {
-    tabsRow.append(el("button", { class: "ed-compare", type: "button", title: "Every account's thread side by side (Alt+C)",
-      onclick: openCompare }, "⇆ Compare"));
-  }
-  // The row scrolls sideways when the tabs don't fit: keep the active one
-  // in view (and the keyboard on it, when it was in the row).
+  compareBtn.hidden = ids.length < 2;
+  platformPane.setAttribute("aria-labelledby", state.tab === "shared" ? "ed-tab-shared" : "ed-tab-" + state.tab);
+  // The row keeps its sideways scroll; when the active tab changed, it is
+  // brought into view by scrolling the row only (scrollIntoView would also
+  // scroll the page to the editor). The keyboard stays on it when it was
+  // in the row.
+  tabsRow.scrollLeft = left;
   const on = tabsRow.querySelector(".ed-tab.on");
-  if (on) {
-    if (on.scrollIntoView) on.scrollIntoView({ block: "nearest", inline: "nearest" });
-    if (had) on.focus({ preventScroll: true });
+  if (on && state.tab !== shownTab) {
+    const r = on.getBoundingClientRect(), box = tabsRow.getBoundingClientRect();
+    if (box.width) { // laid out (not a hidden view)
+      if (r.left < box.left) tabsRow.scrollLeft -= box.left - r.left + 8;
+      else if (r.right > box.right) tabsRow.scrollLeft += r.right - box.right + 8;
+      shownTab = state.tab;
+    }
   }
+  if (on && had) on.focus({ preventScroll: true });
 }
 
 // setTab shows the shared tab ("shared") or account id's.
@@ -796,7 +809,7 @@ function renderCompare() {
   for (const { p, pl } of plans) {
     const n = pl ? pl.items.length : 0;
     grid.append(el("button", { class: "cmp-head p-" + typeOf(p), type: "button", role: "columnheader", "data-account": p,
-      title: accessibleName(p), onclick: () => open(p) },
+      title: accessibleName(p), "aria-label": `${accessibleName(p)}, ${n === 1 ? "1 post" : `${n} posts`}`, onclick: () => open(p) },
       brandTile(typeOf(p), { size: 20, r: 5 }), el("span", { class: "cmp-name", text: labels[p] }),
       el("span", { class: "muted", text: n === 1 ? "1 post" : `${n} posts` }),
       mode(p) !== "shared" ? el("span", { class: "pp-mode own", text: mode(p) === "text" ? "own text" : "own breaks" }) : null));

@@ -4,6 +4,12 @@ import { markDirty } from "./compose.js";
 
 const KEY = "compose_recovery_v1";
 
+// pending: the banner offers a stored snapshot the owner hasn't restored
+// or discarded yet. Until then nothing removes it: an empty composer (or a
+// draft opened meanwhile) leaves it for a reload to offer again.
+let pending = false;
+export function setRecoveryPending(on) { pending = !!on; }
+
 // snapshot writes the current Compose state to localStorage as a recovery
 // snapshot. Called on every state change via installRecoveryAutosave. Silently
 // no-ops on quota errors so a full localStorage never breaks the editor.
@@ -11,7 +17,7 @@ export function snapshot() {
   try {
     if (state.activeDraftId && !state.dirty) {
       // An open draft with nothing unsaved: the server has it all.
-      localStorage.removeItem(KEY);
+      if (!pending) localStorage.removeItem(KEY);
       return;
     }
     // Otherwise keep the edits (an open draft's carry its id and etag, so
@@ -19,7 +25,7 @@ export function snapshot() {
     const spec = buildSpec();
     // Skip empty drafts to avoid recovery noise.
     if (!spec.master_text && (!spec.images || spec.images.length === 0)) {
-      localStorage.removeItem(KEY);
+      if (!pending) localStorage.removeItem(KEY);
       return;
     }
     // The tags too: saving the restored draft sends them.
@@ -43,6 +49,7 @@ export function loadRecovery() {
 }
 
 export function clearRecovery() {
+  pending = false; // what was offered is gone now, on purpose
   try { localStorage.removeItem(KEY); } catch { /* ignore */ }
 }
 

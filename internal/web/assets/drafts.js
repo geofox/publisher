@@ -2,7 +2,7 @@
 import { state, v1PostBody, clearImages, setTargets } from "./state.js";
 import { cpIndex } from "./textpos.js";
 import { loadDraft, markDirty, mediaReady, newKey, resetComposer, rerenderComposer } from "./compose.js";
-import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
+import { loadRecovery, clearRecovery, snapshot, setRecoveryPending } from "./drafts_recovery.js";
 import { flash, el, v1, problemError, confirmModal, pressable } from "./common.js";
 import { byId, typeOf, loadAccounts, defaultTargets, networkName } from "./accounts.js";
 import { fromV1 } from "./interact.js";
@@ -181,8 +181,9 @@ async function resolveInteraction(action, url, prev, actor = "", candidates = []
       r = await resolve(url, actor);
     } catch (e) {
       // That account can't look it up any more (turned off, say): the
-      // server picks.
+      // server picks, or another of the candidates below.
       if (!actor || !(e.status >= 400 && e.status < 500)) throw e;
+      candidates = candidates.filter(id => id !== actor);
       actor = "";
       r = await resolve(url, "");
     }
@@ -257,6 +258,9 @@ async function specFromDraft(d, etag) {
     breaks: Array.isArray(c.breaks) ? u16(sharedText, c.breaks) : [],
     targets: interaction ? [interaction.account, ...targets.filter(id => id !== interaction.account)] : targets,
     overrides, media, anchors, interaction,
+    // The accounts it named that are gone (loadDraft then selects none of
+    // the defaults in their place).
+    dropped: accountsRead ? (post.targets || []).map(t => t.account).filter(id => !byId(id)) : [],
     number: post.threading ? !!post.threading.numbering : true,
     scheduled_at: post.schedule && post.schedule.at,
     notice: notes.length ? notes.join(" · ") : "",
@@ -458,6 +462,7 @@ function maybeShowRecoveryBanner() {
   const recovered = loadRecovery();
   if (!recovered) { banner.hidden = true; return; }
   banner.hidden = false;
+  setRecoveryPending(true);
   const r = document.getElementById("draft-recovery-restore");
   const d = document.getElementById("draft-recovery-discard");
   if (r) r.addEventListener("click", async () => {
@@ -499,6 +504,7 @@ function maybeShowRecoveryBanner() {
       // the restored edits are unsaved.
       onLoaded: () => {
         renderTagChips(Array.isArray(snap.tags) ? snap.tags : []);
+        setRecoveryPending(false);
         markDirty();
         banner.hidden = true;
         renderList(); refreshActiveControls();
@@ -508,6 +514,7 @@ function maybeShowRecoveryBanner() {
       } });
   };
   if (d) d.addEventListener("click", () => {
+    setRecoveryPending(false);
     clearRecovery();
     banner.hidden = true;
   });
