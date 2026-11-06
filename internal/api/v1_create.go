@@ -149,6 +149,7 @@ type plannedTarget struct {
 	caps    destination.Capabilities
 	text    string
 	textPtr string // where text came from, for errors
+	own     bool   // text is the target's own, not the shared text
 	reqPtr  string // the target in the request: /targets/i
 	ov      dispatch.Overrides
 	// layout is the target's breaks and media positions in text.
@@ -320,9 +321,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 	for _, ac := range accts {
 		byID[ac.ID] = ac
 	}
-	plan.spec.Overrides = map[string]dispatch.Overrides{}
-	plan.spec.Accounts = map[string]string{}
-	seenAcct, seenType := map[string]bool{}, map[string]bool{}
+	seenAcct := map[string]bool{}
 	sharedEmpty := false // reported once, not per target
 	for i, t := range req.Targets {
 		ptr := "/targets/" + strconv.Itoa(i)
@@ -331,29 +330,17 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 			add(ptr+"/account", "unknown_account", "no account "+t.Account+"; list them with GET /v1/accounts")
 			continue
 		}
-		drv, registered := destination.Lookup(ac.Type)
-		if !ac.Enabled || !registered {
-			add(ptr+"/account", "account_disabled", "this account is disabled (not configured on this server)")
-			continue
-		}
-		if sa, ok := a.Dispatch.(accountSender); ok && !sa.SendsAs(ac.Type, ac.ID) {
-			// Another account of a connected type: the engine would send it
-			// with the connected account's credentials.
-			add(ptr+"/account", "account_disabled", "this account isn't connected on this server (one account per destination type for now)")
+		drv, _ := destination.Lookup(ac.Type)
+		if why := a.accountUnusable(ac); why != "" {
+			add(ptr+"/account", "account_disabled", why)
 			continue
 		}
 		if seenAcct[ac.ID] {
 			add(ptr+"/account", "duplicate", "this account is already a target")
 			continue
 		}
-		if seenType[ac.Type] {
-			// The engine sends through one account per type until accounts
-			// can be added (step 4).
-			add(ptr+"/account", "duplicate_type", "one account per destination type for now")
-			continue
-		}
-		seenAcct[ac.ID], seenType[ac.Type] = true, true
-		caps := a.caps(ctx, ac.Type)
+		seenAcct[ac.ID] = true
+		caps := a.caps(ctx, ac.ID, ac.Type)
 		name := drv.Manifest().Name
 		pt := plannedTarget{account: ac, caps: caps, text: rawText, textPtr: "/content/text", reqPtr: ptr}
 		own := false
@@ -363,7 +350,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 			if c.Text != nil {
 				// The engine reads an empty override as "inherit", so a
 				// blank one would preview empty and publish the shared text.
-				pt.text, ov.Text, pt.textPtr, own = *c.Text, *c.Text, ptr+"/content/text", true
+				pt.text, pt.textPtr, own = *c.Text, ptr+"/content/text", true
 				switch {
 				case strings.TrimSpace(*c.Text) == "":
 					add(ptr+"/content/text", "empty", "leave text out (or null) to post the shared text")
@@ -406,7 +393,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 		}
 		a.planOptions(drv.Manifest(), caps, t.Options, ptr+"/options", &ov, add)
 		if action, _, _ := req.interaction(); strings.TrimSpace(pt.text) == "" && len(req.Content.Media) == 0 &&
-			ov.Text == "" && !sharedEmpty && action != "quote" && action != "repost" {
+			!own && !sharedEmpty && action != "quote" && action != "repost" {
 			sharedEmpty = true
 			add("/content/text", "required", "a post needs text or media")
 		}
@@ -435,18 +422,10 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 		}
 		pt.layout = targetLayout(req, t, own, pt.text, plan, ptr, add)
 		pt.text = thread.NormalizeNewlines(pt.text, pt.layout.Breaks, pt.layout.MediaAt)
-		if own {
-			ov.Text = pt.text
-		}
-		pt.ov = ov
+		pt.ov, pt.own = ov, own
 		plan.targets = append(plan.targets, pt)
-		plan.spec.Platforms = append(plan.spec.Platforms, ac.Type)
-		plan.spec.Overrides[ac.Type] = ov
-		plan.spec.Accounts[ac.Type] = ac.ID
-		if plan.spec.Layouts == nil {
-			plan.spec.Layouts = map[string]thread.Layout{}
-		}
-		plan.spec.Layouts[ac.Type] = pt.layout
+		plan.spec.Targets = append(plan.spec.Targets, dispatch.TargetSpec{AccountID: ac.ID, Type: ac.Type,
+			Text: pt.text, Overrides: ov, Layout: pt.layout})
 	}
 
 	// Threading and schedule.
@@ -567,12 +546,6 @@ func replyGateProblem(s string) string {
 		}
 	}
 	return ""
-}
-
-// accountSender reports whether the engine sends a type as a stored
-// account (dispatch.Dispatcher.SendsAs).
-type accountSender interface {
-	SendsAs(typ, id string) bool
 }
 
 // enqueuer saves a post for the background workers (*dispatch.Dispatcher).

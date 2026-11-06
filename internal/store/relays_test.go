@@ -35,7 +35,7 @@ func TestRelayPersistenceAndRetry(t *testing.T) {
 			Attempts: []Attempt{{AttemptNo: 1, Status: "partial", AttemptedAt: time.Now()}},
 		}},
 	}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 

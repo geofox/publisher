@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/feed"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
@@ -167,71 +168,106 @@ type v1RelaysSyncReq struct {
 	Relays    []string `json:"relays"`
 }
 
-// nostrAccount answers the request's account if it is one of the caller's
-// Nostr accounts; otherwise it writes the problem and returns false.
-func (a *API) nostrAccount(w http.ResponseWriter, r *http.Request) bool {
+// relayAccount is a leased account that has relays (a Nostr account).
+type relayAccount struct {
+	id      string
+	lister  pubnostr.RelayLister
+	release func()
+}
+
+func (ra relayAccount) owner() relaysync.Owner {
+	return relaysync.Owner{Home: ra.lister.HomeRelay(), Pubkey: ra.lister.OwnerPubkey()}
+}
+
+// relayAccountOf leases the request's account when it is one of the
+// caller's accounts with relays; otherwise it writes the problem and
+// returns false. release must be called when it returns true.
+func (a *API) relayAccountOf(w http.ResponseWriter, r *http.Request) (relayAccount, bool) {
 	if a.Store == nil {
 		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "no database")
-		return false
+		return relayAccount{}, false
+	}
+	if a.Accounts == nil {
+		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "accounts aren't loaded on this server")
+		return relayAccount{}, false
 	}
 	p, _ := principalFrom(r.Context())
-	accts, err := a.Store.Accounts(r.Context(), p.OwnerID)
+	id := r.PathValue("id")
+	e, ok := a.Accounts.Get(id)
+	if !ok || e.Row.OwnerID != p.OwnerID {
+		problem(w, r, http.StatusNotFound, codeNotFound, "no account "+id)
+		return relayAccount{}, false
+	}
+	if e.Row.Type != pubnostr.Type {
+		problem(w, r, http.StatusNotFound, codeNotFound, "relays belong to Nostr accounts; "+id+" is not one")
+		return relayAccount{}, false
+	}
+	acct, release, err := a.Accounts.Acquire(id)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "v1: relays: accounts", "err", err)
-		problem(w, r, http.StatusInternalServerError, codeInternal, "reading the account failed")
+		problem(w, r, http.StatusConflict, codeInvalidState, err.Error())
+		return relayAccount{}, false
+	}
+	lister, ok := acct.(pubnostr.RelayLister)
+	if !ok {
+		release()
+		problem(w, r, http.StatusNotFound, codeNotFound, "this account has no relays to sync")
+		return relayAccount{}, false
+	}
+	return relayAccount{id: id, lister: lister, release: release}, true
+}
+
+// relaySyncAvailable reports whether relay sync can run for one of the
+// caller's accounts now.
+func (a *API) relaySyncAvailable(ctx context.Context) bool {
+	if a.Sync == nil || a.Accounts == nil {
 		return false
 	}
-	id := r.PathValue("id")
-	for _, ac := range accts {
-		if ac.ID != id {
+	p, _ := principalFrom(ctx)
+	for _, e := range a.Accounts.List(p.OwnerID) {
+		if e.Status != accounts.Connected {
 			continue
 		}
-		if ac.Type != pubnostr.Type {
-			problem(w, r, http.StatusNotFound, codeNotFound, "relays belong to Nostr accounts; "+id+" is not one")
-			return false
+		acct, release, err := a.Accounts.Acquire(e.Row.ID)
+		if err != nil {
+			continue
 		}
-		if !ac.Enabled {
-			problem(w, r, http.StatusConflict, codeInvalidState, "this account is disabled (not configured on this server)")
-			return false
+		_, ok := acct.(pubnostr.RelayLister)
+		release()
+		if ok {
+			return true
 		}
-		// Relay sync works on the server's configured Nostr identity (its
-		// key, home relay and relay list), which is the env account's.
-		if ac.Source != "env" || ac.EnvKey != store.EnvKeyDefault {
-			problem(w, r, http.StatusNotFound, codeNotFound, "relay sync works for the server's configured Nostr account only")
-			return false
-		}
-		return true
 	}
-	problem(w, r, http.StatusNotFound, codeNotFound, "no account "+id)
 	return false
 }
 
-func (a *API) v1RelaysView(r *http.Request) (v1RelaysBody, error) {
+func (a *API) v1RelaysView(ctx context.Context, ra relayAccount) (v1RelaysBody, error) {
 	var nip65 []string
 	var nip65Err *string
-	if a.np != nil {
-		got, err := a.np.ResolveWriteRelays(r.Context())
-		if err != nil {
-			slog.WarnContext(r.Context(), "v1: relays: NIP-65 lookup", "err", err)
-			msg := "your relay list (NIP-65) could not be read from the bootstrap relay; try again"
-			nip65Err = &msg
-		} else {
-			nip65 = got
-		}
+	got, err := ra.lister.ResolveWriteRelays(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "v1: relays: NIP-65 lookup", "account", ra.id, "err", err)
+		msg := "your relay list (NIP-65) could not be read from the bootstrap relay; try again"
+		nip65Err = &msg
+	} else {
+		nip65 = got
 	}
-	secondary, err := a.Store.SyncRelays()
+	secondary, err := a.Store.AccountSyncRelays(ctx, ra.id)
 	if err != nil {
 		return v1RelaysBody{}, err
 	}
 	if nip65 == nil {
 		nip65 = []string{}
 	}
-	return v1RelaysBody{Home: a.HomeRelay, NIP65: nip65, Secondary: secondary,
-		Targets: relaysync.ResolveTargets(nip65, secondary, a.HomeRelay), NIP65Error: nip65Err}, nil
+	if secondary == nil {
+		secondary = []string{}
+	}
+	home := ra.lister.HomeRelay()
+	return v1RelaysBody{Home: home, NIP65: nip65, Secondary: secondary,
+		Targets: relaysync.ResolveTargets(nip65, secondary, home), NIP65Error: nip65Err}, nil
 }
 
-func (a *API) writeRelays(w http.ResponseWriter, r *http.Request) {
-	body, err := a.v1RelaysView(r)
+func (a *API) writeRelays(w http.ResponseWriter, r *http.Request, ra relayAccount) {
+	body, err := a.v1RelaysView(r.Context(), ra)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "v1: relays", "err", err)
 		problem(w, r, http.StatusInternalServerError, codeInternal, "reading the relays failed")
@@ -241,17 +277,23 @@ func (a *API) writeRelays(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) v1GetRelays(w http.ResponseWriter, r *http.Request) {
-	if a.nostrAccount(w, r) {
-		a.writeRelays(w, r)
+	if ra, ok := a.relayAccountOf(w, r); ok {
+		defer ra.release()
+		a.writeRelays(w, r, ra)
 	}
 }
 
 // v1PutRelays replaces the secondary relay list.
 func (a *API) v1PutRelays(w http.ResponseWriter, r *http.Request) {
 	var req v1RelaysPut
-	if !decodeJSON(w, r, &req) || !a.nostrAccount(w, r) {
+	if !decodeJSON(w, r, &req) {
 		return
 	}
+	ra, ok := a.relayAccountOf(w, r)
+	if !ok {
+		return
+	}
+	defer ra.release()
 	var errs []fieldError
 	if req.Secondary == nil {
 		errs = append(errs, fieldError{Pointer: "/secondary", Code: "required", Detail: "the relay list ([] for none)"})
@@ -263,7 +305,7 @@ func (a *API) v1PutRelays(w http.ResponseWriter, r *http.Request) {
 	}
 	seen := map[string]bool{}
 	urls := []string{}
-	home := normalizeRelay(a.HomeRelay)
+	home := normalizeRelay(ra.lister.HomeRelay())
 	for i, raw := range req.Secondary {
 		ptr := "/secondary/" + strconv.Itoa(i)
 		u := normalizeRelay(raw)
@@ -289,12 +331,12 @@ func (a *API) v1PutRelays(w http.ResponseWriter, r *http.Request) {
 		invalid(w, r, errs)
 		return
 	}
-	if err := a.Store.SetSyncRelays(urls); err != nil {
-		slog.ErrorContext(r.Context(), "v1: set relays", "err", err)
+	if err := a.Store.SetAccountSyncRelays(r.Context(), ra.id, urls); err != nil {
+		slog.ErrorContext(r.Context(), "v1: set relays", "account", ra.id, "err", err)
 		problem(w, r, http.StatusInternalServerError, codeInternal, "saving the relays failed")
 		return
 	}
-	a.writeRelays(w, r)
+	a.writeRelays(w, r, ra)
 }
 
 // hasBody reports whether the request carries a body, peeking when its
@@ -363,8 +405,8 @@ var errNIP65 = errors.New("NIP-65 relays unavailable")
 // syncTargets narrows the sync targets to the relays a request names
 // (every target when it names none). A named relay that isn't a target is
 // a field error.
-func (a *API) syncTargets(r *http.Request, relays []string) ([]relaysync.Target, []fieldError, error) {
-	view, err := a.v1RelaysView(r)
+func (a *API) syncTargets(ctx context.Context, ra relayAccount, relays []string) ([]relaysync.Target, []fieldError, error) {
+	view, err := a.v1RelaysView(ctx, ra)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -421,9 +463,11 @@ func (a *API) v1RelaysAction(action string) http.HandlerFunc {
 			}
 			relays, direction = req.Relays, req.Direction
 		}
-		if !a.nostrAccount(w, r) {
+		ra, ok := a.relayAccountOf(w, r)
+		if !ok {
 			return
 		}
+		defer ra.release()
 		if a.Sync == nil {
 			problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "relay sync is not configured on this server")
 			return
@@ -433,7 +477,7 @@ func (a *API) v1RelaysAction(action string) http.HandlerFunc {
 				Detail: "pull (copy from the relays to your home relay) or push (from home to the relays)"}})
 			return
 		}
-		targets, errs, err := a.syncTargets(r, relays)
+		targets, errs, err := a.syncTargets(r.Context(), ra, relays)
 		switch {
 		case errors.Is(err, errNIP65):
 			problem(w, r, http.StatusBadGateway, codeUpstream, "your relay list (NIP-65) could not be read from the bootstrap relay; try again")
@@ -460,14 +504,14 @@ func (a *API) v1RelaysAction(action string) http.HandlerFunc {
 		defer cancel()
 		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(relaySyncBudget + 30*time.Second))
 		if action == "scan" {
-			out := a.Sync.Scan(ctx, targets)
+			out := a.Sync.Scan(ctx, ra.owner(), targets)
 			if out == nil {
 				out = []relaysync.RelayDiff{}
 			}
 			writeV1(w, http.StatusOK, map[string]any{"relays": out})
 			return
 		}
-		out := a.Sync.Apply(ctx, targets, direction)
+		out := a.Sync.Apply(ctx, ra.owner(), targets, direction)
 		if out == nil {
 			out = []relaysync.ApplyResult{}
 		}

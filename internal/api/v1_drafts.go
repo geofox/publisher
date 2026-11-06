@@ -190,7 +190,7 @@ func (a *API) checkDraft(ctx context.Context, owner string, in *v1DraftIn) ([]fi
 		for _, ac := range accts {
 			known[ac.ID] = ac
 		}
-		seen, seenType := map[string]bool{}, map[string]bool{}
+		seen := map[string]bool{}
 		for i, t := range p.Targets {
 			ptr := "/post/targets/" + strconv.Itoa(i)
 			ac, ok := known[t.Account]
@@ -199,14 +199,12 @@ func (a *API) checkDraft(ctx context.Context, owner string, in *v1DraftIn) ([]fi
 				add(ptr+"/account", "unknown_account", "no account "+t.Account+"; list them with GET /v1/accounts")
 			case seen[t.Account]:
 				add(ptr+"/account", "duplicate", "this account is already a target")
-			case seenType[ac.Type]:
-				add(ptr+"/account", "duplicate_type", "one account per destination type for now")
 			}
-			seen[t.Account], seenType[ac.Type] = true, ok
+			seen[t.Account] = true
 			// Options as the post checks them, against the account's
 			// destination; without one, only their shape.
 			if drv, registered := destination.Lookup(ac.Type); ok && registered {
-				a.planOptions(drv.Manifest(), a.caps(ctx, ac.Type), t.Options, ptr+"/options", &dispatch.Overrides{}, add)
+				a.planOptions(drv.Manifest(), a.caps(ctx, ac.ID, ac.Type), t.Options, ptr+"/options", &dispatch.Overrides{}, add)
 			} else {
 				for k, v := range t.Options {
 					op := ptr + "/options/" + jsonPointerToken(k)

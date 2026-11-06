@@ -21,7 +21,7 @@ func TestResolvedNotPublishedIsSentAfterTheKeyWindow(t *testing.T) {
 	id := plan(t, d, "hello")
 	sendWithoutRecording(t, d, id)
 	later := time.Now().UTC().Add(2 * time.Hour)
-	d2 := &Dispatcher{Accounts: d.Accounts, Store: d.Store, Policy: d.Policy, Clock: func() time.Time { return later }}
+	d2 := &Dispatcher{Registry: d.Registry, Store: d.Store, Policy: d.Policy, Clock: func() time.Time { return later }}
 	ctx := context.Background()
 	d2.recoverSending(ctx)
 	post, _ := d.Store.GetPost(id)

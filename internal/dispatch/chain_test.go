@@ -47,7 +47,7 @@ func itoa(n int) string { return strconv.Itoa(n) }
 
 func TestRunPlatformForwardsReplyAndCID(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Bluesky: f})}
 	ref := &ReplyRef{RootID: "r", RootCID: "rc", ParentID: "p", ParentCID: "pc"}
 	r := d.runPlatform(context.Background(), "bluesky", "hi", Overrides{}, nil, nil, ref)
 	if r.Status != "success" || cidOf(r.RefData) != "cid0" {
@@ -60,7 +60,7 @@ func TestRunPlatformForwardsReplyAndCID(t *testing.T) {
 
 func TestRunChainThreadsSegments(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Bluesky: f})}
 	text := "aaa\n---\nbbb\n---\nccc" // 3 segments via --- markers (deterministic)
 	out := d.runChain(context.Background(), "bluesky", text, Overrides{}, nil, false, nil, nil, "t")
 
@@ -89,7 +89,7 @@ func TestRunChainThreadsSegments(t *testing.T) {
 
 func TestRunChainStopsOnFailure(t *testing.T) {
 	f := &fakeBsky{failAt: 1} // segment 0 ok, segment 1 fails
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Bluesky: f})}
 	out := d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb\n---\nccc", Overrides{}, nil, false, nil, nil, "t")
 	if out.Status != "partial" {
 		t.Fatalf("status=%s", out.Status)
@@ -118,7 +118,7 @@ func TestResumeSkipsLiveSegments(t *testing.T) {
 		},
 	}
 	f := &fakeBsky{failAt: -1}
-	out := (&Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f})}).resumeSegments(context.Background(), tg, Overrides{}, nil, "t")
+	out := (&Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Bluesky: f})}).resumeSegments(context.Background(), tg, Overrides{}, nil, "t")
 
 	if len(f.calls) != 1 { // ONLY seg2 reposts; the live partial seg1 is left alone (no duplicate)
 		t.Fatalf("expected 1 repost, got %d: %+v", len(f.calls), f.calls)
@@ -149,7 +149,7 @@ func TestResumePostsPendingTail(t *testing.T) {
 		},
 	}
 	f := &fakeBsky{failAt: -1}
-	out := (&Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f})}).resumeSegments(context.Background(), tg, Overrides{}, nil, "t")
+	out := (&Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Bluesky: f})}).resumeSegments(context.Background(), tg, Overrides{}, nil, "t")
 	if len(f.calls) != 2 {
 		t.Fatalf("expected 2 reposts (failed + pending tail), got %d", len(f.calls))
 	}
@@ -163,7 +163,7 @@ func TestResumePostsPendingTail(t *testing.T) {
 
 func TestRunChainSingleSegmentNoChain(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Bluesky: f})}
 	out := d.runChain(context.Background(), "bluesky", "short", Overrides{}, nil, false, nil, nil, "t")
 	if len(out.Segments) != 0 {
 		t.Fatalf("single post must have no Segments: %+v", out.Segments)
@@ -180,7 +180,7 @@ func TestRunChainImagesUnderCapStayOnHead(t *testing.T) {
 	// When the number of images is at or below the platform cap, the plan is
 	// [n, 0, ...]: all images land on the head segment, none on subsequent ones.
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Bluesky: f})}
 	imgs := []Img{{BlossomURL: "https://b/x", Bytes: []byte("i"), Mime: "image/png"}}
 	d.runChain(context.Background(), "bluesky", "aaa\n---\nbbb", Overrides{}, imgs, false, nil, nil, "t")
 	if f.calls[0].nImgs != 1 {
@@ -203,7 +203,7 @@ func TestResumeSegmentsContinuesFromFailure(t *testing.T) {
 		},
 	}
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Bluesky: f})}
 	out := d.resumeSegments(context.Background(), tg, Overrides{}, nil, "t")
 
 	if out.Status != "success" {
@@ -250,7 +250,7 @@ func (f *fakeMastoChain) QuoteStatus(context.Context, string, string, []Img) (le
 
 func TestRunChainSplitsImagesOverMastodonCap(t *testing.T) {
 	f := &fakeMastoChain{}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Mastodon: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Mastodon: f})}
 	out := d.runChain(context.Background(), "mastodon", "hello", Overrides{}, testImgs(10), false, nil, nil, "t")
 	if out.Status != "success" {
 		t.Fatalf("status=%s err=%s", out.Status, out.Error)
@@ -276,7 +276,7 @@ func TestRunChainSplitsImagesOverMastodonCap(t *testing.T) {
 
 func TestRunChainBlueskyTenImagesSinglePost(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Bluesky: f})}
 	out := d.runChain(context.Background(), "bluesky", "hello", Overrides{}, testImgs(10), false, nil, nil, "t")
 	if out.Status != "success" || len(f.calls) != 1 || f.calls[0].nImgs != 10 {
 		t.Fatalf("want single post with 10 images: %+v (status=%s)", f.calls, out.Status)
@@ -288,7 +288,7 @@ func TestRunChainBlueskyTenImagesSinglePost(t *testing.T) {
 
 func TestRunChainSpreadsImagesAcrossTextSegments(t *testing.T) {
 	f := &fakeMastoChain{}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Mastodon: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Mastodon: f})}
 	out := d.runChain(context.Background(), "mastodon", "one\n---\ntwo\n---\nthree", Overrides{}, testImgs(10), false, nil, nil, "t")
 	if out.Status != "success" || len(f.calls) != 3 {
 		t.Fatalf("calls=%d status=%s", len(f.calls), out.Status)
@@ -312,7 +312,7 @@ func TestRetryResumesPartialThread(t *testing.T) {
 	}
 	defer db.Close()
 	f := &fakeBsky{failAt: -1}
-	d := &Dispatcher{Accounts: legacyAccounts(legacy{Bluesky: f}), Store: db}
+	d := &Dispatcher{Registry: legacyAccounts(legacy{Bluesky: f}), Store: db}
 
 	rec := &store.Post{
 		ID: "rp", CreatedAt: time.Now().UTC(), Platforms: []string{"bluesky"}, Source: "web", Status: "partial",
@@ -325,7 +325,7 @@ func TestRetryResumesPartialThread(t *testing.T) {
 			Attempts: []store.Attempt{{AttemptNo: 1, Status: "partial", AttemptedAt: time.Now()}},
 		}},
 	}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.Retry(context.Background(), "rp", nil); err != nil {
@@ -343,7 +343,7 @@ func TestRetryResumesPartialThread(t *testing.T) {
 
 func TestResumeRepostsSegmentImageSlices(t *testing.T) {
 	f := &fakeMastoChain{}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Mastodon: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Mastodon: f})}
 	tg := store.Target{
 		Platform: "mastodon",
 		Segments: []store.Segment{
@@ -368,7 +368,7 @@ func TestResumeRepostsSegmentImageSlices(t *testing.T) {
 
 func TestResumeFullRetryDistributesImages(t *testing.T) {
 	f := &fakeMastoChain{}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Mastodon: f})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Mastodon: f})}
 	// Head itself failed (no RemoteID anywhere): the whole chain re-posts.
 	// Segments 1 and 2 are image-only overflow segments, hence empty text.
 	tg := store.Target{

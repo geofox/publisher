@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/thread"
@@ -37,10 +38,14 @@ type TargetResult struct {
 	// what the fan-out and relay retry re-send.
 	SignedEventJSON string
 	PendingRelays   []string // secondary endpoints to deliver to asynchronously
+	// waiting: nothing was sent because the account is locked; the item
+	// waits for it to open.
+	waiting bool
 }
 
+// Overrides are a target's content fields and options, as stored in its
+// fields_json. Its text is TargetSpec.Text.
 type Overrides struct {
-	Text           string   `json:"text"`
 	SpoilerText    string   `json:"spoiler_text"`
 	Sensitive      bool     `json:"sensitive"`
 	Visibility     string   `json:"visibility"`
@@ -113,22 +118,39 @@ type InteractRef struct {
 	Mentions     []string `json:"mentions,omitempty"`
 }
 
+// TargetSpec is one account a post goes to.
+type TargetSpec struct {
+	// AccountID is the account that sends; Type is its destination type.
+	AccountID string
+	Type      string
+	// Text is what this account posts: its own text or the shared one
+	// (empty: PostSpec.MasterText, or an interaction's commentary).
+	Text      string
+	Overrides Overrides
+	// Layout is the account's hand-made breaks and media positions in
+	// Text; without any, the text is split automatically with every media
+	// on its first post.
+	Layout thread.Layout
+}
+
+// PostSpec is a post to plan: its shared content and the accounts it goes
+// to.
 type PostSpec struct {
 	MasterText   string
-	Platforms    []string
+	Targets      []TargetSpec
 	DelaySeconds int
 	Source       string
-	Overrides    map[string]Overrides // keyed by platform
 	Images       []Img
-	// Layouts are each platform's hand-made breaks and media positions in
-	// the text it posts; a platform left out is split automatically with
-	// every media on its first post.
-	Layouts      map[string]thread.Layout
 	MediaRecords []store.Media // already uploaded to Blossom, for archival
 	Number       bool          // append k/n counters to threaded segments
-	// Accounts names the account each platform posts as (platform →
-	// account id); a platform left out gets its env account.
-	Accounts map[string]string
+}
+
+// text is what target t posts.
+func (s PostSpec) text(t TargetSpec) string {
+	if t.Text != "" {
+		return t.Text
+	}
+	return s.MasterText
 }
 
 type Fetcher interface {
@@ -143,17 +165,27 @@ type PostNotifier interface {
 	PostPublished(ctx context.Context, p *store.Post)
 }
 
+// AccountSource is where the dispatcher finds accounts, by id
+// (*accounts.Registry).
+type AccountSource interface {
+	// Acquire leases a connected account; release when the send ends. An
+	// account that can't be used gives an *accounts.Unavailable.
+	Acquire(id string) (destination.Account, func(), error)
+	// Caps is the account's capabilities, or its type's defaults while it
+	// isn't open.
+	Caps(ctx context.Context, id, typ string) destination.Capabilities
+	Get(id string) (accounts.Entry, bool)
+	List(owner string) []accounts.Entry
+	// ReportAuthFailure says a network refused the account's credentials,
+	// so the registry checks them.
+	ReportAuthFailure(id string)
+}
+
 // Dispatcher publishes posts to destination accounts and records the outcome.
 type Dispatcher struct {
-	// Accounts are the connected destination accounts, keyed by the name a
-	// post targets. Until accounts can be added (step 4) the name is the
-	// destination type: one connected account per type.
-	Accounts map[string]destination.Account
-	// AccountIDs names the stored account each entry of Accounts sends as
-	// (type → account id, from store.SeedEnvAccounts). A target naming
-	// another account of the type is refused rather than sent with these
-	// credentials. Nil skips the check (unit tests).
-	AccountIDs map[string]string
+	// Registry holds the accounts targets name by id. Nil: no account can
+	// send (every target fails as not configured).
+	Registry AccountSource
 	// Host re-hosts re-encoded media for URL-transport destinations. Nil
 	// keeps canonical URLs.
 	Host     MediaHost
@@ -180,11 +212,11 @@ type Dispatcher struct {
 // enqueueFanout records async relay deliveries for a freshly-published Nostr
 // event (no-op without a store, an empty event, no pending relays, or a
 // failed primary publish — a failed delivery must not fan out).
-func (d *Dispatcher) enqueueFanout(ctx context.Context, postID, status, signedEventJSON string, relays []string) {
+func (d *Dispatcher) enqueueFanout(ctx context.Context, postID string, itemID int64, status, signedEventJSON string, relays []string) {
 	if d.Store == nil || status == "failed" || signedEventJSON == "" || len(relays) == 0 {
 		return
 	}
-	if err := d.Store.EnqueueFanout(postID, signedEventJSON, relays); err != nil {
+	if err := d.Store.EnqueueFanout(postID, itemID, signedEventJSON, relays); err != nil {
 		slog.WarnContext(ctx, "enqueue fan-out failed", "post_id", postID, "err", err)
 	}
 }
@@ -206,7 +238,7 @@ func (d *Dispatcher) alertFailure(ctx context.Context, p *store.Post) bool {
 	var gaveUp []string
 	for _, t := range p.Targets {
 		if t.GaveUpAt != nil {
-			gaveUp = append(gaveUp, d.displayName(t.Platform))
+			gaveUp = append(gaveUp, d.displayName(t.AccountID, t.Platform))
 		}
 	}
 	const why = ": the failure would repeat (auth, invalid, rejected) " +

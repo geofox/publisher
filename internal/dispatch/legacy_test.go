@@ -77,8 +77,8 @@ type legacy struct {
 }
 
 // legacyAccounts wraps the set fakes as accounts that speak the real drivers'
-// manifests.
-func legacyAccounts(l legacy) map[string]destination.Account {
+// manifests, each its type's test account.
+func legacyAccounts(l legacy) *testRegistry {
 	out := map[string]destination.Account{}
 	if l.Nostr != nil {
 		out[nostr.Type] = &legacyNostr{l.Nostr}
@@ -92,7 +92,7 @@ func legacyAccounts(l legacy) map[string]destination.Account {
 	if l.Threads != nil {
 		out[threads.Type] = &legacyThreads{l.Threads}
 	}
-	return out
+	return registryOf(out)
 }
 
 // toResult converts a fake's result the way the old dispatcher read it.
@@ -283,15 +283,15 @@ func (d *Dispatcher) runPlatform(ctx context.Context, plat, text string, ov Over
 			}
 		}
 	}
-	return d.publishItem(ctx, plat, it)
+	return d.publishItem(ctx, acct(plat), plat, it)
 }
 
 // runAction runs a repost or a single-item quote, as the old runAction did.
 func (d *Dispatcher) runAction(ctx context.Context, action, plat, text string, ov Overrides, imgs []Img, _ []gonostr.Tag, ref InteractRef) TargetResult {
 	if action == actionRepost {
-		return d.repost(ctx, plat, ref)
+		return d.repost(ctx, acct(plat), plat, ref)
 	}
-	return d.publishItem(ctx, plat, item{text: text, ov: ov, imgs: imgs, head: &headSpec{quote: &ref}})
+	return d.publishItem(ctx, acct(plat), plat, item{text: text, ov: ov, imgs: imgs, head: &headSpec{quote: &ref}})
 }
 
 // testImgs returns n small images with bytes, as the composer would send.

@@ -51,7 +51,9 @@ valid token.
 
 **403.** The token is valid but lacks the route's scope. The
 `WWW-Authenticate` header names the scope needed. Create a token with that
-scope (`admin` includes every scope).
+scope. `admin` includes every scope except `accounts:write`, which must
+be granted by name; only the signed-in owner (not a token) can create a
+token holding it.
 
 ## cross_origin
 
@@ -91,11 +93,21 @@ bodies; see `GET /v1/instance` for the limits).
 `errors[]` lists every invalid field, so a client can show them all at once.
 Field codes include `required`, `too_long`, `unknown_scope`,
 `invalid_time`, `in_past` and `exceeds_caller` (a token tried to create a
-token that would outlive it). For a reply, quote or repost the source URL
-can be `unrecognized`, `not_supported` (Threads), `not_configured` or
+token that would outlive it, or one holding `accounts:write`). For a reply, quote or repost the source URL
+can be `unrecognized`, `not_supported` (Threads), `not_configured` (none
+of your accounts on the post's network is connected) or
 `unresolvable` (not found, deleted, private, or not yet known to your
 server); `not_allowed` and `missing_source_account` concern the action
-and its targets. The tools add `unsupported_language` (translate) and
+and its targets, and `one_native_actor` a second target on the post's own
+network (the post exists once there, so one of your accounts acts on it;
+send from the others separately). A target's account that can't send
+now is `account_disabled`; `detail` says why (turned off, not
+configured, locked, needs to be connected again). The same account twice
+is `duplicate`. `POST /v1/resolve` with `account` adds, on `/account`,
+`unknown_account` (not one of yours), `not_allowed` (on another network)
+and `account_disabled`. `PATCH /v1/accounts/{id}` uses `required`,
+`too_long` and `invalid` (a control character, or a value of the wrong
+type, `null` included). The tools add `unsupported_language` (translate) and
 `unknown_relay` (relay sync: a relay that isn't one of the account's).
 Resolving an unknown item (`:resolve`) adds `unknown_item`, and for its
 `url` `not_found` (no such post), `not_own` (another account's post),
@@ -127,8 +139,10 @@ previous page unchanged; cursors are opaque.
 
 **409.** The request is valid but the resource is not in a state that
 allows it: rescheduling a post that isn't scheduled, hiding one still to be
-sent, canceling a post with nothing left to cancel, or retrying one with
-nothing to retry. `detail` says which.
+sent, canceling a post with nothing left to cancel, retrying one with
+nothing to retry, or a relay operation on a Nostr account that isn't
+connected now (or while a scan or sync of its relays is running). `detail`
+says which.
 
 ## idempotency_key_invalid
 
@@ -152,7 +166,8 @@ key for a new request. Keys are kept for 24 hours.
 ## precondition_failed
 
 **412.** The `If-Match` header names a version the resource is no longer
-at: it changed since you read it (a draft saved from another tab, say).
+at: it changed since you read it (a draft saved from another tab, or an
+account's settings changed by another client).
 The response's `ETag` is the current version. Read the resource again,
 merge, and retry with the new ETag, or send `If-Match: *` to overwrite.
 

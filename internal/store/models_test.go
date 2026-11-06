@@ -25,7 +25,7 @@ func TestSaveAndGetPost(t *testing.T) {
 				Attempts: []Attempt{{AttemptNo: 1, Status: "failed", Error: "boom", AttemptedAt: time.Now()}}},
 		},
 	}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 	got, err := db.GetPost("abc123")
@@ -68,7 +68,7 @@ func TestSavePostScrubsAttemptSecrets(t *testing.T) {
 				RequestJSON:  `{"Authorization":"Bearer SECRET123","text":"hi"}`,
 				ResponseJSON: `{"ok":true}`, AttemptedAt: time.Now()}}}},
 	}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 	got, err := db.GetPost("p1")
@@ -104,7 +104,7 @@ func TestSavePostWithSegments(t *testing.T) {
 			Attempts: []Attempt{{AttemptNo: 1, Status: "partial", AttemptedAt: time.Now()}},
 		}},
 	}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 	got, err := db.GetPost("seg1")
@@ -132,7 +132,7 @@ func TestSavePostNoSegmentsIsEmpty(t *testing.T) {
 		Targets: []Target{{Platform: "mastodon", Status: "success", RemoteID: "m1",
 			Attempts: []Attempt{{AttemptNo: 1, Status: "success", AttemptedAt: time.Now()}}}},
 	}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := db.GetPost("ns1")
@@ -151,7 +151,7 @@ func TestPostInteractionRoundTrip(t *testing.T) {
 			SourceURL: "https://bsky.app/x", SourceAuthor: "@alice"},
 		Targets: []Target{{Platform: "bluesky", Status: "success"}},
 	}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := db.GetPost("i1")
@@ -170,7 +170,7 @@ func TestListPostsCarriesInteraction(t *testing.T) {
 		Platforms: []string{"bluesky"}, Source: "web", Status: "success",
 		Interaction: &Interaction{Action: "repost", SourcePlatform: "bluesky", SourceAuthor: "@bob"},
 		Targets:     []Target{{Platform: "bluesky", Status: "success"}}}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 	list, err := db.ListPosts(10, 0)
@@ -190,7 +190,7 @@ func TestGetPostHandlesLegacyNullInteraction(t *testing.T) {
 	rec := &Post{ID: "l1", CreatedAt: time.Now().UTC().Truncate(time.Second),
 		Platforms: []string{"nostr"}, Source: "web", Status: "success",
 		Targets: []Target{{Platform: "nostr", Status: "success"}}}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.sql.Exec(`UPDATE posts SET interaction_json=NULL WHERE id=?`, "l1"); err != nil {
@@ -211,7 +211,7 @@ func TestPostWithoutInteractionLoadsNil(t *testing.T) {
 	rec := &Post{ID: "n1", CreatedAt: time.Now().UTC().Truncate(time.Second),
 		Platforms: []string{"nostr"}, Source: "web", Status: "success",
 		Targets: []Target{{Platform: "nostr", Status: "success"}}}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := db.GetPost("n1")
@@ -237,7 +237,7 @@ func TestMediaDurationRoundtrip(t *testing.T) {
 				PosterURL: "https://b/poster"},
 		},
 	}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 	got, err := db.GetPost("dur1")

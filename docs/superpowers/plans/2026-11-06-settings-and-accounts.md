@@ -512,6 +512,60 @@ One commit: every caller moves to the registry and account-keyed specs.
   account**; fan-out through its own account, through another when locked,
   waiting when none.
 
+### As built (A2.1–A2.3)
+
+- **Store names.** The per-account relay-sync functions are
+  `AccountSyncRelays`, `SetAccountSyncRelays`,
+  `SeedAccountSyncRelaysIfEmpty` and `AdoptLegacySyncRelays`; the global
+  `SyncRelays`/`SeedSyncRelaysIfEmpty` stay until A2.4 moves relay sync to
+  accounts. `InsertAccount(ctx, Account)` was added for tests and the
+  harness (a second account of a type, a `not_configured` row); C's write
+  API replaces it for real accounts.
+- **Test helpers stay in their packages.** `store` has
+  `fixtures_test.go` (`saveWithAccounts`, `testAccount`); `dispatch` has
+  `registry_test.go` (a `testRegistry` with lease counts, `typeSpec` and
+  `typeInteract` builders for the old per-type tests). No `storetest` or
+  `dispatchtest` package: nothing outside the package needs them yet.
+- **The dispatcher's per-type entry points** (`Post`, `Schedule`, `Fire`,
+  `Retry(types)`, `Interact`, `RetryRelay`) moved to `registry_test.go`
+  as test-only wrappers over `Enqueue` instead of rewriting about 150
+  tests; production code no longer has them.
+- **Registry status lives in memory.** It is recomputed on `Load` and by
+  checks; nothing new is stored. `destination.Expirer`
+  (`CredentialsExpireAt`) is how the refresh loop and the expiry alert
+  read an account's expiry; the Threads account implements it.
+- **A `Restore` error makes the account `locked`** ("its saved state could
+  not be read; it is retried at the next start") rather than failing the
+  start or opening with the environment's token, which could be older than
+  the refreshed one.
+- **Locked items wait `clamp(time since the post was due, 1 min, 15
+  min)`** rather than a per-item backoff: no attempt is counted, so the
+  backoff has nothing to grow from, and the post's age gives the same
+  shape. The item stays `planned` with `not_sent`, class `transient`, the
+  error "the account is locked: <reason>; it is sent once the account
+  opens", no settled step and no alert. Part C should make a locked
+  account's items due at once when it unlocks.
+- **`InteractSpec.Targets` includes the source account** (the one that
+  acts natively) with every copy; `split()` separates them and forces the
+  source target's type to `SourcePlatform`.
+- **The API checks accounts up front** (`accountUnusable`, pulled forward
+  from A2.5): a target whose account isn't loaded or can't send is refused
+  with `account_disabled` and the registry's reason, rather than being
+  accepted and failing as `auth`. `duplicate_type` stays until A2.5.
+- **Fan-out and relay retry** use the job's account, else the first
+  connected `Redeliverer` of the type, else wait; `NewFanout` lost its
+  `enabled` argument.
+- **Startup** (`main.go`): env accounts → `SeedEnvAccounts` →
+  `AdoptLegacy` (an error is logged, not fatal: the lists can be fixed in
+  the app) → `Registry.Load` → refresh and check loops → recovery →
+  workers. Until A2.4 the interim identity, resolve and relay-sync services
+  lease the first connected account of their type; startup still fails if
+  the env Nostr account can't open (A2.6 makes Nostr optional).
+- **Known follow-ups:** `internal/web/assets/accounts.js` picks the first
+  `enabled` account per type; since v11 every env row is enabled, so A2.5
+  must expose `status` and A3 (or A2.5) pick the first `connected` one.
+  `TokenManager` and `drivers.OpenEnv` are unused in production (A2.7).
+
 ### Task A2.4: services per account
 
 **Files:** delete `internal/identity`, `resolve.Service` and adapters;
@@ -539,6 +593,52 @@ One commit: every caller moves to the registry and account-keyed specs.
   forbids them importing a driver package (only `internal/drivers` may).
 - [ ] Tests: readiness names; relay handlers per account; feed flag in
   page and webhook.
+
+### As built (A2.4)
+
+- **The API reaches accounts through one interface,** `api.AccountRegistry`
+  (`Get`, `List`, `Acquire`, `Profile`; the registry, or the harness's
+  engine wrapper). `api.New(mp)`; the `np`, `HomeRelay`, `Identity` and
+  `Resolve` fields are gone.
+- **Profiles** come from `Registry.Profile` for every account (two of a
+  network included); `main.go` calls `RefreshProfiles` at startup. An
+  account the owner turned off isn't asked for its profile (its
+  credentials aren't used while off), matching the checks.
+  `internal/identity` is deleted.
+- **Readiness glue lives in the registry** (`Probeable`, `Probe`,
+  `Readiness(owner)`), so it is tested there; `health.Checker` gained
+  `MoreExternal func() []Check`, asked at each refresh of the external
+  results. A probe failure is classed `unreachable`, `timeout` or `not ok`;
+  the network's message only reaches the log. `health.NostrRelay` is gone.
+  `blossom` is listed only when `BLOSSOM_URL` is set.
+- **Looking posts up:** `resolve` keeps the types, `Detect` (now exported,
+  trims space) and `FromResolved`; `Service` and the adapter are deleted.
+  The API looks a post up with the first connected account of the detected
+  type, and an interaction prefers its own target account on that network
+  (pulled forward from A2.5: a Mastodon status id is only valid on its
+  own server). `ErrThreadsUnsupported` became `ErrUnsupported`, its message
+  built from the driver's name. Behaviour change: with every account of
+  the post's network turned off, `/v1/resolve` answers `not_configured`
+  ("none of your accounts on that post's network is connected") instead
+  of a preview with nothing allowed, since looking up uses the account.
+- **Relay sync** works for any of the owner's Nostr accounts (not only the
+  env default): `relaysync.Sync` takes a `relaysync.Owner{Home, Pubkey}`
+  per call; `nostr.RelayLister` is implemented by the Nostr account; lists
+  are `AccountSyncRelays`/`SetAccountSyncRelays`; an unusable account is
+  `409` with the registry's reason; another owner's account is `404`
+  without being leased. `features.relay_sync` is true while a Nostr
+  account of the caller's is connected.
+- **Feed** links carry `account` and `handle` (OpenAPI updated).
+- **Guard tests:** `cmd/publisher` joins the string-literal check; a new
+  test forbids `cmd/publisher` and `internal/accounts` importing a driver
+  package (found by reflection on the registered drivers, so a new driver
+  is covered without editing the test). `main.go` no longer imports any
+  driver package.
+- The startup log no longer prints the Nostr key and bootstrap relay
+  (they belong to an account); it prints `blossom_signer`.
+- Left for A2.7: the global `sync_relays` store functions (`SyncRelays`,
+  `SetSyncRelays`, `AddSyncRelay`, `RemoveSyncRelay`,
+  `SeedSyncRelaysIfEmpty`) are now used only by `AdoptLegacy` and tests.
 
 ### Task A2.5: the API by account
 
@@ -572,6 +672,36 @@ One commit: every caller moves to the registry and account-keyed specs.
   source network; resolve with `account`; PATCH with ETags and scopes; an
   admin token can't PATCH or mint `accounts:write`.
 
+### As built (A2.5)
+
+- **Account views** carry `status`, `status_reason`, `order`, `remote_id`,
+  `profile_url`, `default_selected` and `public_feed`; the handlers moved
+  to `v1_accounts.go`. The single view's `ETag` is `updated_at` in Unix
+  nanoseconds (which moves only on an owner's change); the store compares
+  it inside the update's transaction (`AccountMeta.IfUpdatedAt`,
+  `ErrAccountConflict`), so a change landing between read and write is a
+  412 even without `If-Match`, as for drafts.
+- **`PATCH /v1/accounts/{id}`** decodes each field raw so `null` is
+  refused (`invalid`) instead of read as "keep". `api.AccountRegistry`
+  gained `Update`. `Registry.Update` now takes only the owner's fields and
+  ignores a row older than the one it holds (two PATCHes whose registry
+  notices cross), keeping the handle and remote id the registry learnt.
+- **`account.updated`** is written by `UpdateAccountMeta` in its
+  transaction with `post_id` NULL; data: account, type, field names,
+  actor (`session`, `token`, `proxy`) and token id. `/v1/events` sends it
+  only to a caller with `accounts:read` (`EventFilter.PostsOnly`); `post`
+  became optional in the event schema. Pulled forward from C (spec §10.1).
+- **Drafts** accept an unavailable account without a warning field (they
+  never had one); the composer shows the account's status when it loads
+  the draft (A3).
+- **The token form** offers `accounts:write`; `admin` reads "everything
+  else".
+- **Fixed on the way:** `AdoptLegacy` gave the 2.x relay-sync list to the
+  first env Nostr row in the order given, which could be a numbered
+  account (same `created_at`, random id); it now goes to the unnumbered
+  (`default`) account, 2.x's one account. Its test was order-dependent
+  (failed about half the runs).
+
 ### Task A2.6: Nostr and Blossom optional
 
 **Files:** `cmd/publisher/main.go` (extract `run(ctx, getenv)`),
@@ -594,29 +724,111 @@ One commit: every caller moves to the registry and account-keyed specs.
   `features.media=false`; CI's Docker smoke run gains a second container
   with no destination variables.
 
+### As built (A2.6)
+
+- **`run(ctx, runOptions{Getenv, Started, Stopping})`** holds what `main`
+  did and returns an exit code (2 configuration, 1 failure, 0 after a
+  graceful stop); it listens with `net.Listen` so a test can use port 0.
+  `config.LoadFrom(getenv)` reads through the given function (`Load` is
+  `LoadFrom(os.Getenv)`). Tests in `cmd/publisher`: only `BLUESKY_*` set
+  (ready, `features.media=false`, one connected account, upload 503,
+  graceful exit 0), nothing set (ready), `BLOSSOM_URL` without a Nostr
+  key (exit 2).
+- **No media store:** `mp` is nil; `media.NewFetcher()` (a plain fetcher
+  split out of `Pipeline.Fetch`) is the dispatcher's `Fetcher` either way;
+  `Host` is set only with a store; the video runner is built only with a
+  store. `POST /v1/media` (image or video) and `:compress` answer 503 "no
+  media store is configured (set BLOSSOM_URL)"; `features.media`, and
+  `features.video` now also needs the store. The composer hides the attach
+  button and the video preset and says why.
+- **Startup log:** accounts grouped by status; one warning per account
+  that isn't connected (with its reason), an info line for one turned
+  off, and a warning when there is none.
+- **CI:** a second Docker smoke run with only `DB_PATH` checks `/readyz`,
+  `features.media=false` and the healthcheck (checked locally with the
+  binary; this container has no Docker daemon).
+
 ### Task A2.7: cleanup
 
-- [ ] Delete what the switch left unused: old driver constructors,
+- [x] Delete what the switch left unused: old driver constructors,
   `ConnectedIDs`, `LegacyItemKey` outside the v4 migration and reads, the
   old config plumbing. `go vet` clean and no unused exported helpers left.
+
+### As built (A2.7)
+
+- **Removed:** `threads.TokenManager` (the registry's refresh loop and
+  `accounts.RefreshDue`, which also sets `publisher_token_expiry_seconds`,
+  do its work; `threads/refresh.go` keeps `SeedProvisional` and
+  `SeedHash`); `drivers.OpenEnv`, `errNoSave` and `envHost` (tests open
+  env accounts through each driver with `destinationtest.NewHost`); the
+  store's global relay-sync functions (`SyncRelays`, `SetSyncRelays`,
+  `AddSyncRelay`, `RemoveSyncRelay`, `SeedSyncRelaysIfEmpty`, and the
+  unused `AddAccountSyncRelay`/`RemoveAccountSyncRelay`): table
+  `sync_relays` is only read by `AdoptLegacySyncRelays`, and tests write
+  it with SQL; `config.Load` (callers use `LoadFrom(os.Getenv)`).
+- **Moved to tests:** the inline drive (`drive`, `driveTarget`,
+  `beginInline`, `endInline`, `notSaved`, `runDue`) to
+  `dispatch/inline_test.go`. Production only enqueues; it was reachable
+  before only through reflection. The workers still skip a post a test
+  drives inline (`inlinePosts`), and `memMedia` stays (tests hand media
+  in memory).
+- **Kept on purpose:** `bluesky.New`, `mastodon.New`, `threads.New` (test
+  conveniences over `Open` with a trusted network, 69 call sites);
+  `destination.MergeState`, `OptStrings`, `Unregister` (contract and test
+  helpers); `LegacyItemKey` (v4 migration; tests building 2.x items).
+  `ConnectedIDs` was already gone. Every `config.Config` field is read.
+- `deadcode ./...` now reports a subset of what it reported on `main`.
 
 ### Task A2.8: e2e
 
 **Files:** `e2e/harness/*`, `e2e/tests/*`, `e2e/README.md`.
 
-- [ ] The harness seeds through an injectable env list with keys: one
+- [x] The harness seeds through an injectable env list with keys: one
   account per type as today (default selected), plus a second Mastodon
   (1000-character limit) and a second Bluesky with `default_selected=0`,
   and the `not_configured` row; existing specs keep their four rows.
-- [ ] The recorder records the account of each call and accepts
+- [x] The recorder records the account of each call and accepts
   `?account=` on its controls (`down`, `invalid`, `hold`).
-- [ ] Fake `SourceResolver`s on the fakes, with URLs `Detect` recognises,
+- [x] Fake `SourceResolver`s on the fakes, with URLs `Detect` recognises,
   so interactions can be tested.
-- [ ] Tests that change accounts restore them in `afterEach`.
-- [ ] New `api-accounts.spec.ts` (API level, since the composer is still
+- [x] Tests that change accounts restore them in `afterEach`.
+- [x] New `api-accounts.spec.ts` (API level, since the composer is still
   per type in A2): create a post to both Mastodon accounts and see two
   sends with their own texts; retry one account's failed item; PATCH a
   label; the `not_configured` account refused with its reason.
+
+### As built (A2.8)
+
+- **`harnessAccounts`** (`e2e/harness/main.go`) is the one table of the
+  harness's accounts, seeded with `SeedEnvAccounts` in table order; the
+  registry's env list is built from it (an entry with `NotConfigured` is
+  stored but left out, so it is `not_configured`). Accounts: one of each
+  network (the composer's four rows), "Mastodon (long posts)" (1000
+  characters, through the account config key `e2e_max_length`), "Bluesky
+  (alt)" (`default_selected` off), "Mastodon (old)" (not configured).
+- **`SeedEnvAccounts` keeps the order given:** rows seeded together got
+  the same `created_at`, so the registry fell back to the random ids and
+  two env accounts of a type came in either order (no driver reads
+  numbered variables yet, so only the harness had two). Each row is now
+  1 µs after the previous (`TestSeedEnvAccountsKeepsOrder`, which fails
+  without the fix).
+- **Fakes per account:** `newFake(rec, type, accountID, config)` from the
+  registry's `Open`; calls record `account`; `/__e2e/*` controls take
+  `account=acc_…` instead of `platform=`; attempts count per platform and
+  per account. Bluesky, Mastodon and Nostr fakes implement
+  `ResolveSource` (Threads has none, as in production); ids they return
+  carry the account's id and the preview names it.
+- **Specs:** `api-accounts.spec.ts` (6 tests): list order, status, reason
+  and flags; one post to two Mastodon accounts, each with its own text
+  and limit; a retry of one account's failed item; PATCH with `If-Match`
+  and a stale ETag (label restored in `afterEach`); a reply from the
+  account named, with `one_native_actor`; `/v1/resolve` with and without
+  `account`, and its refusals. The reliability test of the second account
+  now covers the `not_configured` one. Mutation checks: ignoring the
+  per-account limit or per-account outages fails two of the tests.
+- Not done: the Interact tab's tests still stub `/v1/resolve` in the
+  browser (they test the tab's rendering); A3 moves the composer to
+  accounts and its e2e then.
 
 ### Task A2.9: docs, PR, review
 
@@ -626,6 +838,47 @@ One commit: every caller moves to the registry and account-keyed specs.
   feed fields).
 - [ ] Rehearsal steps in the PR body.
 - [ ] Open PR A2; 2 QA + 1 security reviews; fix; hand over.
+
+### As built (A2.9): review fixes
+
+- **Names** (`api.nameProblem`): account labels and token names refuse
+  control, format (bidi, zero-width, BOM), separator, private-use,
+  surrogate and noncharacter code points, and need one visible
+  character; ZWJ/ZWNJ after a visible character pass (emoji, Persian).
+- **Env credentials are the operator's:** `envFor` opens an env row with
+  the environment's credentials only when its owner is `DefaultOwner`
+  (an empty key reads as the unnumbered one); the 2.x Threads token goes
+  only to the operator's unnumbered Threads row.
+- **Turned off still renews** the Threads token (`refreshOne` runs for
+  `connected` and `disabled`).
+- **Waits:** a waiting item is an `item.waiting` event (status `planned`,
+  the reason); a cancel that lands while it is claimed ends it
+  `canceled` (`RecordItemResult` turns a planned result on a canceled
+  post into canceled), and the post settles. An item given up unsent
+  (`release`) is now an `item.unknown` event; only the restart re-queue
+  stays silent.
+- **Relay-sync lists** (v11, amended before release):
+  `nostr_sync_relay_lists` marks an account whose list exists, even
+  emptied, so adopt and seed run once (`SeedAccountSyncRelaysOnce`).
+  Part C's account delete must delete its row too.
+- **No account for relays:** fan-out jobs that wait are deferred a minute
+  (`DeferFanout`, no attempt counted) so they don't hold the head of the
+  queue; the fan-out and the retrier log the wait when it starts and then
+  every 15 minutes (`lastingWarn`), and once when it ends.
+- **Small:** `Acquire` after `Close` is `ErrClosed` (transient, not an
+  auth give-up); `displayName` ignores a label that repeats the type in
+  any case; the registry no longer logs each unavailable account (the
+  start log does); reasons say what to do ("you turned it off; turn it on
+  again to use it", "the network refused its credentials: …"); a JSON body
+  that isn't an object is `400 invalid_json`.
+- **Web:** a new post selects the networks with a connected account that
+  new posts select, once, when the accounts first load (never on a
+  reload), and `accountFor` prefers that account; the video preset stays
+  hidden without a media store; the Tools tab says relay sync needs a
+  Nostr account (`features.relay_sync`). `web-account-defaults.spec.ts`.
+- **Docs:** `enabled` is only the owner's switch (CHANGELOG Breaking:
+  pick targets by `status`), `admin` lacks `accounts:write`, `order -1`,
+  the PATCH answer, `invalid_state` for relays, feed `handle` absent.
 
 ---
 
@@ -1107,7 +1360,9 @@ tests, tests.
   no idempotent route can return a secret or a capability. `:reveal` has
   its own route entry, never idempotent, `no-store`.
 - [ ] `GET`/`PATCH`/`DELETE`, `:check`, `:reveal`, `:adopt` per spec
-  §5.3–5.6 (reveal and delete bound to the account by their nonce).
+  §5.3–5.6 (reveal and delete bound to the account by their nonce). A
+  delete also removes the account's `nostr_sync_relays` and
+  `nostr_sync_relay_lists` rows (both reference `accounts`).
 - [ ] Proxy mode through `NoProxy` (B2): credential writes, adopt, reveal,
   and later connect, settings secrets and instance settings. A table test
   over `v1Routes()` checks every flagged route.
@@ -1382,6 +1637,8 @@ Made by this plan; the spec is updated to match.
 | §2.1: order by type alphabetically | Order by driver registration (`TypesInOrder`), which keeps the composer's order. |
 | §2.2: `needs_reconnect` on an `auth` failure | Only after an authenticated check confirms it; a later passing check clears it. |
 | §2.2: locked items retried "on the normal schedule" | Not counted as attempts, never given up, claimed with retries off. |
+| Plan A2.3: locked items pushed "by the backoff" | Wait `clamp(age, 1 min, 15 min)`, no alert (see As built A2). |
+| Plan A2.5: unavailable account refused at create | Pulled into A2.3 (`accountUnusable`), so no post is accepted for an account that can't send. |
 | §2.4: `nostr_relay` readiness check kept | Dropped; each Nostr account's check covers its relay. |
 | §2.6: field code `duplicate_account` | Today's `duplicate` kept for the same account twice; `duplicate_account` is C's 409. |
 | §2.6: `profile` object | Flat `display_name`, `avatar` (as today) plus `profile_url`. |

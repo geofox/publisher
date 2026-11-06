@@ -35,7 +35,7 @@ func (e *v1Env) seedUnknown(id, platform string) (postPath, target string) {
 	}}
 	p := &store.Post{ID: id, CreatedAt: now, MasterText: "one two three", Platforms: []string{platform}, Source: "test",
 		Status: "partial", Targets: []store.Target{tg}}
-	if err := e.st.SavePost(p); err != nil {
+	if err := e.savePost(p); err != nil {
 		e.t.Fatal(err)
 	}
 	got, err := e.st.GetPost(id)

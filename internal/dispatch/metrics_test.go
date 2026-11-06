@@ -44,7 +44,7 @@ func metricValue(t *testing.T, re *regexp.Regexp) float64 {
 }
 
 func TestRunPlatformRecordsPublish(t *testing.T) {
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Mastodon: fakeMastodon{}})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Mastodon: fakeMastodon{}})}
 	re := regexp.MustCompile(`publisher_publish_total\{outcome="success",platform="mastodon"\} (\d+)`)
 	before := metricValue(t, re)
 
@@ -91,7 +91,7 @@ func TestSchedulerMetricsHelpers(t *testing.T) {
 // in publish_total. fakeMastodon.Reblog returns an empty TargetResult, which
 // runAction normalizes to status "failed" — so this asserts the failed series.
 func TestRunActionRecordsPublish(t *testing.T) {
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Mastodon: fakeMastodon{}})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Mastodon: fakeMastodon{}})}
 	re := regexp.MustCompile(`publisher_publish_total\{outcome="failed",platform="mastodon"\} (\d+)`)
 	before := metricValue(t, re)
 

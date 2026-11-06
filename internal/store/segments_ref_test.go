@@ -20,7 +20,7 @@ func TestSegmentRefStoredButNotSerialized(t *testing.T) {
 	p := &Post{ID: "p1", CreatedAt: time.Now().UTC(), Platforms: []string{"x"}, Source: "web", Status: "success",
 		Targets: []Target{{Platform: "x", Status: "success",
 			Segments: []Segment{{Ordinal: 0, Text: "a", Status: "success", Ref: ref}, {Ordinal: 1, Text: "b", Status: "success"}}}}}
-	if err := st.SavePost(p); err != nil {
+	if err := saveWithAccounts(st, p); err != nil {
 		t.Fatal(err)
 	}
 	got, err := st.GetPost("p1")

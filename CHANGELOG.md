@@ -5,8 +5,49 @@ the `edge` image.
 
 ## Unreleased
 
+### Breaking
+
+- **Thread breaks are positions, not `---`.** A post's text is split
+  where `content.breaks` says (code point positions); `---` on its own
+  line is now ordinary text. A caller that relied on `---` (an n8n flow,
+  say) must send `breaks` instead, or leave the splitting to each
+  network's limit. Media go with the post that holds them
+  (`media[].at`); the old `media[].part` is refused with code `replaced`.
+  Each account can have its own breaks and media positions
+  (`targets[].thread`). Stored drafts are converted at the first start.
+- **`enabled` on an account is now only your switch.** It used to be
+  false for a network whose variables weren't set; after the upgrade
+  every account starts with `enabled: true`, and `status` says whether it
+  can be used. A caller that picked targets with `enabled` must use
+  `status == "connected"` instead, or a post naming an account that
+  isn't configured is refused (`account_disabled`).
+
 ### Changed
 
+- The web app edits a thread per network: shared cards, a tab per
+  network with its own text and breaks, and a side-by-side comparison
+  (Alt+C).
+- An OIDC email allowlist (`OIDC_ALLOWED_EMAILS`) matches only an email
+  the identity provider says is verified. Stored emails are cleared once,
+  so an unverified one stops passing; a refused sign-in logs the subject
+  to allow instead.
+- Automatic retries no longer resend a failure older than the retry
+  policy's whole span.
+- After a restart, an item that was being sent is resent only when it
+  never reached the network; otherwise it is marked unknown for you to
+  check.
+- Photos lose their EXIF, GPS and XMP metadata before upload, and a
+  rotated JPEG is stored upright.
+- Schedule times in the web app use the device's time zone.
+- Nothing is required to start. `NSEC_HEX` is needed only for a Nostr
+  account and `BLOSSOM_URL` only for media; a server with only Bluesky,
+  say, starts and posts text. Without `BLOSSOM_URL`, uploads answer `503`
+  ("no media store is configured"), `GET /v1/instance` says
+  `features.media: false`, and the composer hides the attach button.
+  Posts made while it was set still fetch their media for a retry.
+  `BLOSSOM_URL` without `NSEC_HEX` stops startup (uploads are signed with
+  the Nostr key). The startup log lists each account with its status, and
+  warns about each one that isn't connected.
 - Boolean environment variables (`AUTO_RETRY_ENABLED`, `NOSTR_PRIMARY_FANOUT`,
   `OIDC_END_SESSION`) accept `1/true/yes/on` and `0/false/no/off` in any
   case. Any other value now stops startup with an error naming the variable,
@@ -30,6 +71,66 @@ the `edge` image.
 - A negative `POW_DIFFICULTY_DEFAULT` or `POW_DIFFICULTY_MAX` stops startup
   with an error naming the variable; it used to mean 0 (no proof of work).
   Use `0` for that.
+- Accounts are known by id everywhere. A post names accounts, not
+  networks, in the engine, retries, the Nostr fan-out and recovery after a
+  restart, so two accounts of one network can be sent to independently.
+- The external readiness checks (`/readyz?external=1`) are named
+  `account:<id>`, one per account that is turned on, instead of
+  `nostr_relay`, `bluesky`, `mastodon` and `threads`; `blossom` stays.
+  Update a monitor that matched the old names.
+- Each Nostr account has its own relay-sync list, home relay and key. On
+  upgrade the existing list moves to the Nostr account set by the
+  environment.
+- Each account shows its own profile (name, avatar, handle) in
+  `GET /v1/accounts`; profiles are fetched in the background and never
+  delay the answer. An account that is turned off isn't asked for its
+  profile.
+- A pasted post is looked up with your first connected account on its
+  network (a reply with the account that replies); with every account on
+  that network turned off it says none is connected.
+- `GET /v1/public/feed` links carry `account` (the id of the account that
+  posted) and its `handle`.
+- A post can go to two accounts of one network (two Mastodon accounts,
+  say), each counted by its own limits. `duplicate_type` is gone; the same
+  account twice is still `duplicate`. A reply, quote or repost is made by
+  one account on the original's network; a second one there is refused
+  with `one_native_actor`.
+- `GET /v1/accounts` says whether each account can be used (`status`,
+  `status_reason`), its place in the app's order (`order`), its
+  `remote_id` and `profile_url`, and the owner's `default_selected` and
+  `public_feed` flags; `GET /v1/accounts/{id}` has an `ETag`.
+- `POST /v1/resolve` takes `account`, the account to look the post up
+  with.
+- A post can't name an account that isn't connected (`account_disabled`,
+  saying why). When an account stops being usable after a post was
+  accepted, a locked account's items wait for it, each wait an
+  `item.waiting` event with the reason, and any other account's items fail
+  (retry them by hand once it's back). Canceling the post ends a waiting
+  item.
+- An item the engine gives up unsent because the network may already have
+  it (its idempotency key expired) is now an `item.unknown` event; it used
+  to change without one.
+- The `/v1/events` stream's `post` field is absent on the new account
+  events, which only a caller with `accounts:read` receives.
+- Alerts name the account, not only its network: "Mastodon
+  (@me@example.social)" where they said "Mastodon". An alert rule that
+  matches the exact text needs updating.
+
+### Added
+
+- `ALLOWED_HOSTS`: the host names the server answers for (others get
+  `421`). Recommended when OIDC is off.
+- `PATCH /v1/accounts/{id}` changes an account's label, turns it off or
+  on, and sets whether new posts select it and whether its posts go to the
+  public feed. It needs the new `accounts:write` scope, which `admin`
+  doesn't include and only the signed-in owner can grant to a token. Each
+  change is an `account.updated` event naming the fields that changed. A
+  turned-off account still renews its Threads token, so it works when
+  turned on again.
+- The composer selects, for a new post, the networks with a connected
+  account that new posts select (`default_selected`), and posts from that
+  account. The Tools tab says relay sync needs a Nostr account instead of
+  showing an error.
 
 ### Security
 

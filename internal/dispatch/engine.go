@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/media"
@@ -22,9 +23,9 @@ import (
 // The engine. A post is written whole, every item planned, before anything
 // is sent. Items are then claimed one at a time (store.ClaimItem), published,
 // and their results recorded with the retry decision (store.RecordItemResult).
-// "Publish now" drives the new post's items inline, so the caller gets the
-// outcome; everything else (scheduled posts, retries, items a stopped process
-// left in flight) is claimed by the background workers Run starts.
+// Every item (a new post, a scheduled one, a retry, what a stopped process
+// left in flight) is claimed by the background workers Run starts; the
+// caller follows the outcome through the post and its events.
 
 // RetryPolicy decides when a failed item is tried again.
 type RetryPolicy struct {
@@ -57,10 +58,10 @@ const (
 // engine is the Dispatcher's run state. The zero value is ready.
 type engine struct {
 	mu       sync.Mutex
-	inline   map[string]int // posts being driven inline, by drive count
+	inline   map[string]int // posts a test drives inline (inline_test.go), by drive count
 	recover  sync.Once      // startup recovery
 	stopping bool
-	active   sync.WaitGroup // workers and inline drives
+	active   sync.WaitGroup // workers (and a test's inline drives)
 	kickOnce sync.Once
 	kickCh   chan struct{}
 }
@@ -84,31 +85,6 @@ func (d *Dispatcher) kick() {
 func (d *Dispatcher) kicks() <-chan struct{} {
 	d.eng.kickOnce.Do(func() { d.eng.kickCh = make(chan struct{}, 1) })
 	return d.eng.kickCh
-}
-
-// beginInline registers an inline drive of postID; false once shutting down.
-func (d *Dispatcher) beginInline(postID string) bool {
-	d.eng.mu.Lock()
-	defer d.eng.mu.Unlock()
-	if d.eng.stopping {
-		return false
-	}
-	if d.eng.inline == nil {
-		d.eng.inline = map[string]int{}
-	}
-	d.eng.inline[postID]++
-	d.eng.active.Add(1)
-	return true
-}
-
-func (d *Dispatcher) endInline(postID string) {
-	d.eng.mu.Lock()
-	if d.eng.inline[postID]--; d.eng.inline[postID] <= 0 {
-		delete(d.eng.inline, postID)
-	}
-	d.eng.mu.Unlock()
-	d.eng.active.Done()
-	d.kick() // what the drive left (a retry later, say) is the workers' now
 }
 
 func (d *Dispatcher) inlinePosts() []string {
@@ -223,22 +199,6 @@ func (d *Dispatcher) worker(ctx context.Context) {
 	}
 }
 
-// runDue claims and publishes due items one after another until none is
-// due, and returns how many it ran: one worker's loop, synchronously.
-func (d *Dispatcher) runDue(ctx context.Context) int {
-	n := 0
-	for !d.isStopping() {
-		now := d.now()
-		c, err := d.Store.ClaimItem(ctx, now, store.ClaimFilter{Exclude: d.inlinePosts(), MissedBefore: d.missedBefore(now)})
-		if err != nil || c == nil {
-			return n
-		}
-		d.runClaim(ctx, c, nil, true)
-		n++
-	}
-	return n
-}
-
 func (d *Dispatcher) missedBefore(now time.Time) time.Time {
 	if d.ScheduleGrace <= 0 {
 		return time.Time{}
@@ -300,7 +260,7 @@ func (d *Dispatcher) scheduleUnscheduled(ctx context.Context, now time.Time) {
 				slog.ErrorContext(ctx, "engine: mark gave-up failed", "post_id", u.PostID, "err", err)
 			} else if set {
 				metrics.IncRetryExhausted(u.Platform)
-				d.alertGaveUp(ctx, u.PostID, u.Platform, dec.giveUp)
+				d.alertGaveUp(ctx, u.PostID, u.AccountID, u.Platform, dec.giveUp)
 			}
 			continue
 		}
@@ -340,7 +300,7 @@ func (d *Dispatcher) recoverSending(ctx context.Context) {
 		if !si.SentAt.IsZero() {
 			at = si.SentAt
 		}
-		caps, _ := d.Caps(ctx, si.Platform)
+		caps := d.Caps(ctx, si.AccountID, si.Platform)
 		if caps.CommitMarks && !si.Committing {
 			// The driver marks the item right before its publishing request,
 			// and there is no mark: it stopped while preparing (media,
@@ -384,8 +344,8 @@ func (d *Dispatcher) recoverSending(ctx context.Context) {
 		}
 		slog.WarnContext(pctx, "engine: item left sending may have been posted", "platform", si.Platform, "ordinal", si.Ordinal)
 		d.alert(ctx, "Publisher: post may have been published",
-			"post "+si.PostID+" was being sent to "+d.displayName(si.Platform)+" when the publisher stopped. "+
-				"It may have been posted: check "+d.displayName(si.Platform)+", then retry it if it wasn't.")
+			"post "+si.PostID+" was being sent to "+d.displayName(si.AccountID, si.Platform)+" when the publisher stopped. "+
+				"It may have been posted: check "+d.displayName(si.AccountID, si.Platform)+", then retry it if it wasn't.")
 	}
 	if n, err := d.Store.ResetUnstarted(ctx); err != nil {
 		slog.ErrorContext(ctx, "engine: reset unstarted failed", "err", err)
@@ -400,62 +360,6 @@ type memMedia struct {
 	post   []Img                   // by post media index
 	source []Img                   // a quote's re-hosted source media, by source index
 	thumbs map[string]*unfurl.Card // link cards fetched at planning, by thumbnail URL
-}
-
-// drive publishes postID's due items now: targets in parallel, each
-// target's items in order. It returns when none of them is due. persist,
-// when set, saves the post or makes its items due: it runs after the post
-// is registered as driven inline, so no worker claims its items first, and
-// it runs even during shutdown (the next start sends what it saved).
-func (d *Dispatcher) drive(ctx context.Context, postID string, mm *memMedia, persist func() error) error {
-	// A send, once started, finishes and is recorded even if the request
-	// that asked for it goes away (a closed tab, a proxy timeout): a
-	// canceled record would leave the item sending until the next start.
-	ctx = context.WithoutCancel(ctx)
-	if !d.beginInline(postID) {
-		if persist != nil {
-			if err := persist(); err != nil {
-				return err
-			}
-		}
-		slog.WarnContext(ctx, "engine: shutting down; post left to the next start", "post_id", postID)
-		return nil
-	}
-	defer d.endInline(postID)
-	if persist != nil {
-		if err := persist(); err != nil {
-			return err
-		}
-	}
-	post, err := d.Store.GetPost(postID)
-	if err != nil {
-		slog.ErrorContext(ctx, "engine: load post failed", "post_id", postID, "err", err)
-		return nil
-	}
-	var wg sync.WaitGroup
-	for _, tg := range post.Targets {
-		wg.Add(1)
-		go func(tg store.Target) {
-			defer wg.Done()
-			d.driveTarget(ctx, postID, tg, mm)
-		}(tg)
-	}
-	wg.Wait()
-	return nil
-}
-
-func (d *Dispatcher) driveTarget(ctx context.Context, _ string, tg store.Target, mm *memMedia) {
-	for !d.isStopping() {
-		c, err := d.Store.ClaimItem(ctx, d.now(), store.ClaimFilter{TargetID: tg.ID})
-		if err != nil {
-			slog.ErrorContext(ctx, "engine: claim failed", "target_id", tg.ID, "err", err)
-			break
-		}
-		if c == nil {
-			break
-		}
-		d.runClaim(ctx, c, mm, false)
-	}
 }
 
 // runClaim publishes a claimed item and records the result. auto marks a
@@ -481,7 +385,7 @@ func (d *Dispatcher) runClaim(ctx context.Context, c *store.Claim, mm *memMedia,
 		}
 	}()
 	if auto && c.Attempts > 0 {
-		caps, _ := d.Caps(ctx, c.Platform)
+		caps := d.Caps(ctx, c.AccountID, c.Platform)
 		if d.keyForgotten(ctx, *c, "", caps, now) {
 			d.release(ctx, c, now)
 			return store.ItemUnknown
@@ -500,8 +404,14 @@ func (d *Dispatcher) runClaim(ctx context.Context, c *store.Claim, mm *memMedia,
 		}
 		r = TargetResult{Platform: c.Platform, Status: "failed", Error: "load post: " + err.Error(),
 			ErrorClass: string(destination.ClassTransient)}
+	} else if why, locked := d.lockedReason(c.AccountID); locked {
+		r = TargetResult{Platform: c.Platform, waiting: true, Error: why}
 	} else {
 		r = d.publishClaimed(ctx, post, *tg, *it, mm)
+	}
+	if r.waiting {
+		d.wait(ctx, c, post, r.Error, now)
+		return store.ItemPlanned
 	}
 	if c.Attempts > 0 {
 		metrics.RecordRetry(c.Platform)
@@ -520,7 +430,7 @@ func (d *Dispatcher) runClaim(ctx context.Context, c *store.Claim, mm *memMedia,
 		return res.Status
 	}
 	logItemResult(ctx, c, res)
-	d.enqueueFanout(ctx, c.PostID, r.Status, r.SignedEventJSON, r.PendingRelays)
+	d.enqueueFanout(ctx, c.PostID, c.ItemID, r.Status, r.SignedEventJSON, r.PendingRelays)
 	if out.PostBefore == "scheduled" {
 		metrics.IncSchedulerFire()
 	}
@@ -547,6 +457,57 @@ func (d *Dispatcher) recordResult(ctx context.Context, res store.ItemResult) (st
 	return out, err
 }
 
+// lockedReason reports whether account id is locked, and why, so its
+// item waits before any media is fetched for it.
+func (d *Dispatcher) lockedReason(id string) (string, bool) {
+	if d.Registry == nil {
+		return "", false
+	}
+	e, ok := d.Registry.Get(id)
+	if !ok || e.Status != accounts.Locked {
+		return "", false
+	}
+	return errLocked{reason: e.Reason}.Error(), true
+}
+
+// lockedWaitMax caps how long an item of a locked account waits between
+// looks at its account.
+const lockedWaitMax = 15 * time.Minute
+
+// wait puts back an item whose account is locked: nothing was sent, so no
+// attempt is counted and nothing gives up, and it is due again after a wait
+// that grows with how long the post has waited (one minute at first, at
+// most lockedWaitMax), whether or not automatic retries are on. It stays
+// planned, so its post stays sending and no failure is reported, and an
+// item.waiting event gives the reason. If the post was canceled meanwhile,
+// the item ends canceled instead (the store decides, in the transaction).
+func (d *Dispatcher) wait(ctx context.Context, c *store.Claim, post *store.Post, why string, now time.Time) {
+	waited := time.Duration(0)
+	if post != nil {
+		due := post.CreatedAt
+		if post.ScheduledAt != nil {
+			due = *post.ScheduledAt
+		}
+		waited = now.Sub(due)
+	}
+	next := now.Add(min(max(waited, time.Minute), lockedWaitMax))
+	res := store.ItemResult{Claim: *c, Status: store.ItemPlanned, NotSent: true, NextAttemptAt: &next, At: now,
+		ErrorClass: string(destination.ClassTransient), Error: why + "; it is sent once the account opens"}
+	out, err := d.recordResult(ctx, res)
+	if err != nil {
+		slog.ErrorContext(ctx, "engine: record wait failed", "platform", c.Platform, "account", c.AccountID, "err", err)
+		return
+	}
+	if out.ItemStatus != store.ItemPlanned {
+		slog.InfoContext(ctx, "engine: item canceled while its account was locked", "platform", c.Platform,
+			"account", c.AccountID, "ordinal", c.Ordinal)
+		d.settled(ctx, c, out, "")
+		return
+	}
+	slog.WarnContext(ctx, "engine: item waits for its account", "platform", c.Platform, "account", c.AccountID,
+		"ordinal", c.Ordinal, "next_attempt_at", next, "reason", why)
+}
+
 // settled follows up a recorded result: the post's end-of-run alert and
 // feed notice when this result ended its run, and an alert for a target
 // that gave up unless the end-of-run alert already names it.
@@ -558,7 +519,7 @@ func (d *Dispatcher) settled(ctx context.Context, c *store.Claim, out store.Outc
 	if out.GaveUp {
 		metrics.IncRetryExhausted(c.Platform)
 		if !alerted {
-			d.alertGaveUp(ctx, c.PostID, c.Platform, why)
+			d.alertGaveUp(ctx, c.PostID, c.AccountID, c.Platform, why)
 		}
 	}
 }
@@ -590,7 +551,7 @@ func (d *Dispatcher) idempotency(ctx context.Context, c store.Claim, caps destin
 func (d *Dispatcher) release(ctx context.Context, c *store.Claim, now time.Time) {
 	res := store.ItemResult{Claim: *c, Status: store.ItemUnknown, NotSent: true, GiveUp: true, At: now,
 		ErrorClass: string(destination.ClassUnknownOutcome),
-		Error: "not retried: an earlier attempt may have been posted and " + d.displayName(c.Platform) +
+		Error: "not retried: an earlier attempt may have been posted and " + d.displayName(c.AccountID, c.Platform) +
 			" no longer remembers its idempotency key; check, then retry by hand"}
 	out, err := d.Store.RecordItemResult(ctx, res)
 	if err != nil {
@@ -660,10 +621,6 @@ func (d *Dispatcher) publishClaimed(ctx context.Context, post *store.Post, tg st
 		marked = true
 		return nil
 	})
-	if !d.SendsAs(tg.Platform, tg.AccountID) {
-		e := errOtherAccount(tg.Platform)
-		return TargetResult{Platform: tg.Platform, Status: "failed", Error: e.Error(), ErrorClass: string(e.Class)}
-	}
 	var ov Overrides
 	if tg.FieldsJSON != "" {
 		if err := json.Unmarshal([]byte(tg.FieldsJSON), &ov); err != nil {
@@ -687,10 +644,10 @@ func (d *Dispatcher) publishClaimed(ctx context.Context, post *store.Post, tg st
 			ErrorClass: string(destination.ClassInvalid)}
 	}
 	if repost != nil && it.Ordinal == 0 {
-		return d.repost(ctx, tg.Platform, *repost)
+		return d.repost(ctx, tg.AccountID, tg.Platform, *repost)
 	}
 	if legacyPlacement(post, tg) {
-		caps, _ := d.Caps(ctx, tg.Platform)
+		caps := d.Caps(ctx, tg.AccountID, tg.Platform)
 		it.Media = legacyMedia(thread.PlanMedia(len(post.Media), len(tg.Items), caps.Media.Images.MaxCount), it.Ordinal)
 	}
 	x := item{text: it.Text, ov: ov, imgs: d.itemImages(ctx, post, it, mm), postID: post.ID, ordinal: it.Ordinal,
@@ -706,7 +663,7 @@ func (d *Dispatcher) publishClaimed(ctx context.Context, post *store.Post, tg st
 				Error: "an earlier part of this thread has no reference to reply to (it was marked posted by hand without one); post the rest yourself"}
 		}
 	}
-	return d.publishItem(ctx, tg.Platform, x)
+	return d.publishItem(ctx, tg.AccountID, tg.Platform, x)
 }
 
 // legacyPlacement reports whether a thread was planned before media
@@ -825,7 +782,7 @@ func (d *Dispatcher) decide(ctx context.Context, c store.Claim, cls destination.
 	if !d.Policy.Enabled {
 		return decision{}
 	}
-	caps, _ := d.Caps(ctx, c.Platform)
+	caps := d.Caps(ctx, c.AccountID, c.Platform)
 	if !cls.Retryable(d.idempotency(ctx, c, caps)) {
 		return decision{giveUp: string(cls)}
 	}
@@ -884,8 +841,8 @@ func (d *Dispatcher) alert(ctx context.Context, summary, body string) {
 }
 
 // alertGaveUp tells the owner the engine stopped retrying a target.
-func (d *Dispatcher) alertGaveUp(ctx context.Context, postID, platform, why string) {
-	body := "post " + postID + " will not be retried automatically on " + d.displayName(platform) + " (" + why + "). "
+func (d *Dispatcher) alertGaveUp(ctx context.Context, postID, accountID, platform, why string) {
+	body := "post " + postID + " will not be retried automatically on " + d.displayName(accountID, platform) + " (" + why + "). "
 	if why == "attempts exhausted" {
 		body += "Manual retry is still available."
 		d.alert(ctx, "Publisher: auto-retry exhausted", body)
@@ -900,7 +857,7 @@ func (d *Dispatcher) alertGaveUp(ctx context.Context, postID, platform, why stri
 // a log alert can watch for failures without reading the database. Endpoint
 // counts are there for destinations that deliver to several (Nostr relays).
 func logItemResult(ctx context.Context, c *store.Claim, res store.ItemResult) {
-	attrs := []any{"platform", c.Platform, "ordinal", c.Ordinal, "attempt", c.Attempts + 1,
+	attrs := []any{"platform", c.Platform, "account", c.AccountID, "ordinal", c.Ordinal, "attempt", c.Attempts + 1,
 		"status", res.Status, "latency_ms", res.LatencyMS}
 	if res.RemoteID != "" {
 		attrs = append(attrs, "remote_id", res.RemoteID)

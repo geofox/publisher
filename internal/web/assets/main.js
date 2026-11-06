@@ -2,9 +2,9 @@
 import { $, META, ORDER } from "./common.js";
 import { state, defaultOv } from "./state.js";
 import { composeInit, applyIdentity, rerenderComposer, setAccountsReloader } from "./compose.js";
-import { loadAccounts, reloadAccounts, accountFor, identityFromAccounts, loadInstance } from "./accounts.js";
+import { loadAccounts, reloadAccounts, accountFor, identityFromAccounts, loadInstance, defaultPlatforms } from "./accounts.js";
 import { historyInit, loadHistory } from "./history.js";
-import { toolsInit, loadTools } from "./tools.js";
+import { toolsInit, loadTools, relaySyncOff } from "./tools.js";
 import { verifyInit } from "./verify.js";
 import { interactInit } from "./interact.js";
 import { installRecoveryAutosave } from "./drafts_recovery.js";
@@ -25,7 +25,18 @@ async function loadConfig() {
     if (Array.isArray(data.translate_targets)) {
       state.translateTargets = data.translate_targets;
     }
+    if (data.features && data.features.media === false) noMediaStore();
+    if (data.features && data.features.relay_sync === false) relaySyncOff();
   } catch (_) { /* keep the "en" defaults; translate button stays hidden */ }
+}
+
+// noMediaStore hides the attach controls on a server without a media
+// store, saying why (an upload would be refused).
+function noMediaStore() {
+  state.mediaOff = true; // the composer keeps #vidpreset hidden too
+  for (const id of ["#addimg", "#vidpreset"]) { const e = $(id); if (e) e.hidden = true; }
+  const meta = $("#media-meta");
+  if (meta) meta.textContent = "no media store on this server (set BLOSSOM_URL)";
 }
 
 // applyAccounts takes each type's name and text limit from its account, so
@@ -45,6 +56,15 @@ function applyAccounts() {
   rerenderComposer();
 }
 let composed = false;
+
+// selectDefaults selects, for a new post nobody has touched yet, the
+// networks with a connected account that new posts select. It runs once,
+// when the accounts first load: a later reload never changes a selection.
+function selectDefaults() {
+  if (state.dirty || state.activeDraftId || state.interaction) return;
+  state.platforms = defaultPlatforms(ORDER);
+  if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || state.focus;
+}
 
 // ---------------------------------------------------------------------------
 // Tab routing
@@ -67,7 +87,7 @@ async function init() {
   // The accounts carry the effective limits and live profiles; profiles can
   // take a few seconds on a cold cache. Wait briefly so the composer starts
   // with the right limits; if they are slower, it takes them on arrival.
-  const accounts = loadAccounts().then(applyAccounts).catch(() => { /* keep built-ins and placeholders */ });
+  const accounts = loadAccounts().then(selectDefaults).then(applyAccounts).catch(() => { /* keep built-ins and placeholders */ });
   await Promise.race([accounts, new Promise(r => setTimeout(r, 1500))]);
   composeInit();
   composed = true;

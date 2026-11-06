@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func TestCanceledRequestStillRecordsResult(t *testing.T) {
 			return published(n), nil
 		}}
 	d := stubDispatcher(t, acct)
-	rec := d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub"}})
+	rec := d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"stub"}})
 	ctx, c := context.WithCancel(context.Background())
 	cancel = c
 	if _, err := d.Retry(ctx, rec.ID, nil); err != nil {
@@ -55,13 +56,23 @@ func TestRecoveredKeyWindowStartsAtTheSend(t *testing.T) {
 	sendWithoutRecording(t, d, id) // sent at t0 with its key; the process dies
 
 	at := t0.Add(50 * time.Minute) // inside the window: re-sent
-	d2 := &Dispatcher{Accounts: d.Accounts, Store: d.Store, Policy: d.Policy, Clock: func() time.Time { return at }}
+	d2 := &Dispatcher{Registry: d.Registry, Store: d.Store, Policy: d.Policy, Clock: func() time.Time { return at }}
 	d2.Recover(context.Background())
 	d2.runDue(context.Background()) // 429
 	at = t0.Add(100 * time.Minute)  // the key was forgotten at t0+60m
 	d2.runDue(context.Background())
 	if len(acct.reqs) != 2 {
 		t.Errorf("sent %d times; want 2 (no send past the key's window from the first send)", len(acct.reqs))
+	}
+	// Given up unsent, the item is unknown, and a stream reader is told.
+	evs, _ := d.Store.EventsSince(context.Background(), store.EventFilter{OwnerID: store.DefaultOwner, PostID: id})
+	if last := evs[len(evs)-1]; last.Type != store.EventPostUpdated && last.Type != store.EventPostCompleted {
+		t.Errorf("last event %+v", last)
+	}
+	if !slices.ContainsFunc(evs, func(e store.Event) bool {
+		return e.Type == store.EventItemUnknown && strings.Contains(e.Data.Error, "no longer remembers its idempotency key")
+	}) {
+		t.Errorf("no item.unknown event for the item given up unsent")
 	}
 }
 
@@ -81,7 +92,7 @@ func TestGiveUpAfterRetryIsAlerted(t *testing.T) {
 	d := stubDispatcher(t, acct)
 	al := &fakeAlerter{}
 	d.Alerter = al
-	rec := d.Post(context.Background(), marked(PostSpec{MasterText: "one\n---\ntwo", Platforms: []string{"stub"}}))
+	rec := d.Post(context.Background(), marked(typeSpec{MasterText: "one\n---\ntwo", Platforms: []string{"stub"}}))
 	n0 := len(al.calls)
 	later := time.Now().Add(time.Hour)
 	d.Clock = func() time.Time { return later }
@@ -107,10 +118,10 @@ func TestFirstRunAlertNamesGivenUpTargets(t *testing.T) {
 		return destination.PublishResult{}, &destination.Error{Class: destination.ClassTransient, Err: errors.New("503")}
 	}}
 	d := stubDispatcher(t, a1)
-	d.Accounts["stub2"] = a2
+	d.Registry.(*testRegistry).add(acct("stub2"), "stub2", a2)
 	al := &fakeAlerter{}
 	d.Alerter = al
-	d.Post(context.Background(), PostSpec{MasterText: "hi", Platforms: []string{"stub", "stub2"}})
+	d.Post(context.Background(), typeSpec{MasterText: "hi", Platforms: []string{"stub", "stub2"}})
 	all := strings.Join(al.bodies, " | ")
 	if !strings.Contains(all, "not on Stub") && !strings.Contains(all, "retried automatically on Stub") {
 		t.Errorf("no alert names the given-up target: %v", al.bodies)
@@ -134,12 +145,12 @@ func TestRepostIsNotIdempotent(t *testing.T) {
 	} {
 		p := &store.Post{ID: tc.id, CreatedAt: now, Platforms: []string{"stub"}, Source: "test", Status: "sending",
 			Interaction: tc.ix, Targets: []store.Target{{Platform: "stub", Status: "sending"}}}
-		if err := d.Store.SavePost(p); err != nil {
+		if err := saveWithAccounts(d.Store, p); err != nil {
 			t.Fatal(err)
 		}
 		gp, _ := d.Store.GetPost(tc.id)
 		c := store.Claim{PostID: tc.id, TargetID: gp.Targets[0].ID, ItemID: gp.Targets[0].Items[0].ID}
-		caps, _ := d.Caps(ctx, "stub")
+		caps := d.Caps(ctx, acct("stub"), "stub")
 		if got := d.idempotency(ctx, c, caps); got != tc.want {
 			t.Errorf("%s: idempotency %q, want %q", tc.id, got, tc.want)
 		}
@@ -178,8 +189,8 @@ func TestFirstSendReusesCardThumbnail(t *testing.T) {
 	f := &fakeBsky{failAt: -1}
 	uf := &fakeUnfurler{card: &unfurl.Card{URI: "https://x.com/a", Title: "T", ThumbURL: "https://x.com/t.jpg",
 		ThumbData: []byte("img"), ThumbMime: "image/jpeg"}}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f}), Unfurler: uf}
-	d.Post(context.Background(), PostSpec{MasterText: "hello https://x.com/a", Platforms: []string{"bluesky"}})
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Bluesky: f}), Unfurler: uf}
+	d.Post(context.Background(), typeSpec{MasterText: "hello https://x.com/a", Platforms: []string{"bluesky"}})
 	if uf.thumbs != 0 {
 		t.Errorf("thumbnail downloaded %d more times", uf.thumbs)
 	}

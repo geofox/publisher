@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,18 +22,30 @@ import (
 
 // Token scopes.
 const (
-	scopePostsRead    = "posts:read"
-	scopePostsWrite   = "posts:write"
-	scopeMediaWrite   = "media:write"
-	scopeDraftsRead   = "drafts:read"
-	scopeDraftsWrite  = "drafts:write"
-	scopeAccountsRead = "accounts:read"
-	scopeAdmin        = "admin"
+	scopePostsRead     = "posts:read"
+	scopePostsWrite    = "posts:write"
+	scopeMediaWrite    = "media:write"
+	scopeDraftsRead    = "drafts:read"
+	scopeDraftsWrite   = "drafts:write"
+	scopeAccountsRead  = "accounts:read"
+	scopeAccountsWrite = "accounts:write"
+	scopeAdmin         = "admin"
 )
 
 // v1Scopes are the scopes a token can hold, in documentation order.
 var v1Scopes = []string{scopePostsRead, scopePostsWrite, scopeMediaWrite, scopeDraftsRead, scopeDraftsWrite,
-	scopeAccountsRead, scopeAdmin}
+	scopeAccountsRead, scopeAccountsWrite, scopeAdmin}
+
+// adminImplies are the scopes admin includes: those that existed before
+// accounts could be changed. A scope added since (accounts:write) must be
+// granted by name, so an old admin token gains nothing new.
+var adminImplies = []string{scopePostsRead, scopePostsWrite, scopeMediaWrite, scopeDraftsRead, scopeDraftsWrite,
+	scopeAccountsRead}
+
+// sessionOnlyScopes are the scopes only a signed-in owner (a session, or
+// the reverse proxy when sign-in is off) may grant to a new token: a
+// token, admin included, can't hand them out.
+var sessionOnlyScopes = []string{scopeAccountsWrite}
 
 // principal is who is calling: the owner in a browser session, a token, or
 // (with OIDC off) whoever the reverse proxy let through.
@@ -49,7 +62,8 @@ type principal struct {
 func (p principal) key() string { return p.Kind + ":" + p.ID }
 
 func (p principal) can(scope string) bool {
-	return p.Scopes == nil || slices.Contains(p.Scopes, scope) || slices.Contains(p.Scopes, scopeAdmin)
+	return p.Scopes == nil || slices.Contains(p.Scopes, scope) ||
+		slices.Contains(p.Scopes, scopeAdmin) && slices.Contains(adminImplies, scope)
 }
 
 type principalKey struct{}
@@ -81,6 +95,7 @@ func (a *API) v1Routes() []v1Route {
 		{Method: "GET", Path: "/v1/destinations", Scope: scopeAccountsRead, Handler: a.v1Destinations},
 		{Method: "GET", Path: "/v1/accounts", Scope: scopeAccountsRead, Handler: a.v1Accounts},
 		{Method: "GET", Path: "/v1/accounts/{id}", Scope: scopeAccountsRead, Handler: a.v1Account},
+		{Method: "PATCH", Path: "/v1/accounts/{id}", Scope: scopeAccountsWrite, Handler: a.v1PatchAccount},
 		{Method: "GET", Path: "/v1/me", Handler: a.v1Me},
 		{Method: "GET", Path: "/v1/tokens", Scope: scopeAdmin, Handler: a.v1ListTokens},
 		// Not idempotent: the response carries a secret we never store.
@@ -273,8 +288,10 @@ func (s *startedWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 // maxV1Body caps a JSON request body.
 const maxV1Body = 1 << 20
 
-// decodeJSON reads a JSON request body into v, rejecting unknown fields
-// and trailing data; on failure it answers a problem and returns false.
+// decodeJSON reads a JSON object from the request body into v, rejecting
+// unknown fields, any other JSON value (`null` would read as an empty
+// object) and trailing data; on failure it answers a problem and returns
+// false.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	// Content-Type is required: a cross-site form or no-cors fetch can't
 	// send application/json without a CORS preflight, so this backs up the
@@ -284,7 +301,12 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 		problem(w, r, http.StatusUnsupportedMediaType, codeUnsupportedMediaType, "send Content-Type: application/json")
 		return false
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxV1Body))
+	body := bufio.NewReader(http.MaxBytesReader(w, r.Body, maxV1Body))
+	if c, err := firstNonSpace(body); err == nil && c != '{' {
+		problem(w, r, http.StatusBadRequest, codeInvalidJSON, "the body must be a JSON object")
+		return false
+	}
+	dec := json.NewDecoder(body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		var mbe *http.MaxBytesError
@@ -303,6 +325,20 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
+}
+
+// firstNonSpace returns the first byte after JSON whitespace, leaving it
+// unread.
+func firstNonSpace(r *bufio.Reader) (byte, error) {
+	for {
+		c, err := r.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			return c, r.UnreadByte()
+		}
+	}
 }
 
 // writeV1 writes a JSON resource.

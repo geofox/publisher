@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -13,8 +14,11 @@ import (
 type Interaction struct {
 	Action         string `json:"action"` // reply|repost|quote
 	SourcePlatform string `json:"source_platform"`
-	SourceURL      string `json:"source_url"`
-	SourceAuthor   string `json:"source_author"`
+	// SourceAccount is the account that acted natively ("" on rows
+	// recorded before accounts: the target of SourcePlatform's type).
+	SourceAccount string `json:"source_account,omitempty"`
+	SourceURL     string `json:"source_url"`
+	SourceAuthor  string `json:"source_author"`
 	// Ref is the source post's platform-native reference (dispatch.InteractRef
 	// as JSON), kept so a retry can repeat the action. Empty on rows recorded
 	// before it existed.
@@ -68,6 +72,11 @@ type Target struct {
 	Segments        []Segment    `json:"segments,omitempty"`
 	SignedEventJSON string       `json:"-"` // nostr only; never sent to the client
 	Items           []Item       `json:"-"`
+	// FeedExcluded: the target's account is kept out of the public feed
+	// (accounts.public_feed = 0). The zero value includes it.
+	FeedExcluded bool `json:"-"`
+	// AccountHandle is the account's handle as last seen (PublicFeed only).
+	AccountHandle string `json:"-"`
 }
 
 type Attempt struct {
@@ -169,9 +178,9 @@ func (s *Store) SavePost(p *Post) error {
 	for _, tg := range p.Targets {
 		accountID := tg.AccountID
 		if accountID == "" {
-			if accountID, err = envAccountFor(ctx, tx, DefaultOwner, tg.Platform); err != nil {
-				return err
-			}
+			// Never guessed: an account picked by type could send with
+			// credentials the post didn't name.
+			return fmt.Errorf("store: the %s target names no account", tg.Platform)
 		}
 		var lastAttempt any // a target planned and not yet sent has none
 		if len(tg.Attempts) > 0 {
@@ -194,7 +203,7 @@ func (s *Store) SavePost(p *Post) error {
 		var headID int64
 		for i, it := range items {
 			if it.IdemKey == "" {
-				it.IdemKey = ItemKey(p.ID, tg.Platform, it.Ordinal)
+				it.IdemKey = AccountItemKey(p.ID, accountID, it.Ordinal)
 			}
 			// Planned items the caller passed carry their own due time (nil:
 			// not until a retry). Derived ones are due at the post's time, or now.
@@ -292,7 +301,9 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		return nil, err
 	}
 
-	trows, err := s.sql.Query(`SELECT id,account_id,platform,final_text,fields_json,status,latency_ms,attempt_count,last_attempt_at,gave_up_at,COALESCE(error_class,'') FROM post_targets WHERE post_id=? ORDER BY id`, id)
+	trows, err := s.sql.Query(`SELECT pt.id, pt.account_id, pt.platform, pt.final_text, pt.fields_json, pt.status, pt.latency_ms,
+		  pt.attempt_count, pt.last_attempt_at, pt.gave_up_at, COALESCE(pt.error_class, ''), COALESCE(a.public_feed, 1) = 0
+		FROM post_targets pt LEFT JOIN accounts a ON a.id = pt.account_id WHERE pt.post_id = ? ORDER BY pt.id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +313,8 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		var fields, ftext sql.NullString
 		var la, gu sql.NullTime
 		var lat sql.NullInt64
-		if err := trows.Scan(&tg.ID, &tg.AccountID, &tg.Platform, &ftext, &fields, &tg.Status, &lat, &tg.AttemptCount, &la, &gu, &tg.ErrorClass); err != nil {
+		if err := trows.Scan(&tg.ID, &tg.AccountID, &tg.Platform, &ftext, &fields, &tg.Status, &lat, &tg.AttemptCount, &la, &gu,
+			&tg.ErrorClass, &tg.FeedExcluded); err != nil {
 			return nil, err
 		}
 		tg.FieldsJSON, tg.FinalText, tg.LatencyMS = fields.String, ftext.String, int(lat.Int64)
@@ -517,6 +529,14 @@ func nullStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+// nullInt stores 0 as NULL.
+func nullInt(n int64) any {
+	if n == 0 {
+		return nil
+	}
+	return n
 }
 
 // ErrNotPending is returned by cancel/reschedule when a post is not 'scheduled'.

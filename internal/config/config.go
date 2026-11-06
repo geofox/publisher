@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -87,10 +86,12 @@ type Config struct {
 // OIDCEnabled reports whether app-level OIDC auth is configured.
 func (c Config) OIDCEnabled() bool { return c.OIDCIssuer != "" }
 
-// Load reads the configuration from the environment. Every invalid
-// variable is reported, not only the first, so one restart fixes them all.
-func Load() (Config, error) {
-	var l loader
+// LoadFrom reads the configuration through getenv (os.Getenv, or a test's
+// map). Every invalid variable is reported, not only the first, so one
+// restart fixes them all.
+func LoadFrom(getenv func(string) string) (Config, error) {
+	l := loader{getenv: getenv}
+	getEnv := l.get
 	c := Config{
 		BlossomURL:       strings.TrimRight(getEnv("BLOSSOM_URL", ""), "/"),
 		Port:             getEnv("PORT", DefaultPort),
@@ -139,10 +140,6 @@ func Load() (Config, error) {
 	c.FanoutTick, _ = l.duration("FANOUT_TICK", "5s")
 	c.VerifyHTTPTimeout, _ = l.duration("VERIFY_HTTP_TIMEOUT", "10s")
 
-	if c.BlossomURL == "" {
-		l.fail("BLOSSOM_URL is required")
-	}
-
 	c.FFmpegPath = getEnv("FFMPEG_PATH", "/usr/local/bin/ffmpeg")
 	c.FFprobePath = getEnv("FFPROBE_PATH", "/usr/local/bin/ffprobe")
 	c.VideoWorkdir = getEnv("VIDEO_WORKDIR", "")
@@ -170,15 +167,19 @@ func Load() (Config, error) {
 	return c, l.err()
 }
 
-func getEnv(k, d string) string {
-	if v := os.Getenv(k); v != "" {
+// loader reads variables through getenv and collects every error.
+type loader struct {
+	getenv func(string) string
+	errs   []error
+}
+
+// get is variable k, or d when it is unset or empty.
+func (l *loader) get(k, d string) string {
+	if v := l.getenv(k); v != "" {
 		return v
 	}
 	return d
 }
-
-// loader parses variables and collects every error.
-type loader struct{ errs []error }
 
 func (l *loader) fail(format string, args ...any) {
 	l.errs = append(l.errs, fmt.Errorf(format, args...))
@@ -187,7 +188,7 @@ func (l *loader) fail(format string, args ...any) {
 func (l *loader) err() error { return errors.Join(l.errs...) }
 
 func (l *loader) int(k, d string) (int, bool) {
-	n, err := strconv.Atoi(getEnv(k, d))
+	n, err := strconv.Atoi(l.get(k, d))
 	if err != nil {
 		l.errs = append(l.errs, fmt.Errorf("%s: %w", k, err))
 		return 0, false
@@ -196,7 +197,7 @@ func (l *loader) int(k, d string) (int, bool) {
 }
 
 func (l *loader) duration(k, d string) (time.Duration, bool) {
-	v, err := time.ParseDuration(getEnv(k, d))
+	v, err := time.ParseDuration(l.get(k, d))
 	if err != nil {
 		l.errs = append(l.errs, fmt.Errorf("%s: %w", k, err))
 		return 0, false
@@ -205,7 +206,7 @@ func (l *loader) duration(k, d string) (time.Duration, bool) {
 }
 
 func (l *loader) bool(k string, d bool) bool {
-	v, err := ParseBool(k, os.Getenv(k), d)
+	v, err := ParseBool(k, l.getenv(k), d)
 	if err != nil {
 		l.errs = append(l.errs, err)
 	}

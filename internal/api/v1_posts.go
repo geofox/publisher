@@ -726,11 +726,11 @@ func (a *API) v1ResolveItem(w http.ResponseWriter, r *http.Request) {
 	rest := slices.ContainsFunc(t.Items, func(it store.Item) bool {
 		return it.Ordinal > *req.Ordinal && (it.Status == store.ItemPlanned || it.Status == store.ItemFailed)
 	})
-	if res.Published && a.Locator != nil && a.Locator.CanLocate(t.Platform) {
+	if res.Published && a.Locator != nil && a.Locator.CanLocate(t.AccountID) {
 		switch {
 		case link != "":
 			lctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-			ref, err := a.Locator.Locate(lctx, t.Platform, link)
+			ref, err := a.Locator.Locate(lctx, t.AccountID, link)
 			cancel()
 			switch {
 			case errors.Is(err, destination.ErrPostNotFound):

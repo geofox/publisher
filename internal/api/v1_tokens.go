@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/geofox/publisher/internal/store"
@@ -155,8 +154,8 @@ func (a *API) v1CreateToken(w http.ResponseWriter, r *http.Request) {
 		errs = append(errs, fieldError{Pointer: "/name", Code: "required", Detail: "name the token, for example after the script that uses it"})
 	case utf8.RuneCountInString(name) > maxTokenName:
 		errs = append(errs, fieldError{Pointer: "/name", Code: "too_long", Detail: "at most 100 characters"})
-	case strings.ContainsFunc(name, unicode.IsControl):
-		errs = append(errs, fieldError{Pointer: "/name", Code: "invalid", Detail: "no control characters"})
+	case nameProblem(name) != "":
+		errs = append(errs, fieldError{Pointer: "/name", Code: "invalid", Detail: nameProblem(name)})
 	}
 	var scopes []string
 	if len(req.Scopes) == 0 {
@@ -166,6 +165,16 @@ func (a *API) v1CreateToken(w http.ResponseWriter, r *http.Request) {
 		if !slices.Contains(v1Scopes, s) {
 			errs = append(errs, fieldError{Pointer: "/scopes/" + strconv.Itoa(i), Code: "unknown_scope",
 				Detail: "one of " + strings.Join(v1Scopes, ", ")})
+		}
+	}
+	// A token can't grant what only the signed-in owner may (re-signing
+	// in will be asked for once sign-in has it).
+	if p, _ := principalFrom(r.Context()); p.Token != nil {
+		for i, s := range req.Scopes {
+			if slices.Contains(sessionOnlyScopes, s) {
+				errs = append(errs, fieldError{Pointer: "/scopes/" + strconv.Itoa(i), Code: "exceeds_caller",
+					Detail: "only the signed-in owner can create a token with " + s + "; a token can't"})
+			}
 		}
 	}
 	// Documentation order, without repeats.

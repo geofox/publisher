@@ -407,12 +407,12 @@ func (a *API) receiveUpload(w http.ResponseWriter, r *http.Request, declared str
 	br := bufio.NewReaderSize(body, 512)
 	head, _ := br.Peek(512)
 	mt := sniffType(declared, head)
+	if a.media == nil && (uploadImageTypes[mt] || strings.HasPrefix(mt, "video/")) {
+		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, noMediaStore)
+		return nil
+	}
 	switch {
 	case uploadImageTypes[mt]:
-		if a.media == nil {
-			problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "media storage is not configured")
-			return nil
-		}
 		select {
 		case imageReadSem <- struct{}{}:
 		case <-r.Context().Done():
@@ -527,8 +527,16 @@ func (a *API) uploadReadProblem(w http.ResponseWriter, r *http.Request, err erro
 
 // v1CompressMedia re-encodes an image with a preset and answers the bytes;
 // nothing is stored. "convert" turns HEIC into JPEG.
+// noMediaStore answers a media request on a server without a media store.
+const noMediaStore = "no media store is configured (set BLOSSOM_URL)"
+
 func (a *API) v1CompressMedia(w http.ResponseWriter, r *http.Request) {
 	const limit = "images are at most 64 MiB"
+	// It stores nothing, but an image made smaller here is one to upload.
+	if a.media == nil {
+		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, noMediaStore)
+		return
+	}
 	if r.ContentLength > maxUploadRequestBytes+1<<20 {
 		problem(w, r, http.StatusRequestEntityTooLarge, codeTooLarge, limit)
 		return

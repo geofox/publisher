@@ -3,7 +3,7 @@ import { el, $, wcount, flash, confirmModal, META, ORDER, v1, problemError, TZ, 
 import { state, postedText, v1PostBody, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen } from "./state.js";
 import { renderPreview, mediaMax, previewMedia } from "./preview.js";
 import { openDetail } from "./history.js";
-import { accountFor } from "./accounts.js";
+import { accountFor, defaultPlatforms } from "./accounts.js";
 import { followPost } from "./follow.js";
 import { brandTile, icon, PLATFORM_META } from "./brands.js";
 import { planFor, lastPlanFor, planError } from "./plan.js";
@@ -294,7 +294,7 @@ export function exitInteraction() {
   state.breaks = [];
   state.tab = "shared";
   clearImages();
-  state.platforms = prev && prev.size ? new Set(prev) : new Set(ORDER);
+  state.platforms = prev && prev.size ? new Set(prev) : defaultPlatforms(ORDER);
   if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
   detachDraft(); // what follows is a new post, not the draft the reply came from
   renderImages();
@@ -339,8 +339,8 @@ export function loadDraft(input) {
         state.ov.bluesky.langs = input.lang;
         state.ov.mastodon.language = input.lang;
       }
-      state.platforms = new Set(ORDER);
-      if (!state.platforms.has(state.focus)) state.focus = "bluesky";
+      state.platforms = defaultPlatforms(ORDER);
+      if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
       detachDraft();
       state.dirty = true;
       const tab = document.querySelector('.tab[data-view="compose"]');
@@ -363,7 +363,7 @@ export function loadDraft(input) {
     state.breaks = old ? conv.breaks : (input.breaks || []).filter(Number.isInteger);
     state.tab = "shared";
     clearImages();
-    state.platforms = new Set(input.platforms && input.platforms.length ? input.platforms : ORDER);
+    state.platforms = input.platforms && input.platforms.length ? new Set(input.platforms) : defaultPlatforms(ORDER);
     if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
     // reset overrides to defaults, then apply saved overrides
     ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
@@ -900,7 +900,7 @@ export function renderImages() {
       } }));
     c.append(el("div", { class: "thumb" }, ...kids));
   });
-  const vp = $("#vidpreset"); if (vp) vp.hidden = state.images.some(i => i.video);
+  const vp = $("#vidpreset"); if (vp) vp.hidden = state.mediaOff || state.images.some(i => i.video);
   renderEditor(); // the attachments on its cards
   renderMeta(); renderPreview();
 }
@@ -1104,7 +1104,11 @@ async function submit() {
     finally { btn.disabled = false; }
     missing = missingAccounts();
   }
-  if (missing.length) { flash("No account to post to " + missing.join(", ") + " is configured"); return; }
+  if (missing.length) {
+    const many = missing.length > 1;
+    flash(missing.join(", ") + (many ? " have" : " has") + " no connected account: untick " + (many ? "them" : "it") + " to post to the rest");
+    return;
+  }
   doPost();
 }
 

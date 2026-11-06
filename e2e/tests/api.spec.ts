@@ -7,11 +7,11 @@ import { test, expect, marker } from "./fixtures";
 // and every request has every scope.
 test("posts through /v1 with media and waits for the outcome", async ({ request, fakes }) => {
   const m = marker("v1");
-  const accounts = (await (await request.get("/v1/accounts")).json()).data as { id: string; type: string; enabled: boolean }[];
-  // The connected account of each type: the first listed (the harness also
-  // seeds a second Mastodon account, which can't post).
-  const enabled = accounts.filter((a, i) => a.enabled && accounts.findIndex(b => b.enabled && b.type === a.type) === i);
-  expect(enabled.map(a => a.type).sort()).toEqual(["bluesky", "mastodon", "nostr", "threads"]);
+  const accounts = (await (await request.get("/v1/accounts")).json()).data as { id: string; type: string; status: string }[];
+  // The first connected account of each type (the harness seeds more than
+  // one of some networks; see harnessAccounts).
+  const first = accounts.filter((a, i) => a.status === "connected" && accounts.findIndex(b => b.status === "connected" && b.type === a.type) === i);
+  expect(first.map(a => a.type).sort()).toEqual(["bluesky", "mastodon", "nostr", "threads"]);
 
   const up = await request.post("/v1/media?alt=A%20blue%20gradient", {
     headers: { "Content-Type": "image/png" },
@@ -23,7 +23,7 @@ test("posts through /v1 with media and waits for the outcome", async ({ request,
 
   const body = {
     content: { text: `Posted through the API ${m}`, media: [{ id: media.id }] },
-    targets: enabled.map(a => (a.type === "mastodon" ? { account: a.id, options: { visibility: "unlisted" } } : { account: a.id })),
+    targets: first.map(a => (a.type === "mastodon" ? { account: a.id, options: { visibility: "unlisted" } } : { account: a.id })),
   };
   const res = await request.post("/v1/posts", {
     headers: { "Content-Type": "application/json", "Prefer": "wait=30", "Idempotency-Key": `"${m}"` },

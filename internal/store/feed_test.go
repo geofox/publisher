@@ -22,7 +22,7 @@ func mkFeedPost(t *testing.T, db *Store, id, status string, targets []Target) {
 	for _, tg := range targets {
 		rec.Platforms = append(rec.Platforms, tg.Platform)
 	}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatalf("mkFeedPost %q: %v", id, err)
 	}
 }
@@ -50,7 +50,7 @@ func TestPublicFeedFirstSuccessAndOrder(t *testing.T) {
 			}},
 	})
 	// Newer post: nostr succeeded at t3, with one media attachment.
-	if err := db.SavePost(&Post{
+	if err := saveWithAccounts(db, &Post{
 		ID: "new", CreatedAt: time.Now().UTC(), MasterText: "text new",
 		Platforms: []string{"nostr"}, Source: "web", Status: "success",
 		Targets: []Target{

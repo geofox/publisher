@@ -1,6 +1,8 @@
 package feed
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -153,3 +155,44 @@ func TestBuildIncludesPartialNostr(t *testing.T) {
 }
 
 func ptr(t time.Time) *time.Time { return &t }
+
+// An account kept out of the feed contributes no link; a post whose only
+// links are from such accounts is not in the feed (nor sent to the
+// webhook, which uses Eligible).
+func TestFeedExcludedAccounts(t *testing.T) {
+	out := store.Target{Platform: "mastodon", Status: "success", RemoteURL: "https://m/1", FeedExcluded: true}
+	in := store.Target{Platform: "bluesky", Status: "success", RemoteURL: "https://b/1"}
+	p := store.Post{ID: "p", Targets: []store.Target{out, in}}
+	r := Build([]store.Post{p}, 10)
+	if len(r.Posts) != 1 || len(r.Posts[0].Links) != 1 || r.Posts[0].Links[0].URL != "https://b/1" {
+		t.Fatalf("feed = %+v", r.Posts)
+	}
+	p.Targets = []store.Target{out}
+	if Eligible(p) || len(Build([]store.Post{p}, 10).Posts) != 0 {
+		t.Fatal("a post only on excluded accounts is in the feed")
+	}
+}
+
+// Two accounts of one network each get their own link, saying which
+// account posted it; the JSON leaves out a handle not known yet.
+func TestBuildLinksNameTheirAccount(t *testing.T) {
+	a := successTarget("mastodon", "https://m.example/1", "")
+	a.AccountID, a.AccountHandle = "acc_home", "me@m.example"
+	b := successTarget("mastodon", "https://work.example/1", "")
+	b.AccountID = "acc_work"
+	out := Build([]store.Post{{ID: "p", Targets: []store.Target{a, b}}}, 20)
+	if len(out.Posts) != 1 {
+		t.Fatalf("posts = %+v", out.Posts)
+	}
+	want := []Link{
+		{Platform: "mastodon", URL: "https://m.example/1", Account: "acc_home", Handle: "me@m.example"},
+		{Platform: "mastodon", URL: "https://work.example/1", Account: "acc_work"},
+	}
+	if !reflect.DeepEqual(out.Posts[0].Links, want) {
+		t.Errorf("links = %+v, want %+v", out.Posts[0].Links, want)
+	}
+	raw, _ := json.Marshal(out.Posts[0].Links[1])
+	if string(raw) != `{"platform":"mastodon","url":"https://work.example/1","account":"acc_work"}` {
+		t.Errorf("JSON = %s", raw)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/metrics"
 	"github.com/geofox/publisher/internal/store"
@@ -30,7 +31,7 @@ type item struct {
 	thread *destination.ThreadRef // segment k+1 replies to segment k
 	head   *headSpec              // only on a thread's first item
 	// postID and ordinal name the item; idemKey is its idempotency key
-	// (store.ItemKey when unset), stable across every attempt.
+	// (store.AccountItemKey when unset), stable across every attempt.
 	postID  string
 	ordinal int
 	idemKey string
@@ -41,97 +42,156 @@ type item struct {
 	itemID   int64
 }
 
-// account returns the account a post names, or a classified error.
-func (d *Dispatcher) account(name string) (destination.Account, error) {
-	if a, ok := d.Accounts[name]; ok && a != nil {
-		return a, nil
+// errLocked is why an item of a locked account waits instead of failing.
+type errLocked struct{ reason string }
+
+func (e errLocked) Error() string {
+	if e.reason == "" {
+		return "the account is locked"
 	}
-	return nil, &destination.Error{Class: destination.ClassAuth, Err: fmt.Errorf("%s not configured", name)}
+	return "the account is locked: " + e.reason
 }
 
-// SendsAs reports whether the connected account of type typ is the stored
-// account id, so a post naming id is sent with that account's credentials.
-// True when the dispatcher wasn't told the ids.
-func (d *Dispatcher) SendsAs(typ, id string) bool {
-	if d.AccountIDs == nil || id == "" {
-		return true
+// acquire leases account id for a send. An account that can't be used is
+// a classified failure (auth), except a locked one, whose items wait
+// (errLocked).
+func (d *Dispatcher) acquire(id, typ string) (destination.Account, func(), error) {
+	if d.Registry == nil || id == "" {
+		return nil, nil, &destination.Error{Class: destination.ClassAuth, Err: fmt.Errorf("%s not configured", typ)}
 	}
-	connected, ok := d.AccountIDs[typ]
-	// No connected account of the type: d.account answers "not configured".
-	return !ok || connected == id
+	acct, release, err := d.Registry.Acquire(id)
+	if err == nil {
+		return acct, release, nil
+	}
+	if u, ok := accounts.IsUnavailable(err); ok {
+		if u.Status == accounts.Locked {
+			return nil, nil, errLocked{reason: u.Reason}
+		}
+		return nil, nil, &destination.Error{Class: destination.ClassAuth, Err: u}
+	}
+	if errors.Is(err, accounts.ErrClosed) {
+		return nil, nil, &destination.Error{Class: destination.ClassTransient, Err: err}
+	}
+	return nil, nil, &destination.Error{Class: destination.ClassAuth, Err: err}
 }
 
-// errOtherAccount fails a target whose account isn't the connected one.
-func errOtherAccount(typ string) *destination.Error {
-	return &destination.Error{Class: destination.ClassAuth,
-		Err: fmt.Errorf("this %s account isn't the one connected on this server", typ)}
+// Caps returns account id's capabilities: the open account's, else its
+// type's defaults (so recovery and the composer's preview work for an
+// account that isn't open).
+func (d *Dispatcher) Caps(ctx context.Context, id, typ string) destination.Capabilities {
+	if d.Registry != nil && id != "" {
+		return d.Registry.Caps(ctx, id, typ)
+	}
+	if drv, ok := destination.Lookup(typ); ok {
+		return drv.Manifest().Defaults
+	}
+	return destination.Capabilities{}
 }
 
-// Caps returns the effective capabilities for a target name: the account's
-// when one is connected, else the registered driver's defaults (so the
-// composer can preview a platform before it is connected). ok=false when the
-// name is unknown.
-func (d *Dispatcher) Caps(ctx context.Context, name string) (destination.Capabilities, bool) {
-	if a, ok := d.Accounts[name]; ok && a != nil {
-		return a.Capabilities(ctx), true
+// CanLocate reports whether account id can look its own posts up by URL
+// (destination.Locator).
+func (d *Dispatcher) CanLocate(id string) bool {
+	if d.Registry == nil {
+		return false
 	}
-	if drv, ok := destination.Lookup(name); ok {
-		return drv.Manifest().Defaults, true
+	acct, release, err := d.Registry.Acquire(id)
+	if err != nil {
+		return false
 	}
-	return destination.Capabilities{}, false
-}
-
-// CanLocate reports whether the named account can look its own posts up
-// by URL (destination.Locator).
-func (d *Dispatcher) CanLocate(name string) bool {
-	_, ok := d.Accounts[name].(destination.Locator)
+	defer release()
+	_, ok := acct.(destination.Locator)
 	return ok
 }
 
-// Locate finds one of the named account's own posts by its URL.
-func (d *Dispatcher) Locate(ctx context.Context, name, url string) (destination.ItemRef, error) {
-	l, ok := d.Accounts[name].(destination.Locator)
+// Locate finds one of account id's own posts by its URL.
+func (d *Dispatcher) Locate(ctx context.Context, id, url string) (destination.ItemRef, error) {
+	if d.Registry == nil {
+		return destination.ItemRef{}, errors.New("dispatch: no accounts")
+	}
+	acct, release, err := d.Registry.Acquire(id)
+	if err != nil {
+		return destination.ItemRef{}, err
+	}
+	defer release()
+	l, ok := acct.(destination.Locator)
 	if !ok {
-		return destination.ItemRef{}, errors.New("dispatch: " + name + " can't look posts up")
+		return destination.ItemRef{}, errors.New("dispatch: this account can't look posts up")
 	}
 	return l.Locate(ctx, url)
 }
 
-// displayName is the destination's human name for messages ("Bluesky").
-func (d *Dispatcher) displayName(name string) string {
-	if a, ok := d.Accounts[name]; ok && a != nil {
-		if n := a.Manifest().Name; n != "" {
-			return n
-		}
+// displayName names an account in messages: its type's name with its
+// handle, or its label when that says more ("Bluesky (@me.bsky.social)"),
+// or the type's name alone for an account the registry doesn't know. A
+// type without a driver is named by the account's label.
+func (d *Dispatcher) displayName(id, typ string) string {
+	name, known := typ, false
+	if drv, ok := destination.Lookup(typ); ok && drv.Manifest().Name != "" {
+		name, known = drv.Manifest().Name, true
 	}
-	if drv, ok := destination.Lookup(name); ok {
-		if n := drv.Manifest().Name; n != "" {
-			return n
-		}
+	if d.Registry == nil || id == "" {
+		return name
 	}
-	return name
+	e, ok := d.Registry.Get(id)
+	if !ok {
+		return name
+	}
+	label := e.Row.Label
+	if !known && label != "" {
+		name, label = label, ""
+	}
+	switch {
+	case e.Row.Handle != "":
+		return name + " (" + e.Row.Handle + ")"
+	case label == "" || strings.EqualFold(label, name): // a row labeled by its type in lower case says nothing more
+		return name
+	default:
+		return name + " (" + label + ")"
+	}
 }
 
-// publishItem publishes one item to one account and returns the normalized
-// result. Nothing is sent when the media can't be made to fit the account.
-func (d *Dispatcher) publishItem(ctx context.Context, name string, it item) TargetResult {
+// publishItem publishes one item from one account and returns the
+// normalized result. Nothing is sent when the media can't be made to fit
+// the account. A refusal of the credentials asks the registry to check
+// them.
+func (d *Dispatcher) publishItem(ctx context.Context, id, typ string, it item) TargetResult {
 	start := time.Now()
-	acct, err := d.account(name)
+	acct, release, err := d.acquire(id, typ)
 	var res destination.PublishResult
 	if err == nil {
+		defer release()
 		var req destination.PublishRequest
-		req, err = d.request(ctx, acct, name, it)
+		req, err = d.request(ctx, acct, id, typ, it)
 		if err == nil {
 			req.Prepared, err = d.prepare(ctx, acct, req, it)
 		}
 		if err == nil {
 			res, err = acct.Publish(ctx, req)
 		}
+		d.reportAuth(id, err)
 	}
-	r := normalize(name, acct, res, err)
+	return d.finish(typ, acct, res, err, start)
+}
+
+// finish normalizes a send's result and records its metrics.
+func (d *Dispatcher) finish(typ string, acct destination.Account, res destination.PublishResult, err error, start time.Time) TargetResult {
+	r := normalize(typ, acct, res, err)
 	r.LatencyMS = int(time.Since(start).Milliseconds())
-	metrics.RecordPublish(name, r.Status, time.Since(start))
+	var locked errLocked
+	if errors.As(err, &locked) {
+		r.waiting = true
+		return r
+	}
+	metrics.RecordPublish(typ, r.Status, time.Since(start))
 	return r
+}
+
+// reportAuth tells the registry when the network refused the account's
+// credentials, so an authenticated check can confirm it.
+func (d *Dispatcher) reportAuth(id string, err error) {
+	if err != nil && d.Registry != nil && destination.ClassOf(err) == destination.ClassAuth {
+		d.Registry.ReportAuthFailure(id)
+	}
 }
 
 // prepare returns the item as a Preparer built it: from an earlier attempt,
@@ -159,28 +219,27 @@ func (d *Dispatcher) prepare(ctx context.Context, acct destination.Account, req 
 	return prep, nil
 }
 
-// repost natively reposts an external post.
-func (d *Dispatcher) repost(ctx context.Context, name string, ref InteractRef) TargetResult {
+// repost natively reposts an external post from account id.
+func (d *Dispatcher) repost(ctx context.Context, id, typ string, ref InteractRef) TargetResult {
 	start := time.Now()
-	acct, err := d.account(name)
+	acct, release, err := d.acquire(id, typ)
 	var res destination.PublishResult
 	if err == nil {
+		defer release()
 		rp, ok := acct.(destination.Reposter)
 		if !ok {
-			err = destination.Invalidf("%s does not support reposts", d.displayName(name))
+			err = destination.Invalidf("%s does not support reposts", d.displayName(id, typ))
 		} else {
-			res, err = rp.Repost(ctx, sourceRef(name, ref))
+			res, err = rp.Repost(ctx, sourceRef(typ, ref))
+			d.reportAuth(id, err)
 		}
 	}
-	r := normalize(name, acct, res, err)
-	r.LatencyMS = int(time.Since(start).Milliseconds())
-	metrics.RecordPublish(name, r.Status, time.Since(start))
-	return r
+	return d.finish(typ, acct, res, err, start)
 }
 
 // request builds the PublishRequest for an item against the account's
 // capabilities: media fitted, and only the fields the account supports.
-func (d *Dispatcher) request(ctx context.Context, acct destination.Account, name string, it item) (destination.PublishRequest, error) {
+func (d *Dispatcher) request(ctx context.Context, acct destination.Account, id, typ string, it item) (destination.PublishRequest, error) {
 	m := acct.Manifest()
 	caps := acct.Capabilities(ctx)
 	media, err := prepareMedia(ctx, m.Name, caps.Media, it.imgs, d.Host)
@@ -226,13 +285,13 @@ func (d *Dispatcher) request(ctx context.Context, acct destination.Account, name
 			if !caps.Interactions.Quote {
 				return req, destination.Invalidf("%s does not support quotes", m.Name)
 			}
-			src := sourceRef(name, *h.quote)
+			src := sourceRef(typ, *h.quote)
 			req.Quote = &src
 		case h.reply != nil:
 			if !caps.Interactions.Reply {
 				return req, destination.Invalidf("%s does not support replies to other posts", m.Name)
 			}
-			src := sourceRef(name, *h.reply)
+			src := sourceRef(typ, *h.reply)
 			req.ReplyTo = &src
 		}
 	}
@@ -241,7 +300,7 @@ func (d *Dispatcher) request(ctx context.Context, acct destination.Account, name
 		case it.idemKey != "":
 			req.IdempotencyKey = it.idemKey
 		case it.postID != "":
-			req.IdempotencyKey = store.ItemKey(it.postID, name, it.ordinal)
+			req.IdempotencyKey = store.AccountItemKey(it.postID, id, it.ordinal)
 		}
 	}
 	return req, nil
@@ -350,14 +409,4 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
-}
-
-// ConnectedIDs maps each type to the stored account its connected account
-// sends as, for Dispatcher.AccountIDs, from store.SeedEnvAccounts' answer.
-func ConnectedIDs(seeded map[string]store.Account) map[string]string {
-	out := make(map[string]string, len(seeded))
-	for typ, a := range seeded {
-		out[typ] = a.ID
-	}
-	return out
 }

@@ -51,7 +51,7 @@ func (sourcesResolver) Resolve(_ context.Context, in string) (*resolve.SourceRef
 func TestV1CreateInteractions(t *testing.T) {
 	e := newV1Env(t, true)
 	e.withEngine()
-	e.api.Resolve = sourcesResolver{}
+	e.withAccounts()
 	png := pngBytes(t, 4, 4)
 	e.api.fetchMedia = func(_ context.Context, u string) ([]byte, string, error) {
 		if u != "https://cdn.example/a.jpg" {
@@ -112,7 +112,7 @@ func TestV1CreateInteractions(t *testing.T) {
 func TestV1CreateInteractionValidation(t *testing.T) {
 	e := newV1Env(t, true)
 	e.withEngine()
-	e.api.Resolve = sourcesResolver{}
+	e.withAccounts()
 	bsky, masto := e.acct("bluesky"), e.acct("mastodon")
 	vidObj := &store.MediaObject{Status: store.MediaReady, Mime: "video/mp4", URL: "https://b/v", SizeBytes: 10, DurationSecs: 5}
 	if err := e.st.CreateMediaObject(context.Background(), vidObj); err != nil {
@@ -192,7 +192,7 @@ func TestV1CreateInteractionValidation(t *testing.T) {
 func TestV1PreviewQuote(t *testing.T) {
 	e := newV1Env(t, true)
 	e.withEngine()
-	e.api.Resolve = sourcesResolver{}
+	e.withAccounts()
 	r := e.do(req{method: "POST", path: "/v1/posts:preview", body: `{"content":{"text":"look"},"targets":[{"account":"` +
 		e.acct("bluesky") + `"},{"account":"` + e.acct("mastodon") + `"}],"quote":{"url":"` + bskySource + `"}}`})
 	wantStatus(t, r, 200)
@@ -211,7 +211,7 @@ func TestV1PreviewQuote(t *testing.T) {
 
 func TestV1Resolve(t *testing.T) {
 	e := newV1Env(t, true)
-	e.api.Resolve = sourcesResolver{}
+	e.withAccounts()
 	r := e.do(req{method: "POST", path: "/v1/resolve", body: `{"url":"` + mastoSource + `"}`})
 	wantStatus(t, r, 200)
 	var got v1ResolveBody
@@ -229,24 +229,83 @@ func TestV1Resolve(t *testing.T) {
 		t.Fatalf("errors = %+v", p.Errors)
 	}
 	wantProblem(t, e.do(req{method: "POST", path: "/v1/resolve", body: `{"url":"https://down.example/1"}`, badRequest: true}), 502, codeUpstream)
-	e.api.Resolve = nil
+	e.api.Accounts = nil
 	p = wantProblem(t, e.do(req{method: "POST", path: "/v1/resolve", body: `{"url":"` + bskySource + `"}`, badRequest: true}), 422, codeValidation)
 	if p.Errors[0].Code != "not_configured" {
 		t.Fatalf("errors = %+v", p.Errors)
 	}
-	e.api.Resolve = sourcesResolver{}
-	// No account on the post's network: nothing is allowed.
-	if _, err := e.st.SeedEnvAccounts(context.Background(), store.DefaultOwner, []store.EnvAccount{{Type: "mastodon", Label: "Mastodon"}}); err != nil {
-		t.Fatal(err)
-	}
+	e.api.Accounts = e.reg
 	r = e.do(req{method: "POST", path: "/v1/resolve", body: `{"url":"` + bskySource + `"}`})
 	wantStatus(t, r, 200)
 	r.json(&got)
 	if len(got.Media) != 2 || got.Media[0].Type != "image" || got.Media[1].Type != "video" {
 		t.Fatalf("media = %+v", got.Media)
 	}
-	if got.Account != nil || got.Actions.Reply.Allowed || got.CreatedAt == nil {
+	if got.Account == nil || *got.Account != e.acct("bluesky") || !got.Actions.Reply.Allowed || got.CreatedAt == nil {
 		t.Fatalf("resolve = %+v", got)
+	}
+	// Posts are looked up with an account on their network: with the
+	// only Bluesky account turned off, a Bluesky post can't be.
+	e.disable(e.acct("bluesky"))
+	p = wantProblem(t, e.do(req{method: "POST", path: "/v1/resolve", body: `{"url":"` + bskySource + `"}`, badRequest: true}), 422, codeValidation)
+	if p.Errors[0].Code != "not_configured" || !strings.Contains(p.Errors[0].Detail, "connected") {
+		t.Fatalf("errors = %+v", p.Errors)
+	}
+}
+
+// A post is looked up with the owner's first connected account on its
+// network, or with the account a reply comes from (a Mastodon status id
+// is only valid on its own server); a network whose accounts can't look
+// posts up says so.
+func TestV1ResolveByAccount(t *testing.T) {
+	e := newV1Env(t, true)
+	e.seedAccounts("threads")
+	if err := e.st.InsertAccount(context.Background(), store.Account{ID: "acc_work", Type: "mastodon", Label: "Work",
+		Source: "env", EnvKey: "work", Enabled: true, CreatedAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	e.withEngine()
+	e.withAccounts()
+	home := e.acct("mastodon")
+	resolveWith := func() string {
+		t.Helper()
+		r := e.do(req{method: "POST", path: "/v1/resolve", body: `{"url":"` + mastoSource + `"}`})
+		wantStatus(t, r, 200)
+		var got v1ResolveBody
+		r.json(&got)
+		if got.Account == nil {
+			t.Fatalf("resolve = %+v", got)
+		}
+		return *got.Account
+	}
+	if got := resolveWith(); got != home || e.lookups[len(e.lookups)-1] != home {
+		t.Fatalf("resolved with %s (lookups %v), want the first account %s", got, e.lookups, home)
+	}
+
+	// A reply from the second account looks the post up there.
+	r := e.do(req{method: "POST", path: "/v1/posts", body: `{"content":{"text":"hi"},"targets":[{"account":"acc_work"}],` +
+		`"reply_to":{"url":"` + mastoSource + `"}}`})
+	wantStatus(t, r, 202)
+	if last := e.lookups[len(e.lookups)-1]; last != "acc_work" {
+		t.Fatalf("the reply's source was looked up with %s, want acc_work", last)
+	}
+	var pb v1PostBody
+	r.json(&pb)
+	saved, err := e.st.GetPost(strings.TrimPrefix(pb.ID, prefixPost))
+	if err != nil || saved.Interaction == nil || saved.Interaction.SourceAccount != "acc_work" {
+		t.Fatalf("interaction = %+v, %v", saved.Interaction, err)
+	}
+
+	// The first account turned off: the second looks posts up.
+	e.disable(home)
+	if got := resolveWith(); got != "acc_work" {
+		t.Fatalf("resolved with %s, want acc_work", got)
+	}
+
+	p := wantProblem(t, e.do(req{method: "POST", path: "/v1/resolve", badRequest: true,
+		body: `{"url":"https://www.threads.net/@a/post/x"}`}), 422, codeValidation)
+	if p.Errors[0].Code != "not_supported" || p.Errors[0].Detail != "Threads posts can't be looked up (its API has no URL lookup)" {
+		t.Fatalf("errors = %+v", p.Errors)
 	}
 }
 

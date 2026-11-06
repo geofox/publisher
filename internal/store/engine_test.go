@@ -27,11 +27,11 @@ func plannedPost(t *testing.T, s *Store, id string, due time.Time, n int, platfo
 		for i := 0; i < n; i++ {
 			d := due
 			tg.Items = append(tg.Items, Item{Ordinal: i, Text: pl + "-" + string(rune('a'+i)), Status: ItemPlanned,
-				IdemKey: ItemKey(id, pl, i), NextAttemptAt: &d})
+				IdemKey: LegacyItemKey(id, pl, i), NextAttemptAt: &d})
 		}
 		p.Targets = append(p.Targets, tg)
 	}
-	if err := s.SavePost(p); err != nil {
+	if err := saveWithAccounts(s, p); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetPost(id)

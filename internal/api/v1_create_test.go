@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/media"
@@ -41,6 +42,34 @@ func (e *v1Env) seedAccounts(types ...string) {
 	if _, err := e.st.SeedEnvAccounts(context.Background(), store.DefaultOwner, envs); err != nil {
 		e.t.Fatal(err)
 	}
+}
+
+// disable turns an account off, as the owner would.
+func (e *v1Env) disable(id string) {
+	e.t.Helper()
+	off := false
+	if _, err := e.st.UpdateAccountMeta(context.Background(), store.DefaultOwner, id, store.AccountMeta{Enabled: &off}); err != nil {
+		e.t.Fatal(err)
+	}
+	e.syncRegistry(id)
+}
+
+// savePost saves p, each target without an account sent as the env's
+// account of its type (seeded when missing).
+func (e *v1Env) savePost(p *store.Post) error {
+	e.t.Helper()
+	for i := range p.Targets {
+		tg := &p.Targets[i]
+		if tg.AccountID != "" {
+			continue
+		}
+		if _, err := e.st.SeedEnvAccounts(context.Background(), store.DefaultOwner,
+			[]store.EnvAccount{{Type: tg.Platform, Label: tg.Platform}}); err != nil {
+			return err
+		}
+		tg.AccountID = e.acct(tg.Platform)
+	}
+	return e.st.SavePost(p)
 }
 
 // acct returns the env's account id of a type.
@@ -151,10 +180,7 @@ func TestV1CreatePostValidation(t *testing.T) {
 	e := newV1Env(t, true)
 	e.withEngine()
 	bsky, masto := e.acct("bluesky"), e.acct("mastodon")
-	// A disabled account: re-seed without mastodon.
-	if _, err := e.st.SeedEnvAccounts(context.Background(), store.DefaultOwner, []store.EnvAccount{{Type: "bluesky", Label: "Bluesky"}}); err != nil {
-		t.Fatal(err)
-	}
+	e.disable(masto)
 	long := strings.Repeat("a", maxPostTextRunes+1)
 	manyParts := strings.Repeat("word ", 9000) // 45000 chars: over 100 Bluesky posts
 	img := e.upload("x")
@@ -430,6 +456,7 @@ func TestV1MediaScope(t *testing.T) {
 
 func TestV1CompressMedia(t *testing.T) {
 	e := newV1Env(t, true)
+	e.withEngine() // a media store
 	r := e.do(req{method: "POST", path: "/v1/media:compress?preset=small", body: string(pngBytes(t, 16, 8)),
 		header: map[string]string{"Content-Type": "image/png"}})
 	wantStatus(t, r, 200)
@@ -630,22 +657,44 @@ func TestV1CreatePostTooManyLinks(t *testing.T) {
 	}
 }
 
-// TestV1CreatePostOtherAccountOfType: until accounts can be added, the engine
-// holds one connected account per type. A stored account of that type that
-// isn't the connected one would be sent with the connected one's
-// credentials, so it is refused.
-func TestV1CreatePostOtherAccountOfType(t *testing.T) {
+// statusOf is an AccountStatus with fixed statuses (connected unless set).
+type statusOf map[string]accounts.Status
+
+func (s statusOf) Get(id string) (accounts.Entry, bool) {
+	st, ok := s[id]
+	if !ok {
+		st = accounts.Connected
+	}
+	reason := ""
+	if st == accounts.NotConfigured {
+		reason = "set BLUESKY_APP_PASSWORD to use it again"
+	}
+	return accounts.Entry{Row: store.Account{ID: id}, Status: st, Reason: reason}, true
+}
+
+func (statusOf) List(string) []accounts.Entry { return nil }
+func (statusOf) Acquire(id string) (destination.Account, func(), error) {
+	return nil, nil, accounts.ErrNoAccount
+}
+func (statusOf) Profile(string) (accounts.Profile, bool) { return accounts.Profile{}, false }
+func (statusOf) Update(string, store.Account) error      { return nil }
+
+// TestV1CreatePostUnavailableAccount: an account the registry says can't
+// send (here, the environment no longer configures it) is refused, saying
+// why, rather than saved to fail later.
+func TestV1CreatePostUnavailableAccount(t *testing.T) {
 	e := newV1Env(t, true)
-	d := e.withEngine()
+	e.withEngine()
 	bsky := e.acct("bluesky")
-	d.AccountIDs = map[string]string{"bluesky": "acc_connected"}
+	e.api.Accounts = statusOf{bsky: accounts.NotConfigured}
 	body := `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `"}]}`
 	for _, path := range []string{"/v1/posts", "/v1/posts:preview"} {
 		p := wantProblem(t, e.do(req{method: "POST", path: path, body: body, badRequest: true}), 422, codeValidation)
-		if len(p.Errors) != 1 || p.Errors[0].Pointer != "/targets/0/account" || p.Errors[0].Code != "account_disabled" {
+		if len(p.Errors) != 1 || p.Errors[0].Pointer != "/targets/0/account" || p.Errors[0].Code != "account_disabled" ||
+			!strings.Contains(p.Errors[0].Detail, "BLUESKY_APP_PASSWORD") {
 			t.Fatalf("%s: errors = %+v", path, p.Errors)
 		}
 	}
-	d.AccountIDs = map[string]string{"bluesky": bsky}
+	e.api.Accounts = statusOf{}
 	wantStatus(t, e.do(req{method: "POST", path: "/v1/posts", body: body}), 202)
 }

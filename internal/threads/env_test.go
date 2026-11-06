@@ -55,7 +55,7 @@ func TestFromEnvKeepsTokenAsSet(t *testing.T) {
 	if err != nil || len(got) != 1 {
 		t.Fatalf("FromEnv = %v, %v", got, err)
 	}
-	if tok := got[0].Secrets[SecretAccessToken]; seedHash(tok) != seedHash("EAAtok \n") {
+	if tok := got[0].Secrets[SecretAccessToken]; SeedHash(tok) != SeedHash("EAAtok \n") {
 		t.Errorf("token = %q: its hash no longer matches the one stored by earlier versions", tok)
 	}
 	if got, err := (Driver{}).FromEnv(envOf(map[string]string{"THREADS_ACCESS_TOKEN": "  "})); err != nil || got != nil {

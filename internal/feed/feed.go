@@ -44,6 +44,10 @@ type Interaction struct {
 type Link struct {
 	Platform string `json:"platform"`
 	URL      string `json:"url"`
+	// Account is the id of the account that posted it; Handle its handle
+	// as last seen (empty before its network first answered).
+	Account string `json:"account,omitempty"`
+	Handle  string `json:"handle,omitempty"`
 }
 
 const defaultLimit, maxLimit = 20, 100
@@ -71,20 +75,21 @@ func publicVisible(platform, fieldsJSON string) bool {
 }
 
 // targetLink returns the public link for a target, or false if it should not
-// appear. A target qualifies when it is publicly visible, carries a URL, and
+// appear. A target qualifies when its account takes part in the feed, it is
+// publicly visible, carries a URL, and
 // actually went live — status "success", or "partial". "partial" only arises
 // for Nostr, where it means the note reached at least one relay (the njump.me
 // URL resolves) while another relay failed; that note is publicly live, so it
 // must not be hidden until every relay is green. The RemoteURL guard keeps
 // truly-failed targets (which have no URL) out.
 func targetLink(t store.Target) (Link, bool) {
-	if t.RemoteURL == "" || !publicVisible(t.Platform, t.FieldsJSON) {
+	if t.FeedExcluded || t.RemoteURL == "" || !publicVisible(t.Platform, t.FieldsJSON) {
 		return Link{}, false
 	}
 	if t.Status != "success" && t.Status != "partial" {
 		return Link{}, false
 	}
-	return Link{Platform: t.Platform, URL: t.RemoteURL}, true
+	return Link{Platform: t.Platform, URL: t.RemoteURL, Account: t.AccountID, Handle: t.AccountHandle}, true
 }
 
 // Eligible reports whether a post may appear in the feed: it is not a reply and

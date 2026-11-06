@@ -31,7 +31,7 @@ type v1EventBody struct {
 	ID          int64   `json:"id"`
 	Type        string  `json:"type"`
 	CreatedAt   string  `json:"created_at"`
-	Post        string  `json:"post"`
+	Post        string  `json:"post,omitempty"` // absent for an account event
 	Status      string  `json:"status,omitempty"`
 	Target      string  `json:"target,omitempty"`
 	Account     string  `json:"account,omitempty"`
@@ -43,14 +43,26 @@ type v1EventBody struct {
 	Endpoint    string  `json:"endpoint,omitempty"`
 	ScheduledAt *string `json:"scheduled_at,omitempty"`
 	Hidden      *bool   `json:"hidden,omitempty"`
+	// Account events: the names of the fields that changed (never their
+	// values), and who changed them (a token by its id).
+	Fields []string `json:"fields,omitempty"`
+	Actor  string   `json:"actor,omitempty"`
+	Token  string   `json:"token,omitempty"`
 }
 
 func v1Event(e store.Event) v1EventBody {
 	d := e.Data
 	b := v1EventBody{
-		ID: e.ID, Type: e.Type, CreatedAt: rfc3339(e.CreatedAt), Post: postID(e.PostID), Account: d.AccountID,
+		ID: e.ID, Type: e.Type, CreatedAt: rfc3339(e.CreatedAt), Account: d.AccountID,
 		Destination: d.Platform, Ordinal: d.Ordinal, URL: d.RemoteURL, ErrorClass: d.ErrorClass, Error: d.Error,
 		Endpoint: d.Endpoint, ScheduledAt: rfc3339ptr(d.ScheduledAt), Hidden: d.Hidden,
+		Fields: d.Fields, Actor: d.Actor,
+	}
+	if e.PostID != "" {
+		b.Post = postID(e.PostID)
+	}
+	if d.TokenID != "" {
+		b.Token = tokenID(d.TokenID)
 	}
 	if d.TargetID != 0 {
 		b.Target = targetID(d.TargetID)
@@ -129,7 +141,8 @@ func (a *API) v1Events(w http.ResponseWriter, r *http.Request) {
 		after = last
 	}
 	pr, _ := principalFrom(r.Context())
-	a.streamEvents(w, r, store.EventFilter{OwnerID: pr.OwnerID, After: after}, false)
+	// Account changes go only to a caller that may read accounts.
+	a.streamEvents(w, r, store.EventFilter{OwnerID: pr.OwnerID, After: after, PostsOnly: !pr.can(scopeAccountsRead)}, false)
 }
 
 // streamEvents writes events matching f as they are logged. untilSettled

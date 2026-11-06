@@ -18,7 +18,7 @@ func mkPost(t *testing.T, db *Store, id, status, text string) {
 		Status:     status,
 		Targets:    []Target{{Platform: "nostr", Status: status}},
 	}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatalf("mkPost %q: %v", id, err)
 	}
 }

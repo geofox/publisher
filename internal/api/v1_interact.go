@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/resolve"
@@ -49,46 +50,88 @@ func (req *v1CreatePostReq) interaction() (action string, src *v1SourceIn, n int
 // maxSourceURL bounds a source URL (or Nostr id).
 const maxSourceURL = 2048
 
-// resolveSource resolves a URL for an action; problems are field errors at
-// ptr. upstream is set instead when the post's network couldn't be reached
-// (a timeout, a dropped connection, a 5xx or rate limit): the request was
-// fine and may be retried. Details stay in the log; clients get fixed text.
-func (a *API) resolveSource(ctx context.Context, url, ptr string, add func(ptr, code, detail string)) (src *resolve.SourceRef, upstream bool) {
+// lookUp resolves a pasted post with one of the owner's connected accounts
+// on its network: prefer when it is one (the account that will act on
+// the post), else the first in registry order that can look posts up. It
+// returns the account used.
+func (a *API) lookUp(ctx context.Context, input, prefer string) (*resolve.SourceRef, string, error) {
+	typ := resolve.Detect(input)
+	if typ == "" {
+		return nil, "", resolve.ErrUnrecognized
+	}
+	if a.Accounts == nil {
+		return nil, "", resolve.ErrNotConfigured
+	}
+	p, _ := principalFrom(ctx)
+	var ids []string
+	for _, e := range a.Accounts.List(p.OwnerID) {
+		if e.Row.Type != typ || e.Status != accounts.Connected {
+			continue
+		}
+		if e.Row.ID == prefer {
+			ids = append([]string{e.Row.ID}, ids...)
+		} else {
+			ids = append(ids, e.Row.ID)
+		}
+	}
+	for _, id := range ids {
+		acct, release, err := a.Accounts.Acquire(id)
+		if err != nil {
+			continue
+		}
+		r, ok := acct.(destination.SourceResolver)
+		if !ok {
+			release()
+			return nil, "", resolve.ErrUnsupported
+		}
+		rs, err := r.ResolveSource(ctx, strings.TrimSpace(input))
+		release()
+		if err != nil {
+			return nil, id, err
+		}
+		return resolve.FromResolved(rs), id, nil
+	}
+	return nil, "", resolve.ErrNotConfigured
+}
+
+// resolveSource resolves a URL for an action, with prefer's account when
+// it is on the post's network; problems are field errors at ptr. upstream
+// is set instead when the post's network couldn't be reached (a timeout, a
+// dropped connection, a 5xx or rate limit): the request was fine and may
+// be retried. Details stay in the log; clients get fixed text.
+func (a *API) resolveSource(ctx context.Context, url, prefer, ptr string, add func(ptr, code, detail string)) (src *resolve.SourceRef, account string, upstream bool) {
 	switch {
 	case strings.TrimSpace(url) == "":
 		add(ptr, "required", "the post's URL (or a Nostr nevent/note id)")
-		return nil, false
+		return nil, "", false
 	case len(url) > maxSourceURL:
 		add(ptr, "too_long", "at most 2048 characters")
-		return nil, false
-	case a.Resolve == nil:
-		add(ptr, "not_configured", "resolving posts is not configured on this server")
-		return nil, false
+		return nil, "", false
 	}
 	rctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	src, err := a.Resolve.Resolve(rctx, url)
+	src, account, err := a.lookUp(rctx, url, prefer)
 	if err == nil {
-		return src, false
+		return src, account, false
 	}
-	slog.InfoContext(ctx, "v1: resolve", "url", url, "err", store.Scrub(err.Error()))
+	slog.InfoContext(ctx, "v1: resolve", "url", url, "account", account, "err", store.Scrub(err.Error()))
 	var he *destination.HTTPError
 	var ne net.Error
 	switch {
 	case errors.Is(err, resolve.ErrUnrecognized):
 		add(ptr, "unrecognized", "not a Bluesky or Mastodon post URL, or a Nostr nevent/note id")
-	case errors.Is(err, resolve.ErrThreadsUnsupported):
-		add(ptr, "not_supported", "Threads posts can't be looked up (its API has no URL lookup)")
+	case errors.Is(err, resolve.ErrUnsupported):
+		add(ptr, "not_supported", displayName(resolve.Detect(url))+" posts can't be looked up (its API has no URL lookup)")
 	case errors.Is(err, resolve.ErrNotConfigured):
-		add(ptr, "not_configured", "that post's network is not configured on this server")
+		add(ptr, "not_configured", "none of your accounts on that post's network is connected")
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &ne),
 		errors.As(err, &he) && (he.StatusCode >= 500 || he.StatusCode == http.StatusTooManyRequests):
-		return nil, true
+		return nil, account, true
 	default:
 		add(ptr, "unresolvable", "the post couldn't be found or read: it may be deleted, private, "+
 			"or not yet known to your server; the server log has details")
 	}
-	return nil, false
+	return nil, account, false
 }
 
 // checkInteraction runs the checks on an interaction that need no network,
@@ -134,7 +177,16 @@ func (a *API) checkInteraction(req *v1CreatePostReq, plan *createPlan, add func(
 func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *createPlan, add func(ptr, code, detail string)) {
 	action, in, _ := req.interaction()
 	ptr := map[string]string{"reply": "/reply_to", "quote": "/quote", "repost": "/repost"}[action]
-	src, upstream := a.resolveSource(ctx, in.URL, ptr+"/url", add)
+	// The account that will act on the post looks it up: an id (a
+	// Mastodon status id) is only valid on its own server.
+	prefer := ""
+	for _, pt := range plan.targets {
+		if pt.account.Type == resolve.Detect(in.URL) {
+			prefer = pt.account.ID // the first acts natively
+			break
+		}
+	}
+	src, _, upstream := a.resolveSource(ctx, in.URL, prefer, ptr+"/url", add)
 	if src == nil {
 		plan.upstream = upstream
 		return
@@ -156,18 +208,21 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 		add(ptr+"/url", "not_allowed", reason)
 	}
 	native := -1
-	var fanout []string
 	for i, pt := range plan.targets {
 		if pt.account.Type == src.Platform {
+			if native >= 0 {
+				// The post exists once on its network: one account acts on it.
+				add(pt.reqPtr+"/account", "one_native_actor", "only one of your "+displayName(src.Platform)+
+					" accounts can "+action+" this post; send from the others separately")
+				continue
+			}
 			native = i
 			continue
 		}
 		if action != "quote" {
 			add(pt.reqPtr+"/account", "not_allowed", "a "+action+" goes only to the source's network ("+src.Platform+
 				"); use a quote to share it elsewhere")
-			continue
 		}
-		fanout = append(fanout, pt.account.Type)
 	}
 	if native < 0 {
 		add("/targets", "missing_source_account", "include your "+src.Platform+" account: the "+action+" happens there")
@@ -190,16 +245,23 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 		webURL = in.URL
 	}
 	r := src.Ref
+	targets := make([]dispatch.TargetSpec, len(plan.targets))
+	for i, pt := range plan.targets {
+		targets[i] = dispatch.TargetSpec{AccountID: pt.account.ID, Type: pt.account.Type, Overrides: pt.ov, Layout: pt.layout}
+		if pt.own {
+			targets[i].Text = pt.text
+		}
+	}
 	ix := &dispatch.InteractSpec{
-		Action: action, SourcePlatform: src.Platform, SourceURL: webURL, SourceAuthor: author,
+		Action: action, SourcePlatform: src.Platform, SourceAccount: plan.targets[native].account.ID,
+		SourceURL: webURL, SourceAuthor: author,
 		Ref: dispatch.InteractRef{URI: r.URI, CID: r.CID, ReplyRootURI: r.ReplyRootURI, ReplyRootCID: r.ReplyRootCID,
 			LocalID: r.LocalID, EventID: r.EventID, Author: r.Author, RelayHints: r.RelayHints, Kind: r.Kind,
 			ThreadRootID: r.ThreadRootID, Mentions: r.Mentions},
-		Text: plan.spec.MasterText, Overrides: plan.spec.Overrides, Fanout: fanout, Number: plan.spec.Number,
+		Text: plan.spec.MasterText, Targets: targets, Number: plan.spec.Number,
 		MediaRecords:  plan.spec.MediaRecords,
 		SourcePreview: dispatch.SourcePreview{Author: author, Text: src.Preview.Text},
-		Source:        "api", Accounts: plan.spec.Accounts,
-		Layout: plan.spec.Layouts[src.Platform],
+		Source:        "api",
 	}
 	plan.ix, plan.source = ix, src
 	if allowed.Allowed && allowed.Reason != "" {
@@ -212,11 +274,11 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 		case action == "repost":
 			pt.text = ""
 		case i == native:
-			pt.text = dispatch.InteractText(*ix, pt.account.Type)
+			pt.text = dispatch.InteractText(*ix, targets[i])
 		default:
 			// A link-quote copy is split automatically, every media on
 			// its first post.
-			pt.text = dispatch.ReproductionText(*ix, pt.account.Type)
+			pt.text = dispatch.ReproductionText(*ix, targets[i])
 			pt.layout = thread.Layout{MediaAt: make([]int, len(plan.media))}
 		}
 	}
@@ -243,7 +305,7 @@ func sourceImagesWanted(plan *createPlan) int {
 	}
 	room := 0
 	for _, pt := range plan.targets {
-		if pt.account.Type == plan.source.Platform || !pt.caps.Media.Images.Supported {
+		if pt.account.ID == plan.ix.SourceAccount || !pt.caps.Media.Images.Supported {
 			continue
 		}
 		r := maxSourceImages
@@ -261,7 +323,7 @@ func sourceImagesWanted(plan *createPlan) int {
 // to copy here).
 func (a *API) rehostSourceMedia(ctx context.Context, plan *createPlan) int {
 	ix, want := plan.ix, sourceImagesWanted(plan)
-	if a.media == nil || len(ix.Fanout) == 0 || want == 0 {
+	if a.media == nil || len(ix.Targets) < 2 || want == 0 {
 		return 0
 	}
 	ctx, cancel := context.WithTimeout(ctx, sourceMediaBudget)
@@ -391,8 +453,16 @@ type v1ResolveAction struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
+// v1ResolveSourceReq is POST /v1/resolve's body.
+type v1ResolveSourceReq struct {
+	URL string `json:"url"`
+	// Account looks the post up with this account (one of yours on the
+	// post's network, connected); absent: the first such account.
+	Account *string `json:"account"`
+}
+
 func (a *API) v1Resolve(w http.ResponseWriter, r *http.Request) {
-	var req v1SourceIn
+	var req v1ResolveSourceReq
 	if !decodeJSON(w, r, &req) {
 		return
 	}
@@ -404,20 +474,36 @@ func (a *API) v1Resolve(w http.ResponseWriter, r *http.Request) {
 	add := func(ptr, code, detail string) {
 		errs = append(errs, fieldError{Pointer: ptr, Code: code, Detail: detail})
 	}
-	src, upstream := a.resolveSource(r.Context(), req.URL, "/url", add)
+	prefer := ""
+	if req.Account != nil {
+		prefer = *req.Account
+		pr, _ := principalFrom(r.Context())
+		var e accounts.Entry
+		ok := false
+		if a.Accounts != nil {
+			e, ok = a.Accounts.Get(prefer)
+		}
+		typ := resolve.Detect(req.URL)
+		switch {
+		case !ok || e.Row.OwnerID != pr.OwnerID:
+			add("/account", "unknown_account", "no account "+prefer+"; list them with GET /v1/accounts")
+		case typ != "" && e.Row.Type != typ:
+			add("/account", "not_allowed", "a "+displayName(e.Row.Type)+" account can't look up a "+displayName(typ)+" post")
+		case e.Status != accounts.Connected:
+			add("/account", "account_disabled", (&accounts.Unavailable{ID: prefer, Status: e.Status, Reason: e.Reason}).Error())
+		}
+		if len(errs) > 0 {
+			invalid(w, r, errs)
+			return
+		}
+	}
+	src, account, upstream := a.resolveSource(r.Context(), req.URL, prefer, "/url", add)
 	if upstream {
 		problem(w, r, http.StatusBadGateway, codeUpstream, "the post's network could not be reached; try again")
 		return
 	}
 	if src == nil {
 		invalid(w, r, errs)
-		return
-	}
-	pr, _ := principalFrom(r.Context())
-	accts, err := a.Store.Accounts(r.Context(), pr.OwnerID)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "v1: resolve accounts", "err", err)
-		problem(w, r, http.StatusInternalServerError, codeInternal, "reading the accounts failed")
 		return
 	}
 	out := v1ResolveBody{Platform: src.Platform, URL: src.Preview.WebURL, Text: src.Preview.Text,
@@ -435,16 +521,10 @@ func (a *API) v1Resolve(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Media = append(out.Media, v1ResolveMedia{URL: m.URL, Alt: m.Alt, Type: kind})
 	}
-	for _, ac := range accts {
-		// The account planCreate would accept: enabled, on a registered
-		// destination, and the one the engine sends the type as.
-		sa, guarded := a.Dispatch.(accountSender)
-		if _, registered := destination.Lookup(ac.Type); ac.Enabled && registered && ac.Type == src.Platform &&
-			(!guarded || sa.SendsAs(ac.Type, ac.ID)) {
-			id := ac.ID
-			out.Account = &id
-			break
-		}
+	// The account that looked the post up is connected, so a post naming
+	// it is accepted.
+	if account != "" {
+		out.Account = &account
 	}
 	act := func(c resolve.Cap) v1ResolveAction {
 		if out.Account == nil {

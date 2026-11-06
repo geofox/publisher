@@ -22,5 +22,11 @@ func (Driver) Open(_ context.Context, req destination.OpenRequest) (destination.
 	if token == "" {
 		return nil, destination.InvalidField(SecretAccessToken, "required")
 	}
-	return &Account{C: NewWithNet(token, userID, req.Host.Net(destination.NetAccount))}, nil
+	tokens, err := openTokenState(req.Config)
+	if err != nil {
+		return nil, err
+	}
+	a := &Account{C: NewWithNet(token, userID, req.Host.Net(destination.NetAccount)), host: req.Host, tokens: tokens}
+	a.C.SetTokenExpiry(tokens.known())
+	return a, nil
 }

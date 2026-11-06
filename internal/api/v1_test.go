@@ -21,6 +21,7 @@ import (
 	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
 
 	apidocs "github.com/geofox/publisher/docs/api"
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/auth"
 	"github.com/geofox/publisher/internal/store"
 )
@@ -68,6 +69,9 @@ type v1Env struct {
 	h      http.Handler
 	st     *store.Store
 	cookie *http.Cookie // a signed-in session (OIDC on only)
+	reg    *accounts.Registry
+	// lookups are the accounts that looked posts up, in order.
+	lookups []string
 }
 
 // newV1Env serves the real Routes() over a fresh store with two seeded
@@ -352,7 +356,6 @@ func TestV1Conformance(t *testing.T) {
 	e.seedPost("fail", "failed", "mastodon")
 	unknownPath, unknownTarget := e.seedUnknown("unk", "bluesky")
 	e.withEngine()
-	e.api.Resolve = sourcesResolver{}
 	e.api.Translator = v1FakeTranslator{}
 	e.api.Verify = &v1FakeVerifier{}
 	e.api.Sync = &v1FakeSyncer{}
@@ -379,6 +382,8 @@ func TestV1Conformance(t *testing.T) {
 		{"GET /v1/destinations", req{method: "GET", path: "/v1/destinations"}, 200},
 		{"GET /v1/accounts", req{method: "GET", path: "/v1/accounts"}, 200},
 		{"GET /v1/accounts/{id}", req{method: "GET", path: "/v1/accounts/" + accts[0].ID}, 200},
+		{"PATCH /v1/accounts/{id}", req{method: "PATCH", path: "/v1/accounts/" + accts[0].ID,
+			header: map[string]string{"If-Match": "*"}, body: `{"label":"Work","default_selected":false}`}, 200},
 		{"GET /v1/me", req{method: "GET", path: "/v1/me"}, 200},
 		{"GET /v1/tokens", req{method: "GET", path: "/v1/tokens"}, 200},
 		{"POST /v1/tokens", req{method: "POST", path: "/v1/tokens", body: `{"name":"ci","scopes":["posts:read"],"expires_at":"2099-01-01T00:00:00Z"}`}, 201},
@@ -746,6 +751,7 @@ func TestV1TokenValidation(t *testing.T) {
 		{"json with charset", `{"name":"x","scopes":["admin"]}`, "application/json; charset=utf-8", 201, ""},
 		{"jsonp", `{"name":"x","scopes":["admin"]}`, "application/jsonp", 415, codeUnsupportedMediaType},
 		{"control char", `{"name":"a\u0000b","scopes":["admin"]}`, "", 422, codeValidation},
+		{"bidi override", `{"name":"ci \u202etoor\u202c","scopes":["admin"]}`, "", 422, codeValidation},
 		{"lowercase t and z", `{"name":"x","scopes":["admin"],"expires_at":"2099-01-01t00:00:00z"}`, "", 201, ""},
 		{"too large", `{"name":"` + strings.Repeat("a", maxV1Body) + `","scopes":["admin"]}`, "", 413, codeTooLarge},
 	}

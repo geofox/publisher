@@ -9,7 +9,7 @@ import { loadAccounts, accountFor } from "./accounts.js";
 async function relaysPath() {
   await loadAccounts();
   const a = accountFor("nostr");
-  if (!a) throw new Error("no Nostr account is configured");
+  if (!a) throw new Error("no Nostr account is connected");
   return "/v1/accounts/" + encodeURIComponent(a.id) + "/nostr/relays";
 }
 
@@ -180,8 +180,21 @@ function syncApply(direction) {
 // Public API
 // ---------------------------------------------------------------------------
 
+// relaySyncOn is features.relay_sync (GET /v1/instance): a connected
+// Nostr account can sync relays.
+let relaySyncOn = true;
+export function relaySyncOff() { relaySyncOn = false; }
+
 export function loadTools() {
+  if (!relaySyncOn) { showNoRelaySync(); return; }
   loadSyncRelays();
+}
+
+// showNoRelaySync says why there is nothing to sync, instead of an error.
+function showNoRelaySync() {
+  const c = $("#syncrelays");
+  if (c) c.replaceChildren(el("div", { class: "muted", text: "Relay sync needs a connected Nostr account (set NSEC_HEX)." }));
+  for (const id of ["#reconcile-head", "#syncscan", "#syncpull", "#syncpush", "#syncout"]) { const e = $(id); if (e) e.hidden = true; }
 }
 
 export function toolsInit() {

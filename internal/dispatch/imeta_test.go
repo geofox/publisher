@@ -34,7 +34,7 @@ func (p *perSegNostr) Quote(context.Context, string, string, string, string, []g
 
 func TestResumeSegmentsNostrPlacesImetasPerSegment(t *testing.T) {
 	cn := &perSegNostr{}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: cn})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Nostr: cn})}
 	imgs := []Img{{BlossomURL: "https://b/x"}, {BlossomURL: "https://b/y"}}
 	tg := store.Target{Platform: "nostr", Segments: []store.Segment{
 		{Ordinal: 0, Text: "a", Status: "pending", Images: []int{0}},
@@ -52,7 +52,7 @@ func TestResumeSegmentsNostrPlacesImetasPerSegment(t *testing.T) {
 
 func TestResumeSegmentsNostrLegacyHeadOnly(t *testing.T) {
 	cn := &perSegNostr{}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: cn})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Nostr: cn})}
 	imgs := []Img{{BlossomURL: "https://b/x"}, {BlossomURL: "https://b/y"}}
 	// Legacy: segments saved before placement → nil Images.
 	tg := store.Target{Platform: "nostr", Segments: []store.Segment{
@@ -67,7 +67,7 @@ func TestResumeSegmentsNostrLegacyHeadOnly(t *testing.T) {
 
 func TestRunChainNostrPlacesImetasPerSegment(t *testing.T) {
 	cn := &perSegNostr{}
-	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Nostr: cn})}
+	d := &Dispatcher{Store: openDispatchStore(t), Registry: legacyAccounts(legacy{Nostr: cn})}
 	imgs := []Img{{BlossomURL: "https://b/x", Mime: "image/png"}, {BlossomURL: "https://b/y", Mime: "image/jpeg"}}
 	// 2-part thread; image 0 → head (part 0), image 1 → part 1 (second post).
 	o := d.runChain(context.Background(), "nostr", "a\n---\nb", Overrides{}, imgs, false, []int{0, 1}, nil, "t")

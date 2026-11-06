@@ -48,10 +48,10 @@ func (a *API) ConvertOldDrafts(ctx context.Context) (converted, failed int) {
 // oldDraftSpec is the old composer's draft spec, as far as the conversion
 // reads it.
 type oldDraftSpec struct {
-	MasterText  string                        `json:"master_text"`
-	Platforms   []string                      `json:"platforms"`
-	Overrides   map[string]dispatch.Overrides `json:"-"`
-	RawOv       json.RawMessage               `json:"overrides"`
+	MasterText  string                  `json:"master_text"`
+	Platforms   []string                `json:"platforms"`
+	Overrides   map[string]oldOverrideF `json:"-"`
+	RawOv       json.RawMessage         `json:"overrides"`
 	Interaction *struct {
 		Action      string `json:"action"`
 		SourceURL   string `json:"sourceURL"`
@@ -71,9 +71,9 @@ func (a *API) convertOldDraft(ctx context.Context, od store.OldDraft) error {
 	if len(sp.RawOv) > 0 {
 		raw := map[string]json.RawMessage{}
 		_ = json.Unmarshal(sp.RawOv, &raw)
-		sp.Overrides = map[string]dispatch.Overrides{}
+		sp.Overrides = map[string]oldOverrideF{}
 		for k, v := range raw {
-			var ov dispatch.Overrides
+			var ov oldOverrideF
 			if json.Unmarshal(v, &ov) == nil {
 				sp.Overrides[k] = ov
 			}
@@ -164,9 +164,16 @@ func (a *API) convertOldDraft(ctx context.Context, od store.OldDraft) error {
 	return a.Store.ConvertDraft(ctx, od.ID, store.DeriveTitle(text), text, body)
 }
 
+// oldOverrideF is a type's overrides in an old draft: the engine's fields
+// then, its own text among them.
+type oldOverrideF struct {
+	dispatch.Overrides
+	Text string `json:"text"`
+}
+
 // oldOverrides turns a type's old override fields into a target's options
 // and content, keeping only the options its destination declares.
-func oldOverrides(typ string, ov dispatch.Overrides) (map[string]any, *v1TargetContent) {
+func oldOverrides(typ string, ov oldOverrideF) (map[string]any, *v1TargetContent) {
 	drv, ok := destination.Lookup(typ)
 	if !ok {
 		return nil, nil

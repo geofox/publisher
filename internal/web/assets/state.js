@@ -37,6 +37,8 @@ export const state = {
   // operator has no DEEPL_API_KEY configured; the history Translate button
   // is hidden in that case.
   translateTargets: [],
+  // The server has no media store (features.media false): no attaching.
+  mediaOff: false,
   // Drafts integration
   activeDraftId: null, // id of the draft currently loaded into Compose, or null
   draftETag: "",       // its version as last read or saved, for If-Match

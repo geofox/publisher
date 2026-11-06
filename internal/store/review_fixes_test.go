@@ -59,8 +59,8 @@ func TestMigrateSurvivesUnreadableThreadAndOrphans(t *testing.T) {
 	}
 }
 
-// New items are keyed as the dispatcher keys its sends, and planned items
-// are due at their post's time, as migrated items are.
+// New items are keyed as the dispatcher keys its sends (by account), and
+// planned items are due at their post's time, as migrated items are.
 func TestNewItemsKeyedAndDue(t *testing.T) {
 	st := openTestStore(t)
 	at := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
@@ -68,7 +68,7 @@ func TestNewItemsKeyedAndDue(t *testing.T) {
 		Source: "test", Status: "scheduled", ScheduledAt: &at,
 		Targets: []Target{{Platform: "bluesky", Status: "scheduled", Segments: []Segment{
 			{Ordinal: 0, Text: "a", Status: "pending"}, {Ordinal: 1, Text: "b", Status: "pending"}}}}}
-	if err := st.SavePost(p); err != nil {
+	if err := saveWithAccounts(st, p); err != nil {
 		t.Fatal(err)
 	}
 	items := func() []Item {
@@ -79,7 +79,7 @@ func TestNewItemsKeyedAndDue(t *testing.T) {
 		return gp.Targets[0].Items
 	}
 	for _, it := range items() {
-		if it.IdemKey != ItemKey("nk", "bluesky", it.Ordinal) {
+		if it.IdemKey != AccountItemKey("nk", "acc_bluesky", it.Ordinal) {
 			t.Errorf("item %d key %q, want the derived key", it.Ordinal, it.IdemKey)
 		}
 		if it.NextAttemptAt == nil || !it.NextAttemptAt.Equal(at) {
@@ -118,7 +118,7 @@ func TestRelayRetryLeavesUnfinishedThread(t *testing.T) {
 			Segments: []Segment{
 				{Ordinal: 0, Text: "a", Status: "success", RemoteID: "e0"},
 				{Ordinal: 1, Text: "b", Status: "failed", Error: "boom"}}}}}
-	if err := st.SavePost(p); err != nil {
+	if err := saveWithAccounts(st, p); err != nil {
 		t.Fatal(err)
 	}
 	gp, _ := st.GetPost("nt")
@@ -148,7 +148,7 @@ func TestConcurrentWritersDontFailBusy(t *testing.T) {
 				id := newID()
 				p := &Post{ID: id, CreatedAt: time.Now().UTC(), MasterText: "x", Platforms: []string{"mastodon"},
 					Source: "test", Status: "failed", Targets: []Target{{Platform: "mastodon", Status: "failed"}}}
-				if err := st.SavePost(p); err != nil {
+				if err := saveWithAccounts(st, p); err != nil {
 					errs <- err
 					continue
 				}

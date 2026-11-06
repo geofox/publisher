@@ -5,12 +5,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	pubnostr "github.com/geofox/publisher/internal/nostr"
 )
 
 func TestMetricsRoute(t *testing.T) {
-	a := New(&pubnostr.Publisher{}, nil)
+	a := New(nil)
 	srv := httptest.NewServer(a.Routes())
 	defer srv.Close()
 

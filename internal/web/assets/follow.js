@@ -36,7 +36,7 @@ export function followPost(id, { onPost, until = p => p.status !== "publishing",
     if (until(p) || Date.now() > deadline) stop();
   };
   const wake = () => { clearTimeout(timer); timer = setTimeout(reread, 250); };
-  for (const t of ["post.updated", "post.completed", "item.sending", "item.published", "item.partial", "item.failed",
+  for (const t of ["post.updated", "post.completed", "item.sending", "item.waiting", "item.published", "item.partial", "item.failed",
     "item.unknown", "item.canceled", "delivery.updated"]) es.addEventListener(t, wake);
   // The server ends the stream once the post settles; closing here stops
   // EventSource from reconnecting.

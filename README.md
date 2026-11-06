@@ -31,11 +31,12 @@ every route, request and response against it. It has:
 |---|---|---|
 | `GET /v1/instance` | any | version, features, languages, limits |
 | `GET /v1/destinations` | `accounts:read` | destination types and their manifests |
-| `GET /v1/accounts`, `GET /v1/accounts/{id}` | `accounts:read` | accounts with profile and capabilities |
+| `GET /v1/accounts`, `GET /v1/accounts/{id}` | `accounts:read` | accounts with status, profile and capabilities |
+| `PATCH /v1/accounts/{id}` | `accounts:write` | rename an account, turn it off or on, choose whether new posts select it and whether its posts go to the public feed (`If-Match`) |
 | `GET /v1/me` | any | who is calling, with which scopes |
 | `GET/POST /v1/tokens`, `GET/DELETE /v1/tokens/{id}` | `admin` | API tokens with scopes and expiry |
 | `POST /v1/posts` | `posts:write` | publish or schedule a post to one or more accounts (`Idempotency-Key`, `Prefer: wait`) |
-| `POST /v1/resolve` | `posts:write` | look up a post by URL: author, text, media, and whether you can reply, quote or repost |
+| `POST /v1/resolve` | `posts:write` | look up a post by URL (optionally with a given `account`): author, text, media, and whether you can reply, quote or repost |
 | `POST /v1/posts:preview` | `posts:write` | the same body: what each account would get (thread parts, link card, warnings); sends nothing |
 | `GET /v1/posts` | `posts:read` | the history, newest first; filter by `status`, `account`, `q`, `since`, `until`, `hidden` |
 | `GET /v1/posts/{id}` | `posts:read` | a post with its targets, items (thread parts), deliveries and attempts |
@@ -44,7 +45,7 @@ every route, request and response against it. It has:
 | `POST /v1/posts/{id}:retry` | `posts:write` | send failed items again, optionally only some `targets` or Nostr `deliveries` |
 | `POST /v1/posts/{id}:resolve` | `posts:write` | say whether an item whose outcome is `unknown` went out; with the post's URL a thread goes on under it |
 | `GET /v1/posts/{id}/events` | `posts:read` | a post's progress as server-sent events, from its first event until it settles |
-| `GET /v1/events` | `posts:read` | every post's events as they happen |
+| `GET /v1/events` | `posts:read` | every post's events as they happen (and account changes, with `accounts:read`) |
 | `POST /v1/media` | `media:write` | upload an image (stored at once) or a video (processed in the background) |
 | `GET/PATCH /v1/media/{id}` | `media:write` | a media object's state; set its alt text |
 | `POST /v1/media:compress` | `media:write` | re-encode an image with a preset (HEIC to JPEG too); stores nothing |
@@ -100,10 +101,12 @@ every route, request and response against it. It has:
 
 - **Auth:** the browser session, or `Authorization: Bearer <token>`. Tokens
   carry scopes (`posts:read`, `posts:write`, `media:write`, `drafts:read`,
-  `drafts:write`, `accounts:read`, `admin`, which includes all) and an
-  optional expiry. Tokens made before scopes keep `posts:write media:write`,
-  which is what the old `/publish` and `/upload-media` let them do. A token
-  can't create a token that outlives it.
+  `drafts:write`, `accounts:read`, `accounts:write`, and `admin`, which
+  includes all of them but `accounts:write`) and an optional expiry. Tokens
+  made before scopes keep `posts:write media:write`, which is what the old
+  `/publish` and `/upload-media` let them do. A token can't create a token
+  that outlives it, and only the signed-in owner can create one holding
+  `accounts:write`.
 - **Errors** are RFC 9457 problem details with a stable `code`; the
   [error catalogue](docs/api/errors.md) lists them.
 - **Lists** page with `?limit=` (1 to 200) and `?cursor=`; the answer is
@@ -283,9 +286,11 @@ handled on the next start as described above.
   homepage. Requires `Authorization: Bearer $PUBLIC_FEED_TOKEN`; returns `404`
   when `PUBLIC_FEED_TOKEN` is unset. Each item has `id`, `published_at` (first
   time the post went live on any platform), `text`, optional `media[]`, optional
-  `interaction` (for quotes/reposts), and `links[]` — one `{platform, url}` per
-  platform where the post is public and successfully published. Replies, and any
-  post with no public platform copy, are omitted. `limit` defaults to 20, max
+  `interaction` (for quotes/reposts), and `links[]` — one `{platform, url,
+  account, handle}` per account where the post is public and successfully
+  published (`account` is the account's id; `handle` is absent until its
+  network first answered). An account whose `public_feed` is off is left out. Replies,
+  and any post with no public copy, are omitted. `limit` defaults to 20, max
   100.
 
 When a feed-eligible post is published (immediately, on a scheduled fire, or on
@@ -358,10 +363,14 @@ Readiness: can this instance accept and persist work right now?
 `error` class (`timeout`, `unreachable`, `schema mismatch`, `low space`, …);
 details are logged once when a check starts failing and when it recovers.
 
-Add `?external=1` to also check upstream reachability — `blossom`,
-`nostr_relay` (NIP-11), and `bluesky` / `mastodon` / `threads` when
-configured. These never make the instance unavailable, are cached for 30 s,
-and send no credentials (reachability only, not token validity).
+Add `?external=1` to also check upstream reachability — `blossom`, and
+`account:<id>` for each account that is turned on and open (its server: a
+Nostr account's bootstrap relay, by NIP-11). These never make the
+instance unavailable, are cached for 30 s, and send no credentials
+(reachability only, not token validity). Earlier versions named these
+checks `nostr_relay`, `bluesky`, `mastodon` and `threads`; a monitor that
+matched those names must match `account:` names now (the ids are in
+`GET /v1/accounts`).
 
 `/healthz` and `/readyz` are open even when OIDC is enabled.
 
@@ -389,13 +398,16 @@ signs events on request, so treat it like a credential store and read
 
 ### Prerequisites
 
-- A Nostr secret key as 64-char hex (`NSEC_HEX`). Convert your `nsec1…`
-  once with [`nak`](https://github.com/fiatjaf/nak): `nak key decode nsec1…`
-  gives the hex secret. The public key is derived from it.
-- A [Blossom](https://github.com/hzrd149/blossom) server URL for media
-  uploads (`BLOSSOM_URL`).
 - A writable directory for the SQLite archive (mounted at `DB_PATH`).
-- Optional, per platform you want to cross-post to:
+- For media (images and videos): a
+  [Blossom](https://github.com/hzrd149/blossom) server URL
+  (`BLOSSOM_URL`). Uploads to it are signed with the Nostr key, so it
+  needs `NSEC_HEX` too. Without it, posts are text only.
+- Per network you want to post to:
+  - **Nostr:** a secret key as 64-char hex (`NSEC_HEX`). Convert your
+    `nsec1…` once with [`nak`](https://github.com/fiatjaf/nak):
+    `nak key decode nsec1…` gives the hex secret. The public key is
+    derived from it.
   - **Mastodon:** instance URL + access token (both required together).
   - **Bluesky:** PDS URL, handle/identifier, and an app password (all three
     required together).
@@ -403,20 +415,21 @@ signs events on request, so treat it like a credential store and read
 
 ### Configuration
 
-All configuration is via environment variables. Only `NSEC_HEX` and
-`BLOSSOM_URL` are **required**; the relay defaults point at the author's own
-infrastructure and should be overridden. A network is turned on by its
-credential (`MASTODON_TOKEN`, `BLUESKY_APP_PASSWORD`,
-`THREADS_ACCESS_TOKEN`); a credential set without the variables that go with
-it stops startup with an error naming them. Every invalid variable is
+All configuration is via environment variables, and none is required: a
+server with no network configured starts, and says so in its log. The
+relay defaults point at the author's own infrastructure and should be
+overridden. A network is turned on by its credential (`NSEC_HEX`,
+`MASTODON_TOKEN`, `BLUESKY_APP_PASSWORD`, `THREADS_ACCESS_TOKEN`); a
+credential set without the variables that go with it stops startup with an
+error naming them, and so does `BLOSSOM_URL` without `NSEC_HEX`. Every invalid variable is
 reported at once. Boolean variables take `true/false`, `1/0`, `yes/no` or
 `on/off` in any case; any other value is an error, not the default.
 
 | Var | Required | Default | Purpose |
 |---|---|---|---|
-| `NSEC_HEX` | yes | — | Secret key as exactly 64 hex characters (**secret**). Convert `nsec1…` via `nak key decode`; if a tool printed it without its leading zeros, add them back |
+| `NSEC_HEX` | for Nostr and media | — | Secret key as exactly 64 hex characters (**secret**). Convert `nsec1…` via `nak key decode`; if a tool printed it without its leading zeros, add them back |
 | `OWNER_PUBKEY` | no | (derived) | 64-char hex pubkey. Optional: it is derived from `NSEC_HEX`. If set, it must match, or the process refuses to start |
-| `BLOSSOM_URL` | yes | — | Blossom media server base URL, e.g. `https://blossom.example.com` |
+| `BLOSSOM_URL` | for media | — | Blossom media server base URL, e.g. `https://blossom.example.com`. Unset: posts carry no media, and the composer hides the attach button. Posts made while it was set still fetch their media for a retry |
 | `NIP65_BOOTSTRAP_RELAY` | no | `wss://relay.geoffrey.one` | Where to fetch the author's `kind:10002` relay list |
 | `FALLBACK_RELAYS` | no | `wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io` | Used when NIP-65 returns no write-relays. Set it to a single space for none |
 | `SYNC_RELAYS` | no | `wss://nos.lol,wss://relay.damus.io,wss://nostr.wine,wss://nostr.land,wss://relay.nostr.band,wss://purplepag.es,wss://relay.snort.social,wss://nostr.mom` | Default relay set for the relay-sync tool |
@@ -571,6 +584,28 @@ To roll back, stop the container, replace `publisher.db` with
 database: 1.x has no schema check and would write to tables it doesn't
 know. Posts made on 2.0 after the upgrade are lost from History by a
 rollback (they stay on the platforms).
+
+### Upgrading from 2.x
+
+No environment variable was removed or renamed, and nothing needs to be
+set before starting. Read the [CHANGELOG](CHANGELOG.md) first; the changes
+that need action:
+
+1. **API callers that split threads with `---`** (an n8n flow, say) must
+   send `content.breaks` instead: `---` is plain text now.
+2. **Monitors:** `/readyz?external=1` names its checks `account:<id>`
+   instead of `nostr_relay`, `bluesky`, `mastodon` and `threads`. Alerts
+   name the account ("Mastodon (@me@example.social)").
+3. **Startup is stricter:** a boolean variable that isn't `1/true/yes/on`
+   or `0/false/no/off`, a `NSEC_HEX` that isn't 64 hex characters, a
+   negative `POW_*`, or `BLOSSOM_URL` without `NSEC_HEX` now stops startup
+   with an error naming the variable.
+
+Your accounts keep their ids (`acc_…` in `GET /v1/accounts`), so posts,
+drafts and API callers that name them keep working; the relay-sync list
+moves to your Nostr account. Before migrating, the first start writes a
+copy named after the first version it applies (`publisher.db.pre-v9.bak`
+from 2.0); see [Database upgrades and backups](#database-upgrades-and-backups).
 
 ### Build from source
 

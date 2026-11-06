@@ -2,22 +2,20 @@ package api
 
 import (
 	"context"
-	"github.com/geofox/publisher/internal/destination"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/auth"
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/health"
 	"github.com/geofox/publisher/internal/httpx"
-	"github.com/geofox/publisher/internal/identity"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
-	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/relaysync"
-	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/unfurl"
 	"github.com/geofox/publisher/internal/verify"
@@ -64,21 +62,17 @@ type Dispatcher interface {
 	RetryTargetRelay(ctx context.Context, postID string, targetID int64, relay string) (*store.Post, error)
 }
 
-// Syncer is implemented by *relaysync.Sync.
+// Syncer is implemented by *relaysync.Sync: it scans or syncs the events of
+// the account named on each call.
 type Syncer interface {
-	Scan(ctx context.Context, targets []relaysync.Target) []relaysync.RelayDiff
-	Apply(ctx context.Context, targets []relaysync.Target, direction string) []relaysync.ApplyResult
+	Scan(ctx context.Context, who relaysync.Owner, targets []relaysync.Target) []relaysync.RelayDiff
+	Apply(ctx context.Context, who relaysync.Owner, targets []relaysync.Target, direction string) []relaysync.ApplyResult
 }
 
 // Verifier is implemented by *verify.Service; extracted so the api package can
 // be tested with a stub and has no hard dependency on the concrete verify service.
 type Verifier interface {
 	Verify(ctx context.Context, in verify.Input) verify.Verdict
-}
-
-// Resolver is implemented by *resolve.Service; resolves a pasted URL/identifier.
-type Resolver interface {
-	Resolve(ctx context.Context, input string) (*resolve.SourceRef, error)
 }
 
 // Translator proxies a text-translation request to an upstream provider (DeepL).
@@ -97,22 +91,36 @@ type UnfurlService interface {
 // ItemLocator finds an account's own posts by URL; implemented by
 // dispatch.Dispatcher.
 type ItemLocator interface {
-	CanLocate(name string) bool
-	Locate(ctx context.Context, name, url string) (destination.ItemRef, error)
+	CanLocate(accountID string) bool
+	Locate(ctx context.Context, accountID, url string) (destination.ItemRef, error)
+}
+
+// AccountRegistry is the account registry as the API uses it: whether an
+// account can be used now, its profile, and a lease on its open account
+// (looking posts up, relay sync). Implemented by accounts.Registry.
+type AccountRegistry interface {
+	Get(id string) (accounts.Entry, bool)
+	// List is the owner's accounts in registry order.
+	List(owner string) []accounts.Entry
+	// Acquire leases a connected account; release must be called.
+	Acquire(id string) (destination.Account, func(), error)
+	// Profile is the account's last known profile, at once.
+	Profile(id string) (accounts.Profile, bool)
+	// Update takes the owner's settings from a row the store just saved.
+	Update(id string, row store.Account) error
 }
 
 // API holds the dependencies for the HTTP handlers.
 type API struct {
-	np        *pubnostr.Publisher
-	media     *media.Pipeline
-	Dispatch  Dispatcher   // set by cmd/publisher (exported so tests can inject fakes)
-	Store     *store.Store // set by cmd/publisher
-	Sync      Syncer       // set by cmd/publisher; Nostr relay sync
-	HomeRelay string       // set by cmd/publisher; the home relay URL
-	Verify    Verifier     // set by cmd/publisher; verifies pasted events / post URLs
+	media    *media.Pipeline
+	Dispatch Dispatcher   // set by cmd/publisher (exported so tests can inject fakes)
+	Store    *store.Store // set by cmd/publisher
+	// Sync scans and syncs a Nostr account's relays (relaysync.Sync); the
+	// account comes from Accounts. nil: relay sync is off.
+	Sync   Syncer
+	Verify Verifier // set by cmd/publisher; verifies pasted events / post URLs
 	// relaySyncMu lets one /v1 relay scan or sync run at a time.
 	relaySyncMu sync.Mutex
-	Resolve     Resolver // set by cmd/publisher; resolves pasted post URLs/ids
 	// Locator looks up an account's own posts when the owner resolves an
 	// unknown outcome by hand. nil: URLs are kept as given.
 	Locator ItemLocator
@@ -130,13 +138,15 @@ type API struct {
 	// disabled (404). Set → callers must send Authorization: Bearer <it>.
 	PublicFeedToken string
 
-	// Identity aggregates the operator's own per-platform profile (handle, name,
-	// avatar), shown on the accounts (GET /v1/accounts). nil → none.
-	Identity *identity.Service
-
-	// Caps returns a target's effective capabilities (the dispatcher's
+	// Caps returns an account's effective capabilities (the dispatcher's
 	// Caps). nil → the registered drivers' defaults.
-	Caps func(ctx context.Context, name string) (destination.Capabilities, bool)
+	Caps func(ctx context.Context, accountID, typ string) destination.Capabilities
+
+	// Accounts is the account registry: which accounts can send now, their
+	// profiles, and the accounts that look posts up and sync relays. nil →
+	// every enabled account of a registered type can send, and nothing
+	// that needs an open account works.
+	Accounts AccountRegistry
 
 	// fetchMedia downloads a quoted post's images to copy them. nil → the
 	// SSRF-guarded client. Overridable in tests.
@@ -187,9 +197,9 @@ type API struct {
 	streams atomic.Int64 // open event streams
 }
 
-// New creates a new API with the given publisher and media pipeline.
-func New(np *pubnostr.Publisher, mp *media.Pipeline) *API {
-	return &API{np: np, media: mp}
+// New creates a new API with the given media pipeline.
+func New(mp *media.Pipeline) *API {
+	return &API{media: mp}
 }
 
 // Routes returns the HTTP handler with all API routes registered, wrapped in
@@ -214,18 +224,37 @@ func (a *API) Routes() http.Handler {
 	return withSecurityHeaders(a.withHostGuard(a.withCSRFGuard(a.withGates(mux))))
 }
 
-// caps returns a target's effective capabilities: the connected account's,
-// else the registered driver's defaults, else none (no limits).
-func (a *API) caps(ctx context.Context, name string) destination.Capabilities {
+// caps returns an account's effective capabilities: the open account's,
+// else its type's defaults, else none (no limits).
+func (a *API) caps(ctx context.Context, accountID, typ string) destination.Capabilities {
 	if a.Caps != nil {
-		if c, ok := a.Caps(ctx, name); ok {
-			return c
-		}
+		return a.Caps(ctx, accountID, typ)
 	}
-	if d, ok := destination.Lookup(name); ok {
+	if d, ok := destination.Lookup(typ); ok {
 		return d.Manifest().Defaults
 	}
 	return destination.Capabilities{}
+}
+
+// accountUnusable says why an account can't send now, or "" when it can.
+func (a *API) accountUnusable(ac store.Account) string {
+	if _, ok := destination.Lookup(ac.Type); !ok {
+		return "this server has no driver for " + ac.Type
+	}
+	if a.Accounts == nil {
+		if !ac.Enabled {
+			return "this account is turned off"
+		}
+		return ""
+	}
+	e, ok := a.Accounts.Get(ac.ID)
+	switch {
+	case !ok:
+		return "this account isn't loaded yet; try again after a restart"
+	case e.Status != accounts.Connected:
+		return (&accounts.Unavailable{ID: ac.ID, Status: e.Status, Reason: e.Reason}).Error()
+	}
+	return ""
 }
 
 // displayName is a destination type's human name ("Bluesky").

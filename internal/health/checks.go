@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -115,19 +114,6 @@ func doRequest(ctx context.Context, client *http.Client, method, url string, hea
 	}
 	_ = resp.Body.Close()
 	return resp.StatusCode, nil
-}
-
-// NostrRelay checks a relay's NIP-11 information document, which relays serve
-// over plain HTTP(S) on the websocket URL — no websocket, no subscription.
-func NostrRelay(name string, client *http.Client, relayURL string) Check {
-	u := relayURL
-	switch {
-	case strings.HasPrefix(u, "wss://"):
-		u = "https://" + strings.TrimPrefix(u, "wss://")
-	case strings.HasPrefix(u, "ws://"):
-		u = "http://" + strings.TrimPrefix(u, "ws://")
-	}
-	return HTTPReachable(name, client, http.MethodGet, u, http.Header{"Accept": {"application/nostr+json"}})
 }
 
 var errUnsupported = errors.New("free-space check unsupported on this platform")

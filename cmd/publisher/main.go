@@ -1,5 +1,5 @@
-// publisher: HTTP→Nostr signing bridge for the n8n cross-posting
-// workflow on Oppy. See README.md for the HTTP API and env-var contract.
+// publisher: a self-hosted cross-poster (Nostr, Bluesky, Mastodon,
+// Threads). See README.md for the HTTP API and the variables it reads.
 package main
 
 import (
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,26 +19,21 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/api"
 	"github.com/geofox/publisher/internal/auth"
-	"github.com/geofox/publisher/internal/bluesky"
 	"github.com/geofox/publisher/internal/config"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/drivers"
 	"github.com/geofox/publisher/internal/feed"
 	"github.com/geofox/publisher/internal/health"
-	"github.com/geofox/publisher/internal/identity"
 	"github.com/geofox/publisher/internal/logging"
-	"github.com/geofox/publisher/internal/mastodon"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
-	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/notify"
 	"github.com/geofox/publisher/internal/relaysync"
-	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
-	"github.com/geofox/publisher/internal/threads"
 	"github.com/geofox/publisher/internal/transcode"
 	"github.com/geofox/publisher/internal/translate"
 	"github.com/geofox/publisher/internal/unfurl"
@@ -58,108 +54,135 @@ func main() {
 		runHealthcheck()
 		return
 	}
+	// SIGTERM/SIGINT start a graceful stop: readiness fails, new work stops
+	// being claimed, and what is in flight finishes. A second signal kills
+	// the process.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+	os.Exit(run(ctx, runOptions{Getenv: os.Getenv, Stopping: stop}))
+}
 
+// runOptions are run's inputs besides its context.
+type runOptions struct {
+	// Getenv reads the configuration (os.Getenv; a test's map).
+	Getenv func(string) string
+	// Started, if set, is told the address the server listens on.
+	Started func(addr string)
+	// Stopping, if set, is called when the context ends, before the
+	// graceful stop (main restores the default signal handling).
+	Stopping func()
+}
+
+// run starts the server and serves until ctx ends, then stops gracefully.
+// It returns the exit code: 0 after a graceful stop, 2 for a configuration
+// error, 1 for any other failure.
+func run(ctx context.Context, o runOptions) int {
+	getenv := o.Getenv
 	// Each driver reads its own variables; every invalid one, from the
 	// config and the drivers, is reported at once.
-	cfg, cfgErr := config.Load()
-	env, envErr := drivers.EnvAccounts(os.Getenv)
+	cfg, cfgErr := config.LoadFrom(getenv)
+	env, envErr := drivers.EnvAccounts(getenv)
 	startErrs := []error{cfgErr, envErr}
-	// Nostr signs the Blossom uploads, so it stays required until media
-	// stores get their own key.
-	if strings.TrimSpace(os.Getenv("NSEC_HEX")) == "" {
-		startErrs = append(startErrs, errors.New("NSEC_HEX is required"))
+	// Media uploads are signed with the environment's Nostr key until the
+	// media store gets a key of its own (part D).
+	mediaKey, mediaPub, haveSigner := drivers.EnvMediaSigner(env)
+	if cfg.BlossomURL != "" && !haveSigner {
+		startErrs = append(startErrs, errors.New("BLOSSOM_URL is set, but uploads to it are signed with the Nostr key: set NSEC_HEX too, or unset BLOSSOM_URL to run without media"))
 	}
 	if err := errors.Join(startErrs...); err != nil {
 		fmt.Fprintln(os.Stderr, "config error:", err)
-		os.Exit(2)
+		return 2
 	}
 	setupLogger(cfg.LogLevel)
 	metrics.SetBuildInfo(version, commit)
 
-	mediaKey, mediaPub, ok := drivers.EnvMediaSigner(env)
-	if !ok {
-		fmt.Fprintln(os.Stderr, "config error: NSEC_HEX is required")
-		os.Exit(2)
-	}
-	mp := media.New(cfg.BlossomURL, mediaKey, mediaPub)
-
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
 		slog.Error("store open failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	defer st.Close()
-	mp.Lookup = st.LookupMediaURL
+	// Without a media store posts carry no media; a retry still fetches
+	// the media of posts made while one was configured.
+	var mp *media.Pipeline
+	if cfg.BlossomURL != "" {
+		mp = media.New(cfg.BlossomURL, mediaKey, mediaPub)
+		mp.Lookup = st.LookupMediaURL
+	}
 
 	uf := unfurl.New()
-	// One account per destination type, from the environment (the account
-	// registry adds more); a type whose variables aren't set has no account,
-	// so posting to it fails as "not configured" before any network call.
-	// Each configured type is one env-sourced stored account with a stable
-	// id; unconfigured types' accounts are disabled (their history stays).
+	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
+	// Every account the environment configures has a stored row with a
+	// stable id; state 2.x kept for "the" account of a type moves to it;
+	// then the registry opens what it can (without network I/O).
 	var seed []store.EnvAccount
 	for _, e := range env {
 		drv, _ := destination.Lookup(e.Type)
-		seed = append(seed, store.EnvAccount{Type: e.Type, Label: drv.Manifest().Name})
+		seed = append(seed, store.EnvAccount{Type: e.Type, Key: e.Key, Label: drv.Manifest().Name})
 	}
-	seeded, err := st.SeedEnvAccounts(context.Background(), store.DefaultOwner, seed)
+	envRows, err := st.SeedEnvAccounts(context.Background(), store.DefaultOwner, seed)
 	if err != nil {
 		slog.Error("seeding accounts failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
-	accountIDs := dispatch.ConnectedIDs(seeded)
-	accounts, err := drivers.OpenEnv(context.Background(), env, accountIDs, destination.Tuning{
-		PublishTimeout:  cfg.PublishTimeout,
-		POWTimeout:      cfg.POWTimeout,
-		RelayCacheTTL:   cfg.RelayCacheTTL,
-		VerifyTimeout:   cfg.VerifyHTTPTimeout,
-		PLCDirectoryURL: cfg.PLCDirectoryURL,
-	})
-	if err != nil {
-		slog.Error("opening accounts failed", "err", err)
-		os.Exit(1)
+	if err := drivers.AdoptLegacy(context.Background(), st, envRows, env); err != nil {
+		slog.Error("adopting 2.x account state failed; it is tried again at the next start", "err", err)
 	}
-	// The identity, source resolution and token services still take the
-	// clients (until they work by account in part A2). Nostr is always
-	// configured here; the others are nil when unset.
-	np := accounts[pubnostr.Type].(*pubnostr.Account).P
-	var bc *bluesky.Client
-	if a, ok := accounts[bluesky.Type].(*bluesky.Account); ok {
-		bc = a.C
+	regEnv := make([]accounts.EnvAccount, 0, len(env))
+	for _, e := range env {
+		regEnv = append(regEnv, accounts.EnvAccount{Type: e.Type, EnvAccount: e.EnvAccount})
 	}
-	var mc *mastodon.Client
-	if a, ok := accounts[mastodon.Type].(*mastodon.Account); ok {
-		mc = a.C
-	}
-	var tc *threads.Client
-	if a, ok := accounts[threads.Type].(*threads.Account); ok {
-		tc = a.C
-	}
-	d := &dispatch.Dispatcher{
-		Accounts:   accounts,
-		AccountIDs: accountIDs,
-		// Re-encoded variants for URL-transport destinations (Threads) are
-		// hosted on Blossom; content addressing makes a retry reuse the URL.
-		Host: func(ctx context.Context, body []byte, mime string) (string, error) {
-			res, err := mp.Process(ctx, body, mime)
-			if err != nil {
-				return "", err
-			}
-			return res.URL, nil
+	reg := accounts.New(accounts.Options{
+		Store: st,
+		Env:   regEnv,
+		State: drivers.LegacyState{Store: st},
+		Tuning: destination.Tuning{
+			PublishTimeout:  cfg.PublishTimeout,
+			POWTimeout:      cfg.POWTimeout,
+			RelayCacheTTL:   cfg.RelayCacheTTL,
+			VerifyTimeout:   cfg.VerifyHTTPTimeout,
+			PLCDirectoryURL: cfg.PLCDirectoryURL,
 		},
+		Alerter: notifier,
+	})
+	if err := reg.Load(context.Background()); err != nil {
+		slog.Error("loading accounts failed", "err", err)
+		return 1
+	}
+	defer reg.Close()
+	// Profiles are fetched in the background now, so the composer has
+	// them when it first asks.
+	reg.RefreshProfiles()
+	d := &dispatch.Dispatcher{
+		Registry: reg,
 		Store:    st,
-		Fetcher:  mp,
+		// A plain fetcher, never a nil *Pipeline inside the interface.
+		Fetcher:  media.NewFetcher(),
 		Notify:   feed.NewWebhook(cfg.FeedWebhookURL, cfg.FeedWebhookToken),
 		Unfurler: uf,
+		Alerter:  notifier,
 		Policy: dispatch.RetryPolicy{Enabled: cfg.AutoRetryEnabled, MaxAttempts: cfg.AutoRetryMaxAttempts,
 			Base: cfg.AutoRetryBaseDelay, Max: cfg.AutoRetryMaxDelay},
 		Workers:       cfg.PublishWorkers,
 		ScheduleGrace: cfg.ScheduleGrace,
 	}
-	a := api.New(np, mp)
+	if mp != nil {
+		// Re-encoded variants for URL-transport destinations (Threads) are
+		// hosted in the media store; content addressing makes a retry
+		// reuse the URL. Without a store they use the canonical URL.
+		d.Host = func(ctx context.Context, body []byte, mime string) (string, error) {
+			res, err := mp.Process(ctx, body, mime)
+			if err != nil {
+				return "", err
+			}
+			return res.URL, nil
+		}
+	}
+	a := api.New(mp)
 	a.Store = st
 	a.Dispatch = d
 	a.Caps = d.Caps
+	a.Accounts = reg
 	a.Locator = d
 	a.Unfurl = uf
 	a.UserLanguages = cfg.UserLanguages
@@ -167,9 +190,10 @@ func main() {
 	a.Version = version
 	// Drafts saved before /v1 get their /v1 shape, once, before requests.
 	a.ConvertOldDrafts(context.Background())
-	// Video pipeline: enabled only when both ffmpeg and ffprobe are present (dev
-	// hosts without them run image-only; the endpoints 503 with a clear message).
-	{
+	// Video pipeline: enabled only with a media store and both ffmpeg and
+	// ffprobe present (dev hosts without them run image-only; the
+	// endpoints 503 with a clear message).
+	if mp != nil {
 		_, ffmpegErr := os.Stat(cfg.FFmpegPath)
 		_, ffprobeErr := os.Stat(cfg.FFprobePath)
 		switch {
@@ -192,51 +216,20 @@ func main() {
 			}
 		}
 	}
-	// Operator's own cross-platform identity for the composer (real handle/name/
-	// avatar). Each platform is wired only when its credentials are configured;
-	// Nostr is always available (npub derives from the owner pubkey).
-	ids := &identity.Service{Nostr: np, TTL: 10 * time.Minute, Timeout: 6 * time.Second}
-	if bc != nil {
-		ids.Bluesky = bc
-	}
-	if mc != nil {
-		ids.Mastodon = mc
-	}
-	if tc != nil {
-		ids.Threads = tc
-	}
-	a.Identity = ids
 	if cfg.DeepLAPIKey != "" {
 		a.Translator = translate.NewDeepL(cfg.DeepLAPIKey)
 	}
-	if err := st.SeedSyncRelaysIfEmpty(envSyncRelaysSeed(env)); err != nil {
-		slog.Error("seed sync relays failed", "err", err)
-	}
-	a.Sync = relaysync.New(relaysync.NewLiveIO(), np.HomeRelay(), np.OwnerPubkey())
-	a.HomeRelay = np.HomeRelay()
+	// Relay sync works on the Nostr account a request names (its own
+	// home relay, key and list).
+	a.Sync = relaysync.New(relaysync.NewLiveIO())
 	a.Verify = &verify.Service{
 		Nostr:    verify.NewNostrVerifier(cfg.VerifyHTTPTimeout),
 		Bluesky:  verify.NewBlueskyVerifier(cfg.PLCDirectoryURL, cfg.VerifyHTTPTimeout),
 		Mastodon: verify.NewMastodonVerifier(cfg.VerifyHTTPTimeout),
 		Threads:  verify.NewThreadsVerifier(cfg.VerifyHTTPTimeout),
 	}
-	// A platform without an account resolves to "not configured" (a
-	// client with no credentials used to fail later, at sign-in).
-	rs := &resolve.Service{}
-	for typ, field := range map[string]*resolve.Source{
-		bluesky.Type: &rs.Bluesky, mastodon.Type: &rs.Mastodon, pubnostr.Type: &rs.Nostr,
-	} {
-		if r, ok := accounts[typ].(destination.SourceResolver); ok {
-			*field = resolve.AccountAdapter{R: r}
-		}
-	}
-	a.Resolve = rs
-	// SIGTERM/SIGINT start a graceful stop: readiness fails, new work stops
-	// being claimed, and what is in flight finishes.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
-	defer stop()
 	var draining atomic.Bool
-	a.Ready = readinessChecks(cfg, st, a.VideoWorkdir, np.HomeRelay(), env)
+	a.Ready = readinessChecks(cfg, st, a.VideoWorkdir, reg)
 	a.Ready.Local = append(a.Ready.Local, health.Check{Name: "accepting_work", Critical: true,
 		Run: func(context.Context) error {
 			if draining.Load() {
@@ -244,8 +237,6 @@ func main() {
 			}
 			return nil
 		}})
-	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
-	d.Alerter = notifier
 	a.AllowedHosts = cfg.AllowedHosts
 	if !cfg.OIDCEnabled() && len(cfg.AllowedHosts) == 0 {
 		slog.Warn("OIDC is off and ALLOWED_HOSTS is unset: set ALLOWED_HOSTS to the host name you reach publisher by, so a web page can't reach it through DNS rebinding")
@@ -260,7 +251,7 @@ func main() {
 		})
 		if err != nil {
 			slog.Error("oidc init failed", "err", err)
-			os.Exit(1)
+			return 1
 		}
 		a.Auth = authn
 		a.Allowlist = auth.NewAllowlist(cfg.OIDCAllowedSubjects, cfg.OIDCAllowedEmails)
@@ -317,10 +308,10 @@ func main() {
 			}
 		}
 	}()
-	if e, ok := envAccount(env, threads.Type); ok && tc != nil {
-		mgr := threads.NewTokenManager(st, tc, notifier, e.Secrets[threads.SecretAccessToken])
-		go mgr.Start(ctx)
-	}
+	// Credentials are renewed before they expire, and accounts are checked
+	// daily (and after a refused send).
+	go reg.RunRefresh(ctx)
+	go reg.RunChecks(ctx)
 	// The engine first recovers what a stopped process left in flight, then
 	// claims due items (scheduled posts, retries) in the background.
 	// Settle what a stopped process left sending before anything can claim:
@@ -333,12 +324,11 @@ func main() {
 		cfg.AutoRetryEnabled, cfg.AutoRetryMaxAttempts,
 		cfg.AutoRetryBaseDelay, cfg.AutoRetryMaxDelay, cfg.RetrierTick,
 	).Start(ctx)
-	go dispatch.NewFanout(d, np.PrimaryFanout(),
+	go dispatch.NewFanout(d,
 		cfg.AutoRetryMaxAttempts, cfg.AutoRetryBaseDelay, cfg.AutoRetryMaxDelay,
 		cfg.FanoutTick,
 	).Start(ctx)
 	srv := &http.Server{
-		Addr:         ":" + cfg.Port,
 		Handler:      a.Routes(),
 		ReadTimeout:  60 * time.Second,
 		WriteTimeout: 120 * time.Second,
@@ -347,30 +337,59 @@ func main() {
 	stopping := make(chan struct{})
 	a.Stopping = stopping
 	srv.RegisterOnShutdown(func() { close(stopping) })
-	served := make(chan error, 1)
-	go func() { served <- srv.ListenAndServe() }()
-	accountTypes := make([]string, 0, len(env))
-	for _, e := range env {
-		accountTypes = append(accountTypes, e.Type)
+	ln, err := net.Listen("tcp", ":"+cfg.Port)
+	if err != nil {
+		slog.Error("server failed", "err", err)
+		return 1
 	}
-	slog.Info("publisher starting",
-		"port", cfg.Port,
-		"accounts", accountTypes,
-		"pubkey", np.OwnerPubkey().Hex(),
-		"blossom", cfg.BlossomURL,
-		"bootstrap_relay", np.HomeRelay(),
-	)
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
+	logStart(cfg, reg, mp)
+	if o.Started != nil {
+		o.Started(ln.Addr().String())
+	}
 	select {
 	case err := <-served:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server failed", "err", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	case <-ctx.Done():
 	}
-	stop() // a second signal kills the process
+	if o.Stopping != nil {
+		o.Stopping()
+	}
 	gracefulStop(&draining, srv, d)
+	return 0
+}
+
+// logStart logs what the server runs with: each account by type and
+// status, and the media store.
+func logStart(cfg config.Config, reg *accounts.Registry, mp *media.Pipeline) {
+	byStatus := map[string][]string{}
+	for _, e := range reg.List(store.DefaultOwner) {
+		byStatus[string(e.Status)] = append(byStatus[string(e.Status)], e.Row.Type+":"+e.Row.ID)
+	}
+	args := []any{"port", cfg.Port, "accounts", byStatus}
+	if mp != nil {
+		args = append(args, "blossom", cfg.BlossomURL, "blossom_signer", mp.OwnerPub.Hex())
+	} else {
+		args = append(args, "media", "none (BLOSSOM_URL is unset: posts carry no media)")
+	}
+	slog.Info("publisher starting", args...)
+	if len(byStatus) == 0 {
+		slog.Warn("no account is configured: set a network's variables to post (see the README)")
+	}
+	for _, e := range reg.List(store.DefaultOwner) {
+		switch e.Status {
+		case accounts.Connected:
+		case accounts.Disabled: // the owner's choice
+			slog.Info("account turned off", "account", e.Row.ID, "type", e.Row.Type)
+		default:
+			slog.Warn("account not connected", "account", e.Row.ID, "type", e.Row.Type, "status", e.Status, "reason", e.Reason)
+		}
+	}
 }
 
 // shutdownGrace bounds a graceful stop. Docker's default stop timeout is
@@ -416,7 +435,7 @@ func gracefulStop(draining *atomic.Bool, srv *http.Server, d *dispatch.Dispatche
 // readinessChecks builds the /readyz checks. Local checks run on every probe;
 // upstream checks only on /readyz?external=1, cached, and never critical. No
 // probe sends credentials.
-func readinessChecks(cfg config.Config, st *store.Store, videoWorkdir, homeRelay string, env []drivers.EnvAccount) *health.Checker {
+func readinessChecks(cfg config.Config, st *store.Store, videoWorkdir string, reg *accounts.Registry) *health.Checker {
 	dataDir := filepath.Dir(cfg.DBPath)
 	c := &health.Checker{Local: []health.Check{
 		health.Database(st, store.LatestSchemaVersion()),
@@ -425,47 +444,14 @@ func readinessChecks(cfg config.Config, st *store.Store, videoWorkdir, homeRelay
 	if videoWorkdir != "" {
 		c.Local = append(c.Local, health.WritableDir("video_workdir", videoWorkdir))
 	}
-	hc := &http.Client{Timeout: 5 * time.Second}
-	c.External = append(c.External,
-		health.HTTPReachable("blossom", hc, http.MethodHead, cfg.BlossomURL, nil),
-		health.NostrRelay("nostr_relay", hc, homeRelay),
-	)
-	// Until the accounts check themselves (part A2), one probe per
-	// configured type, as before.
-	for _, e := range env {
-		switch e.Type {
-		case bluesky.Type:
-			pds, _ := destination.ConfigString(e.Config, bluesky.ConfigPDSURL)
-			c.External = append(c.External, health.HTTPReachable("bluesky", hc, http.MethodGet, pds+"/xrpc/_health", nil))
-		case mastodon.Type:
-			base, _ := destination.ConfigString(e.Config, mastodon.ConfigInstanceURL)
-			c.External = append(c.External, health.HTTPReachable("mastodon", hc, http.MethodGet, base+"/api/v1/instance", nil))
-		case threads.Type:
-			c.External = append(c.External, health.HTTPReachable("threads", hc, http.MethodGet, "https://graph.threads.net/", nil))
-		}
+	if cfg.BlossomURL != "" {
+		hc := &http.Client{Timeout: 5 * time.Second}
+		c.External = append(c.External, health.HTTPReachable("blossom", hc, http.MethodHead, cfg.BlossomURL, nil))
 	}
+	// One check per open account (account:<id>), asked again at each
+	// refresh so an account turned off or reopened is followed.
+	c.MoreExternal = func() []health.Check { return reg.Readiness(store.DefaultOwner) }
 	return c
-}
-
-// envSyncRelaysSeed is the relay-sync list the env Nostr account starts
-// with (SYNC_RELAYS).
-func envSyncRelaysSeed(env []drivers.EnvAccount) []string {
-	e, ok := envAccount(env, pubnostr.Type)
-	if !ok {
-		return nil
-	}
-	relays, _ := destination.ConfigStrings(e.Config, pubnostr.ConfigSyncRelaysSeed)
-	return relays
-}
-
-// envAccount is the environment's account of a type.
-func envAccount(env []drivers.EnvAccount, typ string) (drivers.EnvAccount, bool) {
-	for _, e := range env {
-		if e.Type == typ {
-			return e, true
-		}
-	}
-	return drivers.EnvAccount{}, false
 }
 
 // runHealthcheck is the container healthcheck: it asks /readyz (local checks

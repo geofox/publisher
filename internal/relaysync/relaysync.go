@@ -51,14 +51,21 @@ type relayIO interface {
 	Publish(ctx context.Context, relayURL string, events []gonostr.Event) (published, failed int, detail string, err error)
 }
 
+// Sync scans and syncs any account's events; the account is named on each
+// call, so one Sync serves every Nostr account.
 type Sync struct {
-	io    relayIO
-	home  string
-	owner gonostr.PubKey
+	io relayIO
 }
 
-func New(io relayIO, home string, owner gonostr.PubKey) *Sync {
-	return &Sync{io: io, home: home, owner: owner}
+// Owner is the account a scan or sync works for: its home relay (the one
+// the others are compared with) and its public key (whose events).
+type Owner struct {
+	Home   string
+	Pubkey gonostr.PubKey
+}
+
+func New(io relayIO) *Sync {
+	return &Sync{io: io}
 }
 
 // replKey returns the replaceable identity of an event — (kind,pubkey) for
@@ -150,9 +157,9 @@ func classify(err error) (status, msg string) {
 	}
 }
 
-func (s *Sync) Scan(ctx context.Context, targets []Target) []RelayDiff {
+func (s *Sync) Scan(ctx context.Context, who Owner, targets []Target) []RelayDiff {
 	out := make([]RelayDiff, 0, len(targets))
-	home, homeErr := s.io.Fetch(ctx, s.home, s.owner)
+	home, homeErr := s.io.Fetch(ctx, who.Home, who.Pubkey)
 	for _, t := range targets {
 		d := RelayDiff{URL: t.URL, Group: t.Group}
 		if homeErr != nil {
@@ -160,7 +167,7 @@ func (s *Sync) Scan(ctx context.Context, targets []Target) []RelayDiff {
 			out = append(out, d)
 			continue
 		}
-		tev, err := s.io.Fetch(ctx, t.URL, s.owner)
+		tev, err := s.io.Fetch(ctx, t.URL, who.Pubkey)
 		if err != nil {
 			d.Status, d.Message = classify(err)
 			out = append(out, d)
@@ -173,7 +180,7 @@ func (s *Sync) Scan(ctx context.Context, targets []Target) []RelayDiff {
 	return out
 }
 
-func (s *Sync) Apply(ctx context.Context, targets []Target, direction string) []ApplyResult {
+func (s *Sync) Apply(ctx context.Context, who Owner, targets []Target, direction string) []ApplyResult {
 	out := make([]ApplyResult, 0, len(targets))
 	// Direction is a caller-supplied constant known before any I/O — validate it
 	// up front rather than paying a home fetch on a bad request.
@@ -183,7 +190,7 @@ func (s *Sync) Apply(ctx context.Context, targets []Target, direction string) []
 		}
 		return out
 	}
-	home, homeErr := s.io.Fetch(ctx, s.home, s.owner)
+	home, homeErr := s.io.Fetch(ctx, who.Home, who.Pubkey)
 	for _, t := range targets {
 		r := ApplyResult{URL: t.URL, Direction: direction}
 		if homeErr != nil {
@@ -191,7 +198,7 @@ func (s *Sync) Apply(ctx context.Context, targets []Target, direction string) []
 			out = append(out, r)
 			continue
 		}
-		tev, err := s.io.Fetch(ctx, t.URL, s.owner)
+		tev, err := s.io.Fetch(ctx, t.URL, who.Pubkey)
 		if err != nil {
 			r.Status, r.Message = classify(err)
 			out = append(out, r)
@@ -200,7 +207,7 @@ func (s *Sync) Apply(ctx context.Context, targets []Target, direction string) []
 		mh, mr := diff(home, tev)
 		toPublish, dest := mr, t.URL
 		if direction == "pull" {
-			toPublish, dest = mh, s.home
+			toPublish, dest = mh, who.Home
 		}
 		if len(toPublish) == 0 { // already in sync — no connection needed
 			r.Status = "ok"

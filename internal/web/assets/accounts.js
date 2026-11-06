@@ -1,22 +1,29 @@
 "use strict";
 import { v1, v1All } from "./common.js";
 
-// The owner's accounts (GET /v1/accounts). Until accounts can be added in the
-// app there is one per destination type, so the composer still picks types
-// (ORDER) and accountFor maps a type to the account that posts it.
+// The owner's accounts (GET /v1/accounts), in the app's order (each
+// account's `order`). Until the composer picks accounts (part A3) it picks
+// types (ORDER), and accountFor maps a type to its connected account: the
+// first one new posts select (default_selected), else the first.
 const byType = {};
 let all = [];
 let loading = null;
+let loaded = false;
 
 // loadAccounts reads the accounts once; later calls share the answer. A
 // failure is not cached, so the next call asks again.
 export function loadAccounts() {
   if (!loading) {
     loading = v1All("/v1/accounts?limit=100").then(list => {
-      all = list;
+      all = [...list].sort((a, b) => a.order - b.order);
       for (const k of Object.keys(byType)) delete byType[k];
-      for (const a of list) if (a.enabled && !byType[a.type]) byType[a.type] = a;
-      return list;
+      for (const a of all) {
+        if (a.status !== "connected") continue;
+        const cur = byType[a.type];
+        if (!cur || (!cur.default_selected && a.default_selected)) byType[a.type] = a;
+      }
+      loaded = true;
+      return all;
     }).catch(e => { loading = null; throw e; });
   }
   return loading;
@@ -29,9 +36,18 @@ export function reloadAccounts() {
   return loadAccounts();
 }
 
-// accountFor is the enabled account of a type, or null (none configured, or
-// the accounts haven't loaded).
+// accountFor is a type's connected account (the first that new posts
+// select, else the first), or null (none is connected, or the accounts
+// haven't loaded).
 export function accountFor(type) { return byType[type] || null; }
+
+// defaultPlatforms is what a new post selects: the types in order with a
+// connected account that new posts select. Before the accounts load, all
+// of them (a Post then reads the accounts again before sending).
+export function defaultPlatforms(order) {
+  if (!loaded) return new Set(order);
+  return new Set(order.filter(t => all.some(a => a.type === t && a.status === "connected" && a.default_selected)));
+}
 
 // accountByID finds any of the owner's accounts, enabled or not.
 export function accountByID(id) { return all.find(a => a.id === id) || null; }

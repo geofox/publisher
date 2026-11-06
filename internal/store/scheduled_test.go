@@ -19,7 +19,7 @@ func TestScheduledPostRoundTrip(t *testing.T) {
 		Status: "scheduled", ScheduledAt: &at,
 		Targets: []Target{{Platform: "bluesky", Status: "scheduled", FinalText: "hi", FieldsJSON: `{"langs":["en"]}`}},
 	}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 	got, err := db.GetPost("s1")
@@ -37,7 +37,7 @@ func TestScheduledPostRoundTrip(t *testing.T) {
 	}
 
 	imm := &Post{ID: "i1", CreatedAt: time.Now().UTC(), Platforms: []string{"nostr"}, Source: "web", Status: "success"}
-	if err := db.SavePost(imm); err != nil {
+	if err := saveWithAccounts(db, imm); err != nil {
 		t.Fatal(err)
 	}
 	got2, err := db.GetPost("i1")
@@ -56,7 +56,7 @@ func mkScheduled(t *testing.T, db *Store, id string, at time.Time) {
 		Status: "scheduled", ScheduledAt: &at,
 		Targets: []Target{{Platform: "bluesky", Status: "scheduled", FinalText: "hi", FieldsJSON: "{}"}},
 	}
-	if err := db.SavePost(rec); err != nil {
+	if err := saveWithAccounts(db, rec); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -106,7 +106,7 @@ func TestHidePost(t *testing.T) {
 	// A terminal (success) post is hideable and drops out of ListPosts.
 	done := &Post{ID: "done", CreatedAt: now, Platforms: []string{"nostr"}, Source: "web", Status: "success",
 		Targets: []Target{{Platform: "nostr", Status: "success"}}}
-	if err := db.SavePost(done); err != nil {
+	if err := saveWithAccounts(db, done); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.HidePost("done"); err != nil {
@@ -150,7 +150,7 @@ func TestListPostsFiredAt(t *testing.T) {
 		Targets: []Target{{Platform: "nostr", Status: "success",
 			Attempts: []Attempt{{AttemptNo: 1, Status: "success", AttemptedAt: fireTime}}}},
 	}
-	if err := db.SavePost(fired); err != nil {
+	if err := saveWithAccounts(db, fired); err != nil {
 		t.Fatal(err)
 	}
 	mkScheduled(t, db, "pend", time.Now().Add(time.Hour)) // pending → no attempts
