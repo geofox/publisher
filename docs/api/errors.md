@@ -60,6 +60,13 @@ scope (`admin` includes every scope).
 forgery against a signed-in browser. Scripts and servers send no `Origin`
 and are not affected.
 
+## misdirected
+
+**421.** The request's `Host` is not one this server serves: the server
+has `ALLOWED_HOSTS` set and the name isn't on it. This stops a web page
+that points its own name at the server (DNS rebinding) from using the app
+as if it were the same site. Add the name to `ALLOWED_HOSTS`.
+
 ## invalid_json
 
 **400.** The body is empty, is not JSON, has a field the operation does
@@ -98,6 +105,13 @@ Drafts add `unknown_media` and `unknown_account` (media or accounts that
 aren't yours), and posting one (`draft` on `POST /v1/posts`) adds
 `unknown_draft`, `draft_changed` (saved again meanwhile) and
 `not_permitted` (the token lacks `drafts:write`).
+Thread positions (`content.breaks`, `media[].at`, `targets[].thread`) add
+`out_of_range` (beyond the text), `not_ascending`, `inside_grapheme` (a
+break that would cut a character in two), `too_many`, `length_mismatch`
+(`thread.media_at` doesn't have one position per media) and `replaced`
+(`media[].part`, which `at` replaced). A text a platform can't take even
+when split, such as more distinct links than Threads allows in one post,
+is `refused_by_destination`.
 
 ## invalid_parameter
 

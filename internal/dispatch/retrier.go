@@ -86,6 +86,9 @@ func (r *Retrier) runDue(ctx context.Context) {
 		return
 	}
 	for _, id := range ids {
+		if ctx.Err() != nil {
+			return // shutting down
+		}
 		r.processPost(ctx, id)
 	}
 }
@@ -118,7 +121,7 @@ func (r *Retrier) processPost(ctx context.Context, id string) {
 				}
 				continue
 			}
-			if !r.relayDue(rl, now) {
+			if !r.relayDue(rl, now) || ctx.Err() != nil {
 				continue
 			}
 			if _, err := r.disp.RetryRelay(ctx, id, rl.URL); err != nil {

@@ -51,6 +51,7 @@ func (Driver) Manifest() destination.Manifest {
 			Languages:    3,
 			Interactions: destination.InteractionCaps{Reply: true, Quote: true, Repost: true, QuoteVideo: true},
 			Idempotent:   destination.IdempotentNone,
+			CommitMarks:  true,
 		},
 	}
 }

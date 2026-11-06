@@ -37,6 +37,16 @@ test("publishes one post to all four platforms and lists it in History @mobile",
   await expect(detail.locator('a.lnk[href^="https://mastodon.e2e.invalid/"]')).toBeVisible();
 });
 
+test("the composer's post counts are the server's", async ({ page }) => {
+  // Three paragraphs of 159 characters: they pack as three Bluesky posts
+  // (the server keeps paragraphs whole), not the two a word count gives.
+  const para = Array(32).fill("word").join(" ");
+  await openApp(page);
+  await page.locator("#master").fill([para, para, para].join("\n\n"));
+  await expect(page.locator("#chips .target-row.p-bluesky .tb-txt")).toHaveText("3 posts");
+  await expect(page.locator("#threadnotice")).toContainText("Bluesky (3)");
+});
+
 test("auto-threads a long post per platform limits", async ({ page, fakes }) => {
   const m = marker("thread");
   const sentence = "Reliability is a feature, and this sentence exists to take up room. ";
@@ -49,10 +59,9 @@ test("auto-threads a long post per platform limits", async ({ page, fakes }) => 
   expect(await page.locator("#preview .pv-seg").count()).toBeGreaterThan(1);
 
   await page.locator("#submit").click();
-  // The composer warns that text is over some platforms' single-post limit,
-  // even though the server will thread it; confirm to post.
-  await page.getByRole("button", { name: "Post anyway" }).click();
+  // Text over a single post's limit is threaded, not cut: no confirm.
   await expect(page.locator(".pmodal .pm-title")).toHaveText("✓ Posted");
+  await expect(page.getByRole("button", { name: "Post anyway" })).toHaveCount(0);
 
   // Wait for all four platforms (Nostr's single post + three chains).
   await expect.poll(async () => new Set((await fakes.calls()).map(c => c.platform)).size).toBe(4);
@@ -81,7 +90,7 @@ test("auto-threads a long post per platform limits", async ({ page, fakes }) => 
   expect(masto[1].reply_to).toBe(masto[0].remote_id);
 });
 
-test("splits on a manual --- marker on every platform", async ({ page, fakes }) => {
+test("a line of --- typed in the composer splits the post on every platform", async ({ page, fakes }) => {
   const m = marker("manual");
   await openApp(page);
   await page.locator("#master").fill(`${m} first part\n---\nsecond part`);
@@ -173,14 +182,17 @@ test("Nostr images carry their alt text in the imeta tag", async ({ page, fakes 
   expect(nostr.images?.[0]?.alt).toBe("A blue gradient");
 });
 
-test("places an image on the thread part its chip names", async ({ page, fakes }) => {
+test("an image moved to the second post goes out with it", async ({ page, fakes }) => {
   const m = marker("place");
   await openApp(page);
   await page.locator("#master").fill(`${m} first part\n---\nsecond part`);
   await page.locator("#imgfile").setInputFiles(path.join(__dirname, "assets", "gradient.png"));
   const thumb = page.locator("#images .thumb");
   await thumb.getByPlaceholder("alt text").fill("On part two");
-  await thumb.locator("select.place-chip").selectOption("1");
+  // The editor shows it on the first card; Move to… puts it on the second.
+  const first = page.locator("#editor .ed-shared .ecard").nth(0);
+  await first.locator("select.ec-move").selectOption("1");
+  await expect(page.locator("#editor .ed-shared .ecard").nth(1).locator(".ec-mitem")).toHaveCount(1);
   // The server preview plans it on the second post.
   await expect(page.locator("#preview .pv-seg").nth(1).locator(".pv-media img")).toHaveCount(1);
   await expect(page.locator("#preview .pv-seg").nth(0).locator(".pv-media img")).toHaveCount(0);

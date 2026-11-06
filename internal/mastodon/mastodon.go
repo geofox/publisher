@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -59,7 +60,21 @@ type Client struct {
 
 func New(baseURL, token string) *Client {
 	gc := gomast.NewClient(&gomast.Config{Server: baseURL, AccessToken: token})
-	gc.Transport = idempotencyTransport{base: http.DefaultTransport}
+	// go-mastodon copies http.DefaultClient: no timeout, and it retries a
+	// 429 itself with sleeps of up to an hour while holding the worker.
+	// Bound the hang-prone phases (a server that accepts and never answers)
+	// by the dial, handshake and answer timeouts, not an overall one: a
+	// large video on a slow uplink takes longer than any fixed ceiling (the
+	// caller's context still bounds the whole). Hand a 429
+	// back as an error so the engine sees the rate limit and its reset time.
+	gc.Client = http.Client{
+		Transport: rateLimitTransport{base: idempotencyTransport{base: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 120 * time.Second,
+		}}},
+	}
 	return &Client{
 		c:                gc,
 		baseURL:          strings.TrimRight(baseURL, "/"),
@@ -97,6 +112,9 @@ func (cl *Client) Post(ctx context.Context, p Post) (Result, error) {
 		mediaIDs = append(mediaIDs, att.ID)
 	}
 	if err := ctx.Err(); err != nil { // nothing sent
+		return Result{}, err
+	}
+	if err := destination.BeforeCommit(ctx); err != nil { // nothing sent
 		return Result{}, err
 	}
 	st, err := cl.c.PostStatus(ctx, &gomast.Toot{
@@ -168,6 +186,20 @@ func (t idempotencyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		req.Header.Set("Idempotency-Key", k)
 	}
 	return t.base.RoundTrip(req)
+}
+
+// rateLimitTransport turns a 429 into an error carrying the response
+// headers, so go-mastodon doesn't retry it internally and classify sees
+// rate_limited with the instance's X-RateLimit-Reset.
+type rateLimitTransport struct{ base http.RoundTripper }
+
+func (t rateLimitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp.StatusCode != http.StatusTooManyRequests {
+		return resp, err
+	}
+	defer resp.Body.Close()
+	return nil, destination.NewHTTPError(req.URL.Path, resp)
 }
 
 // InstanceLimits are the posting limits an instance announces in

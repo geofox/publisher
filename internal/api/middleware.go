@@ -76,6 +76,35 @@ func (a *API) withCSRFGuard(next http.Handler) http.Handler {
 	})
 }
 
+// withHostGuard refuses requests for a Host that isn't this server's, when
+// AllowedHosts is set (ALLOWED_HOSTS). With OIDC off the reverse proxy is
+// the gate, and a page that rebinds its own name to the server's address
+// (127.0.0.1 in the documented compose) would otherwise be same-origin with
+// the app: the CSRF guard compares Origin with that same Host. Loopback
+// names and the health probes always pass.
+func (a *API) withHostGuard(next http.Handler) http.Handler {
+	if len(a.AllowedHosts) == 0 {
+		return next
+	}
+	allowed := map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
+	for _, h := range a.AllowedHosts {
+		allowed[strings.ToLower(hostOnly(strings.TrimSpace(h)))] = true
+	}
+	if a.AppBaseURL != "" {
+		if u, err := url.Parse(a.AppBaseURL); err == nil {
+			allowed[strings.ToLower(hostOnly(u.Host))] = true
+		}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if allowed[strings.ToLower(hostOnly(r.Host))] || r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		problem(w, r, http.StatusMisdirectedRequest, codeMisdirected, "this server does not serve that host name (see ALLOWED_HOSTS)")
+	})
+}
+
 // sameHost compares two host[:port] strings by hostname, ignoring the port (the
 // request Host often carries no port behind the TLS-terminating proxy while the
 // Origin may, or vice-versa). Empty hosts never match.

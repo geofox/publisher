@@ -302,6 +302,7 @@ func sourceRef(name string, r InteractRef) destination.SourceRef {
 	return destination.SourceRef{
 		Type: name, URI: r.URI, CID: r.CID, ReplyRootURI: r.ReplyRootURI, ReplyRootCID: r.ReplyRootCID,
 		LocalID: r.LocalID, EventID: r.EventID, Author: r.Author, RelayHints: r.RelayHints, EventKind: r.Kind,
+		ThreadRootID: r.ThreadRootID, Mentions: r.Mentions,
 	}
 }
 

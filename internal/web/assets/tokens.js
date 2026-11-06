@@ -1,5 +1,5 @@
 "use strict";
-import { el, v1, v1All, flash, relTime, confirmModal } from "./common.js";
+import { el, v1, v1All, flash, relTime, confirmModal, asDialog } from "./common.js";
 
 // API tokens on /v1/tokens: each with scopes and an optional expiry.
 
@@ -141,8 +141,8 @@ function installNewTokenForm() {
 // Shows the plaintext token in a modal with a clear one-time warning.
 function showNewTokenSecret(token, name) {
   const bk = el("div", { class: "modal-bk" });
-  const close = () => bk.remove();
-  bk.addEventListener("click", (e) => { if (e.target === bk) close(); });
+  let close = () => bk.remove();
+  // No close on a backdrop tap: the secret is shown only once. Done or ✕.
 
   const secretInput = el("input", {
     type: "text",
@@ -169,16 +169,17 @@ function showNewTokenSecret(token, name) {
 
   const card = el("div", { class: "modal" });
   card.append(
-    el("button", { class: "modal-x", type: "button", text: "✕", onclick: close }),
+    el("button", { class: "modal-x", type: "button", text: "✕", "aria-label": "Close", onclick: () => close() }),
     el("p", { class: "modal-title ok", text: "Token created — \"" + name + "\"" }),
     el("p", { class: "tok-warning", text: "Copy this now — you won't be able to see it again." }),
     el("div", { class: "tok-secret-row" }, secretInput, copyBtn),
     el("div", { class: "confirm-actions" },
-      el("button", { class: "primary sm", type: "button", text: "Done", onclick: close }),
+      el("button", { class: "primary sm", type: "button", text: "Done", onclick: () => close() }),
     ),
   );
   bk.append(card);
   document.body.append(bk);
+  close = asDialog(bk, card, close, secretInput, { escape: false }); // shown once: Done or ✕ only
   // Auto-select the secret so the user can copy immediately
   setTimeout(() => secretInput.select(), 60);
 }

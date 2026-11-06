@@ -62,7 +62,7 @@ func sendWithoutRecording(t *testing.T, d *Dispatcher, postID string) *store.Cla
 func plan(t *testing.T, d *Dispatcher, text string) string {
 	t.Helper()
 	now := d.now()
-	rec := d.planPost(context.Background(), newID(), PostSpec{MasterText: text, Platforms: []string{"stub"}, Source: "test"}, &now, "sending")
+	rec := d.planPost(context.Background(), newID(), marked(PostSpec{MasterText: text, Platforms: []string{"stub"}, Source: "test"}), &now, "sending")
 	if err := d.create(context.Background(), rec); err != nil {
 		t.Fatal(err)
 	}

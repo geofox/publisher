@@ -20,6 +20,9 @@ type Profile struct {
 	MaxPixels int64    // 0 = only the global decompression-bomb cap
 	Mimes     []string // mimes accepted as-is; empty = any image
 	Quality   int      // JPEG quality for re-encodes
+	// MaxAspect is the widest long-edge:short-edge ratio accepted (0 = any).
+	// Cropping would change the picture, so a wider one can't be fitted.
+	MaxAspect float64
 }
 
 var (
@@ -37,7 +40,8 @@ var (
 	Mastodon = Profile{Name: "mastodon", MaxBytes: 8 << 20, MaxPixels: 16_000_000, Quality: 85}
 	// Threads ingests by URL and accepts only JPEG/PNG up to 8 MB (Meta image
 	// spec) — a WebP canonical must be re-encoded and re-hosted.
-	Threads = Profile{Name: "threads", MaxBytes: 8 << 20, Mimes: []string{"image/jpeg", "image/png"}, Quality: 85}
+	// Its image spec also caps the aspect ratio at 10:1.
+	Threads = Profile{Name: "threads", MaxBytes: 8 << 20, Mimes: []string{"image/jpeg", "image/png"}, Quality: 85, MaxAspect: 10}
 )
 
 // Meta is the metadata-only description of a media object, as known to the
@@ -65,6 +69,23 @@ func (p Profile) Needs(m Meta) (bool, string) {
 	return false, ""
 }
 
+// Rejects is why media described by m can't be fitted to the profile at
+// all ("" when it can): an aspect ratio past MaxAspect.
+func (p Profile) Rejects(m Meta) string {
+	if p.aspectOver(m.W, m.H) {
+		return fmt.Sprintf("its aspect ratio is wider than %g:1", p.MaxAspect)
+	}
+	return ""
+}
+
+func (p Profile) aspectOver(w, h int) bool {
+	if p.MaxAspect <= 0 || w <= 0 || h <= 0 {
+		return false
+	}
+	long, short := max(w, h), min(w, h)
+	return float64(long) > p.MaxAspect*float64(short)
+}
+
 func (p Profile) mimeOK(mime string) bool {
 	if len(p.Mimes) == 0 || mime == "" {
 		return true
@@ -87,6 +108,9 @@ func (p Profile) Fit(src []byte, mime string) (Result, error) {
 	if cfg, format, err := image.DecodeConfig(bytes.NewReader(src)); err == nil {
 		mime = "image/" + format
 		cw, ch = cfg.Width, cfg.Height
+	}
+	if p.aspectOver(cw, ch) {
+		return Result{}, unfittable{fmt.Errorf("image %dx%d is wider than %s's %g:1 limit", cw, ch, p.Name, p.MaxAspect)}
 	}
 	enc := KeepIfAllowed
 	if !p.mimeOK(mime) {

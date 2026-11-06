@@ -54,6 +54,8 @@ func TestClassify(t *testing.T) {
 		{"commit eof", Committing(fmt.Errorf("read: %w", io.ErrUnexpectedEOF)), ClassUnknownOutcome},
 		{"commit 504", Committing(he(504)), ClassUnknownOutcome},
 		{"commit 500", Committing(he(500)), ClassTransient},
+		{"commit 502", Committing(he(502)), ClassUnknownOutcome},
+		{"commit 503", Committing(he(503)), ClassTransient},
 		{"commit 422", Committing(he(422)), ClassInvalid},
 		{"commit dial", Committing(&net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}), ClassTransient},
 		// On any other step (login, upload, poll) nothing was posted.

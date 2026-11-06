@@ -121,25 +121,28 @@ function updateSyncRow(entry, ok, metaText, message) {
 }
 
 // runSyncLive scans/applies the targets one at a time, filling each row live
-// with an n/m counter. fetchOne(url, entry) handles a single relay.
+// with an n/m counter. fetchOne(url, entry) handles a single relay and
+// answers whether it went well. It answers the number of relays that
+// didn't, or -1 when it couldn't run at all (busy, none, an error shown).
 async function runSyncLive(label, fetchOne) {
-  if (syncBusy) return;
+  if (syncBusy) return -1;
   setSyncBusy(true);
   const out = $("#syncout"); out.innerHTML = "";
   try {
     const targets = await fetchSyncTargets();
-    if (targets.length === 0) { out.append(el("div", { class: "muted", text: "no target relays" })); return; }
+    if (targets.length === 0) { out.append(el("div", { class: "muted", text: "no target relays" })); return -1; }
     const head = el("div", { class: "relays-head", text: `${label}  0/${targets.length}` });
     out.append(head);
     const rows = renderPendingTargets(out, targets);
-    let done = 0;
+    let done = 0, failed = 0;
     for (const t of targets) {
       if (rows[t.url]) rows[t.url].meta.textContent = "…";
-      await fetchOne(t.url, rows[t.url]);
+      if ((await fetchOne(t.url, rows[t.url])) === false) failed++;
       head.textContent = `${label}  ${++done}/${targets.length}`;
     }
     head.textContent = `${label} · ${targets.length} relays`;
-  } catch (e) { out.innerHTML = ""; out.append(el("div", { class: "err", text: "Error: " + e.message })); }
+    return failed;
+  } catch (e) { out.innerHTML = ""; out.append(el("div", { class: "err", text: "Error: " + e.message })); return -1; }
   finally { setSyncBusy(false); }
 }
 
@@ -164,8 +167,13 @@ function syncApply(direction) {
       else if (res.failed) meta = (res.published ? `published ${res.published} · ` : "") + `failed ${res.failed}`;
       else meta = res.status; // unreachable / auth
       updateSyncRow(entry, res.status === "ok", meta, res.message);
-    } catch (e) { updateSyncRow(entry, false, "error", e.message); }
-  }).then(() => flash(`${direction}: done`));
+      return res.status === "ok";
+    } catch (e) { updateSyncRow(entry, false, "error", e.message); return false; }
+  }).then(failed => {
+    // Only a run that finished says so; its errors are on screen.
+    if (failed === 0) flash(`${direction}: done`);
+    else if (failed > 0) flash(`${direction}: ${failed} relay(s) failed`);
+  });
 }
 
 // ---------------------------------------------------------------------------

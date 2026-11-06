@@ -153,7 +153,7 @@ func TestV1CreateInteractionValidation(t *testing.T) {
 		{"reply needs text", `{"content":{},"targets":[{"account":"` + bsky + `"}],"reply_to":{"url":"` + bskySource + `"}}`,
 			[]string{"/content/text:required"}},
 		{"media part", `{"content":{"text":"x","media":[{"id":"` + vid + `","part":1}]},"targets":[{"account":"` + bsky + `"}],"reply_to":{"url":"` + bskySource + `"}}`,
-			[]string{"/content/media/0/part:not_supported"}},
+			[]string{"/content/media/0/part:replaced"}},
 	}
 	for _, c := range cases {
 		for _, path := range []string{"/v1/posts", "/v1/posts:preview"} {

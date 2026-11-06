@@ -22,6 +22,13 @@ export function loadAccounts() {
   return loading;
 }
 
+// reloadAccounts reads the accounts again even after a successful read
+// (one may have been added since).
+export function reloadAccounts() {
+  loading = null;
+  return loadAccounts();
+}
+
 // accountFor is the enabled account of a type, or null (none configured, or
 // the accounts haven't loaded).
 export function accountFor(type) { return byType[type] || null; }

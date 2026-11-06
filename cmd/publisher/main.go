@@ -224,6 +224,10 @@ func main() {
 		}})
 	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
 	d.Alerter = notifier
+	a.AllowedHosts = cfg.AllowedHosts
+	if !cfg.OIDCEnabled() && len(cfg.AllowedHosts) == 0 {
+		slog.Warn("OIDC is off and ALLOWED_HOSTS is unset: set ALLOWED_HOSTS to the host name you reach publisher by, so a web page can't reach it through DNS rebinding")
+	}
 	if cfg.OIDCEnabled() {
 		authn, err := auth.New(context.Background(), auth.Config{
 			Issuer:       cfg.OIDCIssuer,
@@ -263,8 +267,8 @@ func main() {
 			"allowed_subjects", len(cfg.OIDCAllowedSubjects),
 			"allowed_emails", len(cfg.OIDCAllowedEmails))
 	}
-	// Expired Idempotency-Key records and old events are dead weight: purge
-	// them hourly.
+	// Expired Idempotency-Key records, old events and settled fan-out jobs
+	// are dead weight: purge them hourly.
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
@@ -283,6 +287,11 @@ func main() {
 				slog.Warn("event purge failed", "err", err)
 			} else if n > 0 {
 				slog.Debug("purged events", "count", n)
+			}
+			if n, err := st.PurgeFanout(ctx, time.Now()); err != nil {
+				slog.Warn("fan-out purge failed", "err", err)
+			} else if n > 0 {
+				slog.Debug("purged settled fan-out jobs", "count", n)
 			}
 		}
 	}()

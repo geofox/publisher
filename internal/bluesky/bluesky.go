@@ -9,6 +9,7 @@ import (
 	"github.com/geofox/publisher/internal/destination"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,10 @@ type Post struct {
 	// can reply. A nil gate means anyone can reply; an all-false gate (e.g. from
 	// "nobody") writes an empty allow list, which means nobody can reply.
 	ReplyGate *ReplyGate
+
+	// mentionDIDs maps lower-cased @handles in Text to their DIDs; Post
+	// fills it before building the record.
+	mentionDIDs map[string]string
 	// DisableQuotes writes an app.bsky.feed.postgate#disableRule, blocking
 	// quote-posts of this post.
 	DisableQuotes bool
@@ -258,7 +263,7 @@ func buildPostRecord(p Post) map[string]any {
 	if len(p.Langs) > 0 {
 		record["langs"] = p.Langs
 	}
-	if f := parseFacets(p.Text); len(f) > 0 {
+	if f := parseFacets(p.Text, p.mentionDIDs); len(f) > 0 {
 		record["facets"] = f
 	}
 	if p.Reply != nil {
@@ -301,14 +306,62 @@ func mediaEmbed(images []map[string]any) map[string]any {
 	return map[string]any{"$type": "app.bsky.embed.gallery", "items": items}
 }
 
+// Post publishes p. It reuses the account's cached session (createSession is
+// limited to 30 per 5 minutes and 300 per day, so a long thread can't sign
+// in for every post). If the server refuses that session before anything was
+// published, it signs in once more and tries again.
 func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 	if uniseg.GraphemeClusterCount(p.Text) > maxGraphemes {
 		return Result{}, fmt.Errorf("%w: exceeds %d graphemes", errTooLong, maxGraphemes)
 	}
-	s, err := c.createSession(ctx)
+	return withSession(ctx, c, func(s session) (Result, error) { return c.post(ctx, s, p) })
+}
+
+// withSession runs fn with the cached session. When fn fails because the
+// server refused the session and published nothing (no RemoteID), the session
+// is dropped and fn runs once more with a fresh one.
+func withSession(ctx context.Context, c *Client, fn func(session) (Result, error)) (Result, error) {
+	s, err := c.readSession(ctx)
 	if err != nil {
 		return Result{}, err
 	}
+	res, err := fn(s)
+	if err == nil || res.RemoteID != "" || !sessionRefused(err) {
+		return res, err
+	}
+	c.dropReadSession()
+	if s, err = c.readSession(ctx); err != nil {
+		return Result{}, err
+	}
+	return fn(s)
+}
+
+// resolveMentions maps each @handle in text to its DID, for mention facets.
+// A handle that doesn't resolve stays plain text; it never fails the post.
+func (c *Client) resolveMentions(ctx context.Context, s session, text string) map[string]string {
+	handles := mentionHandles(text)
+	if len(handles) == 0 {
+		return nil
+	}
+	dids := map[string]string{}
+	for _, h := range handles {
+		if strings.EqualFold(h, s.Handle) && s.Did != "" {
+			dids[h] = s.Did
+			continue
+		}
+		var rh struct {
+			Did string `json:"did"`
+		}
+		if err := c.get(ctx, "/xrpc/com.atproto.identity.resolveHandle",
+			url.Values{"handle": {h}}, s.AccessJwt, &rh); err == nil && strings.HasPrefix(rh.Did, "did:") {
+			dids[h] = rh.Did
+		}
+	}
+	return dids
+}
+
+func (c *Client) post(ctx context.Context, s session, p Post) (Result, error) {
+	p.mentionDIDs = c.resolveMentions(ctx, s, p.Text)
 
 	// Video embed: upload blob and build app.bsky.embed.video. When a video is
 	// set, skip the image-upload loop entirely (composer enforces exclusivity).
@@ -396,7 +449,9 @@ func (c *Client) Post(ctx context.Context, p Post) (Result, error) {
 	// result alongside the error — the caller records the link and surfaces the
 	// gate failure rather than losing the post.
 	rkey := rkeyOf(uri)
-	if p.ReplyGate != nil {
+	// A threadgate only applies to a thread's root post (its rkey must match
+	// the root's), so replies and later thread segments don't get one.
+	if p.ReplyGate != nil && p.Reply == nil {
 		tg := map[string]any{
 			"$type":     "app.bsky.feed.threadgate",
 			"post":      uri,
@@ -432,10 +487,10 @@ func repostRecord(subjectURI, subjectCID string) map[string]any {
 
 // Repost creates an app.bsky.feed.repost of the subject post.
 func (c *Client) Repost(ctx context.Context, subjectURI, subjectCID string) (Result, error) {
-	s, err := c.createSession(ctx)
-	if err != nil {
-		return Result{}, err
-	}
+	return withSession(ctx, c, func(s session) (Result, error) { return c.repost(ctx, s, subjectURI, subjectCID) })
+}
+
+func (c *Client) repost(ctx context.Context, s session, subjectURI, subjectCID string) (Result, error) {
 	uri, cid, err := c.createRecord(ctx, s, "app.bsky.feed.repost", "", repostRecord(subjectURI, subjectCID))
 	if err != nil {
 		return Result{}, fmt.Errorf("repost: %w", err)
@@ -499,6 +554,9 @@ func (c *Client) createRecord(ctx context.Context, s session, collection, rkey s
 		CID string `json:"cid"`
 	}
 	if err := ctx.Err(); err != nil { // nothing sent
+		return "", "", fmt.Errorf("createRecord: %w", err)
+	}
+	if err := destination.BeforeCommit(ctx); err != nil { // nothing sent
 		return "", "", fmt.Errorf("createRecord: %w", err)
 	}
 	if err := c.do(ctx, "/xrpc/com.atproto.repo.createRecord", "application/json", s.AccessJwt, body, &resp); err != nil {

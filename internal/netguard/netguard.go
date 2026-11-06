@@ -23,10 +23,48 @@ func IsBlockedIP(ip net.IP) bool {
 		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
 		return true
 	}
-	if ip4 := ip.To4(); ip4 != nil && cgnatRange.Contains(ip4) {
+	if ip4 := ip.To4(); ip4 != nil {
+		for _, n := range reserved4 {
+			if n.Contains(ip4) {
+				return true
+			}
+		}
+		return cgnatRange.Contains(ip4)
+	}
+	ip16 := ip.To16()
+	if ip16 == nil {
 		return true
 	}
+	switch {
+	case nat64WKP.Contains(ip16):
+		// NAT64 (RFC 6052): the gateway turns it into the IPv4 address in
+		// its last 4 bytes, so judge that address.
+		return IsBlockedIP(net.IP(ip16[12:16]))
+	case nat64Local.Contains(ip16), siit.Contains(ip16):
+		// Local-use NAT64 (RFC 8215; the IPv4 address sits where the
+		// operator's prefix length puts it) and SIIT: never a public host.
+		return true
+	case sixToFour.Contains(ip16):
+		return IsBlockedIP(net.IP(ip16[2:6])) // 6to4 carries its IPv4 in bytes 2-5
+	}
 	return false
+}
+
+var (
+	nat64WKP   = mustCIDR("64:ff9b::/96")
+	nat64Local = mustCIDR("64:ff9b:1::/48")
+	siit       = mustCIDR("::ffff:0:0:0/96")
+	sixToFour  = mustCIDR("2002::/16")
+	// reserved4: "this network", benchmarking, and reserved/broadcast.
+	reserved4 = []*net.IPNet{mustCIDR("0.0.0.0/8"), mustCIDR("198.18.0.0/15"), mustCIDR("240.0.0.0/4")}
+)
+
+func mustCIDR(s string) *net.IPNet {
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return n
 }
 
 // Resolver is the lookup CheckPublicURL uses (net.DefaultResolver in

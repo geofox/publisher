@@ -31,9 +31,9 @@ export function fromV1(r) {
 async function resolveInput(input) {
   const card = $("#srccard"), status = $("#srcstatus");
   card.innerHTML = "";
+  const seq = ++_seq; // before the empty case too: a lookup in flight is now stale
   if (!input.trim()) { status.textContent = ""; return; }
   status.textContent = "Resolving…";
-  const seq = ++_seq;
   let data;
   try {
     data = fromV1(await v1("/v1/resolve", { method: "POST", body: { url: input.trim() } }));

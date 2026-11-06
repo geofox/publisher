@@ -63,7 +63,17 @@ every route, request and response against it. It has:
   (`GET /v1/accounts`) and the media. Each account can override the text,
   content warning, sensitivity and languages, and set its destination's
   options (`GET /v1/destinations`; `visibility` on Mastodon). Text too long
-  for an account becomes a thread there. The answer is `202` at once and
+  for an account becomes a thread there.
+- **Threads** are planned on positions in the text, never on markers: a
+  line of `---` is ordinary text. `content.breaks` lists where you want a
+  new post (Unicode code point offsets into `content.text`, ascending),
+  and a media item's `at` puts it on the post holding that position. An
+  account can set its own `thread.breaks` (`[]` for none) on the shared
+  text, or its own text with its own `thread.breaks` and `thread.media_at`.
+  Any post still over the limit is split automatically (paragraphs, then
+  sentences, then words), counted the way that platform counts.
+  `POST /v1/posts:preview` answers each post's `range`, `length` and
+  whether its break was `manual` or `auto`. The answer is `202` at once and
   the engine sends the post; add `Prefer: wait=30` to get `201` with the
   outcome when it settles within 30 seconds (60 at most). Send an
   `Idempotency-Key` so a retried request can't post twice. A video must
@@ -292,6 +302,22 @@ served from the root path. It talks to the publisher through `/v1` like any
 other client. Without OIDC it is unauthenticated by the service itself; see
 [Security](#security).
 
+The composer's **thread editor** has a tab for the shared text and one
+per selected account. The shared text is a stack of cards, one per post
+you break by hand: Ctrl/⌘+Enter (or ✂ split) starts a new post at the
+cursor, Backspace at the start of a card joins it to the one above, and a
+line of `---` becomes a break as soon as you start the next line. An
+account's tab shows its thread as the server will post it, counted the way
+that platform counts: solid lines are your breaks, dashed ones are splits
+made to fit its limit. Tap a word and **Break here**, move a break with ↑
+and ↓ (a sentence; Shift: a word) or by dragging it onto a word, and that
+account gets its own breaks while its wording still follows the shared
+text (**Reset to shared** undoes it). **Edit wording** gives it its own
+text. Images go with the post they sit on: drag them between cards, or
+use **Move to…**. Alt+1…5 switch tabs; on a wide screen **Compare**
+(Alt+C) lines every account's thread up side by side. In History, hovering
+a part of a thread marks where it came from in the text.
+
 The **Interact** tab accepts a pasted post URL or Nostr identifier, previews
 the source post, and reports which of reply/quote/repost the post allows.
 **Repost** is one-click. **Reply** and **Quote** open the **Compose** tab in
@@ -425,10 +451,11 @@ infrastructure and should be overridden.
 | `OIDC_CLIENT_SECRET` | yes* | — | Client secret (**secret**) |
 | `OIDC_REDIRECT_URL` | yes* | — | Callback URL registered with the provider, e.g. `https://publisher.example.com/auth/callback` |
 | `OIDC_ALLOWED_SUBJECTS` | yes*† | — | CSV of allowed OIDC subjects (`sub`) |
-| `OIDC_ALLOWED_EMAILS` | yes*† | — | CSV of allowed email addresses |
+| `OIDC_ALLOWED_EMAILS` | yes*† | — | CSV of allowed email addresses. Only an email the provider marks verified (`email_verified`) matches; case doesn't matter. A provider that leaves the claim out (e.g. Entra ID) needs `OIDC_ALLOWED_SUBJECTS`; the refused login logs the subject to add |
 | `OIDC_SCOPES` | no | `openid profile email` | Requested scopes (space- or comma-separated) |
 | `OIDC_END_SESSION` | no | `true` | On logout, also end the provider session (RP-initiated logout) when the provider advertises `end_session_endpoint` |
-| `SESSION_TTL` | no | `168h` | Server-side session lifetime |
+| `SESSION_TTL` | no | `168h` | Server-side session lifetime. Removing someone from the allowlist ends their sessions at once |
+| `ALLOWED_HOSTS` | no | (empty) | CSV of host names the server answers for (e.g. `post.example.com`); `localhost` and the health probes always pass, and other names get 421. Recommended with OIDC off: it stops DNS rebinding from a web page |
 
 \* Required only when `OIDC_ISSUER` is set.
 † At least one of `OIDC_ALLOWED_SUBJECTS` / `OIDC_ALLOWED_EMAILS` must be non-empty when OIDC is enabled.
@@ -571,7 +598,8 @@ authenticated by the service itself: every request the proxy lets through
 can do everything, token management included. (On `/v1`, a bearer token,
 when one is sent, is still checked.) Put it behind an authenticating reverse
 proxy (Authelia, oauth2-proxy, Basic Auth) or keep it on a private network /
-VPN. The `docker run` and compose examples above bind port 8080 to
+VPN, and set `ALLOWED_HOSTS` to the name you reach it by. A Basic Auth
+`Authorization` header the proxy forwards is ignored. The `docker run` and compose examples above bind port 8080 to
 `127.0.0.1` (localhost only), so nothing is exposed until you deliberately
 place a proxy in front of it.
 

@@ -36,6 +36,41 @@ export function el(tag, attrs = {}, ...kids) {
   return n;
 }
 
+// pressable makes a clickable non-button element usable from the keyboard:
+// it takes focus, says what it is, and Enter or Space clicks it.
+export function pressable(n, role = "button") {
+  n.tabIndex = 0;
+  n.setAttribute("role", role);
+  n.addEventListener("keydown", e => {
+    if (e.target !== n || (e.key !== "Enter" && e.key !== " ")) return;
+    e.preventDefault();
+    n.click();
+  });
+  return n;
+}
+
+// asDialog gives a modal its dialog semantics: role and aria-modal on the
+// card, focus moved into it (focusEl), Escape calls close, and focus goes
+// back where it was once the backdrop leaves the page. It answers close
+// wrapped to do that cleanup. escape: false leaves Escape alone (a dialog
+// whose content can't be shown again).
+export function asDialog(bk, card, close, focusEl, { escape = true } = {}) {
+  const before = document.activeElement;
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  const title = card.querySelector(".modal-title, .pm-title");
+  if (title) { title.id = title.id || "dlg-" + Math.random().toString(36).slice(2, 9); card.setAttribute("aria-labelledby", title.id); }
+  const onKey = e => { if (escape && e.key === "Escape" && bk.isConnected) { e.preventDefault(); done(); } };
+  const done = () => {
+    document.removeEventListener("keydown", onKey);
+    close();
+    if (before && before.isConnected && typeof before.focus === "function") before.focus();
+  };
+  document.addEventListener("keydown", onKey);
+  queueMicrotask(() => { const f = focusEl || card.querySelector("button, input, select, textarea"); if (f) f.focus(); });
+  return done;
+}
+
 // Intl.Segmenter construction is costly and grapheme counting runs several times
 // per keystroke, so build one segmenter lazily and reuse it. `false` means the
 // engine lacks Intl.Segmenter → fall back to code points.
@@ -77,10 +112,26 @@ export function relTime(iso) {
   return d.toLocaleDateString();
 }
 
-export function flash(msg) {
+// Times are entered and shown in the device's own time zone, as the
+// datetime-local input reads them: TZ names it, whenText formats one.
+export const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "local time"; } catch { return "local time"; } })();
+export function whenText(d) {
+  return d.toLocaleString(undefined, { weekday: "short", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+// localInput turns an RFC 3339 time into a datetime-local value (local
+// wall time, to the minute); "" for none or a bad one.
+export function localInput(iso) {
+  const d = iso ? new Date(iso) : null;
+  if (!d || isNaN(d)) return "";
+  const pad = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+export function flash(msg, ms = 2600) {
   const t = el("div", { class: "toast", text: msg });
   document.body.append(t);
-  setTimeout(() => t.remove(), 2600);
+  setTimeout(() => t.remove(), ms);
 }
 
 // api wraps fetch with same-origin creds + JSON parse; throws Error(data.error||HTTP n) on !ok.
@@ -138,13 +189,14 @@ export async function v1All(path) {
 // to dismiss (false keeps it open, e.g. on failure).
 export function confirmModal({ title, body, confirmText, onConfirm }) {
   const bk = el("div", { class: "modal-bk" });
-  const close = () => bk.remove();
+  let close = () => bk.remove();
   bk.addEventListener("click", e => { if (e.target === bk) close(); });
   const card = el("div", { class: "modal confirm" });
   card.append(el("p", { class: "modal-title", text: title }));
   if (body) card.append(el("p", { class: "confirm-body", text: body }));
+  const cancel = el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: () => close() });
   card.append(el("div", { class: "confirm-actions" },
-    el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: close }),
+    cancel,
     el("button", {
       class: "danger sm", type: "button", text: confirmText || "Confirm",
       onclick: async e => {
@@ -158,4 +210,5 @@ export function confirmModal({ title, body, confirmText, onConfirm }) {
   ));
   bk.append(card);
   document.body.append(bk);
+  close = asDialog(bk, card, close, cancel); // Cancel first: Enter must not confirm by accident
 }

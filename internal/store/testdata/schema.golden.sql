@@ -263,7 +263,7 @@ CREATE TABLE target_items (
   error           TEXT,
   attempt_count   INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TIMESTAMP,
-  published_at    TIMESTAMP,
+  published_at    TIMESTAMP, doubt_reset_at TIMESTAMP, committing_at TIMESTAMP,
   UNIQUE(target_id, ordinal)
 );
 

@@ -112,10 +112,12 @@ type v1DeliveryBody struct {
 }
 
 type v1ItemBody struct {
-	Ordinal       int              `json:"ordinal"`
-	Status        string           `json:"status"`
-	Text          string           `json:"text"`
-	Media         []int            `json:"media"`
+	Ordinal int    `json:"ordinal"`
+	Status  string `json:"status"`
+	Text    string `json:"text"`
+	Media   []int  `json:"media"`
+	// Range is the code points of the target's text the item posts.
+	Range         *[2]int          `json:"range,omitempty"`
 	URL           string           `json:"url,omitempty"`
 	RemoteID      string           `json:"remote_id,omitempty"`
 	Error         string           `json:"error,omitempty"`
@@ -193,7 +195,7 @@ func v1Post(p store.Post, full bool) v1PostBody {
 			items, attempts := []v1ItemBody{}, []v1AttemptBody{}
 			for _, it := range t.Items {
 				ib := v1ItemBody{
-					Ordinal: it.Ordinal, Status: it.Status, Text: it.Text, Media: it.Media, URL: it.RemoteURL,
+					Ordinal: it.Ordinal, Status: it.Status, Text: it.Text, Media: it.Media, Range: it.Range, URL: it.RemoteURL,
 					RemoteID: it.RemoteID, Error: it.Error, ErrorClass: it.ErrorClass, Attempts: it.AttemptCount,
 					NextAttemptAt: rfc3339ptr(it.NextAttemptAt), PublishedAt: rfc3339ptr(it.PublishedAt),
 					Deliveries: []v1DeliveryBody{},
@@ -278,12 +280,17 @@ func (a *API) v1ListPosts(w http.ResponseWriter, r *http.Request) {
 			fieldError{Parameter: name, Code: "invalid", Detail: detail})
 	}
 	if ss := vals["status"]; len(ss) > 0 {
+		seen := map[string]bool{}
 		for _, st := range strings.Split(strings.Join(ss, ","), ",") {
 			mapped, known := v1PostStatuses[st]
 			if !known {
 				badParam("status", "status is a comma-separated list of "+strings.Join(v1PostStatusNames, ", "))
 				return
 			}
+			if seen[st] {
+				continue // a repeat adds nothing (and enough of them overflow the query)
+			}
+			seen[st] = true
 			if st == "needs_attention" {
 				q.Attention = true
 			}

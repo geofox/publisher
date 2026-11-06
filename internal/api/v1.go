@@ -185,7 +185,14 @@ func (a *API) v1Auth(scope string, next http.Handler) http.Handler {
 }
 
 func (a *API) v1Principal(w http.ResponseWriter, r *http.Request) (principal, bool) {
-	if h := r.Header.Get("Authorization"); h != "" {
+	h := r.Header.Get("Authorization")
+	if _, found := bearerToken(h); h != "" && !found && !a.authEnabled() {
+		// OIDC off: the proxy in front is the gate, and one that uses Basic
+		// auth has the browser send its Authorization on every request.
+		// Only a Bearer token is ours to read.
+		h = ""
+	}
+	if h != "" {
 		raw, found := bearerToken(h)
 		if !found {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="publisher"`)
@@ -214,7 +221,7 @@ func (a *API) v1Principal(w http.ResponseWriter, r *http.Request) (principal, bo
 		return principal{Kind: "proxy", ID: "proxy", OwnerID: store.DefaultOwner}, true
 	}
 	if c, err := r.Cookie(sessionCookie); err == nil && a.Store != nil {
-		if u, err := a.Store.SessionUser(c.Value); err == nil {
+		if u, ok := a.sessionUser(c.Value); ok {
 			return principal{Kind: "session", ID: u.ID, OwnerID: store.DefaultOwner, User: &u}, true
 		}
 	}

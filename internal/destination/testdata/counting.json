@@ -1,0 +1,215 @@
+{
+ "description": "Text length cases shared by internal/destination (Go) and the web app's counter (e2e/tests/counting.spec.ts). Each counting object is a destination.Counting.",
+ "cases": [
+  {
+   "name": "ascii graphemes",
+   "counting": {
+    "unit": "graphemes"
+   },
+   "text": "hello",
+   "want": 5
+  },
+  {
+   "name": "zwj family is one grapheme",
+   "counting": {
+    "unit": "graphemes"
+   },
+   "text": "👨‍👩‍👧",
+   "want": 1
+  },
+  {
+   "name": "cjk graphemes",
+   "counting": {
+    "unit": "graphemes"
+   },
+   "text": "日本語",
+   "want": 3
+  },
+  {
+   "name": "combining accent is one grapheme",
+   "counting": {
+    "unit": "graphemes"
+   },
+   "text": "été",
+   "want": 3
+  },
+  {
+   "name": "flag is one grapheme",
+   "counting": {
+    "unit": "graphemes"
+   },
+   "text": "🇱🇺",
+   "want": 1
+  },
+  {
+   "name": "newlines count",
+   "counting": {
+    "unit": "graphemes"
+   },
+   "text": "a\n\nb",
+   "want": 4
+  },
+  {
+   "name": "url weighted",
+   "counting": {
+    "unit": "graphemes",
+    "url_length": 23,
+    "mention_local_part_only": true,
+    "content_warning_counts": true
+   },
+   "text": "see https://example.com/a/very/long/path?q=1 now",
+   "want": 31
+  },
+  {
+   "name": "two urls",
+   "counting": {
+    "unit": "graphemes",
+    "url_length": 23,
+    "mention_local_part_only": true,
+    "content_warning_counts": true
+   },
+   "text": "http://a.io https://b.io/x",
+   "want": 47
+  },
+  {
+   "name": "url ends at a quote",
+   "counting": {
+    "unit": "graphemes",
+    "url_length": 23,
+    "mention_local_part_only": true,
+    "content_warning_counts": true
+   },
+   "text": "\"https://a.io/x\" ok",
+   "want": 28
+  },
+  {
+   "name": "remote mention",
+   "counting": {
+    "unit": "graphemes",
+    "url_length": 23,
+    "mention_local_part_only": true,
+    "content_warning_counts": true
+   },
+   "text": "hi @alice@example.social!",
+   "want": 10
+  },
+  {
+   "name": "local mention untouched",
+   "counting": {
+    "unit": "graphemes",
+    "url_length": 23,
+    "mention_local_part_only": true,
+    "content_warning_counts": true
+   },
+   "text": "hi @alice",
+   "want": 9
+  },
+  {
+   "name": "email is not a mention",
+   "counting": {
+    "unit": "graphemes",
+    "url_length": 23,
+    "mention_local_part_only": true,
+    "content_warning_counts": true
+   },
+   "text": "mail bob@example.com",
+   "want": 20
+  },
+  {
+   "name": "emoji as utf8 bytes",
+   "counting": {
+    "unit": "graphemes",
+    "emoji_utf8_bytes": true
+   },
+   "text": "hi 😀",
+   "want": 7
+  },
+  {
+   "name": "zwj family as utf8 bytes",
+   "counting": {
+    "unit": "graphemes",
+    "emoji_utf8_bytes": true
+   },
+   "text": "👨‍👩‍👧",
+   "want": 18
+  },
+  {
+   "name": "flag as utf8 bytes",
+   "counting": {
+    "unit": "graphemes",
+    "emoji_utf8_bytes": true
+   },
+   "text": "🇱🇺",
+   "want": 8
+  },
+  {
+   "name": "heart with presentation selector",
+   "counting": {
+    "unit": "graphemes",
+    "emoji_utf8_bytes": true
+   },
+   "text": "❤️",
+   "want": 6
+  },
+  {
+   "name": "keycap",
+   "counting": {
+    "unit": "graphemes",
+    "emoji_utf8_bytes": true
+   },
+   "text": "1️⃣",
+   "want": 7
+  },
+  {
+   "name": "plain text unchanged with emoji rule",
+   "counting": {
+    "unit": "graphemes",
+    "emoji_utf8_bytes": true
+   },
+   "text": "héllo",
+   "want": 5
+  },
+  {
+   "name": "url literal without url rule",
+   "counting": {
+    "unit": "graphemes",
+    "emoji_utf8_bytes": true
+   },
+   "text": "https://a.io",
+   "want": 12
+  },
+  {
+   "name": "url trailing period is text",
+   "counting": {
+    "unit": "graphemes",
+    "url_length": 23,
+    "mention_local_part_only": true,
+    "content_warning_counts": true
+   },
+   "text": "x https://e.com/a.",
+   "want": 26
+  },
+  {
+   "name": "url in parentheses",
+   "counting": {
+    "unit": "graphemes",
+    "url_length": 23,
+    "mention_local_part_only": true,
+    "content_warning_counts": true
+   },
+   "text": "(https://e.com/a)",
+   "want": 25
+  },
+  {
+   "name": "url with its own parentheses",
+   "counting": {
+    "unit": "graphemes",
+    "url_length": 23,
+    "mention_local_part_only": true,
+    "content_warning_counts": true
+   },
+   "text": "https://en.wikipedia.org/wiki/Foo_(bar)",
+   "want": 23
+  }
+ ]
+}

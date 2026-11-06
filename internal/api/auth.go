@@ -88,11 +88,24 @@ func (a *API) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.Allowlist.Check(claims); err != nil {
-		slog.Warn("oidc identity not allowed", "subject", claims.Subject, "email", claims.Email)
+		if claims.Email != "" && !claims.EmailVerified && a.Allowlist.AllowsUser("", claims.Email) {
+			// Listed, but the provider doesn't say the email is verified
+			// (some leave email_verified out): allow by subject instead.
+			slog.Warn("oidc email is allowed but not verified by the provider: add the subject to OIDC_ALLOWED_SUBJECTS",
+				"subject", claims.Subject, "email", claims.Email)
+		} else {
+			slog.Warn("oidc identity not allowed", "subject", claims.Subject, "email", claims.Email)
+		}
 		httpx.WriteError(w, http.StatusForbidden, "not authorized")
 		return
 	}
-	u, err := a.Store.UpsertUser(claims.Subject, claims.Email, claims.Name)
+	// Only a verified email is kept: it is what a session is re-checked
+	// against (sessionUser).
+	email := claims.Email
+	if !claims.EmailVerified {
+		email = ""
+	}
+	u, err := a.Store.UpsertUser(claims.Subject, email, claims.Name)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "user upsert failed")
 		return

@@ -41,7 +41,11 @@ func (Driver) Manifest() destination.Manifest {
 			}},
 		},
 		Defaults: destination.Capabilities{
-			Text:      destination.TextCaps{MaxLength: 500, Counting: destination.Counting{Unit: destination.UnitGraphemes}},
+			// 500 characters, an emoji counting as its UTF-8 bytes, and at
+			// most 5 distinct links (refused since 2025-12-22): see
+			// https://developers.facebook.com/docs/threads/posts
+			Text: destination.TextCaps{MaxLength: 500, MaxLinks: 5,
+				Counting: destination.Counting{Unit: destination.UnitGraphemes, EmojiUTF8Bytes: true}},
 			Threading: destination.ThreadingCaps{Supported: true},
 			Media: destination.MediaCaps{
 				// Meta fetches media by URL, and accepts only JPEG/PNG up to
@@ -49,7 +53,7 @@ func (Driver) Manifest() destination.Manifest {
 				Transport: destination.TransportURL,
 				// Carousels take up to 20 items; 10 keeps posts readable.
 				Images: destination.Limit{Supported: true, MaxCount: 10,
-					MaxBytes: transcode.Threads.MaxBytes, Mimes: transcode.Threads.Mimes},
+					MaxBytes: transcode.Threads.MaxBytes, Mimes: transcode.Threads.Mimes, MaxAspect: transcode.Threads.MaxAspect},
 				Video: destination.Limit{Supported: true, MaxCount: 1, MaxBytes: transcode.ThreadsVideoMaxBytes,
 					MaxDurationSecs: transcode.ThreadsVideoMaxSecs},
 				AltText: true,
@@ -59,6 +63,7 @@ func (Driver) Manifest() destination.Manifest {
 			// from a URL to a media id, so external posts can't be targeted.
 			Interactions: destination.InteractionCaps{},
 			Idempotent:   destination.IdempotentNone,
+			CommitMarks:  true,
 		},
 	}
 }

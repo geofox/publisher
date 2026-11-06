@@ -6,8 +6,10 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -17,7 +19,29 @@ import (
 type Claims struct {
 	Subject string `json:"sub"`
 	Email   string `json:"email"`
-	Name    string `json:"name"`
+	// EmailVerified is the IdP's word that the user proved they own Email.
+	// Without it an email can't sign anyone in: many IdPs let a user set any
+	// address on their own account.
+	EmailVerified bool   `json:"email_verified"`
+	Name          string `json:"name"`
+}
+
+// UnmarshalJSON also reads email_verified sent as the string "true", as
+// some IdPs (AWS Cognito) do.
+func (c *Claims) UnmarshalJSON(p []byte) error {
+	var raw struct {
+		Subject       string          `json:"sub"`
+		Email         string          `json:"email"`
+		EmailVerified json.RawMessage `json:"email_verified"`
+		Name          string          `json:"name"`
+	}
+	if err := json.Unmarshal(p, &raw); err != nil {
+		return err
+	}
+	v := strings.TrimSpace(string(raw.EmailVerified))
+	*c = Claims{Subject: raw.Subject, Email: raw.Email, Name: raw.Name,
+		EmailVerified: v == "true" || strings.EqualFold(v, `"true"`)}
+	return nil
 }
 
 // Config configures the Relying Party.
@@ -40,7 +64,19 @@ type Authenticator struct {
 // .well-known/openid-configuration) and builds the verifier + oauth2 config.
 // Returning an error here is intentionally fatal at startup.
 func New(ctx context.Context, c Config) (*Authenticator, error) {
+	// go-oidc needs the issuer exactly as the provider publishes it, and
+	// some publish it with a trailing "/" (Auth0, Authentik), some without:
+	// if the form given doesn't match, try the other.
 	provider, err := oidc.NewProvider(ctx, c.Issuer)
+	if err != nil {
+		alt := strings.TrimSuffix(c.Issuer, "/")
+		if alt == c.Issuer {
+			alt += "/"
+		}
+		if p, err2 := oidc.NewProvider(ctx, alt); err2 == nil {
+			provider, err = p, nil
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("oidc discovery: %w", err)
 	}

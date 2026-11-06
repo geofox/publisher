@@ -6,7 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"slices"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	gonostr "fiatjaf.com/nostr"
@@ -27,6 +31,62 @@ type SourceEvent struct {
 	RelayHints []string
 	Protected  bool   // NIP-70 ["-"] tag present
 	AuthorName string // best-effort, from kind-0 profile metadata
+	// ThreadRootID is the root of the thread a kind-1 event replies into
+	// (its NIP-10 "root" e-tag, or the first e-tag in the older positional
+	// form); empty when the event starts a thread. Mentions are its p-tags.
+	ThreadRootID string
+	Mentions     []string
+}
+
+// maxReplyMentions caps the p-tags a reply copies from the event it answers.
+const maxReplyMentions = 50
+
+// threadContext reads a kind-1 event's NIP-10 thread root and p-tags.
+func threadContext(tags gonostr.Tags) (root string, mentions []string) {
+	var firstE string
+	marked := false
+	seen := map[string]bool{}
+	for _, t := range tags {
+		if len(t) < 2 {
+			continue
+		}
+		switch t[0] {
+		case "e":
+			if !isHex64(t[1]) {
+				continue
+			}
+			if len(t) > 3 && t[3] == "root" {
+				root = t[1]
+			}
+			if len(t) > 3 && (t[3] == "root" || t[3] == "reply") {
+				marked = true
+			}
+			if firstE == "" {
+				firstE = t[1]
+			}
+		case "p":
+			if isHex64(t[1]) && !seen[t[1]] && len(mentions) < maxReplyMentions {
+				seen[t[1]] = true
+				mentions = append(mentions, t[1])
+			}
+		}
+	}
+	if root == "" && !marked {
+		root = firstE // deprecated positional form: the first e-tag is the root
+	}
+	return root, mentions
+}
+
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // eventPointer is the decoded identity of a reference, before the event itself
@@ -80,13 +140,33 @@ func (p *Publisher) ResolveSource(ctx context.Context, input string) (*SourceEve
 	}
 	hints := publicRelayHints(ctx, net.DefaultResolver, ptr.RelayHints)
 	urls := p.sourceRelays(ctx, hints)
+	// The pointer's hints come from whoever made it: they are dialed only
+	// through a connection that refuses non-public addresses at dial time
+	// (the check above can be outrun by DNS rebinding). The owner's own
+	// relays may be on their network and go through the pool.
+	trusted := map[string]bool{}
+	for _, u := range p.sourceRelays(ctx, nil) {
+		trusted[u] = true
+	}
+	var own, foreign []string
+	for _, u := range urls {
+		if trusted[u] {
+			own = append(own, u)
+		} else {
+			foreign = append(foreign, u)
+		}
+	}
+	fetch := func(f gonostr.Filter) *gonostr.Event { return p.fetchFrom(ctx, own, foreign, f) }
 	id, err := gonostr.IDFromHex(ptr.IDHex)
 	if err != nil {
 		return nil, fmt.Errorf("bad event id: %w", err)
 	}
-	ev := p.fetchOne(ctx, urls, gonostr.Filter{IDs: []gonostr.ID{id}, Limit: 1})
+	ev := fetch(gonostr.Filter{IDs: []gonostr.ID{id}, Limit: 1})
 	if ev == nil {
 		return nil, fmt.Errorf("event %s not found on %d relays", ptr.IDHex[:8], len(urls))
+	}
+	if ptr.Author != "" && ev.PubKey.Hex() != ptr.Author {
+		return nil, fmt.Errorf("event %s is not by the author the reference names", ptr.IDHex[:8])
 	}
 	src := &SourceEvent{
 		IDHex:      ptr.IDHex,
@@ -97,7 +177,10 @@ func (p *Publisher) ResolveSource(ctx context.Context, input string) (*SourceEve
 		RelayHints: hints,
 		Protected:  hasProtectedTag(ev.Tags),
 	}
-	if prof := p.fetchOne(ctx, urls, gonostr.Filter{
+	if ev.Kind == 1 {
+		src.ThreadRootID, src.Mentions = threadContext(ev.Tags)
+	}
+	if prof := fetch(gonostr.Filter{
 		Authors: []gonostr.PubKey{ev.PubKey},
 		Kinds:   []gonostr.Kind{0},
 		Limit:   1,
@@ -215,6 +298,89 @@ func (p *Publisher) sourceRelays(ctx context.Context, hints []string) []string {
 	return out
 }
 
+// fetchFrom returns the first event matching filter from the owner's relays
+// (through the pool) or the foreign ones (each through a dial-guarded
+// connection), or nil.
+func (p *Publisher) fetchFrom(ctx context.Context, own, foreign []string, filter gonostr.Filter) *gonostr.Event {
+	if len(foreign) == 0 {
+		return p.fetchOne(ctx, own, filter)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	found := make(chan *gonostr.Event, len(foreign)+1)
+	var wg sync.WaitGroup
+	run := func(f func() *gonostr.Event) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			found <- f()
+		}()
+	}
+	if len(own) > 0 {
+		run(func() *gonostr.Event { return p.fetchOne(ctx, own, filter) })
+	}
+	for _, u := range foreign {
+		run(func() *gonostr.Event { return queryGuarded(ctx, u, filter) })
+	}
+	go func() { wg.Wait(); close(found) }()
+	for ev := range found {
+		if ev != nil {
+			return ev
+		}
+	}
+	return nil
+}
+
+// matches reports whether ev is genuinely what filter asked for. A relay
+// is matched against the event's claimed id, and the signature check
+// recomputes the id on a copy: a validly signed event with someone else's
+// id gets through. So the id is checked against the content here, and the
+// id and author against the filter.
+func matches(ev *gonostr.Event, filter gonostr.Filter) bool {
+	if ev == nil || !ev.CheckID() || !ev.VerifySignature() {
+		return false
+	}
+	if len(filter.IDs) > 0 && !slices.Contains(filter.IDs, ev.ID) {
+		return false
+	}
+	if len(filter.Authors) > 0 && !slices.Contains(filter.Authors, ev.PubKey) {
+		return false
+	}
+	return true
+}
+
+// guardedWS dials websockets only to public addresses, checked on the
+// address actually dialed.
+var guardedWS = &http.Client{Transport: &http.Transport{
+	DialContext: (&net.Dialer{Timeout: 7 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return err
+		}
+		if ip := net.ParseIP(host); ip == nil || netguard.IsBlockedIP(ip) {
+			return fmt.Errorf("blocked non-public relay address %s", host)
+		}
+		return nil
+	}}).DialContext,
+	TLSHandshakeTimeout: 7 * time.Second,
+}}
+
+// queryGuarded asks one relay for the first event matching filter over a
+// dial-guarded connection of its own.
+func queryGuarded(ctx context.Context, url string, filter gonostr.Filter) *gonostr.Event {
+	r := gonostr.NewRelay(ctx, url, gonostr.RelayOptions{})
+	if err := r.ConnectWithClient(ctx, guardedWS); err != nil {
+		return nil
+	}
+	defer r.Close()
+	for ev := range r.QueryEvents(filter) {
+		if matches(&ev, filter) {
+			return &ev
+		}
+	}
+	return nil
+}
+
 // fetchOne returns the first event matching filter across urls, or nil.
 // QuerySingle returns the first event from the first relay to answer and cancels
 // the rest; RelayEvent embeds Event, so we copy the embedded value out.
@@ -224,7 +390,9 @@ func (p *Publisher) fetchOne(ctx context.Context, urls []string, filter gonostr.
 	}
 	if re := p.pool.QuerySingle(ctx, urls, filter, gonostr.SubscriptionOptions{}); re != nil {
 		ev := re.Event
-		return &ev
+		if matches(&ev, filter) {
+			return &ev
+		}
 	}
 	return nil
 }

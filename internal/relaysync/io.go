@@ -43,11 +43,14 @@ func (io *LiveIO) Fetch(ctx context.Context, relayURL string, pubkey gonostr.Pub
 		}
 		// QueryEvents takes no context; the whole fetch is bounded by cctx
 		// (TotalTimeout), which closes the relay connection on expiry.
-		n := 0
+		n, fresh := 0, 0
 		var oldest gonostr.Timestamp
 		for evt := range relay.QueryEvents(filter) {
-			out[evt.ID] = evt
 			n++
+			if _, seen := out[evt.ID]; !seen {
+				fresh++
+			}
+			out[evt.ID] = evt
 			if oldest == 0 || evt.CreatedAt < oldest {
 				oldest = evt.CreatedAt
 			}
@@ -55,15 +58,23 @@ func (io *LiveIO) Fetch(ctx context.Context, relayURL string, pubkey gonostr.Pub
 				break
 			}
 		}
-		// Stop when a short page (relay exhausted), cap hit, or no progress.
-		if n < io.PageLimit || len(out) >= io.MaxEvents || oldest == 0 {
+		// The next page starts at the oldest second seen, inclusive (NIP-01
+		// until): a page cut by a limit can end inside a second that has
+		// more events. A short page doesn't mean the relay is done, since
+		// relays cap limit below ours. A page with nothing new is stuck in a
+		// second fuller than a page: go on below it. Each round either adds
+		// events or lowers until, so it ends.
+		if n == 0 || len(out) >= io.MaxEvents || oldest == 0 {
 			break
 		}
-		next := oldest - 1
-		if until > 0 && next >= until {
-			break
+		if fresh == 0 {
+			if oldest <= 1 || (until > 0 && oldest > until) {
+				break
+			}
+			until = oldest - 1
+			continue
 		}
-		until = next
+		until = oldest
 	}
 	return out, nil
 }

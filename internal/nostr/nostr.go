@@ -41,6 +41,9 @@ type RelayResult struct {
 type NostrReply struct {
 	RootID, ParentID, RelayHint string
 	AuthorPubkey                string // replied-to author (hex); empty → self-thread, p-tag the owner
+	// Mentions are the replied-to event's own p-tags, carried over so the
+	// conversation's participants are notified (NIP-10).
+	Mentions []string
 }
 
 // PublishInput carries everything needed to build and publish a Nostr event.
@@ -307,17 +310,26 @@ func replyTags(r *NostrReply, ownerPubkeyHex string) []gonostr.Tag {
 		pAuthor = ownerPubkeyHex // self-thread: p-tag the owner (self)
 	}
 	rootE := gonostr.Tag{"e", r.RootID, r.RelayHint, "root"}
-	if r.AuthorPubkey != "" {
-		rootE = append(rootE, r.AuthorPubkey) // NIP-10 author hint (5th element)
+	if r.AuthorPubkey != "" && (r.ParentID == "" || r.ParentID == r.RootID) {
+		// NIP-10 author hint (5th element); only known for the root when the
+		// root is the replied-to event itself.
+		rootE = append(rootE, r.AuthorPubkey)
+	}
+	// p-tags: the replied-to author, then the participants it tagged.
+	ps := []gonostr.Tag{{"p", pAuthor}}
+	for _, m := range r.Mentions {
+		if m != pAuthor && m != ownerPubkeyHex {
+			ps = append(ps, gonostr.Tag{"p", m})
+		}
 	}
 	if r.ParentID == "" || r.ParentID == r.RootID {
-		return []gonostr.Tag{rootE, {"p", pAuthor}}
+		return append([]gonostr.Tag{rootE}, ps...)
 	}
 	replyE := gonostr.Tag{"e", r.ParentID, r.RelayHint, "reply"}
 	if r.AuthorPubkey != "" {
 		replyE = append(replyE, r.AuthorPubkey)
 	}
-	return []gonostr.Tag{rootE, replyE, {"p", pAuthor}}
+	return append([]gonostr.Tag{rootE, replyE}, ps...)
 }
 
 // extractImetaURL returns the "url ..." value from a NIP-92 imeta tag, or

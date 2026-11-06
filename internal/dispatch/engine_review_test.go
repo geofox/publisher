@@ -81,7 +81,7 @@ func TestGiveUpAfterRetryIsAlerted(t *testing.T) {
 	d := stubDispatcher(t, acct)
 	al := &fakeAlerter{}
 	d.Alerter = al
-	rec := d.Post(context.Background(), PostSpec{MasterText: "one\n---\ntwo", Platforms: []string{"stub"}})
+	rec := d.Post(context.Background(), marked(PostSpec{MasterText: "one\n---\ntwo", Platforms: []string{"stub"}}))
 	n0 := len(al.calls)
 	later := time.Now().Add(time.Hour)
 	d.Clock = func() time.Time { return later }

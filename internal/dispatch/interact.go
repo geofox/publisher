@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"github.com/geofox/publisher/internal/store"
+	"github.com/geofox/publisher/internal/thread"
 )
 
 // SourcePreview is the resolved original's content, passed from the frontend so
@@ -17,18 +18,21 @@ type SourcePreview struct {
 }
 
 type InteractSpec struct {
-	Action             string // reply|repost|quote
-	SourcePlatform     string
-	Ref                InteractRef
-	SourceURL          string
-	SourceAuthor       string
-	Text               string
-	Overrides          map[string]Overrides // keyed by platform
-	Fanout             []string             // quote only: other platforms for link-quotes
-	Force              bool
-	Images             []Img
-	MediaRecords       []store.Media
-	Number             bool          // k/n counters on threaded segments
+	Action         string // reply|repost|quote
+	SourcePlatform string
+	Ref            InteractRef
+	SourceURL      string
+	SourceAuthor   string
+	Text           string
+	Overrides      map[string]Overrides // keyed by platform
+	Fanout         []string             // quote only: other platforms for link-quotes
+	Force          bool
+	Images         []Img
+	MediaRecords   []store.Media
+	Number         bool // k/n counters on threaded segments
+	// Layout is the source account's breaks and media positions in its
+	// commentary (a link-quote copy is split automatically).
+	Layout             thread.Layout
 	SourcePreview      SourcePreview // for fan-out reproduction
 	SourceImages       []Img         // original's media, re-hosted (fan-out only)
 	SourceMediaRecords []store.Media // archival records for the re-hosted source media

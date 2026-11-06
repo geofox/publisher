@@ -12,6 +12,7 @@ import (
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/store"
+	"github.com/geofox/publisher/internal/thread"
 )
 
 // ConvertOldDrafts gives each draft saved before /v1 its /v1 body, once
@@ -155,9 +156,12 @@ func (a *API) convertOldDraft(ctx context.Context, od store.OldDraft) error {
 		at := sp.ScheduledAt
 		req.Schedule = &v1CreateSchedule{At: &at}
 	}
+	// "---" lines and media parts become breaks and positions.
+	body, _ := store.ConvertBreakMarkers(marshalPost(&req))
+	text, _, _ = thread.FromMarkers(text)
 	// The old routes never took a title: theirs was derived (cut at 80
 	// bytes); derived again, it follows the text.
-	return a.Store.ConvertDraft(ctx, od.ID, store.DeriveTitle(text), text, marshalPost(&req))
+	return a.Store.ConvertDraft(ctx, od.ID, store.DeriveTitle(text), text, body)
 }
 
 // oldOverrides turns a type's old override fields into a target's options

@@ -7,13 +7,15 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/geofox/publisher/internal/destination"
 )
 
 // urlRe and the punctuation trim mirror bluesky/facets.go, so the card URL is
 // byte-identical to the faceted link.
 var urlRe = regexp.MustCompile(`https?://[^\s]+`)
 
-func trimURL(raw string) string { return strings.TrimRight(raw, ".,!?);:") }
+func trimURL(raw string) string { return destination.TrimURL(raw) }
 
 // CardURL picks the URL that should carry the link card: the trailing URL when
 // the text ends with one (only whitespace after it), else the first URL.

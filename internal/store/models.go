@@ -652,8 +652,13 @@ func (s *Store) CancelScheduled(id string) error {
 // each post and applies backoff/cap per target.
 func (s *Store) PostsNeedingRetry() ([]string, error) {
 	rows, err := s.sql.Query(
-		`SELECT DISTINCT post_id FROM post_targets
-		  WHERE status IN ('failed','partial') AND gave_up_at IS NULL`)
+		// Only targets with a failed endpoint (relay) the retrier may still
+		// retry: one whose failed relays all gave up has nothing left, and
+		// reloading it on every tick would grow with history.
+		`SELECT DISTINCT pt.post_id FROM post_targets pt
+		  WHERE pt.status IN ('failed','partial') AND pt.gave_up_at IS NULL
+		    AND EXISTS (SELECT 1 FROM target_items ti JOIN item_deliveries d ON d.item_id = ti.id
+		                 WHERE ti.target_id = pt.id AND d.status = 'failed' AND d.gave_up_at IS NULL)`)
 	if err != nil {
 		return nil, err
 	}

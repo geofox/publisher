@@ -28,6 +28,30 @@ var migrations = []migration{
 	{version: 6, name: "events", up: migrateEvents},
 	{version: 7, name: "media_objects", up: migrateMediaObjects},
 	{version: 8, name: "drafts_v1", up: migrateDraftsV1},
+	{version: 9, name: "draft_breaks", up: migrateDraftBreaks},
+	{version: 10, name: "item_send_marks", up: migrateItemSendMarks},
+}
+
+// migrateItemSendMarks (v10) gives target_items two marks the engine's
+// duplicate guard reads. doubt_reset_at is when the owner last said to send
+// the item again (a retry by hand, or "not published"): attempts before it
+// no longer count as maybe-posted. committing_at is set just before the
+// request that publishes the item, so a restart can tell an item that never
+// reached the network from one that may have. An item an older binary left
+// sending has no mark but may have been posted: it is marked, so recovery
+// leaves it "maybe posted" rather than sending it again.
+//
+// It also forgets the users' stored emails: before, the login kept an email
+// the provider hadn't verified, and a session is re-checked against the
+// email allowlist by the stored one. The next login stores it again, if
+// verified.
+func migrateItemSendMarks(ctx context.Context, tx execer) error {
+	_, err := tx.ExecContext(ctx, `
+ALTER TABLE target_items ADD COLUMN doubt_reset_at TIMESTAMP;
+ALTER TABLE target_items ADD COLUMN committing_at TIMESTAMP;
+UPDATE target_items SET committing_at = CURRENT_TIMESTAMP WHERE status = 'sending';
+UPDATE users SET email = NULL;`)
+	return err
 }
 
 // migrateDraftsV1 (v8) gives drafts the /v1 shape: body_json holds the

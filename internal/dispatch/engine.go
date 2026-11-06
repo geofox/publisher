@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"runtime/debug"
 	"sync"
@@ -30,6 +31,21 @@ type RetryPolicy struct {
 	Enabled     bool // false: failed items wait for a retry by hand
 	MaxAttempts int  // attempts per item, the first included
 	Base, Max   time.Duration
+}
+
+// span is how long the policy keeps retrying one item at most (twice the
+// sum of its waits, at least a day): a failure older than that was not
+// left for automatic retries.
+func (p RetryPolicy) span() time.Duration {
+	n := p.MaxAttempts
+	if n <= 0 {
+		n = 10
+	}
+	var total time.Duration
+	for i := 1; i < n; i++ {
+		total += backoff(i, p.Base, p.Max)
+	}
+	return max(2*total, 24*time.Hour)
 }
 
 const (
@@ -263,7 +279,21 @@ func (d *Dispatcher) scheduleUnscheduled(ctx context.Context, now time.Time) {
 		slog.ErrorContext(ctx, "engine: unscheduled failures query failed", "err", err)
 		return
 	}
+	stale := d.Policy.span()
 	for _, u := range us {
+		// A failure older than the policy's whole retry span was recorded
+		// while auto-retry was off, and the owner has had it in front of
+		// them since: sending it now, possibly weeks later, would surprise
+		// them. It stays failed, for a retry by hand.
+		if !u.LastAttempt.IsZero() && now.Sub(u.LastAttempt) > stale {
+			if _, err := d.Store.MarkTargetGaveUp(u.TargetID, now); err != nil {
+				slog.ErrorContext(ctx, "engine: mark gave-up failed", "post_id", u.PostID, "err", err)
+			} else {
+				slog.InfoContext(ctx, "engine: old failure left for a retry by hand", "post_id", u.PostID,
+					"platform", u.Platform, "last_attempt", u.LastAttempt)
+			}
+			continue
+		}
 		dec := d.decide(ctx, u.Claim, destination.ErrorClass(u.ErrorClass), 0, u.Attempts, now)
 		if dec.giveUp != "" {
 			if set, err := d.Store.MarkTargetGaveUp(u.TargetID, now); err != nil {
@@ -310,10 +340,27 @@ func (d *Dispatcher) recoverSending(ctx context.Context) {
 		if !si.SentAt.IsZero() {
 			at = si.SentAt
 		}
+		caps, _ := d.Caps(ctx, si.Platform)
+		if caps.CommitMarks && !si.Committing {
+			// The driver marks the item right before its publishing request,
+			// and there is no mark: it stopped while preparing (media,
+			// containers, uploads). Nothing was posted, so send it again.
+			// NotSent: no attempt is counted (nor read as maybe-posted).
+			res := store.ItemResult{Claim: si.Claim, Status: store.ItemFailed, At: at, NextAttemptAt: &now, NotSent: true,
+				ErrorClass: string(destination.ClassTransient),
+				Error:      "the publisher stopped before this was sent; sending it again"}
+			if _, err := d.Store.RecordItemResult(ctx, res); err != nil {
+				slog.ErrorContext(ctx, "engine: recover item failed", "post_id", si.PostID, "item_id", si.ItemID, "err", err)
+				continue
+			}
+			pctx := logging.With(ctx, "post_id", si.PostID)
+			logItemResult(pctx, &si.Claim, res)
+			slog.InfoContext(pctx, "engine: re-queued an item stopped before sending", "platform", si.Platform, "ordinal", si.Ordinal)
+			continue
+		}
 		res := store.ItemResult{Claim: si.Claim, Status: store.ItemUnknown, At: at,
 			ErrorClass: string(destination.ClassUnknownOutcome),
 			Error:      "the publisher stopped while this was being sent; it may have been posted"}
-		caps, _ := d.Caps(ctx, si.Platform)
 		mode := d.idempotency(ctx, si.Claim, caps)
 		retry := mode == destination.IdempotentKey || mode == destination.IdempotentNatural
 		if retry && mode == destination.IdempotentKey && caps.IdempotencyKeyTTLSecs > 0 && !si.SentAt.IsZero() &&
@@ -467,7 +514,7 @@ func (d *Dispatcher) runClaim(ctx context.Context, c *store.Claim, mm *memMedia,
 		dec = d.decide(ctx, *c, destination.ErrorClass(r.ErrorClass), r.RetryAfter, c.Attempts+1, now)
 		res.NextAttemptAt, res.GiveUp = dec.next, dec.giveUp != ""
 	}
-	out, err := d.Store.RecordItemResult(ctx, res)
+	out, err := d.recordResult(ctx, res)
 	if err != nil {
 		slog.ErrorContext(ctx, "engine: record result failed", "platform", c.Platform, "ordinal", c.Ordinal, "err", err)
 		return res.Status
@@ -479,6 +526,25 @@ func (d *Dispatcher) runClaim(ctx context.Context, c *store.Claim, mm *memMedia,
 	}
 	d.settled(ctx, c, out, dec.giveUp)
 	return res.Status
+}
+
+// recordResult records a send's result, retrying a few times on a database
+// error: once something was published, losing its result leaves the item
+// sending until a restart, which then can only call it "may have been
+// posted". A lost claim is final.
+func (d *Dispatcher) recordResult(ctx context.Context, res store.ItemResult) (store.Outcome, error) {
+	ctx = context.WithoutCancel(ctx)
+	var out store.Outcome
+	var err error
+	for i, wait := range []time.Duration{0, 250 * time.Millisecond, time.Second, 3 * time.Second} {
+		if i > 0 {
+			time.Sleep(wait)
+		}
+		if out, err = d.Store.RecordItemResult(ctx, res); err == nil || errors.Is(err, store.ErrClaimLost) {
+			return out, err
+		}
+	}
+	return out, err
 }
 
 // settled follows up a recorded result: the post's end-of-run alert and
@@ -581,6 +647,19 @@ func itemStatus(s string) string {
 // target's options, threaded under the items before it (or, for the first
 // item of an interaction's source target, as the reply, quote or repost).
 func (d *Dispatcher) publishClaimed(ctx context.Context, post *store.Post, tg store.Target, it store.Item, mm *memMedia) TargetResult {
+	// The driver marks the item just before its publishing request, so a
+	// restart can tell it never reached the network (recoverSending).
+	var marked bool
+	ctx = destination.WithCommitHook(ctx, func() error {
+		if marked {
+			return nil
+		}
+		if err := d.Store.MarkCommitting(context.WithoutCancel(ctx), it.ID, d.now()); err != nil {
+			return fmt.Errorf("record send start: %w", err)
+		}
+		marked = true
+		return nil
+	})
 	if !d.SendsAs(tg.Platform, tg.AccountID) {
 		e := errOtherAccount(tg.Platform)
 		return TargetResult{Platform: tg.Platform, Status: "failed", Error: e.Error(), ErrorClass: string(e.Class)}
@@ -763,6 +842,17 @@ func (d *Dispatcher) decide(ctx context.Context, c store.Claim, cls destination.
 		wait = min(retryAfter, maxRetryAfter)
 	}
 	next := now.Add(wait)
+	// A keyed destination forgets its key after a window measured from the
+	// first uncertain attempt; a retry after that is released unsent. Pull
+	// the retry in to the end of the window rather than lose it.
+	if caps.Idempotent == destination.IdempotentKey && caps.IdempotencyKeyTTLSecs > 0 {
+		if first, err := d.Store.FirstUncertainAttempt(ctx, c.ItemID); err == nil && first != nil {
+			last := first.Add(time.Duration(caps.IdempotencyKeyTTLSecs)*time.Second - keyMargin - time.Minute)
+			if next.After(last) && last.After(now) {
+				next = last
+			}
+		}
+	}
 	return decision{next: &next}
 }
 

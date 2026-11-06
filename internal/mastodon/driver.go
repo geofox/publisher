@@ -30,11 +30,12 @@ func (Driver) Manifest() destination.Manifest {
 		Name:     "Mastodon",
 		Kinds:    []destination.Kind{destination.KindNote},
 		Defaults: destination.Capabilities{
-			Text: destination.TextCaps{MaxLength: 500, Counting: destination.Counting{Unit: destination.UnitGraphemes}},
-			// Mastodon counts every URL as 23 characters and a remote mention
-			// as its local part. The splitter and the composer's counter
-			// don't apply that rule yet, so it is not declared until they do
-			// (the counts stay conservative: literal URLs are longer).
+			// Mastodon counts grapheme clusters, every URL as 23 characters
+			// (the instance may announce another cost), a remote mention as
+			// its local part, and the content warning toward the limit
+			// (app/validators/status_length_validator.rb).
+			Text: destination.TextCaps{MaxLength: 500, Counting: destination.Counting{Unit: destination.UnitGraphemes,
+				URLLength: 23, MentionLocalPartOnly: true, ContentWarningCounts: true}},
 			Threading: destination.ThreadingCaps{Supported: true},
 			Media: destination.MediaCaps{
 				Transport: destination.TransportBytes,
@@ -51,6 +52,7 @@ func (Driver) Manifest() destination.Manifest {
 			Visibility:     []string{"public", "unlisted", "private", "direct"},
 			Interactions:   destination.InteractionCaps{Reply: true, Quote: true, Repost: true}, // a quote carries text and images only
 			Idempotent:     destination.IdempotentKey,
+			CommitMarks:    true,
 			// Mastodon keeps an Idempotency-Key for an hour.
 			IdempotencyKeyTTLSecs: 3600,
 		},
@@ -151,6 +153,9 @@ func (a *Account) cachedOrDefaults() destination.Capabilities {
 func applyLimits(c destination.Capabilities, l InstanceLimits) destination.Capabilities {
 	if l.MaxCharacters > 0 {
 		c.Text.MaxLength = l.MaxCharacters
+	}
+	if l.CharactersReservedPerURL > 0 {
+		c.Text.Counting.URLLength = l.CharactersReservedPerURL
 	}
 	if l.MaxMediaAttachments > 0 {
 		c.Media.Images.MaxCount = l.MaxMediaAttachments

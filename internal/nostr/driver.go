@@ -178,7 +178,14 @@ func noteInput(req destination.PublishRequest) PublishInput {
 		// RelayHint is left empty: NIP-10 hints are optional.
 		in.ReplyTo = &NostrReply{RootID: req.InReplyTo.Root.ID, ParentID: req.InReplyTo.Parent.ID}
 	case req.ReplyTo != nil:
-		in.ReplyTo = &NostrReply{RootID: req.ReplyTo.EventID, ParentID: req.ReplyTo.EventID, AuthorPubkey: req.ReplyTo.Author}
+		// Replying into someone's thread: the root is the thread's root when
+		// the event is itself a reply, the event otherwise (NIP-10).
+		root := req.ReplyTo.ThreadRootID
+		if root == "" {
+			root = req.ReplyTo.EventID
+		}
+		in.ReplyTo = &NostrReply{RootID: root, ParentID: req.ReplyTo.EventID, AuthorPubkey: req.ReplyTo.Author,
+			Mentions: req.ReplyTo.Mentions}
 	}
 	return in
 }

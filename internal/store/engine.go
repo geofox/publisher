@@ -69,7 +69,7 @@ func (s *Store) ClaimItem(ctx context.Context, now time.Time, f ClaimFilter) (*C
 	// One statement, so the write lock is taken before the candidate is
 	// chosen and two workers can't claim the same item.
 	var c Claim
-	err = tx.QueryRowContext(ctx, `UPDATE target_items SET status = 'sending', next_attempt_at = ?
+	err = tx.QueryRowContext(ctx, `UPDATE target_items SET status = 'sending', next_attempt_at = ?, committing_at = NULL
 		WHERE id = (
 		  SELECT ti.id FROM target_items ti
 		    JOIN post_targets pt ON pt.id = ti.target_id
@@ -388,10 +388,12 @@ func (s *Store) MarkDue(ctx context.Context, postID string, targetIDs []int64, n
 	for _, id := range targetIDs {
 		// Canceled items go back to planned: a retry by hand sends what a
 		// cancel stopped.
+		// A retry by hand is the owner's word to send: earlier attempts no
+		// longer count as maybe-posted for the duplicate guard.
 		res, err := tx.ExecContext(ctx, `UPDATE target_items
-			SET next_attempt_at = ?, status = CASE WHEN status = 'canceled' THEN 'planned' ELSE status END
+			SET next_attempt_at = ?, doubt_reset_at = ?, status = CASE WHEN status = 'canceled' THEN 'planned' ELSE status END
 			WHERE target_id = ? AND status IN ('planned', 'failed', 'unknown', 'canceled')
-			  AND target_id IN (SELECT id FROM post_targets WHERE post_id = ?)`, now, id, postID)
+			  AND target_id IN (SELECT id FROM post_targets WHERE post_id = ?)`, now, now, id, postID)
 		if err != nil {
 			return 0, err
 		}
@@ -424,13 +426,23 @@ func (s *Store) MarkDue(ctx context.Context, postID string, targetIDs []int64, n
 type SendingItem struct {
 	Claim
 	SentAt time.Time
+	// Committing: the publishing request was started (MarkCommitting).
+	Committing bool
+}
+
+// MarkCommitting records that the item's publishing request is about to be
+// sent. Only an item being sent is marked.
+func (s *Store) MarkCommitting(ctx context.Context, itemID int64, at time.Time) error {
+	_, err := s.sql.ExecContext(ctx, `UPDATE target_items SET committing_at = ? WHERE id = ? AND status = 'sending'`,
+		at.UTC(), itemID)
+	return err
 }
 
 // SendingItems lists the items left sending. Only startup recovery may call
 // it, before any worker runs.
 func (s *Store) SendingItems(ctx context.Context) ([]SendingItem, error) {
 	rows, err := s.sql.QueryContext(ctx, `SELECT ti.id, ti.target_id, ti.ordinal, ti.attempt_count, ti.next_attempt_at,
-		  pt.post_id, pt.platform
+		  pt.post_id, pt.platform, ti.committing_at IS NOT NULL
 		FROM target_items ti JOIN post_targets pt ON pt.id = ti.target_id
 		WHERE ti.status = 'sending' ORDER BY ti.id`)
 	if err != nil {
@@ -441,7 +453,7 @@ func (s *Store) SendingItems(ctx context.Context) ([]SendingItem, error) {
 	for rows.Next() {
 		var si SendingItem
 		var sent sql.NullTime
-		if err := rows.Scan(&si.ItemID, &si.TargetID, &si.Ordinal, &si.Attempts, &sent, &si.PostID, &si.Platform); err != nil {
+		if err := rows.Scan(&si.ItemID, &si.TargetID, &si.Ordinal, &si.Attempts, &sent, &si.PostID, &si.Platform, &si.Committing); err != nil {
 			return nil, err
 		}
 		if sent.Valid {
@@ -624,15 +636,19 @@ func (s *Store) ScheduleItemRetry(ctx context.Context, itemID int64, at time.Tim
 // FirstUncertainAttempt is when the item was first attempted with a
 // failure that may still have published, or nil: an unknown outcome, a
 // transient failure (a 5xx can come after the server committed), or an
-// unclassified failure from before error classes were recorded.
+// unclassified failure from before error classes were recorded. Attempts
+// before the owner last said to send the item again (doubt_reset_at) don't
+// count.
 func (s *Store) FirstUncertainAttempt(ctx context.Context, itemID int64) (*time.Time, error) {
 	var at sql.NullTime
 	// MIN over a TIMESTAMP column returns the stored text, which the driver
 	// can't scan as a time; ORDER BY + LIMIT keeps the column's type.
-	err := s.sql.QueryRowContext(ctx, `SELECT attempted_at FROM target_attempts
-		WHERE item_id = ? AND (error_class IN ('unknown_outcome', 'transient')
-		  OR (error_class IS NULL AND status NOT IN ('success', 'published')))
-		ORDER BY attempted_at LIMIT 1`, itemID).Scan(&at)
+	err := s.sql.QueryRowContext(ctx, `SELECT a.attempted_at FROM target_attempts a
+		JOIN target_items ti ON ti.id = a.item_id
+		WHERE a.item_id = ? AND (a.error_class IN ('unknown_outcome', 'transient')
+		  OR (a.error_class IS NULL AND a.status NOT IN ('success', 'published')))
+		  AND (ti.doubt_reset_at IS NULL OR a.attempted_at > ti.doubt_reset_at)
+		ORDER BY a.attempted_at LIMIT 1`, itemID).Scan(&at)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && !at.Valid) {
 		return nil, nil
 	}

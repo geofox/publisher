@@ -33,7 +33,10 @@ func (s *stubAccount) Capabilities(context.Context) destination.Capabilities {
 	return s.manifest.Defaults
 }
 
-func (s *stubAccount) Publish(_ context.Context, req destination.PublishRequest) (destination.PublishResult, error) {
+func (s *stubAccount) Publish(ctx context.Context, req destination.PublishRequest) (destination.PublishResult, error) {
+	if err := destination.BeforeCommit(ctx); err != nil {
+		return destination.PublishResult{}, err
+	}
 	s.mu.Lock()
 	n := len(s.reqs)
 	s.reqs = append(s.reqs, req)
@@ -63,8 +66,9 @@ func stubManifest(mode destination.IdempotencyMode) destination.Manifest {
 			{Key: "pow", Type: destination.OptionInt, Min: &zero},
 		},
 		Defaults: destination.Capabilities{
-			Text:      destination.TextCaps{MaxLength: 20, Counting: destination.Counting{Unit: destination.UnitGraphemes}},
-			Threading: destination.ThreadingCaps{Supported: true},
+			Text:        destination.TextCaps{MaxLength: 20, Counting: destination.Counting{Unit: destination.UnitGraphemes}},
+			Threading:   destination.ThreadingCaps{Supported: true},
+			CommitMarks: true,
 			Media: destination.MediaCaps{Transport: destination.TransportBytes,
 				Images: destination.Limit{Supported: true, MaxCount: 2}},
 			Languages:  1,
@@ -136,7 +140,7 @@ func TestIdempotencyKeys(t *testing.T) {
 			return published(n), nil
 		}}
 	d := stubDispatcher(t, acct)
-	rec := d.Post(context.Background(), PostSpec{MasterText: "aaaa bbbb\n---\ncccc dddd", Platforms: []string{"stub"}})
+	rec := d.Post(context.Background(), marked(PostSpec{MasterText: "aaaa bbbb\n---\ncccc dddd", Platforms: []string{"stub"}}))
 	if rec.Targets[0].ErrorClass != string(destination.ClassUnknownOutcome) {
 		t.Fatalf("error class = %q", rec.Targets[0].ErrorClass)
 	}

@@ -1,6 +1,10 @@
 package destination
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"testing"
+)
 
 func TestCount(t *testing.T) {
 	mastodon := Counting{URLLength: 23, MentionLocalPartOnly: true}
@@ -36,5 +40,39 @@ func TestFits(t *testing.T) {
 	}
 	if !c.Fits("abc", 3) || c.Fits("abcd", 3) {
 		t.Error("boundary wrong")
+	}
+}
+
+// TestCountSharedCases runs the cases the web app's counter is checked
+// against too, so the two can't drift apart.
+func TestCountSharedCases(t *testing.T) {
+	raw, err := os.ReadFile("testdata/counting.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		Cases []struct {
+			Name     string   `json:"name"`
+			Counting Counting `json:"counting"`
+			Text     string   `json:"text"`
+			Want     int      `json:"want"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Cases) < 10 {
+		t.Fatalf("only %d cases", len(f.Cases))
+	}
+	for _, tc := range f.Cases {
+		if got := tc.Counting.Count(tc.Text); got != tc.Want {
+			t.Errorf("%s: Count(%q) = %d, want %d", tc.Name, tc.Text, got, tc.Want)
+		}
+	}
+}
+
+func TestCountURLs(t *testing.T) {
+	if n := CountURLs("a https://x.io b https://x.io c http://y.io/z"); n != 2 {
+		t.Errorf("CountURLs = %d, want 2 distinct", n)
 	}
 }

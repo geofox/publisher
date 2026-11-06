@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#eef0f5">
   <title>publisher</title>
@@ -74,7 +74,8 @@
                     </div>
                   </div>
                 </div>
-                <textarea id="master" class="master" placeholder="write once — mirror to every platform…"></textarea>
+                <!-- The thread editor (editor.js): the shared text as cards, a tab per platform. -->
+                <div id="editor" class="editor"></div>
                 <div class="compose-foot"><span id="mastermeta" class="metaline"></span></div>
               </div>
 
@@ -98,7 +99,7 @@
               </div>
               <input id="imgfile" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" hidden>
 
-              <div class="sec-head"><span class="lbl">schedule</span><span class="muted">Europe/Paris · empty = now</span></div>
+              <div class="sec-head"><span class="lbl">schedule</span><span class="muted" id="schedtz">your time zone · empty = now</span></div>
               <div id="schedrow" class="sched">
                 <input type="datetime-local" id="schedat" aria-label="schedule date and time">
                 <button id="schedclear" class="ghost sm" type="button" hidden>clear</button>

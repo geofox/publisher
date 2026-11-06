@@ -1584,8 +1584,11 @@ paths:
         Needs `drafts:write` and `posts:write` (it spends the DeepL quota).
         A new draft: the same post with its text in `target_lang` and
         `content.languages` set to it; per-account texts and languages are
-        left out, since they were for the original language. The original
-        stays. 503 when the server has no DeepL key.
+        left out, since they were for the original language. Each part of a
+        hand-broken thread is translated on its own: `content.breaks` and
+        `media[].at` move to the translated parts' starts, and per-account
+        `thread` settings are dropped. The original stays. 503 when the
+        server has no DeepL key.
       security:
         - bearer: ["drafts:write", "posts:write"]
         - session: []
@@ -2118,6 +2121,17 @@ components:
         text:
           type: string
           maxLength: 50000
+          description: Posted as written; a line of `---` is text, not a break (use `breaks`).
+        breaks:
+          type: ["array", "null"]
+          maxItems: 99
+          description: >-
+            Hand-made thread breaks: code point positions in `text`, strictly ascending, each
+            starting a new post (between characters, never inside a link). They apply to every
+            account that posts the shared text and has no `thread.breaks` of its own. Posts are
+            still split to each account's limit after them.
+          items:
+            type: integer
         media:
           type: array
           maxItems: 40
@@ -2133,14 +2147,17 @@ components:
               alt:
                 type: ["string", "null"]
                 description: Alt text for this post; null or absent uses the media object's.
-              part:
+              at:
                 type: ["integer", "null"]
                 minimum: 0
-                maximum: 99
                 description: >-
-                  The part of the text (0-based; parts are split by lines of `---`) this media
-                  goes with; default 0. A part past the last is the last, counted in each
-                  account's own text. Not for a reply or quote (their media go with the first part).
+                  A code point position in `text`: the media goes with the post that holds it, on
+                  every account that posts the shared text (default 0, the first post). A post that
+                  is full passes it to the next.
+              part:
+                type: ["integer", "null"]
+                deprecated: true
+                description: Removed (it counted `---` parts); refused with code `replaced`. Use `at`.
         content_warning:
           type: ["string", "null"]
           maxLength: 1000
@@ -2181,6 +2198,28 @@ components:
               maxItems: 10
               items:
                 type: string
+        thread:
+          type: object
+          additionalProperties: false
+          description: How this account's thread breaks, in the text it posts (its own `content.text`, or the shared text).
+          properties:
+            breaks:
+              type: ["array", "null"]
+              maxItems: 99
+              description: >-
+                This account's breaks, replacing the shared ones: [] posts the text unbroken (still
+                split to the account's limit). null or absent takes the shared breaks, or none when the
+                account has its own text.
+              items:
+                type: integer
+            media_at:
+              type: ["array", "null"]
+              description: >-
+                One position per media in `content.media`, in this account's text. Absent: the
+                shared `at` values, or the first post when the account has its own text.
+              items:
+                type: integer
+                minimum: 0
     PostPreview:
       type: object
       additionalProperties: false
@@ -2191,7 +2230,7 @@ components:
           items:
             type: object
             additionalProperties: false
-            required: [account, type, role, items, link_card, warnings, media_notes]
+            required: [account, type, role, text, limit, items, link_card, warnings, media_notes]
             properties:
               account:
                 type: string
@@ -2201,21 +2240,49 @@ components:
                 type: string
                 enum: [post, reply, quote, repost, link_quote]
                 description: What the account gets; `link_quote` is a quote's copy on another network.
+              text:
+                type: string
+                description: >-
+                  The text the items' ranges are in: the account's own or the shared text (with a
+                  Bluesky link card's URL taken off its end), or the copy a link-quote posts.
+              limit:
+                type: integer
+                description: The most one post may count on this account, after a content warning it counts in; 0 for no limit.
               items:
                 type: array
                 description: The thread parts, in order; one for a post that fits.
                 items:
                   type: object
                   additionalProperties: false
-                  required: [text, media]
+                  required: [text, media, range, break, length, problems]
                   properties:
                     text:
                       type: string
+                      description: What is posted, with its " k/n" counter.
                     media:
                       type: array
                       description: Indexes into `content.media`.
                       items:
                         type: integer
+                    range:
+                      type: array
+                      minItems: 2
+                      maxItems: 2
+                      description: The code points of `text` (the target's) the post carries, counter excluded. A media-only post's is empty, at the end.
+                      items:
+                        type: integer
+                    break:
+                      type: string
+                      enum: [none, manual, auto]
+                      description: What starts the post; `none` for the first.
+                    length:
+                      type: integer
+                      description: The post as the destination counts it.
+                    problems:
+                      type: array
+                      description: What the destination would refuse about this post (such as too many links); a post with any is refused.
+                      items:
+                        type: string
               link_card:
                 description: The card this account gets, on item `item`; null for none.
                 oneOf:
@@ -2739,6 +2806,13 @@ components:
           description: Indexes into the post's content.media.
           items:
             type: integer
+        range:
+          type: array
+          minItems: 2
+          maxItems: 2
+          description: The code points of the target's text this item posts (counter excluded); absent on items posted before 2.1.
+          items:
+            type: integer
         url:
           type: string
         remote_id:
@@ -2921,6 +2995,7 @@ components:
             - unauthenticated
             - insufficient_scope
             - cross_origin
+            - misdirected
             - invalid_json
             - unsupported_media_type
             - too_large
@@ -3118,6 +3193,9 @@ components:
           properties:
             max_length:
               type: integer
+            max_links:
+              type: integer
+              description: The most distinct URLs one post may hold (Threads 5); absent means no cap.
             counting:
               type: object
               additionalProperties: false
@@ -3131,6 +3209,13 @@ components:
                   description: The fixed cost of every URL, when the network has one.
                 mention_local_part_only:
                   type: boolean
+                  description: A remote mention (@user@host) counts as @user.
+                emoji_utf8_bytes:
+                  type: boolean
+                  description: An emoji counts as its UTF-8 length (Threads).
+                content_warning_counts:
+                  type: boolean
+                  description: The content warning counts toward the limit of every post it goes with (Mastodon).
         title:
           type: object
           additionalProperties: false
@@ -3220,6 +3305,9 @@ components:
           type: array
           items:
             type: string
+        max_aspect:
+          type: number
+          description: The widest long-edge to short-edge ratio an image may have (Threads 10).
         max_duration_secs:
           type: integer
         advisory_duration_secs:

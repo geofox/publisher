@@ -209,6 +209,11 @@ type SourceRef struct {
 	Author     string   `json:"author,omitempty"`
 	RelayHints []string `json:"relay_hints,omitempty"`
 	EventKind  int      `json:"event_kind,omitempty"`
+	// ThreadRootID is the root of the thread the event itself replies into
+	// (empty when it is a root); Mentions are its p-tags. A reply needs both
+	// to stay in the conversation and notify its participants (NIP-10).
+	ThreadRootID string   `json:"thread_root_id,omitempty"`
+	Mentions     []string `json:"mentions,omitempty"`
 }
 
 // ItemStatus is the outcome of a publish.

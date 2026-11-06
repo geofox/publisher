@@ -21,8 +21,12 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("create db dir: %w", err)
 		}
 	}
+	// busy_timeout: SQLite's lock wait polls and isn't fair, so under a
+	// burst of writers (engine workers, fan-out, video jobs, requests) one
+	// can lose the lock for seconds while others get through. 15 s keeps a
+	// result write from failing after its post went out.
 	dsn := "file:" + path +
-		"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)" +
+		"?_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)" +
 		"&_pragma=temp_store(MEMORY)&_pragma=foreign_keys(ON)" +
 		// A transaction that reads and then writes must hold the write lock
 		// from the start: under WAL a deferred one that upgrades fails with

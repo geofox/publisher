@@ -24,11 +24,11 @@ func craftBigPNGHeader(w, h uint32) []byte {
 	ihdr[8] = 8
 	ihdr[9] = 2
 	writeChunk(&b, "IHDR", ihdr)
-	// tEXt padding to exceed transcode.Bluesky.MaxBytes (read after IHDR, so it
-	// doesn't affect the dimensions DecodeConfig returns).
+	// Padding to exceed transcode.Bluesky.MaxBytes (read after IHDR, so it
+	// doesn't affect the dimensions DecodeConfig returns). A private chunk:
+	// text chunks are metadata, which fitting strips.
 	pad := make([]byte, transcode.Bluesky.MaxBytes+1024)
-	copy(pad, "Comment\x00")
-	writeChunk(&b, "tEXt", pad)
+	writeChunk(&b, "prVt", pad)
 	writeChunk(&b, "IEND", nil)
 	return b.Bytes()
 }

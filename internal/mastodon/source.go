@@ -100,8 +100,16 @@ func (c *Client) ResolveStatus(ctx context.Context, postURL string) (*SourceStat
 	return out, nil
 }
 
+// reBreak and reParagraph match the HTML Mastodon uses for line and
+// paragraph breaks in a status's content.
+var (
+	reBreak     = regexp.MustCompile(`(?i)<br\s*/?>`)
+	reParagraph = regexp.MustCompile(`(?i)</p>\s*<p[^>]*>`)
+)
+
 func deHTML(s string) string {
-	s = strings.ReplaceAll(s, "</p><p>", "\n\n")
+	s = reParagraph.ReplaceAllString(s, "\n\n")
+	s = reBreak.ReplaceAllString(s, "\n")
 	s = reTag.ReplaceAllString(s, "")
 	return strings.TrimSpace(html.UnescapeString(s))
 }
@@ -135,6 +143,9 @@ func (c *Client) Reblog(ctx context.Context, id string) (Result, error) {
 		URL string `json:"url"`
 	}
 	if err := ctx.Err(); err != nil { // nothing sent
+		return Result{}, fmt.Errorf("reblog: %w", err)
+	}
+	if err := destination.BeforeCommit(ctx); err != nil { // nothing sent
 		return Result{}, fmt.Errorf("reblog: %w", err)
 	}
 	if err := c.postForm(ctx, "/api/v1/statuses/"+id+"/reblog", nil, &st); err != nil {
@@ -175,6 +186,9 @@ func (c *Client) QuotePost(ctx context.Context, p Post, quotedID string) (Result
 		URL string `json:"url"`
 	}
 	if err := ctx.Err(); err != nil { // nothing sent
+		return Result{}, fmt.Errorf("quote: %w", err)
+	}
+	if err := destination.BeforeCommit(ctx); err != nil { // nothing sent
 		return Result{}, fmt.Errorf("quote: %w", err)
 	}
 	if err := c.postForm(WithIdempotencyKey(ctx, p.IdempotencyKey), "/api/v1/statuses", form, &st); err != nil {

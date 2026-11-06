@@ -37,13 +37,13 @@ func mkKind(sk gonostr.SecretKey, kind int, createdAt int64, dval string) gonost
 
 func TestDiffReplaceableAware(t *testing.T) {
 	sk := gonostr.Generate()
-	homeRelayList := mkKind(sk, 10002, 100, "")  // home's current relay list
-	staleRelayList := mkKind(sk, 10002, 50, "")  // target's older copy (the nostr.land phantom)
-	homeProfileOld := mkKind(sk, 0, 100, "")     // home's older profile
-	targetProfileNew := mkKind(sk, 0, 200, "")   // target has a NEWER profile
-	homeAppOld := mkKind(sk, 30078, 100, "cfg")  // addressable, d=cfg, home older
+	homeRelayList := mkKind(sk, 10002, 100, "")   // home's current relay list
+	staleRelayList := mkKind(sk, 10002, 50, "")   // target's older copy (the nostr.land phantom)
+	homeProfileOld := mkKind(sk, 0, 100, "")      // home's older profile
+	targetProfileNew := mkKind(sk, 0, 200, "")    // target has a NEWER profile
+	homeAppOld := mkKind(sk, 30078, 100, "cfg")   // addressable, d=cfg, home older
 	targetAppNew := mkKind(sk, 30078, 200, "cfg") // addressable, d=cfg, target newer
-	note := mkKind(sk, 1, 150, "")               // regular note only on target
+	note := mkKind(sk, 1, 150, "")                // regular note only on target
 
 	home := evmap(homeRelayList, homeProfileOld, homeAppOld)
 	target := evmap(staleRelayList, targetProfileNew, targetAppNew, note)

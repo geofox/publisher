@@ -108,6 +108,27 @@ type commitErr struct{ err error }
 func (e *commitErr) Error() string { return e.err.Error() }
 func (e *commitErr) Unwrap() error { return e.err }
 
+type commitHookKey struct{}
+
+// WithCommitHook returns ctx carrying fn, which BeforeCommit calls.
+func WithCommitHook(ctx context.Context, fn func() error) context.Context {
+	return context.WithValue(ctx, commitHookKey{}, fn)
+}
+
+// BeforeCommit tells the core that the request that publishes the item is
+// about to be sent. Drivers whose Capabilities.CommitMarks is set call it
+// right before that request (createRecord, threads_publish, POST /statuses,
+// the relay publish); what they did before it (uploads, transcodes,
+// containers) published nothing. Calling it more than once is harmless.
+// An error means the mark couldn't be recorded: the driver must not send,
+// and returns the error (nothing was published).
+func BeforeCommit(ctx context.Context) error {
+	if fn, ok := ctx.Value(commitHookKey{}).(func() error); ok && fn != nil {
+		return fn()
+	}
+	return nil
+}
+
 // Committing marks err as coming from the request that publishes the item
 // (createRecord, threads_publish, POST /statuses), so Classify may read a
 // timeout or a dropped connection as an unknown outcome. A nil err gives nil.
@@ -144,10 +165,14 @@ func Classify(err error) *Error {
 	return &Error{Class: classifyTransport(err, committing), Err: err}
 }
 
-// classForCommit refines a status class for the publishing request: a 504
-// means a gateway gave up waiting while the server may still have applied it.
+// classForCommit refines a status class for the publishing request. A 504
+// or 502 comes from a gateway that gave up on, or lost, the server while it
+// may still have applied the write; retrying blindly double-posts on
+// platforms without idempotency keys, so they are unknown outcomes. A 500 is
+// the server itself failing the request (the write is transactional) and a
+// 503 refuses work up front: both stay transient.
 func classForCommit(c ErrorClass, code int, committing bool) ErrorClass {
-	if committing && code == http.StatusGatewayTimeout {
+	if committing && (code == http.StatusGatewayTimeout || code == http.StatusBadGateway) {
 		return ClassUnknownOutcome
 	}
 	return c
@@ -213,8 +238,9 @@ func classifyTransport(err error, committing bool) ErrorClass {
 	return ClassTransient
 }
 
-// retryAfter parses a Retry-After header (seconds or HTTP date) or the
-// RateLimit-Reset epoch-seconds header the atproto PDS sends.
+// retryAfter parses a Retry-After header (seconds or HTTP date), the
+// RateLimit-Reset epoch-seconds header the atproto PDS sends, or Mastodon's
+// X-RateLimit-Reset (an ISO 8601 time).
 func retryAfter(h http.Header) time.Duration {
 	if h == nil {
 		return 0
@@ -230,11 +256,19 @@ func retryAfter(h http.Header) time.Duration {
 			}
 		}
 	}
-	if v := h.Get("Ratelimit-Reset"); v != "" {
-		if s, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
-			if d := time.Until(time.Unix(s, 0)); d > 0 {
-				return d
-			}
+	for _, k := range []string{"Ratelimit-Reset", "X-Ratelimit-Reset"} {
+		v := strings.TrimSpace(h.Get(k))
+		if v == "" {
+			continue
+		}
+		var at time.Time
+		if s, err := strconv.ParseInt(v, 10, 64); err == nil {
+			at = time.Unix(s, 0)
+		} else if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			at = t
+		}
+		if d := time.Until(at); !at.IsZero() && d > 0 {
+			return min(d, 366*24*time.Hour)
 		}
 	}
 	return 0

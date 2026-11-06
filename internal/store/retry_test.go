@@ -37,7 +37,8 @@ func TestPostsNeedingRetryAndMarkGaveUp(t *testing.T) {
 	mk := func(id, status string) {
 		p := &Post{ID: id, CreatedAt: time.Now().UTC(), MasterText: "x",
 			Platforms: []string{"bluesky"}, Source: "test", Status: status,
-			Targets: []Target{{Platform: "bluesky", Status: status}}}
+			Targets: []Target{{Platform: "nostr", Status: status,
+				Relays: []RelayState{{URL: "wss://r", Status: "failed", AttemptedAt: time.Now().UTC()}}}}}
 		if err := st.SavePost(p); err != nil {
 			t.Fatalf("SavePost %s: %v", id, err)
 		}

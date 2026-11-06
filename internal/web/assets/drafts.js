@@ -1,8 +1,9 @@
 "use strict";
 import { state, v1PostBody, clearImages } from "./state.js";
+import { cpIndex } from "./textpos.js";
 import { loadDraft, markDirty, mediaReady, newKey, resetComposer, rerenderComposer } from "./compose.js";
 import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
-import { flash, el, v1, problemError, confirmModal, ORDER } from "./common.js";
+import { flash, el, v1, problemError, confirmModal, ORDER, pressable } from "./common.js";
 import { accountByID, loadAccounts } from "./accounts.js";
 import { fromV1 } from "./interact.js";
 
@@ -91,6 +92,7 @@ function renderList() {
         el("span", { class: "age", text: relativeTime(d.updated_at) })));
     row.dataset.id = d.id;
     row.addEventListener("click", () => openDraft(d.id));
+    pressable(row);
     list.append(row);
   }
   refreshActiveControls();
@@ -103,7 +105,8 @@ function renderTagFilters() {
   for (const d of drafts || []) for (const t of d.tags || []) all.add(t);
   box.replaceChildren();
   for (const t of all) {
-    const chip = el("span", { class: "tag-chip" + (activeFilters.tags.has(t) ? " active" : ""), text: "#" + t });
+    const chip = pressable(el("span", { class: "tag-chip" + (activeFilters.tags.has(t) ? " active" : ""), text: "#" + t,
+      "aria-pressed": activeFilters.tags.has(t) ? "true" : "false" }));
     chip.addEventListener("click", () => {
       if (activeFilters.tags.has(t)) activeFilters.tags.delete(t);
       else activeFilters.tags.add(t);
@@ -115,10 +118,20 @@ function renderTagFilters() {
 
 // ovFromTarget reads a target back into the composer's per-platform card:
 // the reverse of state.js v1Target.
-function ovFromTarget(p, t) {
+// u16 turns the API's code point positions in text into the composer's
+// UTF-16 offsets.
+function u16(text, positions) {
+  const ix = cpIndex(text);
+  return positions.filter(Number.isInteger).map(cp => ix[Math.max(0, Math.min(cp, ix.length - 1))]);
+}
+
+function ovFromTarget(p, t, shared) {
   const o = {}, opts = t.options || {}, c = t.content || {};
   const langs = Array.isArray(c.languages) ? c.languages : [];
   o.text = typeof c.text === "string" ? c.text : null;
+  const th = t.thread || {};
+  const text = o.text != null ? o.text : shared;
+  if (Array.isArray(th.breaks)) o.breaks = u16(text, th.breaks);
   if (p === "bluesky") {
     o.reply = opts.reply_gate || "";
     o.disable_quotes = !!opts.disable_quotes;
@@ -146,7 +159,11 @@ function ovFromTarget(p, t) {
 async function sourceInteraction(post, platforms) {
   const action = post.quote ? "quote" : post.reply_to ? "reply" : "";
   if (!action) return { interaction: null };
-  const url = (post.quote || post.reply_to).url;
+  return resolveInteraction(action, (post.quote || post.reply_to).url, platforms);
+}
+
+// resolveInteraction reads the post at url again for a reply or quote.
+async function resolveInteraction(action, url, platforms) {
   try {
     const src = fromV1(await v1("/v1/resolve", { method: "POST", body: { url } }));
     return {
@@ -158,7 +175,7 @@ async function sourceInteraction(post, platforms) {
       },
     };
   } catch (e) {
-    return { interaction: null, lost: "The post this draft " + (action === "quote" ? "quotes" : "replies to") +
+    return { interaction: null, error: e.message, lost: "The post this draft " + (action === "quote" ? "quotes" : "replies to") +
       " couldn't be loaded (" + e.message + "): it opens as a new post" };
   }
 }
@@ -167,20 +184,22 @@ async function sourceInteraction(post, platforms) {
 async function specFromDraft(d, etag) {
   const accountsRead = await loadAccounts().then(() => true, () => false);
   const post = d.post || {}, c = post.content || {};
-  const platforms = [], overrides = {};
+  const platforms = [], overrides = {}, ownMedia = {};
   let skipped = 0;
   for (const t of post.targets || []) {
     const a = accountByID(t.account);
     if (!a || !ORDER.includes(a.type) || platforms.includes(a.type)) { skipped++; continue; }
     platforms.push(a.type);
-    overrides[a.type] = ovFromTarget(a.type, t);
+    overrides[a.type] = ovFromTarget(a.type, t, typeof c.text === "string" ? c.text : "");
+    if (Array.isArray((t.thread || {}).media_at)) ownMedia[a.type] = t.thread.media_at;
   }
   const objects = new Map((d.media || []).map(m => [m.id, m]));
   const media = [], anchors = {};
   let missing = 0;
-  for (const cm of c.media || []) {
+  const sharedText = typeof c.text === "string" ? c.text : "";
+  (c.media || []).forEach((cm, k) => {
     const m = objects.get(cm.id);
-    if (!m) { missing++; continue; }
+    if (!m) { missing++; return; }
     const id = newKey();
     media.push({
       client_id: id, media_id: m.id, blossom_url: m.url, mime: m.mime, dim: m.dim || "",
@@ -188,8 +207,14 @@ async function specFromDraft(d, etag) {
       alt: typeof cm.alt === "string" ? cm.alt : (m.alt || ""),
       duration_secs: m.duration_secs || 0, poster_url: m.poster_url || "",
     });
-    if (cm.part > 0) anchors[id] = cm.part;
-  }
+    if (Number.isInteger(cm.at) && cm.at > 0) anchors[id] = u16(sharedText, [cm.at])[0];
+    for (const [p, at] of Object.entries(ownMedia)) {
+      const ov = overrides[p];
+      if (ov.text == null || !Number.isInteger(at[k])) continue;
+      ov.mediaAt = ov.mediaAt || {};
+      ov.mediaAt[id] = u16(ov.text, [at[k]])[0];
+    }
+  });
   const { interaction, lost } = await sourceInteraction(post, platforms);
   const notes = [];
   if (!accountsRead && (post.targets || []).length) {
@@ -199,7 +224,9 @@ async function specFromDraft(d, etag) {
   if (lost) notes.push(lost);
   return {
     id: d.id, etag,
-    master_text: typeof c.text === "string" ? c.text : "",
+    v: 2,
+    master_text: sharedText,
+    breaks: Array.isArray(c.breaks) ? u16(sharedText, c.breaks) : [],
     platforms: interaction ? [interaction.platform, ...platforms.filter(p => p !== interaction.platform)] : platforms,
     overrides, media, anchors, interaction,
     number: post.threading ? !!post.threading.numbering : true,
@@ -308,7 +335,7 @@ async function doSave({ overwrite = false } = {}) {
     } else {
       setStatus("dirty", "unsaved changes"); // edited while saving
     }
-    snapshot(); // clears recovery (since activeDraftId is now set)
+    snapshot(); // clears recovery, or keeps what was edited while saving
     loadDraftList();
     refreshActiveControls();
   } catch (e) {
@@ -342,6 +369,7 @@ export function newDraft() {
 // schedule, numbering, targets and tags.
 function clearComposer() {
   openSeq++; // a draft still opening must not land afterwards
+  clearRecovery(); // what was thrown away (or deleted) must not come back
   state.activeDraftId = null;
   state.draftETag = "";
   state.dirty = false;
@@ -366,11 +394,13 @@ function renderTagChips(tags) {
   if (!host) return;
   host.replaceChildren();
   for (const t of tags) {
-    const chip = el("span", { class: "tag-chip", text: "#" + t + " ✕" });
+    const chip = pressable(el("span", { class: "tag-chip", text: "#" + t + " ✕", "aria-label": "Remove tag " + t }));
     chip.dataset.tag = t;
     chip.addEventListener("click", () => {
+      const kbd = document.activeElement === chip;
       chip.remove();
       markDirty();
+      if (kbd) document.querySelector("#draft-tags-input input")?.focus(); // not lost to <body>
     });
     host.append(chip);
   }
@@ -402,18 +432,42 @@ function maybeShowRecoveryBanner() {
   banner.hidden = false;
   const r = document.getElementById("draft-recovery-restore");
   const d = document.getElementById("draft-recovery-discard");
-  if (r) r.addEventListener("click", () => {
+  if (r) r.addEventListener("click", async () => {
+    if (r.disabled) return;
+    r.disabled = true; // resolving a reply's post takes a moment: one restore
+    try { await restore(); } finally { r.disabled = false; }
+  });
+  const restore = async () => {
     const all = recovered.images || [];
     const refs = all.filter(i => i.blossom_url);
+    // A reply or quote in progress stays one: its post is read again. If
+    // it can't be, restoring would make it a standalone post: don't.
+    let interaction = null;
+    const it = recovered.interaction;
+    if (it && it.sourceInput && (it.action === "reply" || it.action === "quote")) {
+      const res = await resolveInteraction(it.action, it.sourceInput, it.prevPlatforms || []);
+      if (!res.interaction) {
+        flash("Not restored: the post this " + it.action + " answers couldn't be read (" + (res.error || "try again") + ")", 8000);
+        return;
+      }
+      interaction = res.interaction;
+    }
     // Reference attachments (uploaded images, ready videos) hydrate like a
     // loaded draft; fresh local-File images cannot survive localStorage.
-    loadDraft({ ...recovered, id: null, media: refs });
-    if (all.length > refs.length) {
-      flash((all.length - refs.length) + " attachment(s) couldn't be restored — re-attach them");
-    }
-    markDirty();
-    banner.hidden = true;
-  });
+    // Edits to an open draft go back into it (its etag finds it changed).
+    loadDraft({ ...recovered, interaction, id: recovered.draft_id || null, etag: recovered.etag || "", media: refs,
+      // Once it has loaded (after "Replace?" when Compose wasn't empty):
+      // the restored edits are unsaved.
+      onLoaded: () => {
+        renderTagChips(Array.isArray(recovered.tags) ? recovered.tags : []);
+        markDirty();
+        banner.hidden = true;
+        renderList(); refreshActiveControls();
+        if (all.length > refs.length) {
+          flash((all.length - refs.length) + " attachment(s) couldn't be restored — re-attach them");
+        }
+      } });
+  };
   if (d) d.addEventListener("click", () => {
     clearRecovery();
     banner.hidden = true;
@@ -421,6 +475,8 @@ function maybeShowRecoveryBanner() {
 }
 
 export function installDraftsSidebar() {
+  // Compose left the open draft (a reply started, a translation loaded).
+  document.addEventListener("draft-detached", () => { setStatus("", ""); renderList(); refreshActiveControls(); });
   const search = $("#draft-search");
   if (search) {
     let t = null;

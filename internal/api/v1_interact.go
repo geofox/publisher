@@ -18,6 +18,7 @@ import (
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
+	"github.com/geofox/publisher/internal/thread"
 )
 
 // Replies, quotes and reposts. A client names the source post by its URL
@@ -100,11 +101,6 @@ func (a *API) checkInteraction(req *v1CreatePostReq, plan *createPlan, add func(
 	}
 	if req.Schedule != nil {
 		add("/schedule", "not_supported", "replies, quotes and reposts are sent now; leave schedule out")
-	}
-	for j, cm := range req.Content.Media {
-		if cm.Part != nil && *cm.Part != 0 {
-			add("/content/media/"+strconv.Itoa(j)+"/part", "not_supported", "a reply's or quote's media go with its first part")
-		}
 	}
 	if action != "repost" {
 		return
@@ -197,11 +193,13 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 	ix := &dispatch.InteractSpec{
 		Action: action, SourcePlatform: src.Platform, SourceURL: webURL, SourceAuthor: author,
 		Ref: dispatch.InteractRef{URI: r.URI, CID: r.CID, ReplyRootURI: r.ReplyRootURI, ReplyRootCID: r.ReplyRootCID,
-			LocalID: r.LocalID, EventID: r.EventID, Author: r.Author, RelayHints: r.RelayHints, Kind: r.Kind},
+			LocalID: r.LocalID, EventID: r.EventID, Author: r.Author, RelayHints: r.RelayHints, Kind: r.Kind,
+			ThreadRootID: r.ThreadRootID, Mentions: r.Mentions},
 		Text: plan.spec.MasterText, Overrides: plan.spec.Overrides, Fanout: fanout, Number: plan.spec.Number,
 		MediaRecords:  plan.spec.MediaRecords,
 		SourcePreview: dispatch.SourcePreview{Author: author, Text: src.Preview.Text},
 		Source:        "api", Accounts: plan.spec.Accounts,
+		Layout: plan.spec.Layouts[src.Platform],
 	}
 	plan.ix, plan.source = ix, src
 	if allowed.Allowed && allowed.Reason != "" {
@@ -216,7 +214,10 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 		case i == native:
 			pt.text = dispatch.InteractText(*ix, pt.account.Type)
 		default:
+			// A link-quote copy is split automatically, every media on
+			// its first post.
 			pt.text = dispatch.ReproductionText(*ix, pt.account.Type)
+			pt.layout = thread.Layout{MediaAt: make([]int, len(plan.media))}
 		}
 	}
 }

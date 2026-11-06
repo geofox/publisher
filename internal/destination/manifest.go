@@ -50,6 +50,10 @@ type Capabilities struct {
 	// IdempotencyKeyTTLSecs is how long the server remembers a key, for
 	// IdempotentKey (0 = indefinitely). A repeat after it can duplicate.
 	IdempotencyKeyTTLSecs int64 `json:"idempotency_key_ttl_secs,omitempty"`
+	// CommitMarks: Publish calls BeforeCommit right before the request that
+	// publishes the item, so a restart before it is known to have sent
+	// nothing. Internal: not part of the API.
+	CommitMarks bool `json:"-"`
 }
 
 // Link preview modes.
@@ -64,6 +68,8 @@ type TextCaps struct {
 	// MaxLength is the limit, measured per Counting. 0 = unlimited.
 	MaxLength int      `json:"max_length"`
 	Counting  Counting `json:"counting"`
+	// MaxLinks caps the distinct URLs in one post; 0 = no cap.
+	MaxLinks int `json:"max_links,omitempty"`
 }
 
 // TitleCaps describes an article title.
@@ -133,6 +139,9 @@ type Limit struct {
 	MaxPixels int64 `json:"max_pixels,omitempty"`
 	// Mimes accepted as-is; empty = any of the kind.
 	Mimes []string `json:"mimes,omitempty"`
+	// MaxAspect is the widest long-edge:short-edge ratio an image may have
+	// (0 = any). No re-encode fixes a wider one.
+	MaxAspect float64 `json:"max_aspect,omitempty"`
 	// MaxDurationSecs is a hard limit for video; AdvisoryDurationSecs a
 	// length past which the network may degrade playback.
 	MaxDurationSecs      int64 `json:"max_duration_secs,omitempty"`

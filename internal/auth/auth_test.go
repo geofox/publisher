@@ -21,8 +21,11 @@ func TestAllowlist(t *testing.T) {
 	if err := a.Check(Claims{Subject: "sub-1"}); err != nil {
 		t.Fatalf("subject match should pass: %v", err)
 	}
-	if err := a.Check(Claims{Subject: "x", Email: "ok@e.com"}); err != nil {
-		t.Fatalf("email match should pass: %v", err)
+	if err := a.Check(Claims{Subject: "x", Email: "OK@e.com", EmailVerified: true}); err != nil {
+		t.Fatalf("verified email match (any case) should pass: %v", err)
+	}
+	if err := a.Check(Claims{Subject: "x", Email: "ok@e.com"}); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("an unverified email must not pass, got %v", err)
 	}
 	if err := a.Check(Claims{Subject: "x", Email: "no@e.com"}); !errors.Is(err, ErrNotAllowed) {
 		t.Fatalf("want ErrNotAllowed, got %v", err)
@@ -99,5 +102,22 @@ func TestVerifierRejectsExpiredAndWrongAud(t *testing.T) {
 	wrongAud := signIDToken(t, signer, issuer, "other", "sub-1", "n1", time.Now().Add(time.Hour))
 	if _, err := verifier.Verify(context.Background(), wrongAud); err == nil {
 		t.Fatal("wrong-aud token accepted")
+	}
+}
+
+func TestClaimsEmailVerifiedAsString(t *testing.T) {
+	for in, want := range map[string]bool{
+		`{"sub":"s","email":"a@b.c","email_verified":true}`:    true,
+		`{"sub":"s","email":"a@b.c","email_verified":"true"}`:  true,
+		`{"sub":"s","email":"a@b.c","email_verified":"false"}`: false,
+		`{"sub":"s","email":"a@b.c"}`:                          false,
+	} {
+		var c Claims
+		if err := json.Unmarshal([]byte(in), &c); err != nil {
+			t.Fatalf("%s: %v", in, err)
+		}
+		if c.EmailVerified != want || c.Subject != "s" || c.Email != "a@b.c" {
+			t.Errorf("%s: %+v", in, c)
+		}
 	}
 }

@@ -99,7 +99,7 @@ test("a restart in the middle of a thread carries on from the part it stopped at
   const masto = await connected(request, "mastodon");
   await fakes.hold("mastodon", 1); // part 1 goes out; part 2 is in flight when the engine stops
   const r = await createPost(request, {
-    content: { text: `${m} one\n---\ntwo\n---\nthree` },
+    content: { text: `${m} one\ntwo\nthree`, breaks: [`${m} one\n`.length, `${m} one\ntwo\n`.length] },
     targets: [{ account: masto.id }],
     threading: { numbering: false },
   });
@@ -129,7 +129,7 @@ test("an item that may have been posted waits for the owner, who sends it again 
   const bsky = await connected(request, "bluesky");
   await fakes.hold("bluesky", 1);
   const r = await createPost(request, {
-    content: { text: `${m} first\n---\nsecond\n---\nthird` },
+    content: { text: `${m} first\nsecond\nthird`, breaks: [`${m} first\n`.length, `${m} first\nsecond\n`.length] },
     targets: [{ account: bsky.id }],
     threading: { numbering: false },
   });
