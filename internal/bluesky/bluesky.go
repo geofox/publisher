@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/geofox/publisher/internal/destination"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -233,14 +232,21 @@ func (c *Client) dropReadSession() {
 }
 
 func New(pds, identifier, appPassword string) *Client {
+	return NewWithNet(pds, identifier, appPassword, destination.TrustedNet())
+}
+
+// NewWithNet is New with every connection made through n.
+func NewWithNet(pds, identifier, appPassword string, n destination.Net) *Client {
 	return &Client{
 		PDS: strings.TrimRight(pds, "/"), Identifier: identifier, AppPassword: appPassword,
-		HTTP: &http.Client{Timeout: 30 * time.Second},
-		uploadHTTP: &http.Client{Transport: &http.Transport{
-			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 120 * time.Second,
-		}},
+		HTTP: n.Client(30 * time.Second),
+		uploadHTTP: &http.Client{
+			Transport: n.Transport(destination.TransportOptions{
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 120 * time.Second,
+			}),
+			CheckRedirect: n.CheckRedirect,
+		},
 	}
 }
 

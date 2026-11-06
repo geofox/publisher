@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -59,6 +58,11 @@ type Client struct {
 }
 
 func New(baseURL, token string) *Client {
+	return NewWithNet(baseURL, token, destination.TrustedNet())
+}
+
+// NewWithNet is New with every connection made through n.
+func NewWithNet(baseURL, token string, n destination.Net) *Client {
 	gc := gomast.NewClient(&gomast.Config{Server: baseURL, AccessToken: token})
 	// go-mastodon copies http.DefaultClient: no timeout, and it retries a
 	// 429 itself with sleeps of up to an hour while holding the worker.
@@ -68,18 +72,17 @@ func New(baseURL, token string) *Client {
 	// caller's context still bounds the whole). Hand a 429
 	// back as an error so the engine sees the rate limit and its reset time.
 	gc.Client = http.Client{
-		Transport: rateLimitTransport{base: idempotencyTransport{base: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		Transport: rateLimitTransport{base: idempotencyTransport{base: n.Transport(destination.TransportOptions{
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 120 * time.Second,
-		}}},
+		})}},
+		CheckRedirect: n.CheckRedirect,
 	}
 	return &Client{
 		c:                gc,
 		baseURL:          strings.TrimRight(baseURL, "/"),
 		token:            token,
-		http:             &http.Client{Timeout: 15 * time.Second},
+		http:             n.Client(15 * time.Second),
 		pollInterval:     2 * time.Second,
 		videoPollTimeout: 5 * time.Minute,
 	}

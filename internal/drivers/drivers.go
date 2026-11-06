@@ -18,7 +18,8 @@ var once sync.Once
 // Register registers the built-in drivers. Safe to call more than once.
 func Register() {
 	once.Do(func() {
-		for _, d := range []destination.Driver{bluesky.Driver{}, mastodon.Driver{}, nostr.Driver{}, threads.Driver{}} {
+		// Registration order is the order accounts are listed and composed in.
+		for _, d := range []destination.Driver{bluesky.Driver{}, mastodon.Driver{}, threads.Driver{}, nostr.Driver{}} {
 			destination.Register(d)
 		}
 	})

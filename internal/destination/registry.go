@@ -1,21 +1,29 @@
 package destination
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"sort"
 	"sync"
 )
 
-// Driver is a destination type: something that has a manifest. Accounts of
-// the type are constructed by the driver's package.
+// Driver is a destination type: it describes the type and opens its
+// accounts.
 type Driver interface {
 	Manifest() Manifest
+	// Open builds an account from what the host stored for it, or what
+	// the environment configured. It must not do network I/O: an
+	// unreachable network must never stop an account from loading (Checker
+	// and Identity find out later). A missing or malformed field is an
+	// *Error of class invalid naming it.
+	Open(ctx context.Context, req OpenRequest) (Account, error)
 }
 
 var (
 	regMu    sync.RWMutex
 	registry = map[string]Driver{}
+	order    []string // registration order
 	typeRe   = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 )
 
@@ -36,6 +44,7 @@ func Register(d Driver) {
 		panic(fmt.Sprintf("destination: %s registered twice", m.Type))
 	}
 	registry[m.Type] = d
+	order = append(order, m.Type)
 }
 
 // Lookup returns the driver for a type.
@@ -58,9 +67,24 @@ func Types() []string {
 	return out
 }
 
+// TypesInOrder returns the registered types in registration order: the
+// order accounts are listed and composed in. Built-in drivers register
+// first, in the order the composer has always shown them.
+func TypesInOrder() []string {
+	regMu.RLock()
+	defer regMu.RUnlock()
+	return append([]string(nil), order...)
+}
+
 // Unregister removes a type. For tests.
 func Unregister(typ string) {
 	regMu.Lock()
 	defer regMu.Unlock()
 	delete(registry, typ)
+	for i, t := range order {
+		if t == typ {
+			order = append(order[:i:i], order[i+1:]...)
+			break
+		}
+	}
 }

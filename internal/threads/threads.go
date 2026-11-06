@@ -70,6 +70,11 @@ type Client struct {
 // New creates a Client with production defaults.
 // Pass userID="" to use the literal "me" alias.
 func New(token, userID string) *Client {
+	return NewWithNet(token, userID, destination.TrustedNet())
+}
+
+// NewWithNet is New with every connection made through n.
+func NewWithNet(token, userID string, n destination.Net) *Client {
 	if userID == "" {
 		userID = "me"
 	}
@@ -78,7 +83,7 @@ func New(token, userID string) *Client {
 		RefreshURL:       "https://graph.threads.net/refresh_access_token",
 		UserID:           userID,
 		token:            token,
-		HTTP:             &http.Client{Timeout: 30 * time.Second},
+		HTTP:             n.Client(30 * time.Second),
 		PollInterval:     3 * time.Second,
 		PollTimeout:      90 * time.Second,
 		VideoPollTimeout: 6 * time.Minute,
