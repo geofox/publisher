@@ -27,6 +27,62 @@ type SourceEvent struct {
 	RelayHints []string
 	Protected  bool   // NIP-70 ["-"] tag present
 	AuthorName string // best-effort, from kind-0 profile metadata
+	// ThreadRootID is the root of the thread a kind-1 event replies into
+	// (its NIP-10 "root" e-tag, or the first e-tag in the older positional
+	// form); empty when the event starts a thread. Mentions are its p-tags.
+	ThreadRootID string
+	Mentions     []string
+}
+
+// maxReplyMentions caps the p-tags a reply copies from the event it answers.
+const maxReplyMentions = 50
+
+// threadContext reads a kind-1 event's NIP-10 thread root and p-tags.
+func threadContext(tags gonostr.Tags) (root string, mentions []string) {
+	var firstE string
+	marked := false
+	seen := map[string]bool{}
+	for _, t := range tags {
+		if len(t) < 2 {
+			continue
+		}
+		switch t[0] {
+		case "e":
+			if !isHex64(t[1]) {
+				continue
+			}
+			if len(t) > 3 && t[3] == "root" {
+				root = t[1]
+			}
+			if len(t) > 3 && (t[3] == "root" || t[3] == "reply") {
+				marked = true
+			}
+			if firstE == "" {
+				firstE = t[1]
+			}
+		case "p":
+			if isHex64(t[1]) && !seen[t[1]] && len(mentions) < maxReplyMentions {
+				seen[t[1]] = true
+				mentions = append(mentions, t[1])
+			}
+		}
+	}
+	if root == "" && !marked {
+		root = firstE // deprecated positional form: the first e-tag is the root
+	}
+	return root, mentions
+}
+
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // eventPointer is the decoded identity of a reference, before the event itself
@@ -96,6 +152,9 @@ func (p *Publisher) ResolveSource(ctx context.Context, input string) (*SourceEve
 		CreatedAt:  ev.CreatedAt.Time(),
 		RelayHints: hints,
 		Protected:  hasProtectedTag(ev.Tags),
+	}
+	if ev.Kind == 1 {
+		src.ThreadRootID, src.Mentions = threadContext(ev.Tags)
 	}
 	if prof := p.fetchOne(ctx, urls, gonostr.Filter{
 		Authors: []gonostr.PubKey{ev.PubKey},

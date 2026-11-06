@@ -77,7 +77,7 @@ func TestExpandLinkFacets(t *testing.T) {
 
 func TestParseFacets(t *testing.T) {
 	text := "Check out #golang at https://go.dev"
-	fs := parseFacets(text)
+	fs := parseFacets(text, nil)
 	if len(fs) != 2 {
 		t.Fatalf("want 2 facets, got %d: %+v", len(fs), fs)
 	}
@@ -102,14 +102,14 @@ func TestParseFacets(t *testing.T) {
 }
 
 func TestParseFacetsTrimsTrailingPunct(t *testing.T) {
-	fs := parseFacets("see https://go.dev.")
+	fs := parseFacets("see https://go.dev.", nil)
 	if len(fs) != 1 || fs[0].Features[0].URI != "https://go.dev" {
 		t.Errorf("want trimmed url, got %+v", fs)
 	}
 }
 
 func TestParseFacetsSkipsFragmentInURL(t *testing.T) {
-	fs := parseFacets("see https://docs.rs/foo#section and #rust")
+	fs := parseFacets("see https://docs.rs/foo#section and #rust", nil)
 	links, tags := 0, 0
 	for _, f := range fs {
 		switch f.Features[0].Type {

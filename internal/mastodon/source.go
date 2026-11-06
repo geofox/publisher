@@ -100,8 +100,16 @@ func (c *Client) ResolveStatus(ctx context.Context, postURL string) (*SourceStat
 	return out, nil
 }
 
+// reBreak and reParagraph match the HTML Mastodon uses for line and
+// paragraph breaks in a status's content.
+var (
+	reBreak     = regexp.MustCompile(`(?i)<br\s*/?>`)
+	reParagraph = regexp.MustCompile(`(?i)</p>\s*<p[^>]*>`)
+)
+
 func deHTML(s string) string {
-	s = strings.ReplaceAll(s, "</p><p>", "\n\n")
+	s = reParagraph.ReplaceAllString(s, "\n\n")
+	s = reBreak.ReplaceAllString(s, "\n")
 	s = reTag.ReplaceAllString(s, "")
 	return strings.TrimSpace(html.UnescapeString(s))
 }

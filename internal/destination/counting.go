@@ -51,7 +51,7 @@ func (c Counting) Count(s string) int {
 		// isn't part of it and counts as text (as Mastodon's extractor).
 		s = countURL.ReplaceAllStringFunc(s, func(u string) string {
 			n += c.URLLength
-			return u[len(trimURL(u)):]
+			return u[len(TrimURL(u)):]
 		})
 	}
 	if c.MentionLocalPartOnly {
@@ -103,9 +103,9 @@ func isEmoji(cluster string) bool {
 	return false
 }
 
-// trimURL takes trailing sentence punctuation off a matched URL, and a
+// TrimURL takes trailing sentence punctuation off a matched URL, and a
 // closing parenthesis it doesn't open itself.
-func trimURL(u string) string {
+func TrimURL(u string) string {
 	for len(u) > 0 {
 		last := u[len(u)-1]
 		switch {

@@ -42,6 +42,9 @@ func (a NostrAdapter) ResolveSource(ctx context.Context, input string) (*SourceR
 			Author:     ev.Author,
 			Kind:       ev.Kind,
 			RelayHints: ev.RelayHints,
+
+			ThreadRootID: ev.ThreadRootID,
+			Mentions:     ev.Mentions,
 		},
 		Preview: Preview{
 			AuthorName: name,

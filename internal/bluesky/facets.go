@@ -4,6 +4,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/geofox/publisher/internal/destination"
 )
 
 type byteSlice struct {
@@ -15,6 +19,7 @@ type facetFeature struct {
 	Type string `json:"$type"`
 	Tag  string `json:"tag,omitempty"`
 	URI  string `json:"uri,omitempty"`
+	DID  string `json:"did,omitempty"`
 }
 
 type facet struct {
@@ -22,9 +27,37 @@ type facet struct {
 	Features []facetFeature `json:"features"`
 }
 
-// Tags: a leading '#' followed by letters/numbers/underscore (unicode-aware).
-// The facet span includes the '#'; the tag value excludes it.
-var tagRe = regexp.MustCompile(`#([\p{L}\p{N}_]+)`)
+// Tags follow Bluesky's own rich-text parser
+// (https://docs.bsky.app/docs/advanced-guides/post-richtext): a '#' at the
+// start or after whitespace, then a tag that doesn't start with a digit, up
+// to the next whitespace; trailing punctuation is not part of it. Group 1 is
+// the facet span (with the '#'), group 2 the tag.
+var tagRe = regexp.MustCompile(`(?:^|\s)([#＃]([^\d\s\p{P}][^\s]*))`)
+
+// maxTagLen is the longest tag Bluesky's parser accepts, in characters.
+const maxTagLen = 64
+
+// Mentions: an @handle at the start, after whitespace or '('. A handle is a
+// domain name, so it has at least one dot and ends in a letter. Group 1 is
+// the facet span (with the '@'), group 2 the handle.
+var mentionRe = regexp.MustCompile(`(?:^|\s|\()(@([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.[a-zA-Z][a-zA-Z0-9-]*))`)
+
+// maxMentions caps how many handles one post resolves (each one is a lookup).
+const maxMentions = 20
+
+// mentionHandles lists the distinct @handles in text, in order, lower-cased.
+func mentionHandles(text string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range mentionRe.FindAllStringSubmatch(text, -1) {
+		h := strings.ToLower(m[2])
+		if !seen[h] && len(out) < maxMentions {
+			seen[h] = true
+			out = append(out, h)
+		}
+	}
+	return out
+}
 
 // Links: http(s) URLs up to the next whitespace.
 var urlRe = regexp.MustCompile(`https?://[^\s]+`)
@@ -82,16 +115,20 @@ func expandLinkFacets(text string, facets []facet) string {
 	return b.String()
 }
 
-// parseFacets scans text and returns richtext facets for inline #hashtags and
-// links, with UTF-8 byte offsets (Go string indices are already UTF-8 bytes).
-func parseFacets(text string) []facet {
+// parseFacets scans text and returns richtext facets for inline #hashtags,
+// links and @mentions, with UTF-8 byte offsets (Go string indices are already
+// UTF-8 bytes). dids maps a lower-cased handle to its DID; a handle missing
+// from it (not resolved) stays plain text.
+func parseFacets(text string, dids map[string]string) []facet {
 	var out []facet
 
 	// Collect link facets first, recording their byte spans.
 	type span struct{ start, end int }
 	var linkSpans []span
 	for _, loc := range urlRe.FindAllStringIndex(text, -1) {
-		uri := strings.TrimRight(text[loc[0]:loc[1]], ".,!?);:")
+		// The same trimming the length counter uses: trailing punctuation
+		// and a ')' the URL doesn't open itself are not part of it.
+		uri := destination.TrimURL(text[loc[0]:loc[1]])
 		end := loc[0] + len(uri)
 		linkSpans = append(linkSpans, span{loc[0], end})
 		out = append(out, facet{
@@ -111,12 +148,26 @@ func parseFacets(text string) []facet {
 
 	// Tags, skipping any '#fragment' that lives inside a link span.
 	for _, m := range tagRe.FindAllStringSubmatchIndex(text, -1) {
-		if insideLink(m[0], m[1]) {
+		start, end := m[2], m[5]
+		tag := strings.TrimRightFunc(text[m[4]:end], unicode.IsPunct)
+		end = m[4] + len(tag)
+		if tag == "" || utf8.RuneCountInString(tag) > maxTagLen || insideLink(start, end) {
 			continue
 		}
 		out = append(out, facet{
-			Index:    byteSlice{ByteStart: m[0], ByteEnd: m[1]},
-			Features: []facetFeature{{Type: "app.bsky.richtext.facet#tag", Tag: text[m[2]:m[3]]}},
+			Index:    byteSlice{ByteStart: start, ByteEnd: end},
+			Features: []facetFeature{{Type: "app.bsky.richtext.facet#tag", Tag: tag}},
+		})
+	}
+
+	for _, m := range mentionRe.FindAllStringSubmatchIndex(text, -1) {
+		did := dids[strings.ToLower(text[m[4]:m[5]])]
+		if did == "" || insideLink(m[2], m[3]) {
+			continue
+		}
+		out = append(out, facet{
+			Index:    byteSlice{ByteStart: m[2], ByteEnd: m[3]},
+			Features: []facetFeature{{Type: "app.bsky.richtext.facet#mention", DID: did}},
 		})
 	}
 	return out

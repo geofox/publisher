@@ -75,16 +75,25 @@ func TestRequiresText(t *testing.T) {
 }
 
 func TestReplyTagsCarriesAuthorOnDistinctParent(t *testing.T) {
-	// Distinct root and parent: both e-tags carry the author 5th element.
+	// Distinct root and parent: the reply e-tag carries the parent's author as
+	// its 5th element; the root's author isn't known, so the root has none.
 	r := &NostrReply{RootID: "root", ParentID: "parent", RelayHint: "wss://r", AuthorPubkey: "auth"}
 	tags := replyTags(r, "owner")
 	count := 0
 	for _, tg := range tags {
-		if tg[0] == "e" {
+		if tg[0] != "e" {
+			continue
+		}
+		count++
+		switch tg[3] {
+		case "reply":
 			if len(tg) < 5 || tg[4] != "auth" {
-				t.Errorf("e-tag missing author 5th elem: %v", tg)
+				t.Errorf("reply e-tag missing author 5th elem: %v", tg)
 			}
-			count++
+		case "root":
+			if len(tg) > 4 {
+				t.Errorf("root e-tag claims the parent's author: %v", tg)
+			}
 		}
 	}
 	if count != 2 {

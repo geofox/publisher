@@ -43,6 +43,11 @@ type PlatformRef struct {
 	Author     string   `json:"author,omitempty"`   // hex pubkey
 	RelayHints []string `json:"relay_hints,omitempty"`
 	Kind       int      `json:"kind,omitempty"`
+	// ThreadRootID is the root of the thread the event replies into (hex),
+	// empty when it starts one; Mentions are its p-tags. A reply to it
+	// carries both (NIP-10).
+	ThreadRootID string   `json:"thread_root_id,omitempty"`
+	Mentions     []string `json:"mentions,omitempty"`
 }
 
 type Preview struct {

@@ -109,6 +109,8 @@ type InteractRef struct {
 	Author       string   `json:"author,omitempty"`
 	RelayHints   []string `json:"relay_hints,omitempty"`
 	Kind         int      `json:"kind,omitempty"`
+	ThreadRootID string   `json:"thread_root_id,omitempty"`
+	Mentions     []string `json:"mentions,omitempty"`
 }
 
 type PostSpec struct {

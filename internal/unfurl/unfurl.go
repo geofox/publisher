@@ -14,6 +14,7 @@ import (
 
 	"github.com/geofox/publisher/internal/verify"
 	"github.com/rivo/uniseg"
+	"golang.org/x/net/html/charset"
 )
 
 const (
@@ -129,7 +130,13 @@ func (s *Service) Unfurl(ctx context.Context, rawURL string) (*Card, error) {
 		return c, err
 	}
 	card, err := s.unfurl(ctx, rawURL)
-	s.store(rawURL, card, err)
+	// A failure, or a card missing its thumbnail, caused by the caller's own
+	// deadline (the composer preview allows 5 s, dispatch 15 s) says nothing
+	// about the site: caching it would make the publish that follows go out
+	// without a card.
+	if ctx.Err() == nil {
+		s.store(rawURL, card, err)
+	}
 	return card, err
 }
 
@@ -174,12 +181,18 @@ func (s *Service) unfurl(ctx context.Context, rawURL string) (*Card, error) {
 	}
 	// Redirects may have moved us: resolve relative og:image against the
 	// final URL, but keep the card's URI exactly as the operator wrote it.
-	m := parseHTML(io.LimitReader(resp.Body, maxHTMLBytes), resp.Request.URL)
-	title := truncateGraphemes(strings.TrimSpace(m.Title), maxTitleGraphemes)
+	// Decode the declared charset (header or <meta>), so a Latin-1 or
+	// Shift_JIS page's title isn't mojibake on the card.
+	body, err := charset.NewReader(io.LimitReader(resp.Body, maxHTMLBytes), resp.Header.Get("Content-Type"))
+	if err != nil {
+		body = io.LimitReader(resp.Body, maxHTMLBytes)
+	}
+	m := parseHTML(body, resp.Request.URL)
+	title := truncateGraphemes(strings.TrimSpace(strings.ToValidUTF8(m.Title, "")), maxTitleGraphemes)
 	if title == "" {
 		return nil, fmt.Errorf("no usable title at %s", rawURL)
 	}
-	desc := truncateGraphemes(strings.TrimSpace(m.Description), maxDescGraphemes)
+	desc := truncateGraphemes(strings.TrimSpace(strings.ToValidUTF8(m.Description, "")), maxDescGraphemes)
 	card := &Card{URI: rawURL, Title: title, Description: desc, ThumbURL: m.Image}
 	// site.standard refs are an enhancement — failures degrade to a plain card.
 	for _, at := range []string{m.DocumentURI, m.PublicationURI} {

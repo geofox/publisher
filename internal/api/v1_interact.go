@@ -193,7 +193,8 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 	ix := &dispatch.InteractSpec{
 		Action: action, SourcePlatform: src.Platform, SourceURL: webURL, SourceAuthor: author,
 		Ref: dispatch.InteractRef{URI: r.URI, CID: r.CID, ReplyRootURI: r.ReplyRootURI, ReplyRootCID: r.ReplyRootCID,
-			LocalID: r.LocalID, EventID: r.EventID, Author: r.Author, RelayHints: r.RelayHints, Kind: r.Kind},
+			LocalID: r.LocalID, EventID: r.EventID, Author: r.Author, RelayHints: r.RelayHints, Kind: r.Kind,
+			ThreadRootID: r.ThreadRootID, Mentions: r.Mentions},
 		Text: plan.spec.MasterText, Overrides: plan.spec.Overrides, Fanout: fanout, Number: plan.spec.Number,
 		MediaRecords:  plan.spec.MediaRecords,
 		SourcePreview: dispatch.SourcePreview{Author: author, Text: src.Preview.Text},

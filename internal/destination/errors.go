@@ -144,10 +144,14 @@ func Classify(err error) *Error {
 	return &Error{Class: classifyTransport(err, committing), Err: err}
 }
 
-// classForCommit refines a status class for the publishing request: a 504
-// means a gateway gave up waiting while the server may still have applied it.
+// classForCommit refines a status class for the publishing request. A 504
+// or 502 comes from a gateway that gave up on, or lost, the server while it
+// may still have applied the write; retrying blindly double-posts on
+// platforms without idempotency keys, so they are unknown outcomes. A 500 is
+// the server itself failing the request (the write is transactional) and a
+// 503 refuses work up front: both stay transient.
 func classForCommit(c ErrorClass, code int, committing bool) ErrorClass {
-	if committing && code == http.StatusGatewayTimeout {
+	if committing && (code == http.StatusGatewayTimeout || code == http.StatusBadGateway) {
 		return ClassUnknownOutcome
 	}
 	return c
@@ -213,8 +217,9 @@ func classifyTransport(err error, committing bool) ErrorClass {
 	return ClassTransient
 }
 
-// retryAfter parses a Retry-After header (seconds or HTTP date) or the
-// RateLimit-Reset epoch-seconds header the atproto PDS sends.
+// retryAfter parses a Retry-After header (seconds or HTTP date), the
+// RateLimit-Reset epoch-seconds header the atproto PDS sends, or Mastodon's
+// X-RateLimit-Reset (an ISO 8601 time).
 func retryAfter(h http.Header) time.Duration {
 	if h == nil {
 		return 0
@@ -230,11 +235,19 @@ func retryAfter(h http.Header) time.Duration {
 			}
 		}
 	}
-	if v := h.Get("Ratelimit-Reset"); v != "" {
-		if s, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
-			if d := time.Until(time.Unix(s, 0)); d > 0 {
-				return d
-			}
+	for _, k := range []string{"Ratelimit-Reset", "X-Ratelimit-Reset"} {
+		v := strings.TrimSpace(h.Get(k))
+		if v == "" {
+			continue
+		}
+		var at time.Time
+		if s, err := strconv.ParseInt(v, 10, 64); err == nil {
+			at = time.Unix(s, 0)
+		} else if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			at = t
+		}
+		if d := time.Until(at); !at.IsZero() && d > 0 {
+			return min(d, 366*24*time.Hour)
 		}
 	}
 	return 0
