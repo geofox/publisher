@@ -34,6 +34,24 @@ changes:
   types allowlisted, its own directory and disk floor, public serving only
   after a self-test.
 
+### Changes made while planning (2026-11-06)
+
+The implementation plan (`docs/superpowers/plans/2026-11-06-settings-and-accounts.md`)
+was reviewed three times and changes some details of this spec. Where the
+two differ, the plan's "Spec deviations" table wins. In short:
+
+- Part A ships as three PRs (A1 contract and drivers, A2 engine and API, A3
+  web app).
+- Accounts are ordered by driver registration, not alphabetically.
+- `needs_reconnect` needs a confirming authenticated check.
+- A locked account's items don't use up retries.
+- `AccountHost` has one atomic `Save`.
+- `ResolveSource` returns a reference with its preview.
+- The OAuth redirect URI never comes from a request header.
+- OIDC re-authentication has no fallback.
+- The Blossom server tag comes only with the media store's own key.
+- `nostr_relay` readiness is folded into the account checks.
+
 ## Decisions (Geoffrey, 2026-11-06)
 
 | # | Question | Decision |
