@@ -3,7 +3,7 @@ import { state, v1PostBody, clearImages } from "./state.js";
 import { cpIndex } from "./textpos.js";
 import { loadDraft, markDirty, mediaReady, newKey, resetComposer, rerenderComposer } from "./compose.js";
 import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
-import { flash, el, v1, problemError, confirmModal, ORDER } from "./common.js";
+import { flash, el, v1, problemError, confirmModal, ORDER, pressable } from "./common.js";
 import { accountByID, loadAccounts } from "./accounts.js";
 import { fromV1 } from "./interact.js";
 
@@ -92,6 +92,7 @@ function renderList() {
         el("span", { class: "age", text: relativeTime(d.updated_at) })));
     row.dataset.id = d.id;
     row.addEventListener("click", () => openDraft(d.id));
+    pressable(row);
     list.append(row);
   }
   refreshActiveControls();
@@ -104,7 +105,8 @@ function renderTagFilters() {
   for (const d of drafts || []) for (const t of d.tags || []) all.add(t);
   box.replaceChildren();
   for (const t of all) {
-    const chip = el("span", { class: "tag-chip" + (activeFilters.tags.has(t) ? " active" : ""), text: "#" + t });
+    const chip = pressable(el("span", { class: "tag-chip" + (activeFilters.tags.has(t) ? " active" : ""), text: "#" + t,
+      "aria-pressed": activeFilters.tags.has(t) ? "true" : "false" }));
     chip.addEventListener("click", () => {
       if (activeFilters.tags.has(t)) activeFilters.tags.delete(t);
       else activeFilters.tags.add(t);
@@ -157,7 +159,11 @@ function ovFromTarget(p, t, shared) {
 async function sourceInteraction(post, platforms) {
   const action = post.quote ? "quote" : post.reply_to ? "reply" : "";
   if (!action) return { interaction: null };
-  const url = (post.quote || post.reply_to).url;
+  return resolveInteraction(action, (post.quote || post.reply_to).url, platforms);
+}
+
+// resolveInteraction reads the post at url again for a reply or quote.
+async function resolveInteraction(action, url, platforms) {
   try {
     const src = fromV1(await v1("/v1/resolve", { method: "POST", body: { url } }));
     return {
@@ -169,7 +175,7 @@ async function sourceInteraction(post, platforms) {
       },
     };
   } catch (e) {
-    return { interaction: null, lost: "The post this draft " + (action === "quote" ? "quotes" : "replies to") +
+    return { interaction: null, error: e.message, lost: "The post this draft " + (action === "quote" ? "quotes" : "replies to") +
       " couldn't be loaded (" + e.message + "): it opens as a new post" };
   }
 }
@@ -329,7 +335,7 @@ async function doSave({ overwrite = false } = {}) {
     } else {
       setStatus("dirty", "unsaved changes"); // edited while saving
     }
-    snapshot(); // clears recovery (since activeDraftId is now set)
+    snapshot(); // clears recovery, or keeps what was edited while saving
     loadDraftList();
     refreshActiveControls();
   } catch (e) {
@@ -387,7 +393,7 @@ function renderTagChips(tags) {
   if (!host) return;
   host.replaceChildren();
   for (const t of tags) {
-    const chip = el("span", { class: "tag-chip", text: "#" + t + " ✕" });
+    const chip = pressable(el("span", { class: "tag-chip", text: "#" + t + " ✕", "aria-label": "Remove tag " + t }));
     chip.dataset.tag = t;
     chip.addEventListener("click", () => {
       chip.remove();
@@ -423,12 +429,26 @@ function maybeShowRecoveryBanner() {
   banner.hidden = false;
   const r = document.getElementById("draft-recovery-restore");
   const d = document.getElementById("draft-recovery-discard");
-  if (r) r.addEventListener("click", () => {
+  if (r) r.addEventListener("click", async () => {
     const all = recovered.images || [];
     const refs = all.filter(i => i.blossom_url);
+    // A reply or quote in progress stays one: its post is read again. If
+    // it can't be, restoring would make it a standalone post: don't.
+    let interaction = null;
+    const it = recovered.interaction;
+    if (it && it.sourceInput && (it.action === "reply" || it.action === "quote")) {
+      const res = await resolveInteraction(it.action, it.sourceInput, it.prevPlatforms || []);
+      if (!res.interaction) {
+        flash("Not restored: the post this " + it.action + " answers couldn't be read (" + (res.error || "try again") + ")", 8000);
+        return;
+      }
+      interaction = res.interaction;
+    }
     // Reference attachments (uploaded images, ready videos) hydrate like a
     // loaded draft; fresh local-File images cannot survive localStorage.
-    loadDraft({ ...recovered, id: null, media: refs });
+    // Edits to an open draft go back into it (its etag finds it changed).
+    loadDraft({ ...recovered, interaction, id: recovered.draft_id || null, etag: recovered.etag || "", media: refs,
+      onLoaded: () => { renderTagChips(Array.isArray(recovered.tags) ? recovered.tags : []); renderList(); refreshActiveControls(); } });
     if (all.length > refs.length) {
       flash((all.length - refs.length) + " attachment(s) couldn't be restored — re-attach them");
     }
@@ -442,6 +462,8 @@ function maybeShowRecoveryBanner() {
 }
 
 export function installDraftsSidebar() {
+  // Compose left the open draft (a reply started, a translation loaded).
+  document.addEventListener("draft-detached", () => { setStatus("", ""); renderList(); refreshActiveControls(); });
   const search = $("#draft-search");
   if (search) {
     let t = null;

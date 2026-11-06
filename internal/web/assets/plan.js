@@ -14,6 +14,10 @@ let current = { key: "", byType: {}, error: null };
 let pendingKey = "";
 let timer = null;
 let seq = 0;
+// A request that got no answer (offline, dropped) is asked again, later
+// each time; the plan shown meanwhile is the last one answered.
+let retryDelay = 0, retryTimer = null;
+if (typeof window !== "undefined") window.addEventListener("online", () => { retryDelay = 0; requestPlan(); });
 
 // planBody is the composer as a preview body: v1PostBody without the
 // schedule or the draft (neither changes the split, and a past schedule
@@ -74,7 +78,16 @@ async function fetchPlan(body, key) {
     const byType = {};
     for (const t of (data && data.targets) || []) byType[t.type] = t;
     next = { key, byType, error: null };
+    retryDelay = 0;
   } catch (e) {
+    if (!e.status) {
+      if (mine !== seq) return;
+      if (pendingKey === key) pendingKey = "";
+      retryDelay = Math.min(retryDelay ? retryDelay * 2 : 1000, 30000);
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(requestPlan, retryDelay);
+      return;
+    }
     next = { key, byType: {}, error: e };
   }
   if (mine !== seq) return; // a newer request owns the plan

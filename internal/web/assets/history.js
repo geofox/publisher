@@ -1,5 +1,5 @@
 "use strict";
-import { el, $, v1, flash, relTime, shortID, shortRef, META, ORDER, confirmModal } from "./common.js";
+import { el, $, v1, flash, relTime, shortID, shortRef, META, ORDER, confirmModal, TZ, whenText, localInput, pressable } from "./common.js";
 import { state } from "./state.js";
 import { loadDraft } from "./compose.js";
 import { brandTile } from "./brands.js";
@@ -196,7 +196,7 @@ function confirmHide(p) {
 
 function schedLine(post) {
   if (post.status === "scheduled" && post.scheduled_at) {
-    const when = new Date(post.scheduled_at).toLocaleString("fr-FR", { timeZone: "Europe/Paris" });
+    const when = whenText(new Date(post.scheduled_at));
     return el("span", { class: "sched-when", text: `⏳ scheduled · fires ${when}` });
   }
   if (post.status === "missed") return el("span", { class: "sched-missed", text: "⏰ missed" });
@@ -254,12 +254,12 @@ function historyItem(p, active) {
   if (p.status === "needs_attention") {
     when.append(el("span", { class: "dot", text: "·" }), el("span", { class: "warn tot", text: "needs you" }));
   }
-  const item = el("div", { class: "hitem" + (active ? " active" : ""), "data-id": p.id, onclick: () => openDetail(p.id) },
+  const item = pressable(el("div", { class: "hitem" + (active ? " active" : ""), "data-id": p.id, onclick: () => openDetail(p.id) },
     when,
     interactionBadge(p),
     el("div", { class: "txt", text: (p.content.text || "").slice(0, 160) }),
     schedLine(p),
-    badges);
+    badges));
   if (!isPendingPost(p)) {
     item.append(el("button", { class: "hide-x", type: "button", title: "Hide from list", text: "✕",
       onclick: e => { e.stopPropagation(); confirmHide(p); } }));
@@ -282,7 +282,8 @@ function schedControls(post) {
     onclick: () => act(cancel, "…", () => v1(postPath(post.id) + ":cancel", { method: "POST" }), "canceled", { reload: true }) });
   const change = el("button", { class: "ghost sm", type: "button", text: "change time",
     onclick: () => {
-      const v = prompt("New time (YYYY-MM-DDTHH:MM, Paris):");
+      // Read in the device's time zone, like the composer's schedule.
+      const v = prompt("New time (YYYY-MM-DDTHH:MM, " + TZ + "):", localInput(post.scheduled_at));
       if (!v) return;
       const d = new Date(v);
       if (isNaN(d.getTime())) { flash("Invalid date — use YYYY-MM-DDTHH:MM"); return; }

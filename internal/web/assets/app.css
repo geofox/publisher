@@ -484,6 +484,10 @@ textarea.master,.verify-input{}
   border-radius:999px;background:var(--red);color:#fff;
   font-size:0.75em;line-height:1.4;text-align:center;
 }
+.attn-badge[hidden]{display:none}
+/* keyboard focus on the rows and chips that act as buttons (pressable) */
+.target-row:focus-visible,.thread-notice:focus-visible,.thread-badge:focus-visible,
+.hitem:focus-visible,.draft-row:focus-visible,.tag-chip:focus-visible{outline:2px solid var(--indigo);outline-offset:2px}
 #hsearch{
   flex:1;min-width:120px;font:inherit;font-size:14px;padding:8px 12px;color:var(--ink);
   background:var(--card);border:.5px solid var(--line-2);border-radius:10px;

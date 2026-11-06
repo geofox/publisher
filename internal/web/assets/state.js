@@ -129,11 +129,12 @@ function ovFor(p) {
     // from a stored spec where buildSpec previously serialized it as []).
     const langsStr = Array.isArray(ov.langs) ? ov.langs.join(",") : (ov.langs || "");
     o.langs = langsStr.split(",").map((s) => s.trim()).filter(Boolean);
-    o.bluesky_reply = ov.reply;
-    o.bluesky_disable_quotes = ov.disable_quotes;
+    // The keys of state.ov, so that loadDraft restores them as they are.
+    o.reply = ov.reply;
+    o.disable_quotes = ov.disable_quotes;
   }
   if (p === "mastodon") { o.spoiler_text = ov.spoiler_text; o.sensitive = ov.sensitive; o.visibility = ov.visibility; o.language = ov.language; }
-  if (p === "threads")  { o.topic_tag = ov.topic_tag; o.threads_reply_control = ov.reply_control; }
+  if (p === "threads")  { o.topic_tag = ov.topic_tag; o.reply_control = ov.reply_control; }
   if (p === "nostr")    { o.pow = ov.pow; o.content_warning = ov.content_warning; }
   return o;
 }
@@ -178,7 +179,10 @@ export function buildSpec() {
   };
   const sa = document.querySelector("#schedat")?.value;
   if (sa) spec.scheduled_at = new Date(sa).toISOString();
-  if (state.activeDraftId) spec.draft_id = state.activeDraftId;
+  if (state.activeDraftId) { spec.draft_id = state.activeDraftId; spec.etag = state.draftETag || ""; }
+  // A reply or quote in progress: what the restore resolves again.
+  const it = state.interaction;
+  if (it) spec.interaction = { action: it.action, platform: it.platform, sourceInput: it.sourceInput, prevPlatforms: [...(it.prevPlatforms || [])] };
   return spec;
 }
 

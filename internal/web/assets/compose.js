@@ -1,5 +1,5 @@
 "use strict";
-import { el, $, wcount, flash, confirmModal, META, ORDER, v1, problemError } from "./common.js";
+import { el, $, wcount, flash, confirmModal, META, ORDER, v1, problemError, TZ, whenText, localInput, pressable } from "./common.js";
 import { state, postedText, v1PostBody, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen } from "./state.js";
 import { renderPreview, mediaMax, previewMedia } from "./preview.js";
 import { openDetail } from "./history.js";
@@ -96,8 +96,8 @@ function iosSwitch(on) { return el("div", { class: "ios-switch" + (on ? " on" : 
 
 function threadBadge(p) {
   const ti = threadInfoFor(p);
-  const badge = el("span", { class: "thread-badge", title: "See and shape the thread",
-    onclick: e => { e.stopPropagation(); showThread(p); } });
+  const badge = pressable(el("span", { class: "thread-badge", title: "See and shape the thread",
+    onclick: e => { e.stopPropagation(); showThread(p); } }));
   const ic = icon("thread", { size: 12, sw: 1.9 }); if (ic) badge.append(ic);
   badge.append(el("span", { class: "tb-txt", text: `${ti.posts} posts` }));
   return badge;
@@ -127,6 +127,8 @@ function renderChips() {
         on ? state.platforms.delete(p) : state.platforms.add(p);
         if (!state.platforms.has(state.focus)) state.focus = p;
         renderChips(); renderCards(); renderEditor(); renderPreview();
+        // The row was drawn again: keep the keyboard where it was.
+        const again = document.querySelector("#chips .target-row.p-" + p); if (again) again.focus({ preventScroll: true });
       },
     },
       brandTile(p, { size: 29 }),
@@ -134,6 +136,10 @@ function renderChips() {
       el("span", { class: "t-count" + (tc.cls ? " " + tc.cls : ""), text: tc.text }),
       iosSwitch(on),
     );
+    pressable(row, "switch");
+    row.setAttribute("aria-checked", on ? "true" : "false");
+    row.setAttribute("aria-label", META[p].label);
+    if (locked || barred) row.setAttribute("aria-disabled", "true");
     c.append(row);
   }
   renderTargetsMeta();
@@ -224,7 +230,7 @@ function renderThreadNotice() {
   const threaded = ORDER.filter(p => state.platforms.has(p) && threadInfoFor(p).threaded);
   if (!threaded.length) return;
   const names = threaded.map(p => `${META[p].label} (${threadInfoFor(p).posts})`).join(", ");
-  const banner = el("div", { class: "thread-notice", onclick: () => showThread(threaded[0]) });
+  const banner = pressable(el("div", { class: "thread-notice", onclick: () => showThread(threaded[0]) }));
   const ic = icon("thread", { size: 20, sw: 1.8 }); if (ic) banner.append(ic);
   banner.append(el("div", { class: "tn-body" },
     el("div", { class: "tn-title", text: `Auto-threading on ${names}` }),
@@ -260,6 +266,7 @@ export function startInteraction(src, action) {
     ORDER.forEach((p) => { state.ov[p] = defaultOv(p); }); // drop stale per-platform overrides
     state.platforms = new Set([src.platform]);
     state.focus = src.platform;
+    detachDraft(); // the reply is a new post: it must not save over, or use up, the draft that was open
     const tab = document.querySelector('.tab[data-view="compose"]');
     if (tab) tab.click();
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -289,8 +296,19 @@ export function exitInteraction() {
   clearImages();
   state.platforms = prev && prev.size ? new Set(prev) : new Set(ORDER);
   if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
+  detachDraft(); // what follows is a new post, not the draft the reply came from
   renderImages();
   renderInteractionUI();
+}
+
+// detachDraft makes what Compose holds a new, unsaved post: saving or
+// posting it no longer touches the draft that was open, and that draft's
+// tags go with it. drafts.js listens to redraw its controls.
+export function detachDraft() {
+  state.activeDraftId = null;
+  state.draftETag = "";
+  const tags = document.querySelector("#draft-tags-input .tag-chips"); if (tags) tags.replaceChildren();
+  document.dispatchEvent(new Event("draft-detached"));
 }
 
 // loadDraft hydrates Compose from a saved draft spec (the server's draftSpecJSON
@@ -310,22 +328,25 @@ export function loadDraft(input) {
       state.breaks = conv.breaks;
       state.anchors = {};
       state.tab = "shared";
-      // Breaks and wording made for the text it replaces don't fit it.
-      for (const p of ORDER) Object.assign(state.ov[p], { text: null, breaks: null, mediaAt: null });
+      // The settings, schedule and tags were made for the post it replaces:
+      // a translation starts from the defaults, like a new post.
+      ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
       clearImages();
+      const sched = $("#schedat"); if (sched) sched.value = "";
       if (input.lang) {
         state.ov.bluesky.langs = input.lang;
         state.ov.mastodon.language = input.lang;
       }
       state.platforms = new Set(ORDER);
       if (!state.platforms.has(state.focus)) state.focus = "bluesky";
-      state.activeDraftId = null;
+      detachDraft();
       state.dirty = true;
       const tab = document.querySelector('.tab[data-view="compose"]');
       if (tab) tab.click();
       window.scrollTo({ top: 0, behavior: "smooth" });
       renderImages();
       renderInteractionUI(); // re-renders chips/cards/preview and hides the banner
+      updateSched();
       flash("Translated draft loaded" + (input.lang ? " · lang " + input.lang : ""));
       return;
     }
@@ -349,6 +370,10 @@ export function loadDraft(input) {
         if (!state.ov[p]) continue;
         Object.assign(state.ov[p], input.overrides[p]);
         const ov = state.ov[p];
+        // Snapshots written before the keys matched state.ov.
+        for (const [old, key] of [["bluesky_reply", "reply"], ["bluesky_disable_quotes", "disable_quotes"], ["threads_reply_control", "reply_control"]]) {
+          if (old in ov) { if (!(key in input.overrides[p])) ov[key] = ov[old]; delete ov[old]; }
+        }
         if (old && typeof ov.text === "string") {
           const own = fromMarkers(ov.text);
           ov.text = own.text;
@@ -398,7 +423,8 @@ export function loadDraft(input) {
     renderImages();
     renderInteractionUI(); // re-renders chips/cards/preview and hides the banner
     updateSched(); // a loaded schedule shows (and the button says Schedule)
-    flash(input.notice || "Draft loaded");
+    // A note to read must outlast the usual short flash.
+    if (input.notice) flash(input.notice, 8000); else flash("Draft loaded");
     if (input.onLoaded) input.onLoaded();
   };
 
@@ -435,20 +461,12 @@ function normalizeLines() {
   }
 }
 
-// localInput turns an RFC 3339 time into a datetime-local value (local
-// wall time, to the minute); "" for none or a bad one.
-function localInput(iso) {
-  const d = iso ? new Date(iso) : null;
-  if (!d || isNaN(d)) return "";
-  const pad = n => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
 
 // renderInteractionUI re-renders the compose chrome for the current mode.
 function renderInteractionUI() {
   renderSrcBanner();
   const sched = $("#schedrow"); if (sched) sched.hidden = state.interaction != null;
-  $("#submit").textContent = state.interaction ? (state.interaction.action === "quote" ? "Quote" : "Reply") : "Post";
+  updateSched(); // the button: Reply, Quote, Schedule or Post
   renderChips(); renderCards(); renderMeta(); renderEditor(); renderPreview();
 }
 
@@ -913,19 +931,20 @@ function renderMeta() {
 function schedNote(v) {
   const d = new Date(v);
   if (isNaN(d.getTime())) return "";
-  const paris = d.toLocaleString("fr-FR", { timeZone: "Europe/Paris", weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  const when = whenText(d);
   const mins = Math.round((d.getTime() - Date.now()) / 60000);
   let rel;
   if (mins < 1) rel = "now";
   else if (mins < 60) rel = `in ${mins} min`;
   else if (mins < 1440) rel = `in ${Math.round(mins / 60)}h`;
   else rel = `in ${Math.round(mins / 1440)}d`;
-  return `⏳ fires ${rel} · ${paris}`;
+  return `⏳ fires ${rel} · ${when}`;
 }
 
 function updateSched() {
   const v = $("#schedat").value;
-  $("#submit").textContent = v ? "Schedule" : "Post";
+  const it = state.interaction; // a reply or quote is never scheduled
+  $("#submit").textContent = it ? (it.action === "quote" ? "Quote" : "Reply") : v ? "Schedule" : "Post";
   $("#schedclear").hidden = !v;
   const note = $("#schednote");
   if (!v) { note.textContent = ""; note.className = "sched-note muted"; return; }
@@ -1037,7 +1056,7 @@ async function doPost() {
       post = await sendPost(body);
     }
     if (post.status === "scheduled" && post.scheduled_at) {
-      flash("Scheduled for " + new Date(post.scheduled_at).toLocaleString("fr-FR", { timeZone: "Europe/Paris" }));
+      flash("Scheduled for " + whenText(new Date(post.scheduled_at)));
     } else {
       setInflight(post.id);
       openProgressModal(post.id, post);
@@ -1064,7 +1083,7 @@ async function doPost() {
 // submit checks what the server would refuse before posting: a video still
 // processing, a platform with no account. Text over a platform's limit is
 // not one: the server threads it (the preview shows how).
-function submit() {
+async function submit() {
   if (state.images.some(i => i.video && i.phase !== "ready")) {
     flash(state.images.some(i => i.video && i.phase === "failed")
       ? "The video failed — retry or remove it first"
@@ -1072,9 +1091,19 @@ function submit() {
     return;
   }
   if (state.platforms.size === 0) { flash("Select at least one platform."); return; }
-  const missing = missingAccounts();
+  let missing = missingAccounts();
+  if (missing.length && reloadAccounts) {
+    // The accounts may just have failed to load (a blip at start): ask again.
+    try { await reloadAccounts(); } catch (e) { flash("Couldn't read your accounts: " + e.message); return; }
+    missing = missingAccounts();
+  }
   if (missing.length) { flash("No account to post to " + missing.join(", ") + " is configured"); return; }
   doPost();
+}
+
+// reloadAccounts reads the accounts again and applies them (main.js sets it).
+let reloadAccounts = null;
+export function setAccountsReloader(fn) { reloadAccounts = fn;
 }
 
 // ---------------------------------------------------------------------------
@@ -1225,6 +1254,7 @@ export function composeInit() {
     uploadImage(entry);
     renderImages();
   });
+  const tz = $("#schedtz"); if (tz) tz.textContent = TZ + " · empty = now";
   $("#schedat").addEventListener("input", updateSched);
   $("#schedclear").addEventListener("click", () => { $("#schedat").value = ""; updateSched(); });
   $("#submit").addEventListener("click", submit);

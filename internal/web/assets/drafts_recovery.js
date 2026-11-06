@@ -9,18 +9,21 @@ const KEY = "compose_recovery_v1";
 // no-ops on quota errors so a full localStorage never breaks the editor.
 export function snapshot() {
   try {
-    if (state.activeDraftId) {
-      // When a draft is active, the server is the source of truth; clear
-      // recovery to avoid offering to restore stale local edits next session.
+    if (state.activeDraftId && !state.dirty) {
+      // An open draft with nothing unsaved: the server has it all.
       localStorage.removeItem(KEY);
       return;
     }
+    // Otherwise keep the edits (an open draft's carry its id and etag, so
+    // the restore saves into that draft, or finds it changed meanwhile).
     const spec = buildSpec();
     // Skip empty drafts to avoid recovery noise.
     if (!spec.master_text && (!spec.images || spec.images.length === 0)) {
       localStorage.removeItem(KEY);
       return;
     }
+    // The tags too: saving the restored draft sends them.
+    spec.tags = Array.from(document.querySelectorAll("#draft-tags-input .tag-chip")).map(n => n.dataset.tag);
     localStorage.setItem(KEY, JSON.stringify(spec));
   } catch (e) {
     // quota or serialization error — log and continue
