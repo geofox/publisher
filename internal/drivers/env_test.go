@@ -105,4 +105,9 @@ func TestEnvHost(t *testing.T) {
 	if n := h.Net(destination.NetTrusted); n.DialContext == nil || n.Proxy == nil {
 		t.Error("trusted net has no dialer or proxy")
 	}
+	// A host may tighten a policy, never loosen it: without the network
+	// guard, owner-typed addresses are refused.
+	if _, err := h.Net(destination.NetOwner).DialContext(context.Background(), "tcp", "127.0.0.1:1"); err == nil {
+		t.Error("NetOwner dialed")
+	}
 }

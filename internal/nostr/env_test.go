@@ -2,6 +2,7 @@ package nostr
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -106,6 +107,13 @@ func TestFromEnvErrors(t *testing.T) {
 	}{
 		{"pubkey without key", map[string]string{"OWNER_PUBKEY": envPUB}, []string{"OWNER_PUBKEY", "NSEC_HEX"}},
 		{"bad key", map[string]string{"NSEC_HEX": "zz"}, []string{"NSEC_HEX"}},
+		// The library pads short keys with zeros: "1" would be secret key 1,
+		// which anyone can compute.
+		{"short key", map[string]string{"NSEC_HEX": "1"}, []string{"NSEC_HEX", "64-character"}},
+		{"truncated key", map[string]string{"NSEC_HEX": envNSEC[1:]}, []string{"NSEC_HEX", "64-character"}},
+		{"key in quotes", map[string]string{"NSEC_HEX": `"` + envNSEC + `"`}, []string{"NSEC_HEX"}},
+		{"nsec instead of hex", map[string]string{"NSEC_HEX": "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5"},
+			[]string{"NSEC_HEX", "nak key decode"}},
 		{"bad pubkey", map[string]string{"NSEC_HEX": envNSEC, "OWNER_PUBKEY": "zz"}, []string{"OWNER_PUBKEY"}},
 		{"pubkey mismatch", map[string]string{"NSEC_HEX": envNSEC, "OWNER_PUBKEY": otherPUB}, []string{"does not match", envPUB}},
 		{"fanout typo", map[string]string{"NSEC_HEX": envNSEC, "NOSTR_PRIMARY_FANOUT": "flase"}, []string{"NOSTR_PRIMARY_FANOUT", `"flase"`}},
@@ -123,9 +131,22 @@ func TestFromEnvErrors(t *testing.T) {
 					t.Errorf("error %q doesn't mention %s", err, w)
 				}
 			}
-			if strings.Contains(err.Error(), envNSEC) {
+			// The secret never appears in an error, in any form.
+			if v := tc.env["NSEC_HEX"]; len(v) > 8 && strings.Contains(err.Error(), strings.Trim(v, `"`)[:8]) {
 				t.Errorf("error %q contains the secret key", err)
 			}
 		})
+	}
+}
+
+// Open refuses a short key too (a stored config can be edited by hand).
+func TestOpenRefusesShortKey(t *testing.T) {
+	_, err := Driver{}.Open(context.Background(), destination.OpenRequest{
+		Config:  map[string]any{ConfigBootstrapRelay: "wss://r.example"},
+		Secrets: map[string]string{SecretKey: "1"},
+		Host:    destinationtest.NewHost(t)})
+	var de *destination.Error
+	if !errors.As(err, &de) || de.Class != destination.ClassInvalid || !strings.Contains(err.Error(), SecretKey) {
+		t.Fatalf("err = %v, want an invalid error naming %s", err, SecretKey)
 	}
 }

@@ -37,7 +37,7 @@ func (Driver) FromEnv(getenv func(string) string) ([]destination.EnvAccount, err
 		return nil, nil
 	}
 	var errs []error
-	sk, err := gonostr.SecretKeyFromHex(nsec)
+	sk, err := ParseSecretKey(nsec)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("NSEC_HEX: %w", err))
 	} else if pub != "" {

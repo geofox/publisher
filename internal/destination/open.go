@@ -2,10 +2,13 @@ package destination
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -117,10 +120,30 @@ func (n Net) Client(timeout time.Duration) *http.Client {
 }
 
 // TrustedNet is the network as Publisher reached it before policies
-// existed: a 10-second dial timeout and the proxy from the environment.
+// existed: a 10-second dial timeout and the proxy from the environment,
+// with SafeRedirect as the redirect rule.
 func TrustedNet() Net {
 	d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-	return Net{DialContext: d.DialContext, Proxy: http.ProxyFromEnvironment}
+	return Net{DialContext: d.DialContext, Proxy: http.ProxyFromEnvironment, CheckRedirect: SafeRedirect}
+}
+
+// SafeRedirect follows at most 10 redirects, never from https to http (Go
+// keeps the Authorization header when only the scheme changes), and never
+// replays a request body to another host (a 307 or 308 after a sign-in
+// would send the password there). Go itself drops credentials on a
+// redirect to another host.
+func SafeRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	prev := via[len(via)-1]
+	if prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return fmt.Errorf("refused a redirect from https to %s", req.URL.Scheme)
+	}
+	if req.GetBody != nil && req.ContentLength != 0 && !strings.EqualFold(req.URL.Host, prev.URL.Host) {
+		return errors.New("refused to send a request body to another host on a redirect")
+	}
+	return nil
 }
 
 // EnvSource is implemented by drivers that can configure accounts from

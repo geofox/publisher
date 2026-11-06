@@ -39,9 +39,9 @@ func (Driver) Open(_ context.Context, req destination.OpenRequest) (destination.
 	if keyHex == "" {
 		return nil, destination.InvalidField(SecretKey, "required")
 	}
-	sk, err := gonostr.SecretKeyFromHex(keyHex)
+	sk, err := ParseSecretKey(keyHex)
 	if err != nil {
-		return nil, destination.InvalidField(SecretKey, "not a hex secret key")
+		return nil, destination.InvalidField(SecretKey, err.Error())
 	}
 	home, err := destination.ConfigString(req.Config, ConfigBootstrapRelay)
 	if err != nil {

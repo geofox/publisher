@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 
 	gonostr "fiatjaf.com/nostr"
 
@@ -51,7 +52,7 @@ func EnvMediaSigner(accts []EnvAccount) (gonostr.SecretKey, gonostr.PubKey, bool
 		if a.Type != nostr.Type {
 			continue
 		}
-		sk, err := gonostr.SecretKeyFromHex(a.Secrets[nostr.SecretKey])
+		sk, err := nostr.ParseSecretKey(a.Secrets[nostr.SecretKey])
 		if err != nil {
 			return gonostr.SecretKey{}, gonostr.PubKey{}, false
 		}
@@ -106,6 +107,18 @@ type envHost struct{ log *slog.Logger }
 
 func (envHost) Save(context.Context, destination.StateUpdate) error { return errNoSave }
 
-func (envHost) Net(destination.NetPolicy) destination.Net { return destination.TrustedNet() }
+// Net gives NetTrusted its usual network. NetOwner is refused until the
+// network guard exists (part C4): no driver asks for it in A1, and a host
+// may tighten a policy but never loosen it.
+func (envHost) Net(p destination.NetPolicy) destination.Net {
+	if p == destination.NetTrusted {
+		return destination.TrustedNet()
+	}
+	return destination.Net{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		return nil, errOwnerNet
+	}}
+}
+
+var errOwnerNet = errors.New("addresses typed in the app need the network guard, which this version doesn't have")
 
 func (h envHost) Logger() *slog.Logger { return h.log }

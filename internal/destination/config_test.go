@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -93,5 +94,37 @@ func TestNetDialsThroughPolicy(t *testing.T) {
 	}
 	if dials.Load() != 2 {
 		t.Fatalf("%d dials through the policy, want 2", dials.Load())
+	}
+}
+
+func TestSafeRedirect(t *testing.T) {
+	get := func(u string) *http.Request { r, _ := http.NewRequest(http.MethodGet, u, nil); return r }
+	post := func(u string) *http.Request {
+		r, _ := http.NewRequest(http.MethodPost, u, strings.NewReader(`{"password":"x"}`))
+		return r
+	}
+	for _, tc := range []struct {
+		name string
+		req  *http.Request
+		from string
+		ok   bool
+	}{
+		{"same host", get("https://a.example/x"), "https://a.example/", true},
+		{"other host, no body", get("https://b.example/x"), "https://a.example/", true},
+		{"https to http", get("http://a.example/x"), "https://a.example/", false},
+		{"body to another host", post("https://b.example/x"), "https://a.example/", false},
+		{"body to the same host", post("https://a.example/y"), "https://a.example/", true},
+	} {
+		err := SafeRedirect(tc.req, []*http.Request{get(tc.from)})
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v", tc.name, err)
+		}
+	}
+	via := make([]*http.Request, 10)
+	for i := range via {
+		via[i] = get("https://a.example/")
+	}
+	if SafeRedirect(get("https://a.example/"), via) == nil {
+		t.Error("an 11th redirect was followed")
 	}
 }
