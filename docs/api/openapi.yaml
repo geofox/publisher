@@ -1584,8 +1584,11 @@ paths:
         Needs `drafts:write` and `posts:write` (it spends the DeepL quota).
         A new draft: the same post with its text in `target_lang` and
         `content.languages` set to it; per-account texts and languages are
-        left out, since they were for the original language. The original
-        stays. 503 when the server has no DeepL key.
+        left out, since they were for the original language. Each part of a
+        hand-broken thread is translated on its own: `content.breaks` and
+        `media[].at` move to the translated parts' starts, and per-account
+        `thread` settings are dropped. The original stays. 503 when the
+        server has no DeepL key.
       security:
         - bearer: ["drafts:write", "posts:write"]
         - session: []

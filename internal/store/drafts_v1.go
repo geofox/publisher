@@ -100,14 +100,13 @@ func (s *Store) UpdateV1Draft(ctx context.Context, d *V1Draft, want int64) error
 		q += ` AND version = ?`
 		args = append(args, want)
 	}
-	res, err := s.sql.ExecContext(ctx, q, args...)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	// The row comes back from the UPDATE itself: a separate read could see
+	// another tab's save made in between, and hand this caller that tab's
+	// version (its ETag), so its next save would overwrite the other's.
+	cur, err := scanV1Draft(s.sql.QueryRowContext(ctx, q+` RETURNING `+v1DraftCols, args...))
+	if errors.Is(err, sql.ErrNoRows) {
 		return s.draftMissOrConflict(ctx, d.OwnerID, d.ID)
 	}
-	cur, err := s.GetV1Draft(ctx, d.OwnerID, d.ID)
 	if err != nil {
 		return err
 	}

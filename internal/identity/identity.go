@@ -90,6 +90,10 @@ func (s *Service) Get(ctx context.Context) *Identity {
 	var amu sync.Mutex
 	var wg sync.WaitGroup
 
+	// The fetches outlive the caller's request (a reload cancels it): the
+	// result is cached for everyone.
+	ctx = context.WithoutCancel(ctx)
+	want, got := 0, 0
 	fetch := func(platform string, run func(context.Context) (string, string, string, error)) {
 		defer wg.Done()
 		cctx, cancel := context.WithTimeout(ctx, s.timeout())
@@ -100,23 +104,28 @@ func (s *Service) Get(ctx context.Context) *Identity {
 		}
 		amu.Lock()
 		id.Accounts[platform] = Account{Platform: platform, Handle: handle, DisplayName: name, Avatar: avatar}
+		got++
 		amu.Unlock()
 	}
 
 	if s.Bluesky != nil {
 		wg.Add(1)
+		want++
 		go fetch("bluesky", s.Bluesky.Profile)
 	}
 	if s.Mastodon != nil {
 		wg.Add(1)
+		want++
 		go fetch("mastodon", s.Mastodon.Profile)
 	}
 	if s.Threads != nil {
 		wg.Add(1)
+		want++
 		go fetch("threads", s.Threads.Profile)
 	}
 	if s.Nostr != nil {
 		wg.Add(1)
+		want++
 		go fetch("nostr", s.Nostr.OwnerProfile)
 	}
 	wg.Wait()
@@ -141,9 +150,15 @@ func (s *Service) Get(ctx context.Context) *Identity {
 	}
 	id.Monogram = monogram(id.Name)
 
+	// A platform that failed (an outage, a timeout) is asked again soon
+	// rather than missing for the whole TTL.
+	at := time.Now()
+	if got < want {
+		at = at.Add(-s.ttl() + min(30*time.Second, s.ttl()))
+	}
 	s.mu.Lock()
 	s.cached = id
-	s.at = time.Now()
+	s.at = at
 	s.mu.Unlock()
 	return id
 }

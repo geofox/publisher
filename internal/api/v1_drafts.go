@@ -634,20 +634,38 @@ func (a *API) v1TranslateDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lang := strings.ToLower(req.TargetLang)
-	text, _, err := a.Translator.Translate(r.Context(), src.Text, lang)
+	var p v1CreatePostReq
+	_ = json.Unmarshal([]byte(src.Body), &p)
+	// Each hand-made part is translated on its own, so the thread keeps its
+	// breaks (now at the translated parts' starts) and media stay with
+	// their posts. Positions in the source text mean nothing in the new one.
+	text, breaks, starts, err := translateParts(r.Context(), a.Translator, src.Text, validBreaks(src.Text, p.Content.Breaks), lang)
 	if err != nil {
 		slog.WarnContext(r.Context(), "v1: translate draft", "err", store.Scrub(err.Error()))
 		problem(w, r, http.StatusBadGateway, codeUpstream, "the translation service failed or could not be reached; try again")
 		return
 	}
-	var p v1CreatePostReq
-	_ = json.Unmarshal([]byte(src.Body), &p)
+	oldStarts := append([]int{0}, validBreaks(src.Text, p.Content.Breaks)...)
 	p.Content.Text = &text
+	p.Content.Breaks = breaks
+	for i := range p.Content.Media {
+		if at := p.Content.Media[i].At; at != nil {
+			k := 0
+			for k+1 < len(oldStarts) && oldStarts[k+1] <= *at {
+				k++
+			}
+			na := starts[k]
+			p.Content.Media[i].At = &na
+		}
+	}
 	p.Content.Languages = []string{lang}
 	for i := range p.Targets {
 		if c := p.Targets[i].Content; c != nil {
 			c.Text, c.Languages = nil, nil
 		}
+		// An account's own breaks and media positions were against its
+		// own (now dropped) or the source text: it takes the shared ones.
+		p.Targets[i].Thread = nil
 	}
 	d := &store.V1Draft{OwnerID: src.OwnerID, Title: store.DeriveTitle(text), Tags: src.Tags, Text: text, Body: marshalPost(&p)}
 	if err := a.Store.CreateV1Draft(r.Context(), d); err != nil {
@@ -656,4 +674,53 @@ func (a *API) v1TranslateDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.writeDraftV1(w, r, http.StatusCreated, d)
+}
+
+// validBreaks is breaks kept only when ascending and inside text (0 and the
+// end excluded), as code point positions.
+func validBreaks(text string, breaks []int) []int {
+	n := utf8.RuneCountInString(text)
+	var out []int
+	last := 0
+	for _, b := range breaks {
+		if b > last && b < n {
+			out = append(out, b)
+			last = b
+		}
+	}
+	return out
+}
+
+// translateParts translates text part by part (cut at breaks, code point
+// positions), keeping each part's surrounding whitespace. It returns the
+// joined text, the breaks at the translated parts' starts, and every part's
+// start (starts[0] = 0).
+func translateParts(ctx context.Context, tr Translator, text string, breaks []int, lang string) (string, []int, []int, error) {
+	rs := []rune(text)
+	cuts := append(append([]int{0}, breaks...), len(rs))
+	var b strings.Builder
+	var newBreaks []int
+	starts := make([]int, 0, len(cuts)-1)
+	pos := 0
+	for i := 0; i+1 < len(cuts); i++ {
+		part := string(rs[cuts[i]:cuts[i+1]])
+		core := strings.TrimSpace(part)
+		lead := part[:strings.Index(part, core)]
+		trail := part[len(lead)+len(core):]
+		if core != "" {
+			t, _, err := tr.Translate(ctx, core, lang)
+			if err != nil {
+				return "", nil, nil, err
+			}
+			core = t
+		}
+		if i > 0 {
+			newBreaks = append(newBreaks, pos)
+		}
+		starts = append(starts, pos)
+		out := lead + core + trail
+		b.WriteString(out)
+		pos += utf8.RuneCountInString(out)
+	}
+	return b.String(), newBreaks, starts, nil
 }
