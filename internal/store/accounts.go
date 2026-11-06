@@ -72,15 +72,19 @@ func (s *Store) SeedEnvAccounts(ctx context.Context, owner string, configured []
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UTC()
-	for _, c := range configured {
+	for i, c := range configured {
 		key := c.Key
 		if key == "" {
 			key = EnvKeyDefault
 		}
+		// Rows seeded together keep the order given (the registry orders
+		// a type's accounts oldest first; equal times would fall back to
+		// the random ids).
+		at := now.Add(time.Duration(i) * time.Microsecond)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO accounts (id, owner_id, type, label, source, env_key, enabled, created_at, updated_at)
 			VALUES (?, ?, ?, ?, 'env', ?, 1, ?, ?)
 			ON CONFLICT (owner_id, type, env_key) DO NOTHING`,
-			newAccountID(), owner, c.Type, c.Label, key, now, now); err != nil {
+			newAccountID(), owner, c.Type, c.Label, key, at, at); err != nil {
 			return nil, err
 		}
 	}

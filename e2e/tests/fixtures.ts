@@ -2,6 +2,8 @@ import { test as base, expect, type APIRequestContext, type Page } from "@playwr
 
 export type Call = {
   platform: "nostr" | "mastodon" | "bluesky" | "threads";
+  /** The id of the account that sent it. */
+  account: string;
   action: "post" | "reply" | "repost" | "quote";
   text: string;
   images?: { mime: string; alt?: string; size: number }[];
@@ -9,19 +11,28 @@ export type Call = {
   remote_id: string;
 };
 
-/** Test-control API of the e2e harness's fake platforms. */
+/** The query naming a platform ("mastodon") or one account ("acc_…"). */
+function who(platformOrAccount: string) {
+  const key = platformOrAccount.startsWith("acc_") ? "account" : "platform";
+  return `${key}=${encodeURIComponent(platformOrAccount)}`;
+}
+
+/**
+ * Test-control API of the e2e harness's fake platforms. Each control takes a
+ * platform (every account of it) or one account's id.
+ */
 export class Fakes {
   constructor(private readonly request: APIRequestContext) {}
   async reset() { expect((await this.request.post("/__e2e/reset")).ok()).toBeTruthy(); }
-  async down(platform: string) { expect((await this.request.post(`/__e2e/down?platform=${platform}`)).ok()).toBeTruthy(); }
-  async up(platform: string) { expect((await this.request.post(`/__e2e/up?platform=${platform}`)).ok()).toBeTruthy(); }
-  /** The platform refuses posts (an `invalid` error) until up() or reset(). */
-  async invalid(platform: string) { expect((await this.request.post(`/__e2e/invalid?platform=${platform}`)).ok()).toBeTruthy(); }
-  /** The platform takes `after` more calls; the next one never returns. */
-  async hold(platform: string, after: number) { expect((await this.request.post(`/__e2e/hold?platform=${platform}&after=${after}`)).ok()).toBeTruthy(); }
+  async down(target: string) { expect((await this.request.post(`/__e2e/down?${who(target)}`)).ok()).toBeTruthy(); }
+  async up(target: string) { expect((await this.request.post(`/__e2e/up?${who(target)}`)).ok()).toBeTruthy(); }
+  /** It refuses posts (an `invalid` error) until up() or reset(). */
+  async invalid(target: string) { expect((await this.request.post(`/__e2e/invalid?${who(target)}`)).ok()).toBeTruthy(); }
+  /** It takes `after` more calls; the next one never returns. */
+  async hold(target: string, after: number) { expect((await this.request.post(`/__e2e/hold?${who(target)}&after=${after}`)).ok()).toBeTruthy(); }
   /** Abandon the engine mid-send and start a new one on the same database, as a restart does. */
   async restart() { expect((await this.request.post("/__e2e/restart")).ok()).toBeTruthy(); }
-  /** Calls each platform received, failed ones included. */
+  /** Calls each platform and each account (by id) received, failed ones included. */
   async attempts(): Promise<Record<string, number>> { return (await this.request.get("/__e2e/attempts")).json(); }
   async calls(): Promise<Call[]> { return (await this.request.get("/__e2e/calls")).json(); }
   /** Calls whose text contains marker, polled until at least `min` arrive. */
@@ -33,6 +44,31 @@ export class Fakes {
     }).toBeGreaterThanOrEqual(min);
     return got;
   }
+}
+
+export type Account = {
+  id: string;
+  type: string;
+  label: string;
+  status: "connected" | "disabled" | "not_configured" | "locked" | "needs_reconnect" | "deleted";
+  status_reason?: string;
+  enabled: boolean;
+  default_selected: boolean;
+  order: number;
+};
+
+/** Every account, oldest first (`order` is the app's order: networks in a fixed order, then oldest first). */
+export async function listAccounts(request: APIRequestContext): Promise<Account[]> {
+  const r = await request.get("/v1/accounts");
+  expect(r.status()).toBe(200);
+  return (await r.json()).data;
+}
+
+/** The harness's account with this label (see harnessAccounts in e2e/harness/main.go). */
+export async function accountLabelled(request: APIRequestContext, label: string): Promise<Account> {
+  const a = (await listAccounts(request)).find(x => x.label === label);
+  expect(a, `an account labelled ${label}`).toBeTruthy();
+  return a!;
 }
 
 /** A short unique marker so a test can find its own posts and calls. */

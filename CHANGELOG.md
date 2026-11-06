@@ -5,8 +5,34 @@ the `edge` image.
 
 ## Unreleased
 
+### Breaking
+
+- **Thread breaks are positions, not `---`.** A post's text is split
+  where `content.breaks` says (code point positions); `---` on its own
+  line is now ordinary text. A caller that relied on `---` (an n8n flow,
+  say) must send `breaks` instead, or leave the splitting to each
+  network's limit. Media go with the post that holds them
+  (`media[].at`); the old `media[].part` is refused with code `replaced`.
+  Each account can have its own breaks and media positions
+  (`targets[].thread`). Stored drafts are converted at the first start.
+
 ### Changed
 
+- The web app edits a thread per network: shared cards, a tab per
+  network with its own text and breaks, and a side-by-side comparison
+  (Alt+C).
+- An OIDC email allowlist (`OIDC_ALLOWED_EMAILS`) matches only an email
+  the identity provider says is verified. Stored emails are cleared once,
+  so an unverified one stops passing; a refused sign-in logs the subject
+  to allow instead.
+- Automatic retries no longer resend a failure older than the retry
+  policy's whole span.
+- After a restart, an item that was being sent is resent only when it
+  never reached the network; otherwise it is marked unknown for you to
+  check.
+- Photos lose their EXIF, GPS and XMP metadata before upload, and a
+  rotated JPEG is stored upright.
+- Schedule times in the web app use the device's time zone.
 - Nothing is required to start. `NSEC_HEX` is needed only for a Nostr
   account and `BLOSSOM_URL` only for media; a server with only Bluesky,
   say, starts and posts text. Without `BLOSSOM_URL`, uploads answer `503`
@@ -71,9 +97,14 @@ the `edge` image.
   with.
 - The `/v1/events` stream's `post` field is absent on the new account
   events, which only a caller with `accounts:read` receives.
+- Alerts name the account, not only its network: "Mastodon
+  (@me@example.social)" where they said "Mastodon". An alert rule that
+  matches the exact text needs updating.
 
 ### Added
 
+- `ALLOWED_HOSTS`: the host names the server answers for (others get
+  `421`). Recommended when OIDC is off.
 - `PATCH /v1/accounts/{id}` changes an account's label, turns it off or
   on, and sets whether new posts select it and whether its posts go to the
   public feed. It needs the new `accounts:write` scope, which `admin`

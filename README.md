@@ -286,9 +286,11 @@ handled on the next start as described above.
   homepage. Requires `Authorization: Bearer $PUBLIC_FEED_TOKEN`; returns `404`
   when `PUBLIC_FEED_TOKEN` is unset. Each item has `id`, `published_at` (first
   time the post went live on any platform), `text`, optional `media[]`, optional
-  `interaction` (for quotes/reposts), and `links[]` — one `{platform, url}` per
-  platform where the post is public and successfully published. Replies, and any
-  post with no public platform copy, are omitted. `limit` defaults to 20, max
+  `interaction` (for quotes/reposts), and `links[]` — one `{platform, url,
+  account, handle}` per account where the post is public and successfully
+  published (`account` is the account's id; `handle` is empty until its network
+  first answered). An account whose `public_feed` is off is left out. Replies,
+  and any post with no public copy, are omitted. `limit` defaults to 20, max
   100.
 
 When a feed-eligible post is published (immediately, on a scheduled fire, or on
@@ -582,6 +584,28 @@ To roll back, stop the container, replace `publisher.db` with
 database: 1.x has no schema check and would write to tables it doesn't
 know. Posts made on 2.0 after the upgrade are lost from History by a
 rollback (they stay on the platforms).
+
+### Upgrading from 2.x
+
+No environment variable was removed or renamed, and nothing needs to be
+set before starting. Read the [CHANGELOG](CHANGELOG.md) first; the changes
+that need action:
+
+1. **API callers that split threads with `---`** (an n8n flow, say) must
+   send `content.breaks` instead: `---` is plain text now.
+2. **Monitors:** `/readyz?external=1` names its checks `account:<id>`
+   instead of `nostr_relay`, `bluesky`, `mastodon` and `threads`. Alerts
+   name the account ("Mastodon (@me@example.social)").
+3. **Startup is stricter:** a boolean variable that isn't `1/true/yes/on`
+   or `0/false/no/off`, a `NSEC_HEX` that isn't 64 hex characters, a
+   negative `POW_*`, or `BLOSSOM_URL` without `NSEC_HEX` now stops startup
+   with an error naming the variable.
+
+Your accounts keep their ids (`acc_…` in `GET /v1/accounts`), so posts,
+drafts and API callers that name them keep working; the relay-sync list
+moves to your Nostr account. Before migrating, the first start writes a
+copy named after the first version it applies (`publisher.db.pre-v9.bak`
+from 2.0); see [Database upgrades and backups](#database-upgrades-and-backups).
 
 ### Build from source
 

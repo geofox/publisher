@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -235,5 +236,33 @@ func TestSeedEnvAccounts(t *testing.T) {
 	}
 	if a, err := s.Account(ctx, DefaultOwner, "acc_db"); err != nil || a.Label != "Added" || a.Source != "db" {
 		t.Errorf("app account = %+v, %v", a, err)
+	}
+}
+
+// Accounts seeded together keep the order given, whatever their random
+// ids: the registry lists a type's accounts oldest first.
+func TestSeedEnvAccountsKeepsOrder(t *testing.T) {
+	ctx := context.Background()
+	for range 10 {
+		s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{Type: "mastodon", Label: "First"},
+			{Type: "mastodon", Key: "2", Label: "Second"}, {Type: "mastodon", Key: "3", Label: "Third"}})
+		_ = s.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, r := range rows {
+			got = append(got, r.Label)
+		}
+		if want := []string{"First", "Second", "Third"}; !slices.Equal(got, want) {
+			t.Fatalf("seeded %v, want %v", got, want)
+		}
+		if !rows[0].CreatedAt.Before(rows[1].CreatedAt) || !rows[1].CreatedAt.Before(rows[2].CreatedAt) {
+			t.Fatalf("created_at %v; want increasing", []time.Time{rows[0].CreatedAt, rows[1].CreatedAt, rows[2].CreatedAt})
+		}
 	}
 }

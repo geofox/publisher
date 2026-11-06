@@ -6,7 +6,7 @@ import type { APIRequestContext } from "@playwright/test";
 // stopped at, an outcome nobody knows is the owner's to settle, and a
 // refusal that would repeat is not retried.
 
-type Account = { id: string; type: string; label: string; enabled: boolean };
+type Account = { id: string; type: string; label: string; status: string; status_reason?: string; enabled: boolean };
 type Item = { ordinal: number; status: string; error_class?: string; next_attempt_at?: string; attempts?: number };
 type Target = { id: number; account: string; type: string; status: string; error_class?: string; gave_up_at?: string; items: Item[] };
 type Post = { id: string; status: string; targets: Target[] };
@@ -15,9 +15,9 @@ async function accounts(request: APIRequestContext): Promise<Account[]> {
   return (await (await request.get("/v1/accounts")).json()).data;
 }
 
-/** The account each type posts as: the first enabled one listed. */
+/** The account each type posts as from the composer: the first connected one listed. */
 async function connected(request: APIRequestContext, type: string): Promise<Account> {
-  const a = (await accounts(request)).find(x => x.enabled && x.type === type);
+  const a = (await accounts(request)).find(x => x.status === "connected" && x.type === type);
   expect(a, `a ${type} account`).toBeTruthy();
   return a!;
 }
@@ -207,27 +207,30 @@ test("a refusal that would repeat is not retried; a transient failure is", async
   }
 });
 
-test("a second account of a type is listed but can't post yet; the composer posts as the connected one", async ({ page, request, fakes }) => {
+test("an account the environment no longer configures is listed but can't post; the composer posts as the first connected one", async ({ page, request, fakes }) => {
   const m = marker("second");
-  const mastos = (await accounts(request)).filter(a => a.type === "mastodon" && a.enabled);
-  expect(mastos.map(a => a.label)).toEqual(["Mastodon", "Mastodon (second)"]);
-  const [main, second] = mastos;
+  const mastos = (await accounts(request)).filter(a => a.type === "mastodon");
+  expect(mastos.map(a => [a.label, a.status])).toEqual([
+    ["Mastodon", "connected"], ["Mastodon (long posts)", "connected"], ["Mastodon (old)", "not_configured"]]);
+  const [main, , old] = mastos;
 
   // /v1 refuses to send as an account the server has no credentials for.
-  for (const targets of [[{ account: second.id }], [{ account: main.id }, { account: second.id }]]) {
-    const r = await createPost(request, { content: { text: `Second ${m}` }, targets });
+  for (const targets of [[{ account: old.id }], [{ account: main.id }, { account: old.id }]]) {
+    const r = await createPost(request, { content: { text: `Old ${m}` }, targets });
     expect(r.status()).toBe(422);
-    const errs = (await r.json()).errors as { pointer: string; code: string }[];
-    // Only the second account is refused, wherever it is in the list.
+    const errs = (await r.json()).errors as { pointer: string; code: string; detail: string }[];
+    // Only that account is refused, wherever it is in the list, with its reason.
     expect(errs).toEqual([expect.objectContaining({ pointer: `/targets/${targets.length - 1}/account`, code: "account_disabled" })]);
+    expect(errs[0].detail).toBe(`the account is not configured: ${old.status_reason}`);
   }
 
-  // The composer still shows one row per type and posts as the connected account.
+  // The composer still shows one row per type and posts as the first connected account.
   await openApp(page);
   await page.locator("#master").fill(`From the composer ${m}`);
   await page.locator("#submit").click();
   await expect(page.locator(".pmodal .pm-title")).toHaveText("✓ Posted");
-  await fakes.waitForCalls(m, 4);
+  const calls = await fakes.waitForCalls(m, 4);
+  expect(calls.filter(c => c.platform === "mastodon").map(c => c.account)).toEqual([main.id]);
   const list = await (await request.get(`/v1/posts?q=${m}`)).json();
   expect(list.data).toHaveLength(1);
   const post = await getPost(request, list.data[0].id);

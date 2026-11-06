@@ -783,19 +783,52 @@ One commit: every caller moves to the registry and account-keyed specs.
 
 **Files:** `e2e/harness/*`, `e2e/tests/*`, `e2e/README.md`.
 
-- [ ] The harness seeds through an injectable env list with keys: one
+- [x] The harness seeds through an injectable env list with keys: one
   account per type as today (default selected), plus a second Mastodon
   (1000-character limit) and a second Bluesky with `default_selected=0`,
   and the `not_configured` row; existing specs keep their four rows.
-- [ ] The recorder records the account of each call and accepts
+- [x] The recorder records the account of each call and accepts
   `?account=` on its controls (`down`, `invalid`, `hold`).
-- [ ] Fake `SourceResolver`s on the fakes, with URLs `Detect` recognises,
+- [x] Fake `SourceResolver`s on the fakes, with URLs `Detect` recognises,
   so interactions can be tested.
-- [ ] Tests that change accounts restore them in `afterEach`.
-- [ ] New `api-accounts.spec.ts` (API level, since the composer is still
+- [x] Tests that change accounts restore them in `afterEach`.
+- [x] New `api-accounts.spec.ts` (API level, since the composer is still
   per type in A2): create a post to both Mastodon accounts and see two
   sends with their own texts; retry one account's failed item; PATCH a
   label; the `not_configured` account refused with its reason.
+
+### As built (A2.8)
+
+- **`harnessAccounts`** (`e2e/harness/main.go`) is the one table of the
+  harness's accounts, seeded with `SeedEnvAccounts` in table order; the
+  registry's env list is built from it (an entry with `NotConfigured` is
+  stored but left out, so it is `not_configured`). Accounts: one of each
+  network (the composer's four rows), "Mastodon (long posts)" (1000
+  characters, through the account config key `e2e_max_length`), "Bluesky
+  (alt)" (`default_selected` off), "Mastodon (old)" (not configured).
+- **`SeedEnvAccounts` keeps the order given:** rows seeded together got
+  the same `created_at`, so the registry fell back to the random ids and
+  two env accounts of a type came in either order (no driver reads
+  numbered variables yet, so only the harness had two). Each row is now
+  1 µs after the previous (`TestSeedEnvAccountsKeepsOrder`, which fails
+  without the fix).
+- **Fakes per account:** `newFake(rec, type, accountID, config)` from the
+  registry's `Open`; calls record `account`; `/__e2e/*` controls take
+  `account=acc_…` instead of `platform=`; attempts count per platform and
+  per account. Bluesky, Mastodon and Nostr fakes implement
+  `ResolveSource` (Threads has none, as in production); ids they return
+  carry the account's id and the preview names it.
+- **Specs:** `api-accounts.spec.ts` (6 tests): list order, status, reason
+  and flags; one post to two Mastodon accounts, each with its own text
+  and limit; a retry of one account's failed item; PATCH with `If-Match`
+  and a stale ETag (label restored in `afterEach`); a reply from the
+  account named, with `one_native_actor`; `/v1/resolve` with and without
+  `account`, and its refusals. The reliability test of the second account
+  now covers the `not_configured` one. Mutation checks: ignoring the
+  per-account limit or per-account outages fails two of the tests.
+- Not done: the Interact tab's tests still stub `/v1/resolve` in the
+  browser (they test the tab's rendering); A3 moves the composer to
+  accounts and its e2e then.
 
 ### Task A2.9: docs, PR, review
 
