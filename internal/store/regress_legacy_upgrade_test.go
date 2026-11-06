@@ -22,13 +22,15 @@ func TestLegacyRealisticUpgrade(t *testing.T) {
 		('ok', ?, 'hello', '["mastodon","bluesky"]', 0, 'ui', 'success'),
 		('bad', ?, 'nope', '["bluesky"]', 0, 'api', 'failed'),
 		('nos', ?, 'gm', '["nostr"]', 0, 'ui', 'partial'),
-		('sch', ?, 'later', '["mastodon"]', 0, 'ui', 'scheduled')`, now, now.Add(time.Second), now.Add(2*time.Second), now.Add(3*time.Second))
+		('sch', ?, 'later', '["mastodon"]', 0, 'ui', 'scheduled'),
+		('snd', ?, 'in flight', '["bluesky"]', 0, 'ui', 'sending')`, now, now.Add(time.Second), now.Add(2*time.Second), now.Add(3*time.Second), now.Add(4*time.Second))
 	mustExec(t, db, `INSERT INTO post_targets (post_id, platform, final_text, fields_json, status, remote_id, remote_url, latency_ms, attempt_count, last_attempt_at) VALUES
 		('ok', 'mastodon', 'hello', '{"visibility":"public"}', 'success', '1', 'https://m/1', 80, 1, ?),
 		('ok', 'bluesky', 'hello', NULL, 'success', 'at://x', 'https://bsky/x', 90, 1, ?),
 		('bad', 'bluesky', 'nope', NULL, 'failed', NULL, NULL, NULL, 3, ?),
 		('nos', 'nostr', 'gm', NULL, 'partial', 'ev', 'https://njump/ev', 300, 1, ?),
-		('sch', 'mastodon', 'later', NULL, 'scheduled', NULL, NULL, NULL, 0, NULL)`, now, now, now, now)
+		('sch', 'mastodon', 'later', NULL, 'scheduled', NULL, NULL, NULL, 0, NULL),
+		('snd', 'bluesky', 'in flight', NULL, 'sending', NULL, NULL, NULL, 1, ?)`, now, now, now, now, now)
 	mustExec(t, db, `INSERT INTO target_attempts (target_id, attempt_no, status, error, latency_ms, remote_id, attempted_at) VALUES
 		(1, 1, 'success', NULL, 80, '1', ?), (2, 1, 'success', NULL, 90, 'at://x', ?),
 		(3, 1, 'failed', 'boom', 0, '', ?), (3, 2, 'failed', 'boom', 0, '', ?), (3, 3, 'failed', 'boom', 0, '', ?),
@@ -47,6 +49,8 @@ func TestLegacyRealisticUpgrade(t *testing.T) {
 	mustExec(t, db, `INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES ('s1', 'u1', ?, ?)`, now, now.Add(time.Hour))
 	mustExec(t, db, `INSERT INTO api_tokens (id, name, token_hash, created_at) VALUES ('t1', 'ci', 'hash', ?)`, now)
 	mustExec(t, db, `INSERT INTO sync_relays (url, added_at) VALUES ('wss://c', ?)`, now)
+	mustExec(t, db, `INSERT INTO threads_token (id, token, expires_at, seed_hash, refreshed_at) VALUES (1, 'tok', ?, 'h', ?)`,
+		now.Add(5*24*time.Hour), now.Add(-50*24*time.Hour))
 	db.Close()
 
 	s, err := Open(path)
@@ -55,12 +59,12 @@ func TestLegacyRealisticUpgrade(t *testing.T) {
 	}
 	defer s.Close()
 	ctx := context.Background()
-	for _, id := range []string{"ok", "bad", "nos", "sch"} {
+	for _, id := range []string{"ok", "bad", "nos", "sch", "snd"} {
 		if _, err := s.GetPost(id); err != nil {
 			t.Errorf("GetPost(%s): %v", id, err)
 		}
 	}
-	if ps, err := s.ListPostsPage(ctx, PostQuery{OwnerID: DefaultOwner}); err != nil || len(ps) != 4 {
+	if ps, err := s.ListPostsPage(ctx, PostQuery{OwnerID: DefaultOwner}); err != nil || len(ps) != 5 {
 		t.Errorf("ListPostsPage: %d %v", len(ps), err)
 	}
 	if ps, err := s.PublicFeed(20); err != nil || len(ps) != 2 {
@@ -87,8 +91,30 @@ func TestLegacyRealisticUpgrade(t *testing.T) {
 	if err != nil || len(olds) != 1 {
 		t.Errorf("OldDrafts: %d %v", len(olds), err)
 	}
-	if _, err := s.SendingItems(ctx); err != nil {
-		t.Errorf("SendingItems: %v", err)
+	// The item an old binary left sending is marked maybe-posted and keeps
+	// the key it was sent with, on its account.
+	if si, err := s.SendingItems(ctx); err != nil || len(si) != 1 {
+		t.Errorf("SendingItems: %v %v", si, err)
+	} else if !si[0].Committing || si[0].AccountID == "" || si[0].IdemKey != LegacyItemKey("snd", "bluesky", 0) {
+		t.Errorf("left sending: %+v", si[0])
+	}
+	// Every account the history needed is an enabled env account, selected
+	// by default and in the feed.
+	if accts, err := s.Accounts(ctx, DefaultOwner); err != nil || len(accts) == 0 {
+		t.Errorf("Accounts: %v %v", accts, err)
+	} else {
+		for _, a := range accts {
+			if !a.Enabled || !a.DefaultSelected || !a.PublicFeed || a.Source != "env" {
+				t.Errorf("account %+v", a)
+			}
+		}
+	}
+	if tok, err := s.GetThreadsToken(); err != nil || tok == nil || tok.Token != "tok" {
+		t.Errorf("GetThreadsToken: %+v %v", tok, err)
+	}
+	// The fan-out job from before items existed has no item to match.
+	if jobs, err := s.DueFanout(now.Add(time.Hour), 10); err != nil || len(jobs) != 1 || jobs[0].ItemID != 0 || jobs[0].AccountID != "" {
+		t.Errorf("DueFanout: %+v %v", jobs, err)
 	}
 	if c, err := s.ClaimItem(ctx, now.Add(time.Hour), ClaimFilter{}); err != nil {
 		t.Errorf("ClaimItem: %v", err)
