@@ -366,9 +366,13 @@ func TestPlanMediaSpillsForward(t *testing.T) {
 func TestPlanHardSplitIsFast(t *testing.T) {
 	text := strings.Repeat("a", 50000)
 	r := Rules{Limit: 500, Number: true, Counting: destination.Counting{URLLength: 23, MentionLocalPartOnly: true}}
+	limit := 1500 * time.Millisecond
+	if raceEnabled {
+		limit *= 10
+	}
 	start := time.Now()
 	items, _ := Plan(text, Layout{}, r)
-	if d := time.Since(start); d > 1500*time.Millisecond {
+	if d := time.Since(start); d > limit {
 		t.Errorf("took %v", d)
 	}
 	for i, it := range items {

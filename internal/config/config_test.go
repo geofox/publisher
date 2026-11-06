@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -200,5 +201,63 @@ func TestRetryAndGraceBounds(t *testing.T) {
 				t.Errorf("%s=%s should be refused", tc.key, tc.val)
 			}
 		})
+	}
+}
+
+func baseEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("NSEC_HEX", tNSEC)
+	t.Setenv("OWNER_PUBKEY", tPUB)
+	t.Setenv("BLOSSOM_URL", "https://b.example.com")
+}
+
+// Booleans accept the usual spellings in any case and refuse anything else,
+// so a typo can't silently keep the default.
+func TestStrictBooleans(t *testing.T) {
+	for _, tc := range []struct {
+		val  string
+		want bool
+	}{
+		{"1", true}, {"true", true}, {"TRUE", true}, {" yes ", true}, {"On", true},
+		{"0", false}, {"false", false}, {"False", false}, {"no", false}, {"OFF", false},
+	} {
+		t.Run(tc.val, func(t *testing.T) {
+			baseEnv(t)
+			t.Setenv("AUTO_RETRY_ENABLED", tc.val)
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.AutoRetryEnabled != tc.want {
+				t.Errorf("AUTO_RETRY_ENABLED=%q → %v, want %v", tc.val, c.AutoRetryEnabled, tc.want)
+			}
+		})
+	}
+	for _, key := range []string{"AUTO_RETRY_ENABLED", "NOSTR_PRIMARY_FANOUT", "OIDC_END_SESSION"} {
+		t.Run(key+"=flase", func(t *testing.T) {
+			baseEnv(t)
+			t.Setenv(key, "flase")
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), `"flase"`) {
+				t.Fatalf("err = %v, want one naming %s and the value", err, key)
+			}
+		})
+	}
+}
+
+// Every invalid variable is reported at once.
+func TestLoadReportsEveryError(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("AUTO_RETRY_ENABLED", "maybe")
+	t.Setenv("POW_TIMEOUT", "soon")
+	t.Setenv("PUBLISH_WORKERS", "0")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load accepted invalid values")
+	}
+	for _, want := range []string{"AUTO_RETRY_ENABLED", "POW_TIMEOUT", "PUBLISH_WORKERS"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q doesn't name %s", err, want)
+		}
 	}
 }

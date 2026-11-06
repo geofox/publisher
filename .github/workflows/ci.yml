@@ -26,8 +26,11 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # The race detector also turns on checkptr, which trips over the
+      # Nostr library's unsafe JSON writer (fiatjaf.com/nostr event.go);
+      # race detection itself stays on.
       - name: Test
-        run: go test ./...
+        run: go test -race -gcflags=all=-d=checkptr=0 ./...
 
   # Build the image for every published platform on each PR, so packaging
   # breaks (Dockerfile, ffmpeg pin, linkage/arch guards) surface before main.
