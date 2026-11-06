@@ -6,15 +6,7 @@ import (
 	"time"
 )
 
-// These are the exact valid test keys already used elsewhere in config_test.go.
-const (
-	tNSEC = "0000000000000000000000000000000000000000000000000000000000000001"
-	tPUB  = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-)
-
 func TestAutoRetryDefaults(t *testing.T) {
-	t.Setenv("NSEC_HEX", tNSEC)
-	t.Setenv("OWNER_PUBKEY", tPUB)
 	t.Setenv("BLOSSOM_URL", "https://b.example.com")
 	c, err := Load()
 	if err != nil {
@@ -38,8 +30,6 @@ func TestAutoRetryDefaults(t *testing.T) {
 }
 
 func TestAutoRetryDisabled(t *testing.T) {
-	t.Setenv("NSEC_HEX", tNSEC)
-	t.Setenv("OWNER_PUBKEY", tPUB)
 	t.Setenv("BLOSSOM_URL", "https://b.example.com")
 	t.Setenv("AUTO_RETRY_ENABLED", "false")
 	c, err := Load()
@@ -54,9 +44,6 @@ func TestAutoRetryDisabled(t *testing.T) {
 func TestVerifyConfigDefaults(t *testing.T) {
 	t.Setenv("PLC_DIRECTORY_URL", "")
 	t.Setenv("VERIFY_HTTP_TIMEOUT", "")
-	// Real matching keypair: secret 00..01, its derived x-only pubkey.
-	t.Setenv("NSEC_HEX", "0000000000000000000000000000000000000000000000000000000000000001")
-	t.Setenv("OWNER_PUBKEY", "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
 	t.Setenv("BLOSSOM_URL", "https://blossom.example.com")
 
 	cfg, err := Load()
@@ -75,8 +62,6 @@ func TestVerifyConfigDefaults(t *testing.T) {
 }
 
 func TestUserLanguagesParsedFromEnv(t *testing.T) {
-	t.Setenv("NSEC_HEX", "0000000000000000000000000000000000000000000000000000000000000001")
-	t.Setenv("OWNER_PUBKEY", "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
 	t.Setenv("BLOSSOM_URL", "https://blossom.example.com")
 	t.Setenv("USER_LANGUAGES", "en, fr , de")
 
@@ -100,8 +85,6 @@ func TestUserLanguagesParsedFromEnv(t *testing.T) {
 // config should call this instead of repeating the boilerplate.
 func loadWithRequiredBase(t *testing.T) (Config, error) {
 	t.Helper()
-	t.Setenv("NSEC_HEX", tNSEC)
-	t.Setenv("OWNER_PUBKEY", tPUB)
 	t.Setenv("BLOSSOM_URL", "https://b.example.com")
 	return Load()
 }
@@ -136,20 +119,13 @@ func TestOIDCConfig(t *testing.T) {
 	}
 }
 
-func TestPrimaryFanoutDefaults(t *testing.T) {
-	// Load() requires a valid keypair; tNSEC/tPUB are a matching pair.
-	t.Setenv("NSEC_HEX", tNSEC)
-	t.Setenv("OWNER_PUBKEY", tPUB)
+// The Nostr fan-out settings moved to the Nostr driver (TestFromEnv there);
+// the queue's tick stays here.
+func TestFanoutTickDefault(t *testing.T) {
 	t.Setenv("BLOSSOM_URL", "https://b.example.com")
 	c, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
-	}
-	if c.NostrPrimaryFanout {
-		t.Errorf("NostrPrimaryFanout should default false")
-	}
-	if len(c.PrimaryRelays) != 1 || c.PrimaryRelays[0] != c.NIP65BootstrapRelay {
-		t.Errorf("PrimaryRelays default = %v, want [%s]", c.PrimaryRelays, c.NIP65BootstrapRelay)
 	}
 	if c.FanoutTick != 5*time.Second {
 		t.Errorf("FanoutTick=%v, want 5s", c.FanoutTick)
@@ -162,8 +138,6 @@ func TestFeedEnvVars(t *testing.T) {
 	}
 
 	// Verify that Load() reads the feed env vars into the correct Config fields.
-	t.Setenv("NSEC_HEX", "0000000000000000000000000000000000000000000000000000000000000001")
-	t.Setenv("OWNER_PUBKEY", "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
 	t.Setenv("BLOSSOM_URL", "https://blossom.example.com")
 	t.Setenv("PUBLIC_FEED_TOKEN", "tok")
 	t.Setenv("FEED_WEBHOOK_URL", "https://hook")
@@ -193,8 +167,6 @@ func TestRetryAndGraceBounds(t *testing.T) {
 		{"AUTO_RETRY_MAX_DELAY", "1s"},
 	} {
 		t.Run(tc.key, func(t *testing.T) {
-			t.Setenv("NSEC_HEX", tNSEC)
-			t.Setenv("OWNER_PUBKEY", tPUB)
 			t.Setenv("BLOSSOM_URL", "https://b.example.com")
 			t.Setenv(tc.key, tc.val)
 			if _, err := Load(); err == nil {
@@ -206,8 +178,6 @@ func TestRetryAndGraceBounds(t *testing.T) {
 
 func baseEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("NSEC_HEX", tNSEC)
-	t.Setenv("OWNER_PUBKEY", tPUB)
 	t.Setenv("BLOSSOM_URL", "https://b.example.com")
 }
 
@@ -233,7 +203,7 @@ func TestStrictBooleans(t *testing.T) {
 			}
 		})
 	}
-	for _, key := range []string{"AUTO_RETRY_ENABLED", "NOSTR_PRIMARY_FANOUT", "OIDC_END_SESSION"} {
+	for _, key := range []string{"AUTO_RETRY_ENABLED", "OIDC_END_SESSION"} {
 		t.Run(key+"=flase", func(t *testing.T) {
 			baseEnv(t)
 			t.Setenv(key, "flase")

@@ -8,43 +8,26 @@ import (
 	"strings"
 	"time"
 
-	"fiatjaf.com/nostr"
+	"github.com/geofox/publisher/internal/destination"
 )
 
 const DefaultPort = "8080"
 
+// Config is the operator's configuration. Destination accounts are not in
+// it: each driver reads its own variables (destination.EnvSource).
 type Config struct {
-	NSEC                 nostr.SecretKey
-	OwnerPubkey          nostr.PubKey
-	BlossomURL           string
-	NIP65BootstrapRelay  string
-	FallbackRelays       []string
-	POWDifficultyDefault int
-	POWDifficultyMax     int
-	POWTimeout           time.Duration
-	RelayCacheTTL        time.Duration
-	PublishTimeout       time.Duration
-	ScheduleGrace        time.Duration
-	Port                 string
-	LogLevel             string
-
-	// New in the publisher graduation:
-	DBPath          string
-	MastodonBaseURL string
-	MastodonToken   string
-
-	BlueskyPDSURL      string
-	BlueskyIdentifier  string
-	BlueskyAppPassword string
-
-	ThreadsToken  string
-	ThreadsUserID string
+	BlossomURL     string
+	POWTimeout     time.Duration
+	RelayCacheTTL  time.Duration
+	PublishTimeout time.Duration
+	ScheduleGrace  time.Duration
+	Port           string
+	LogLevel       string
+	DBPath         string
 
 	AlertWebhookURL  string
 	AlertWebhookUser string
 	AlertWebhookPass string
-
-	SyncRelaysDefault []string
 
 	PLCDirectoryURL   string
 	VerifyHTTPTimeout time.Duration
@@ -75,10 +58,8 @@ type Config struct {
 	AutoRetryMaxDelay    time.Duration
 	RetrierTick          time.Duration
 
-	// Primary fan-out settings (Fix 2).
-	NostrPrimaryFanout bool
-	PrimaryRelays      []string
-	FanoutTick         time.Duration
+	// FanoutTick is how often the Nostr fan-out queue is worked.
+	FanoutTick time.Duration
 
 	// Video pipeline. Enabled only when FFmpegPath points at an existing binary.
 	// VideoWorkdir overrides the default tempdir location for upload staging and
@@ -111,35 +92,21 @@ func (c Config) OIDCEnabled() bool { return c.OIDCIssuer != "" }
 func Load() (Config, error) {
 	var l loader
 	c := Config{
-		BlossomURL:          strings.TrimRight(getEnv("BLOSSOM_URL", ""), "/"),
-		NIP65BootstrapRelay: getEnv("NIP65_BOOTSTRAP_RELAY", "wss://relay.geoffrey.one"),
-		Port:                getEnv("PORT", DefaultPort),
-		LogLevel:            getEnv("LOG_LEVEL", "info"),
-		DBPath:              getEnv("DB_PATH", "/data/publisher.db"),
-		MastodonBaseURL:     strings.TrimRight(getEnv("MASTODON_BASE_URL", ""), "/"),
-		MastodonToken:       getEnv("MASTODON_TOKEN", ""),
-		BlueskyPDSURL:       strings.TrimRight(getEnv("BLUESKY_PDS_URL", ""), "/"),
-		BlueskyIdentifier:   getEnv("BLUESKY_IDENTIFIER", ""),
-		BlueskyAppPassword:  getEnv("BLUESKY_APP_PASSWORD", ""),
-		ThreadsToken:        getEnv("THREADS_ACCESS_TOKEN", ""),
-		ThreadsUserID:       getEnv("THREADS_USER_ID", "me"),
-		AlertWebhookURL:     getEnv("ALERT_WEBHOOK_URL", ""),
-		AlertWebhookUser:    getEnv("ALERT_WEBHOOK_USER", "alertmanager"),
-		AlertWebhookPass:    getEnv("ALERT_WEBHOOK_PASS", ""),
-		PLCDirectoryURL:     getEnv("PLC_DIRECTORY_URL", "https://plc.directory"),
+		BlossomURL:       strings.TrimRight(getEnv("BLOSSOM_URL", ""), "/"),
+		Port:             getEnv("PORT", DefaultPort),
+		LogLevel:         getEnv("LOG_LEVEL", "info"),
+		DBPath:           getEnv("DB_PATH", "/data/publisher.db"),
+		AlertWebhookURL:  getEnv("ALERT_WEBHOOK_URL", ""),
+		AlertWebhookUser: getEnv("ALERT_WEBHOOK_USER", "alertmanager"),
+		AlertWebhookPass: getEnv("ALERT_WEBHOOK_PASS", ""),
+		PLCDirectoryURL:  getEnv("PLC_DIRECTORY_URL", "https://plc.directory"),
 	}
-	c.FallbackRelays = splitCSV(getEnv("FALLBACK_RELAYS",
-		"wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io"))
-	c.SyncRelaysDefault = splitCSV(getEnv("SYNC_RELAYS",
-		"wss://nos.lol,wss://relay.damus.io,wss://nostr.wine,wss://nostr.land,wss://relay.nostr.band,wss://purplepag.es,wss://relay.snort.social,wss://nostr.mom"))
 	c.UserLanguages = splitCSV(getEnv("USER_LANGUAGES", ""))
 	c.DeepLAPIKey = getEnv("DEEPL_API_KEY", "")
 	c.PublicFeedToken = getEnv("PUBLIC_FEED_TOKEN", "")
 	c.FeedWebhookURL = getEnv("FEED_WEBHOOK_URL", "")
 	c.FeedWebhookToken = getEnv("FEED_WEBHOOK_TOKEN", "")
 
-	c.POWDifficultyDefault, _ = l.int("POW_DIFFICULTY_DEFAULT", "16")
-	c.POWDifficultyMax, _ = l.int("POW_DIFFICULTY_MAX", "28")
 	c.POWTimeout, _ = l.duration("POW_TIMEOUT", "30s")
 	c.RelayCacheTTL, _ = l.duration("RELAY_CACHE_TTL", "1h")
 	c.PublishTimeout, _ = l.duration("PUBLISH_TIMEOUT", "10s")
@@ -169,47 +136,11 @@ func Load() (Config, error) {
 		}
 	}
 	c.RetrierTick, _ = l.duration("RETRIER_TICK", "60s")
-	c.NostrPrimaryFanout = l.bool("NOSTR_PRIMARY_FANOUT", false)
-	c.PrimaryRelays = splitCSV(getEnv("PRIMARY_RELAYS", c.NIP65BootstrapRelay))
-	if len(c.PrimaryRelays) == 0 {
-		c.PrimaryRelays = []string{c.NIP65BootstrapRelay}
-	}
 	c.FanoutTick, _ = l.duration("FANOUT_TICK", "5s")
 	c.VerifyHTTPTimeout, _ = l.duration("VERIFY_HTTP_TIMEOUT", "10s")
 
-	nsecHex := getEnv("NSEC_HEX", "")
-	pubHex := getEnv("OWNER_PUBKEY", "")
-	if nsecHex == "" {
-		l.fail("NSEC_HEX is required")
-	}
-	if pubHex == "" {
-		l.fail("OWNER_PUBKEY is required")
-	}
 	if c.BlossomURL == "" {
 		l.fail("BLOSSOM_URL is required")
-	}
-	var nsecOK, pubOK bool
-	if nsecHex != "" {
-		var err error
-		if c.NSEC, err = nostr.SecretKeyFromHex(nsecHex); err != nil {
-			l.errs = append(l.errs, fmt.Errorf("NSEC_HEX: %w", err))
-		} else {
-			nsecOK = true
-		}
-	}
-	if pubHex != "" {
-		var err error
-		if c.OwnerPubkey, err = nostr.PubKeyFromHex(pubHex); err != nil {
-			l.errs = append(l.errs, fmt.Errorf("OWNER_PUBKEY: %w", err))
-		} else {
-			pubOK = true
-		}
-	}
-	if nsecOK && pubOK {
-		if derived := nostr.GetPublicKey(c.NSEC); derived != c.OwnerPubkey {
-			l.fail("OWNER_PUBKEY (%s) does not match the pubkey derived from NSEC_HEX (%s)",
-				c.OwnerPubkey.Hex(), derived.Hex())
-		}
 	}
 
 	c.FFmpegPath = getEnv("FFMPEG_PATH", "/usr/local/bin/ffmpeg")
@@ -281,21 +212,9 @@ func (l *loader) bool(k string, d bool) bool {
 	return v
 }
 
-// ParseBool reads a boolean variable: 1/true/yes/on or 0/false/no/off in any
-// case. An empty value is the default; anything else is an error naming the
-// variable, so a typo can't silently keep the default.
+// ParseBool reads a boolean variable strictly (see destination.ParseBool).
 func ParseBool(name, value string, def bool) (bool, error) {
-	v := strings.ToLower(strings.TrimSpace(value))
-	switch v {
-	case "":
-		return def, nil
-	case "1", "true", "yes", "on":
-		return true, nil
-	case "0", "false", "no", "off":
-		return false, nil
-	default:
-		return def, fmt.Errorf("%s: %q is not a boolean (use true/false, 1/0, yes/no or on/off)", name, value)
-	}
+	return destination.ParseBool(name, value, def)
 }
 
 func splitCSV(s string) []string {

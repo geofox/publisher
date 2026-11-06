@@ -115,6 +115,17 @@ func New(cfg Config) *Publisher {
 	}
 }
 
+// OwnerPubkey is the public key events are signed with.
+func (p *Publisher) OwnerPubkey() gonostr.PubKey { return p.cfg.OwnerPubkey }
+
+// HomeRelay is the bootstrap relay: NIP-65 lookups and relay sync start
+// here.
+func (p *Publisher) HomeRelay() string { return p.cfg.NIP65BootstrapRelay }
+
+// PrimaryFanout reports whether a publish waits only for the primary
+// relays, leaving the rest to the fan-out queue.
+func (p *Publisher) PrimaryFanout() bool { return p.cfg.PrimaryFanout }
+
 // Publish builds, optionally mines, signs, and broadcasts a Nostr event.
 // It returns PublishResult even on partial relay failure — the caller
 // decides how to interpret the relay results slice.
