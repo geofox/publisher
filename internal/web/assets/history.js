@@ -3,6 +3,7 @@ import { el, $, v1, flash, relTime, shortID, shortRef, META, ORDER, confirmModal
 import { state } from "./state.js";
 import { loadDraft } from "./compose.js";
 import { brandTile } from "./brands.js";
+import { cpIndex } from "./textpos.js";
 import { followPost as followPostEvents } from "./follow.js";
 
 // The History tab, on /v1/posts. A post has one target per account; a
@@ -350,9 +351,19 @@ function itemChain(post, t) {
   const items = t.items || [];
   if (items.length < 2 && !items.some(it => it.status === "unknown")) return null;
   const wrap = el("div", { class: "seg-chain" });
+  const ranged = items.length > 1 && fromShared(post.content.text || "", items);
   for (const it of items) {
     const bad = it.status === "failed" || it.status === "unknown";
-    const row = el("div", { class: "seg-row" + (bad ? " seg-failed" : "") });
+    const row = el("div", { class: "seg-row" + (bad ? " seg-failed" : "") + (ranged ? " ranged" : "") });
+    if (ranged && it.range) {
+      // Where the part came from: hovering (or tapping) it marks its
+      // stretch of the text above.
+      const show = () => markRange(it.range);
+      row.title = "Marks where this part is in the text";
+      row.addEventListener("mouseenter", show);
+      row.addEventListener("mouseleave", () => markRange(null));
+      row.addEventListener("click", e => { if (!e.target.closest("a, button")) show(); });
+    }
     const b = badge(it.status);
     row.append(el("span", { class: "seg-n", text: `${it.ordinal + 1}.` }),
       el("span", { class: "seg-text", text: it.text }),
@@ -365,6 +376,30 @@ function itemChain(post, t) {
     if (it.status === "unknown") wrap.append(resolveControls(post, t, it));
   }
   return wrap;
+}
+
+// fromShared reports whether a target's items came from the post's text (not
+// an account's own wording): each part's range of that text is the part.
+function fromShared(text, items) {
+  const ix = cpIndex(text);
+  return items.every(it => {
+    if (!it.range) return false;
+    const [a, b] = it.range;
+    if (b > ix.length - 1) return false;
+    const part = text.slice(ix[a], ix[b]).trim();
+    return part === "" || (it.text || "").startsWith(part);
+  });
+}
+
+// markRange marks code points [from, to) of the detail's text, or nothing.
+function markRange(range) {
+  const box = $("#hdetail .dtext.main");
+  if (!box) return;
+  const text = box.dataset.text || "";
+  if (!range) { box.textContent = text; return; }
+  const ix = cpIndex(text);
+  const a = ix[Math.min(range[0], ix.length - 1)], b = ix[Math.min(range[1], ix.length - 1)];
+  box.replaceChildren(text.slice(0, a), el("mark", { text: text.slice(a, b) }), text.slice(b));
 }
 
 // deliveryBlock: a Nostr item's relays, with a retry for each failed one.
@@ -485,7 +520,7 @@ function renderDetail(post) {
   if (text) {
     const head = el("div", { class: "sec-head" }, el("span", { class: "lbl", text: "text" }));
     if (state.translateTargets && state.translateTargets.length) head.append(translateSelect(text));
-    d.append(head, el("div", { class: "dtext", text }));
+    d.append(head, el("div", { class: "dtext main", "data-text": text, text }));
   }
   if (post.content.media.length) {
     const m = el("div", { class: "dmedia" });

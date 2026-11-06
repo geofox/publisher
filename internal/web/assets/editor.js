@@ -41,8 +41,38 @@ export function editorInit(h) {
   platformPane = el("div", { class: "ed-pane ed-platform", hidden: true });
   root.replaceChildren(tabsRow, sharedPane, platformPane);
   document.addEventListener("plan", onPlan);
+  document.addEventListener("keydown", onKey);
   renderEditor();
 }
+
+// tabKeys are the editor's tabs in order, for Alt+1…Alt+5.
+function tabKeys() { return ["shared", ...selected()]; }
+
+// onKey takes the editor's shortcuts while the composer shows: Alt+1…5 pick
+// a tab, Alt+C opens the comparison; on a platform tab Enter breaks at the
+// picked word and Escape lets it go. (Ctrl/Cmd+Enter and Backspace work in
+// the cards themselves.)
+function onKey(e) {
+  if (!root || root.offsetParent === null || document.querySelector(".modal-bk, .sheet-bk")) {
+    if (e.key === "Escape" && cmpOpen) closeCompare();
+    return;
+  }
+  if (e.altKey && !e.ctrlKey && !e.metaKey) {
+    const n = /^Digit([1-9])$/.exec(e.code);
+    if (n) {
+      const t = tabKeys()[+n[1] - 1];
+      if (t) { e.preventDefault(); setTab(t); }
+      return;
+    }
+    if (e.code === "KeyC" && wide()) { e.preventDefault(); openCompare(); return; }
+  }
+  const inField = e.target.closest && e.target.closest("input, textarea, select, [contenteditable]");
+  if (inField || !picked || state.tab !== picked.p) return;
+  if (e.key === "Escape") { picked = null; renderPlatform(state.tab); }
+  if (e.key === "Enter") platformPane.querySelector(".pp-here")?.click();
+}
+
+const wide = () => window.matchMedia("(min-width: 1100px)").matches;
 
 // ---------------------------------------------------------------------------
 // Documents: the shared text, or one platform's own text
@@ -141,8 +171,11 @@ function postsOf(p) {
 
 function renderTabs() {
   tabsRow.replaceChildren();
+  const keys = tabKeys();
   const tab = (key, label, extra) => {
+    const k = keys.indexOf(key) + 1;
     const b = el("button", {
+      title: k > 0 && k < 10 ? `Alt+${k}` : null,
       class: "ed-tab" + (state.tab === key ? " on" : "") + (key === "shared" ? "" : " p-" + key),
       type: "button", role: "tab", "aria-selected": state.tab === key ? "true" : "false",
       "data-tab": key, onclick: () => setTab(key),
@@ -158,6 +191,10 @@ function renderTabs() {
     if (n > 1) extra.append(el("span", { class: "ed-tab-n", text: String(n) }));
     if (m !== "shared") extra.append(el("span", { class: "ed-tab-mode", title: m === "text" ? "own text" : "own breaks", text: m === "text" ? "✎" : "✂" }));
     tab(p, META[p].label, extra);
+  }
+  if (selected().length > 1) {
+    tabsRow.append(el("button", { class: "ed-compare", type: "button", title: "Every platform's thread side by side (Alt+C)",
+      onclick: openCompare }, "⇆ Compare"));
   }
 }
 
@@ -188,6 +225,7 @@ export function renderEditor() {
 function onPlan() {
   if (!root) return;
   renderTabs();
+  if (cmpOpen) renderCompare();
   refreshChips(SHARED, sharedPane);
   if (state.tab === "shared") return;
   if (mode(state.tab) === "text") refreshChips({ p: state.tab }, platformPane);
@@ -645,3 +683,64 @@ function placeBreak(p, items, i, u, at) {
 }
 
 export { SHARED };
+
+// ---------------------------------------------------------------------------
+// Compare: every platform's thread side by side (wide screens)
+// ---------------------------------------------------------------------------
+
+let cmpOpen = null; // the open comparison's backdrop
+
+function openCompare() {
+  if (cmpOpen) return;
+  cmpOpen = el("div", { class: "modal-bk cmp-bk" });
+  cmpOpen.addEventListener("click", e => { if (e.target === cmpOpen) closeCompare(); });
+  document.body.append(cmpOpen);
+  renderCompare();
+}
+
+function closeCompare() {
+  if (cmpOpen) cmpOpen.remove();
+  cmpOpen = null;
+}
+
+// renderCompare draws one column per selected platform, post k of each on
+// row k, so a post that ends mid-sentence or a link left alone stands out.
+// A column's header or post opens that platform's tab.
+function renderCompare() {
+  const plats = selected();
+  const plans = plats.map(p => ({ p, pl: planFor(p) || lastPlanFor(p) }));
+  const rows = Math.max(1, ...plans.map(x => (x.pl ? x.pl.items.length : 0)));
+  const grid = el("div", { class: "cmp-grid", role: "table" });
+  grid.style.gridTemplateColumns = `repeat(${plats.length}, minmax(220px, 1fr))`;
+  const open = p => { closeCompare(); setTab(p); document.getElementById("editor")?.scrollIntoView({ block: "start" }); };
+  for (const { p, pl } of plans) {
+    const n = pl ? pl.items.length : 0;
+    grid.append(el("button", { class: "cmp-head p-" + p, type: "button", role: "columnheader", onclick: () => open(p) },
+      brandTile(p, { size: 20, r: 5 }), el("span", { class: "cmp-name", text: META[p].label }),
+      el("span", { class: "muted", text: n === 1 ? "1 post" : `${n} posts` }),
+      mode(p) !== "shared" ? el("span", { class: "pp-mode own", text: mode(p) === "text" ? "own text" : "own breaks" }) : null));
+  }
+  for (let k = 0; k < rows; k++) {
+    for (const { p, pl } of plans) {
+      const item = pl && pl.items[k];
+      if (!item) { grid.append(el("div", { class: "cmp-cell empty" })); continue; }
+      const over = pl.limit && item.length > pl.limit;
+      grid.append(el("div", { class: "cmp-cell p-" + p + (k > 0 ? " brk-" + (item.break === "manual" ? "manual" : "auto") : ""),
+        role: "cell", tabindex: "0", title: `Open ${META[p].label}'s tab`,
+        onclick: () => open(p), onkeydown: e => { if (e.key === "Enter") open(p); } },
+        el("div", { class: "cmp-text", text: item.text }),
+        el("div", { class: "cmp-meta" },
+          el("span", { class: "pp-count" + (over ? " over" : ""), text: pl.limit ? `${item.length}/${pl.limit}` : String(item.length) }),
+          (item.media || []).length ? el("span", { text: "🖼 " + item.media.length }) : null,
+          (item.problems || []).length ? el("span", { class: "pp-problem", text: "⚠ " + item.problems.join("; ") }) : null)));
+    }
+  }
+  const card = el("div", { class: "modal cmp" },
+    el("div", { class: "cmp-top" },
+      el("p", { class: "modal-title", text: "Compare threads" }),
+      el("span", { class: "muted", text: "Solid line: your break · dashed: split to fit" }),
+      el("span", { class: "grow" }),
+      el("button", { class: "ghost sm", type: "button", text: "Close", onclick: closeCompare })),
+    grid);
+  cmpOpen.replaceChildren(card);
+}

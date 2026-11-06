@@ -233,3 +233,40 @@ test("unsaved work from the old composer comes back with its breaks", async ({ p
   await expect(own).toHaveCount(2);
   await expect(own.nth(1)).toHaveValue("Own two");
 });
+
+test("Alt+number switches tabs, and Compare lines the threads up", async ({ page }) => {
+  await openApp(page);
+  await page.locator("#master").fill("Alpha one. " + "Words that take room on a short platform. ".repeat(8));
+  await page.keyboard.press("Alt+3"); // Shared, Bluesky, Mastodon…
+  await expect(tab(page, "mastodon")).toHaveClass(/\bon\b/);
+  await page.keyboard.press("Alt+1");
+  await expect(tab(page, "shared")).toHaveClass(/\bon\b/);
+
+  await page.locator("#editor .ed-compare").click();
+  const cmp = page.locator(".modal.cmp");
+  await expect(cmp.locator(".cmp-head")).toHaveCount(4);
+  await expect(cmp.locator(".cmp-head.p-bluesky")).toContainText("2 posts");
+  await expect(cmp.locator(".cmp-cell.p-bluesky.brk-auto")).toHaveCount(1);
+  await cmp.locator(".cmp-head.p-nostr").click();
+  await expect(cmp).toHaveCount(0);
+  await expect(tab(page, "nostr")).toHaveClass(/\bon\b/);
+});
+
+test("History marks where each part of a thread came from", async ({ page }) => {
+  const m = marker("ranges");
+  await openApp(page);
+  await page.locator("#chips .target-row.p-mastodon").click();
+  await page.locator("#chips .target-row.p-threads").click();
+  await page.locator("#chips .target-row.p-nostr").click();
+  await page.locator("#master").fill(`${m} first.\n---\nsecond.`);
+  await page.locator("#submit").click();
+  await expect(page.locator(".pmodal .pm-title")).toHaveText("✓ Posted");
+  await page.locator(".pmodal").getByRole("button", { name: "Done" }).click();
+  await page.locator('.tab[data-view="history"]').click();
+  await page.locator(".hitem", { hasText: m }).click();
+  const detail = page.locator("#hdetail");
+  await detail.locator(".seg-row.ranged").nth(1).hover();
+  await expect(detail.locator(".dtext.main mark")).toHaveText("second.");
+  await detail.locator(".seg-row.ranged").nth(0).hover();
+  await expect(detail.locator(".dtext.main mark")).toHaveText(`${m} first.`);
+});

@@ -314,7 +314,9 @@ and ↓ (a sentence; Shift: a word) or by dragging it onto a word, and that
 account gets its own breaks while its wording still follows the shared
 text (**Reset to shared** undoes it). **Edit wording** gives it its own
 text. Images go with the post they sit on: drag them between cards, or
-use **Move to…**.
+use **Move to…**. Alt+1…5 switch tabs; on a wide screen **Compare**
+(Alt+C) lines every account's thread up side by side. In History, hovering
+a part of a thread marks where it came from in the text.
 
 The **Interact** tab accepts a pasted post URL or Nostr identifier, previews
 the source post, and reports which of reply/quote/repost the post allows.
