@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -61,9 +63,19 @@ func (Driver) Manifest() destination.Manifest {
 // Account is the Nostr identity whose key the Publisher holds.
 type Account struct {
 	P *Publisher
+	// HTTP makes the account's plain HTTP requests (the relay check);
+	// nil uses destination.TrustedNet.
+	HTTP *http.Client
+}
+
+// Close implements io.Closer: it stops the account's relay pool.
+func (a *Account) Close() error {
+	a.P.Close()
+	return nil
 }
 
 var (
+	_ io.Closer               = (*Account)(nil)
 	_ destination.Account     = (*Account)(nil)
 	_ destination.Reposter    = (*Account)(nil)
 	_ destination.Redeliverer = (*Account)(nil)
@@ -323,8 +335,8 @@ func (a *Account) Identity(ctx context.Context) (destination.Identity, error) {
 	if err != nil {
 		return destination.Identity{}, err
 	}
-	return destination.Identity{Handle: npub, DisplayName: name, AvatarURL: picture,
-		ProfileURL: "https://njump.me/" + npub}, nil
+	return destination.Identity{RemoteID: a.P.OwnerPubkey().Hex(), Handle: npub, DisplayName: name,
+		AvatarURL: picture, ProfileURL: "https://njump.me/" + npub}, nil
 }
 
 func firstHint(hints []string) string {

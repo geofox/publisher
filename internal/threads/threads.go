@@ -60,6 +60,7 @@ type Client struct {
 	RefreshURL       string
 	UserID           string
 	token            string
+	expiresAt        time.Time // when token stops working; zero when unknown
 	mu               sync.RWMutex
 	HTTP             *http.Client
 	PollInterval     time.Duration
@@ -70,6 +71,11 @@ type Client struct {
 // New creates a Client with production defaults.
 // Pass userID="" to use the literal "me" alias.
 func New(token, userID string) *Client {
+	return NewWithNet(token, userID, destination.TrustedNet())
+}
+
+// NewWithNet is New with every connection made through n.
+func NewWithNet(token, userID string, n destination.Net) *Client {
 	if userID == "" {
 		userID = "me"
 	}
@@ -78,7 +84,7 @@ func New(token, userID string) *Client {
 		RefreshURL:       "https://graph.threads.net/refresh_access_token",
 		UserID:           userID,
 		token:            token,
-		HTTP:             &http.Client{Timeout: 30 * time.Second},
+		HTTP:             n.Client(30 * time.Second),
 		PollInterval:     3 * time.Second,
 		PollTimeout:      90 * time.Second,
 		VideoPollTimeout: 6 * time.Minute,
@@ -281,6 +287,21 @@ func (c *Client) SetToken(s string) {
 	c.mu.Unlock()
 }
 
+// SetTokenExpiry records when the current token stops working (the token
+// manager knows it from the stored token state).
+func (c *Client) SetTokenExpiry(t time.Time) {
+	c.mu.Lock()
+	c.expiresAt = t
+	c.mu.Unlock()
+}
+
+// TokenExpiry is when the current token stops working; zero when unknown.
+func (c *Client) TokenExpiry() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.expiresAt
+}
+
 func (c *Client) tok() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -336,10 +357,18 @@ func (c *Client) RefreshToken(ctx context.Context, current string) (string, time
 	return out.AccessToken, time.Duration(out.ExpiresIn) * time.Second, nil
 }
 
-// Profile fetches the authenticated operator's own Threads profile (username,
-// name, avatar) via GET /{user-id}?fields=username,name,threads_profile_picture_url.
-func (c *Client) Profile(ctx context.Context) (handle, name, avatar string, err error) {
+// Me is the authenticated account's profile.
+type Me struct {
+	ID     string // the Threads user id
+	Handle string // @username
+	Name   string
+	Avatar string
+}
+
+// Me fetches the authenticated account's id, username, name and picture.
+func (c *Client) Me(ctx context.Context) (Me, error) {
 	var r struct {
+		ID       string `json:"id"`
 		Username string `json:"username"`
 		Name     string `json:"name"`
 		Picture  string `json:"threads_profile_picture_url"`
@@ -348,13 +377,20 @@ func (c *Client) Profile(ctx context.Context) (handle, name, avatar string, err 
 	if uid == "" {
 		uid = "me"
 	}
-	if err := c.do(ctx, http.MethodGet, "/"+uid+"?fields=username,name,threads_profile_picture_url", &r); err != nil {
-		return "", "", "", err
+	if err := c.do(ctx, http.MethodGet, "/"+uid+"?fields=id,username,name,threads_profile_picture_url", &r); err != nil {
+		return Me{}, err
 	}
+	me := Me{ID: r.ID, Name: r.Name, Avatar: r.Picture}
 	if r.Username != "" {
-		handle = "@" + r.Username
+		me.Handle = "@" + r.Username
 	}
-	return handle, r.Name, r.Picture, nil
+	return me, nil
+}
+
+// Profile fetches the operator's own handle, name and picture (see Me).
+func (c *Client) Profile(ctx context.Context) (handle, name, avatar string, err error) {
+	me, err := c.Me(ctx)
+	return me.Handle, me.Name, me.Avatar, err
 }
 
 // do executes an authenticated HTTP request and JSON-decodes the response into out.

@@ -180,12 +180,12 @@ func (a *Account) Repost(ctx context.Context, src destination.SourceRef) (destin
 
 // Identity implements destination.Identifier.
 func (a *Account) Identity(ctx context.Context) (destination.Identity, error) {
-	handle, name, avatar, err := a.C.Profile(ctx)
+	me, err := a.C.Me(ctx)
 	if err != nil {
 		return destination.Identity{}, err
 	}
-	return destination.Identity{Handle: handle, DisplayName: name, AvatarURL: avatar,
-		ProfileURL: "https://bsky.app/profile/" + handle}, nil
+	return destination.Identity{RemoteID: me.DID, Handle: me.Handle, DisplayName: me.DisplayName,
+		AvatarURL: me.Avatar, ProfileURL: "https://bsky.app/profile/" + me.Handle}, nil
 }
 
 // errTooLong is the client's own pre-flight length check.

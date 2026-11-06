@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -81,6 +82,9 @@ type Config struct {
 	PublishTimeout       time.Duration
 	PrimaryFanout        bool     // when true, publish synchronously to PrimaryRelays only
 	PrimaryRelays        []string // the primary relay set (e.g. the owner's own relay)
+	// ContentClient dials relays named by content (the hints in a pasted
+	// nevent); nil: public addresses only, through the network guard.
+	ContentClient *http.Client
 }
 
 // publishPool is the subset of *gonostr.Pool that Publisher needs; an
@@ -114,6 +118,25 @@ func New(cfg Config) *Publisher {
 		cache: map[gonostr.PubKey]relayCacheEntry{},
 	}
 }
+
+// Close stops the relay pool and its connections. The Publisher can't be
+// used after it.
+func (p *Publisher) Close() {
+	if c, ok := p.pool.(interface{ Close(string) }); ok {
+		c.Close("account closed")
+	}
+}
+
+// OwnerPubkey is the public key events are signed with.
+func (p *Publisher) OwnerPubkey() gonostr.PubKey { return p.cfg.OwnerPubkey }
+
+// HomeRelay is the bootstrap relay: NIP-65 lookups and relay sync start
+// here.
+func (p *Publisher) HomeRelay() string { return p.cfg.NIP65BootstrapRelay }
+
+// PrimaryFanout reports whether a publish waits only for the primary
+// relays, leaving the rest to the fan-out queue.
+func (p *Publisher) PrimaryFanout() bool { return p.cfg.PrimaryFanout }
 
 // Publish builds, optionally mines, signs, and broadcasts a Nostr event.
 // It returns PublishResult even on partial relay failure — the caller

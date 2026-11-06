@@ -389,37 +389,41 @@ signs events on request, so treat it like a credential store and read
 
 ### Prerequisites
 
-- A Nostr keypair. You need the secret key as 64-char hex (`NSEC_HEX`) and
-  the matching public key as 64-char hex (`OWNER_PUBKEY`). Derive both from
-  your `nsec1…` once with [`nak`](https://github.com/fiatjaf/nak):
-  `nak key decode nsec1…` gives the hex secret (`NSEC_HEX`) and
-  `nak key public nsec1…` gives the matching hex pubkey (`OWNER_PUBKEY`).
+- A Nostr secret key as 64-char hex (`NSEC_HEX`). Convert your `nsec1…`
+  once with [`nak`](https://github.com/fiatjaf/nak): `nak key decode nsec1…`
+  gives the hex secret. The public key is derived from it.
 - A [Blossom](https://github.com/hzrd149/blossom) server URL for media
   uploads (`BLOSSOM_URL`).
 - A writable directory for the SQLite archive (mounted at `DB_PATH`).
 - Optional, per platform you want to cross-post to:
-  - **Mastodon:** instance URL + access token.
-  - **Bluesky:** PDS URL, handle/identifier, and an app password.
+  - **Mastodon:** instance URL + access token (both required together).
+  - **Bluesky:** PDS URL, handle/identifier, and an app password (all three
+    required together).
   - **Threads:** a long-lived access token + user id.
 
 ### Configuration
 
-All configuration is via environment variables. Only the first three are
-**required**; the relay/Blossom defaults point at the author's own
-infrastructure and should be overridden.
+All configuration is via environment variables. Only `NSEC_HEX` and
+`BLOSSOM_URL` are **required**; the relay defaults point at the author's own
+infrastructure and should be overridden. A network is turned on by its
+credential (`MASTODON_TOKEN`, `BLUESKY_APP_PASSWORD`,
+`THREADS_ACCESS_TOKEN`); a credential set without the variables that go with
+it stops startup with an error naming them. Every invalid variable is
+reported at once. Boolean variables take `true/false`, `1/0`, `yes/no` or
+`on/off` in any case; any other value is an error, not the default.
 
 | Var | Required | Default | Purpose |
 |---|---|---|---|
-| `NSEC_HEX` | yes | — | 64-char hex secret key (**secret**). Convert `nsec1…` via `nak key decode` |
-| `OWNER_PUBKEY` | yes | — | 64-char hex pubkey; must match `NSEC_HEX` or the process refuses to start |
+| `NSEC_HEX` | yes | — | Secret key as exactly 64 hex characters (**secret**). Convert `nsec1…` via `nak key decode`; if a tool printed it without its leading zeros, add them back |
+| `OWNER_PUBKEY` | no | (derived) | 64-char hex pubkey. Optional: it is derived from `NSEC_HEX`. If set, it must match, or the process refuses to start |
 | `BLOSSOM_URL` | yes | — | Blossom media server base URL, e.g. `https://blossom.example.com` |
 | `NIP65_BOOTSTRAP_RELAY` | no | `wss://relay.geoffrey.one` | Where to fetch the author's `kind:10002` relay list |
-| `FALLBACK_RELAYS` | no | `wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io` | Used when NIP-65 returns no write-relays |
+| `FALLBACK_RELAYS` | no | `wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io` | Used when NIP-65 returns no write-relays. Set it to a single space for none |
 | `SYNC_RELAYS` | no | `wss://nos.lol,wss://relay.damus.io,wss://nostr.wine,wss://nostr.land,wss://relay.nostr.band,wss://purplepag.es,wss://relay.snort.social,wss://nostr.mom` | Default relay set for the relay-sync tool |
 | `RELAY_CACHE_TTL` | no | `1h` | TTL for cached `kind:10002` lookups |
 | `PUBLISH_TIMEOUT` | no | `10s` | Per-relay connect+publish timeout |
-| `POW_DIFFICULTY_DEFAULT` | no | `16` | Default leading-zero-bit PoW target |
-| `POW_DIFFICULTY_MAX` | no | `28` | Hard cap on per-request PoW override |
+| `POW_DIFFICULTY_DEFAULT` | no | `16` | Default leading-zero-bit PoW target; `0` turns proof of work off (a negative value stops startup) |
+| `POW_DIFFICULTY_MAX` | no | `28` | Hard cap on per-request PoW override (not negative) |
 | `POW_TIMEOUT` | no | `30s` | Per-publish mining timeout |
 | `SCHEDULE_GRACE` | no | `2h` | Grace window for firing overdue scheduled posts (must be positive) |
 | `AUTO_RETRY_ENABLED` | no | `true` | Master switch for automatic retries (failed parts and relay deliveries) |
@@ -429,11 +433,11 @@ infrastructure and should be overridden.
 | `RETRIER_TICK` | no | `60s` | Relay-retry loop cadence |
 | `PUBLISH_WORKERS` | no | `4` | Parts the background engine publishes at once (scheduled posts, retries) |
 | `DB_PATH` | no | `/data/publisher.db` | SQLite archive path (mount a volume here) |
-| `MASTODON_BASE_URL` | no | — | Mastodon instance URL (enables Mastodon cross-post) |
-| `MASTODON_TOKEN` | no | — | Mastodon access token (**secret**) |
-| `BLUESKY_PDS_URL` | no | — | Bluesky PDS URL (enables Bluesky cross-post) |
-| `BLUESKY_IDENTIFIER` | no | — | Bluesky handle / identifier |
-| `BLUESKY_APP_PASSWORD` | no | — | Bluesky app password (**secret**) |
+| `MASTODON_TOKEN` | no | — | Mastodon access token (**secret**, enables Mastodon cross-post) |
+| `MASTODON_BASE_URL` | with the token | — | Mastodon instance URL, e.g. `https://mastodon.social` |
+| `BLUESKY_APP_PASSWORD` | no | — | Bluesky app password (**secret**, enables Bluesky cross-post) |
+| `BLUESKY_IDENTIFIER` | with the password | — | Bluesky handle, DID or email |
+| `BLUESKY_PDS_URL` | with the password | — | Bluesky PDS URL, e.g. `https://bsky.social` |
 | `THREADS_ACCESS_TOKEN` | no | — | Threads long-lived token (**secret**, enables Threads cross-post) |
 | `THREADS_USER_ID` | no | `me` | Threads user id |
 | `ALERT_WEBHOOK_URL` | no | — | Webhook posted to on scheduled-post failure |
@@ -460,8 +464,9 @@ infrastructure and should be overridden.
 \* Required only when `OIDC_ISSUER` is set.
 † At least one of `OIDC_ALLOWED_SUBJECTS` / `OIDC_ALLOWED_EMAILS` must be non-empty when OIDC is enabled.
 
-> **Note:** `OWNER_PUBKEY` must be the public key derived from `NSEC_HEX`;
-> the process exits at startup if they don't match.
+> **Note:** `OWNER_PUBKEY` is optional. When it is set it must be the public
+> key derived from `NSEC_HEX`; the process exits at startup if they don't
+> match, and setting it without `NSEC_HEX` is an error.
 
 ### Run with Docker
 
@@ -475,7 +480,6 @@ docker run -d --name publisher --stop-timeout 30 \
   -p 127.0.0.1:8080:8080 \
   -v "$PWD/data:/data" \
   -e NSEC_HEX=<64-char-hex-secret> \
-  -e OWNER_PUBKEY=<64-char-hex-pubkey> \
   -e BLOSSOM_URL=https://blossom.example.com \
   -e NIP65_BOOTSTRAP_RELAY=wss://relay.example.com \
   -e FALLBACK_RELAYS=wss://relay.damus.io,wss://nos.lol \
@@ -496,7 +500,6 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       - NSEC_HEX=${NSEC_HEX}
-      - OWNER_PUBKEY=${OWNER_PUBKEY}
       - BLOSSOM_URL=https://blossom.example.com
       - NIP65_BOOTSTRAP_RELAY=wss://relay.example.com
       - FALLBACK_RELAYS=wss://relay.damus.io,wss://nos.lol

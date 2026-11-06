@@ -68,15 +68,24 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, access
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-// Profile fetches the authenticated operator's own handle, display name, and
-// avatar URL. A fresh session already yields the DID + handle;
-// app.bsky.actor.getProfile adds displayName + avatar. Best-effort: returns the
-// session handle even if the profile call fails.
-func (c *Client) Profile(ctx context.Context) (handle, displayName, avatar string, err error) {
+// Me is the authenticated account's profile.
+type Me struct {
+	DID         string
+	Handle      string
+	DisplayName string
+	Avatar      string
+}
+
+// Me fetches the authenticated account's DID, handle, display name and
+// avatar URL. A session already yields the DID and handle;
+// app.bsky.actor.getProfile adds the name and avatar. Best-effort: when the
+// profile call fails, the DID and handle come back with the error.
+func (c *Client) Me(ctx context.Context) (Me, error) {
 	s, err := c.readSession(ctx)
 	if err != nil {
-		return "", "", "", err
+		return Me{}, err
 	}
+	me := Me{DID: s.Did, Handle: s.Handle}
 	var p struct {
 		Handle      string `json:"handle"`
 		DisplayName string `json:"displayName"`
@@ -84,12 +93,41 @@ func (c *Client) Profile(ctx context.Context) (handle, displayName, avatar strin
 	}
 	if err := c.get(ctx, "/xrpc/app.bsky.actor.getProfile", url.Values{"actor": {s.Did}}, s.AccessJwt, &p); err != nil {
 		c.dropReadSession()
-		return s.Handle, "", "", err
+		return me, err
 	}
-	if p.Handle == "" {
-		p.Handle = s.Handle
+	if p.Handle != "" {
+		me.Handle = p.Handle
 	}
-	return p.Handle, p.DisplayName, p.Avatar, nil
+	me.DisplayName, me.Avatar = p.DisplayName, p.Avatar
+	return me, nil
+}
+
+// Profile fetches the authenticated operator's own handle, display name, and
+// avatar URL (see Me). Best-effort: returns the session handle even if the
+// profile call fails.
+func (c *Client) Profile(ctx context.Context) (handle, displayName, avatar string, err error) {
+	me, err := c.Me(ctx)
+	return me.Handle, me.DisplayName, me.Avatar, err
+}
+
+// CheckSession signs in (or reuses the lookup session) and asks the PDS
+// whether the session is valid. A cached session the server refuses is
+// replaced once, so an expired token isn't reported as a bad password.
+func (c *Client) CheckSession(ctx context.Context) error {
+	for attempt := 0; ; attempt++ {
+		s, err := c.readSession(ctx)
+		if err != nil {
+			return err
+		}
+		var out struct {
+			Did string `json:"did"`
+		}
+		err = c.get(ctx, "/xrpc/com.atproto.server.getSession", nil, s.AccessJwt, &out)
+		if err == nil || !sessionRefused(err) || attempt > 0 {
+			return err
+		}
+		c.dropReadSession()
+	}
 }
 
 // GetPost resolves a bsky.app URL to a SourcePost using an authed session (viewer

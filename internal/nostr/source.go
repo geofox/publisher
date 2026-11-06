@@ -10,12 +10,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	gonostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip19"
 
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/netguard"
 )
 
@@ -320,7 +320,7 @@ func (p *Publisher) fetchFrom(ctx context.Context, own, foreign []string, filter
 		run(func() *gonostr.Event { return p.fetchOne(ctx, own, filter) })
 	}
 	for _, u := range foreign {
-		run(func() *gonostr.Event { return queryGuarded(ctx, u, filter) })
+		run(func() *gonostr.Event { return p.queryGuarded(ctx, u, filter) })
 	}
 	go func() { wg.Wait(); close(found) }()
 	for ev := range found {
@@ -350,26 +350,23 @@ func matches(ev *gonostr.Event, filter gonostr.Filter) bool {
 }
 
 // guardedWS dials websockets only to public addresses, checked on the
-// address actually dialed.
-var guardedWS = &http.Client{Transport: &http.Transport{
-	DialContext: (&net.Dialer{Timeout: 7 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
-		host, _, err := net.SplitHostPort(address)
-		if err != nil {
-			return err
-		}
-		if ip := net.ParseIP(host); ip == nil || netguard.IsBlockedIP(ip) {
-			return fmt.Errorf("blocked non-public relay address %s", host)
-		}
-		return nil
-	}}).DialContext,
-	TLSHandshakeTimeout: 7 * time.Second,
-}}
+// address actually dialed. It serves a Publisher built without a
+// ContentClient (tests, New callers outside a host).
+var guardedWS = destination.ContentNet(netguard.IsBlockedIP).Client(0)
 
-// queryGuarded asks one relay for the first event matching filter over a
-// dial-guarded connection of its own.
-func queryGuarded(ctx context.Context, url string, filter gonostr.Filter) *gonostr.Event {
+// contentClient is the client for relays named by content.
+func (p *Publisher) contentClient() *http.Client {
+	if p.cfg.ContentClient != nil {
+		return p.cfg.ContentClient
+	}
+	return guardedWS
+}
+
+// queryGuarded asks one relay named by content for the first event
+// matching filter, over a dial-guarded connection of its own.
+func (p *Publisher) queryGuarded(ctx context.Context, url string, filter gonostr.Filter) *gonostr.Event {
 	r := gonostr.NewRelay(ctx, url, gonostr.RelayOptions{})
-	if err := r.ConnectWithClient(ctx, guardedWS); err != nil {
+	if err := r.ConnectWithClient(ctx, p.contentClient()); err != nil {
 		return nil
 	}
 	defer r.Close()

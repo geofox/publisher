@@ -26,7 +26,7 @@ import (
 
 // ContractVersion is the version of this contract. Manifests record the
 // version their driver was written against.
-const ContractVersion = 1
+const ContractVersion = 2
 
 // Kind is what a published item is.
 type Kind string
@@ -40,6 +40,11 @@ const (
 
 // Account is one connected identity on a destination type. Implementations
 // must be safe for concurrent use.
+//
+// An account that holds connections or goroutines (a relay pool) also
+// implements io.Closer. The host calls Close once nothing uses the account
+// any more: it was reopened with new state, disabled or removed, or the
+// server is stopping. No other method is called after Close.
 type Account interface {
 	// Manifest describes the account's destination type.
 	Manifest() Manifest
@@ -256,6 +261,10 @@ type Trace struct {
 
 // Identity is an account's public profile.
 type Identity struct {
+	// RemoteID is the account's stable id on its network (a DID, an
+	// account URL, a user id, a public key): it tells two accounts apart
+	// when handles change.
+	RemoteID    string `json:"remote_id,omitempty"`
 	Handle      string `json:"handle"`
 	DisplayName string `json:"display_name,omitempty"`
 	AvatarURL   string `json:"avatar_url,omitempty"`

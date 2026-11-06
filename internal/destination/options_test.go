@@ -1,7 +1,9 @@
 package destination
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -57,6 +59,10 @@ type fakeDriver struct{ m Manifest }
 
 func (f fakeDriver) Manifest() Manifest { return f.m }
 
+func (f fakeDriver) Open(context.Context, OpenRequest) (Account, error) {
+	return nil, errors.New("fake driver opens nothing")
+}
+
 func TestRegistry(t *testing.T) {
 	Register(fakeDriver{Manifest{Contract: ContractVersion, Type: "zz_test"}})
 	defer Unregister("zz_test")
@@ -75,4 +81,34 @@ func TestRegistry(t *testing.T) {
 	mustPanic("duplicate", func() { Register(fakeDriver{Manifest{Contract: ContractVersion, Type: "zz_test"}}) })
 	mustPanic("bad type", func() { Register(fakeDriver{Manifest{Contract: ContractVersion, Type: "Bad-Type"}}) })
 	mustPanic("bad contract", func() { Register(fakeDriver{Manifest{Contract: 99, Type: "zz_other"}}) })
+	// A driver written against contract 1 (no Open) is refused.
+	mustPanic("contract 1", func() { Register(fakeDriver{Manifest{Contract: 1, Type: "zz_old"}}) })
+}
+
+// Types are listed in registration order, which is the order the composer
+// shows them in; Types() stays sorted.
+func TestTypesInOrder(t *testing.T) {
+	for _, typ := range []string{"zz_c", "zz_a", "zz_b"} {
+		Register(fakeDriver{Manifest{Contract: ContractVersion, Type: typ}})
+		defer Unregister(typ)
+	}
+	var got []string
+	for _, typ := range TypesInOrder() {
+		if len(typ) > 3 && typ[:3] == "zz_" {
+			got = append(got, typ)
+		}
+	}
+	if want := []string{"zz_c", "zz_a", "zz_b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("TypesInOrder = %v, want %v", got, want)
+	}
+	Unregister("zz_a")
+	got = got[:0]
+	for _, typ := range TypesInOrder() {
+		if len(typ) > 3 && typ[:3] == "zz_" {
+			got = append(got, typ)
+		}
+	}
+	if want := []string{"zz_c", "zz_b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after Unregister: %v, want %v", got, want)
+	}
 }

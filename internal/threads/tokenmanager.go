@@ -81,11 +81,33 @@ func (m *TokenManager) ensureSeed(now time.Time) {
 			slog.Error("threads token seed failed", "err", err)
 			return
 		}
-		m.client.SetToken(m.seed)
+		m.setToken(m.seed, time.Time{}) // the real expiry is unknown until the first refresh
 		slog.Info("threads token seeded from env")
 		return
 	}
-	m.client.SetToken(cur.Token)
+	m.setToken(cur.Token, knownExpiry(cur))
+}
+
+// knownExpiry is the stored token's expiry, or zero while it is only the
+// provisional one a seed records (which schedules the first refresh but
+// says nothing about the token).
+func knownExpiry(t *store.ThreadsToken) time.Time {
+	if t.ExpiresAt.Equal(t.RefreshedAt.Add(seedProvisional)) {
+		return time.Time{}
+	}
+	return t.ExpiresAt
+}
+
+// expiryRecorder is implemented by clients that report their token's
+// expiry (*Client does; test fakes need not).
+type expiryRecorder interface{ SetTokenExpiry(time.Time) }
+
+// setToken points the client at a token and records when it expires.
+func (m *TokenManager) setToken(token string, expiresAt time.Time) {
+	m.client.SetToken(token)
+	if r, ok := m.client.(expiryRecorder); ok {
+		r.SetTokenExpiry(expiresAt)
+	}
 }
 
 // Start seeds, runs one tick immediately, then ticks daily until ctx is done.
@@ -128,7 +150,7 @@ func (m *TokenManager) tick(ctx context.Context) {
 			slog.Error("threads token save failed", "err", err)
 			return
 		}
-		m.client.SetToken(newTok)
+		m.setToken(newTok, now.Add(ttl))
 		slog.Info("threads token refreshed", "expires_at", now.Add(ttl))
 		refreshed = true
 	}
