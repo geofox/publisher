@@ -3,6 +3,7 @@ import { el, $, gcount, graphemes, META, v1 } from "./common.js";
 import { state, focusedPlatform, postedText, mediaPart } from "./state.js";
 import { accountFor } from "./accounts.js";
 import { brandTile, icon } from "./brands.js";
+import { requestPlan } from "./plan.js";
 
 // threadBadgeStatic → the indigo "{N}-post thread" pill shown in a threaded
 // preview header (non-interactive; the row/banner badges open the review sheet).
@@ -348,6 +349,8 @@ function _renderSinglePost(host, p, opts = {}) {
 // For multi-segment threads it shows the thread chain (debounced network call);
 // for single posts it renders the existing single-post card immediately.
 export function renderPreview() {
+  // Every change to the composer comes through here: ask for a fresh plan.
+  requestPlan();
   const host = $("#preview");
   if (!host) return;
   host.innerHTML = "";

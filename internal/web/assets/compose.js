@@ -6,6 +6,7 @@ import { openDetail } from "./history.js";
 import { accountFor } from "./accounts.js";
 import { followPost } from "./follow.js";
 import { brandTile, icon, PLATFORM_META } from "./brands.js";
+import { planFor, planError } from "./plan.js";
 
 // autoGrow sizes a textarea to its content (up to its CSS max-height, then it
 // scrolls). No-op when the element is hidden (scrollHeight is 0 then).
@@ -114,6 +115,13 @@ function splitThread(text, limit, number = true) {
 }
 
 function threadInfoFor(p) {
+  // The server's plan, once it has answered for the composer as it is: the
+  // estimate below can disagree with it (it packs words, not paragraphs).
+  const pl = planFor(p);
+  if (pl && pl.items.length) {
+    const posts = pl.items.length;
+    return { posts, threaded: posts > 1, parts: pl.items.map(it => it.text) };
+  }
   const parts = splitThread(effectivePostedText(p), META[p].limit, numberingOn());
   // Media overflow forms a chain too: images beyond the platform cap spill
   // into appended image-only posts (mirrors thread.PlanMedia's totals).
@@ -1053,19 +1061,6 @@ export function renderImages() {
 // Meta / preflight summary
 // ---------------------------------------------------------------------------
 
-// overLimitPlatforms returns selected platforms whose effective text exceeds the
-// platform limit, as {label, over} — shared by the pre-flight summary and the
-// over-limit confirm guard on Post.
-function overLimitPlatforms() {
-  const out = [];
-  for (const p of ORDER) {
-    if (!state.platforms.has(p) || !META[p].limit) continue;
-    const n = gcount(effectivePostedText(p));
-    if (n > META[p].limit) out.push({ label: META[p].label, over: n - META[p].limit });
-  }
-  return out;
-}
-
 function renderMeta() {
   const mm = $("#mastermeta");
   if (mm) mm.textContent = `${state.master.length} chars · ${wcount(state.master)} words`;
@@ -1074,10 +1069,12 @@ function renderMeta() {
   sum.innerHTML = "";
   const plats = [...state.platforms];
   if (plats.length === 0) { sum.append(el("span", { class: "bad", text: "⚠ no targets selected" })); return; }
-  const over = overLimitPlatforms();
   sum.append(el("span", { text: `→ ${plats.length} target${plats.length > 1 ? "s" : ""} · ${state.images.length} image${state.images.length === 1 ? "" : "s"}` }));
-  sum.append(over.length
-    ? el("span", { class: "warn", text: `⚠ over limit: ${over.map(o => `${o.label} +${o.over}`).join(", ")}` })
+  // A refusal the server would give on Post (a 422), from the last plan.
+  const err = planError();
+  const refused = err && err.status === 422;
+  sum.append(refused
+    ? el("span", { class: "warn", text: "⚠ " + err.message })
     : el("span", { class: "ok", text: "ready ✓" }));
 }
 
@@ -1234,9 +1231,9 @@ async function doPost() {
   }
 }
 
-// submit checks what the server would refuse or cut before posting: a video
-// still processing, a platform with no account, text over a platform's limit
-// (confirm: those targets may be cut or rejected, the rest still post).
+// submit checks what the server would refuse before posting: a video still
+// processing, a platform with no account. Text over a platform's limit is
+// not one: the server threads it (the preview shows how).
 function submit() {
   if (state.images.some(i => i.video && i.phase !== "ready")) {
     flash(state.images.some(i => i.video && i.phase === "failed")
@@ -1247,18 +1244,6 @@ function submit() {
   if (state.platforms.size === 0) { flash("Select at least one platform."); return; }
   const missing = missingAccounts();
   if (missing.length) { flash("No account to post to " + missing.join(", ") + " is configured"); return; }
-  if (state.interaction) { doPost(); return; }
-  const over = overLimitPlatforms();
-  if (over.length) {
-    const list = over.map(o => `${o.label} +${o.over}`).join(", ");
-    confirmModal({
-      title: "Over the character limit",
-      body: `${list} — over-limit targets may be cut or rejected (other platforms still post). Post anyway?`,
-      confirmText: "Post anyway",
-      onConfirm: async () => { await doPost(); return true; },
-    });
-    return;
-  }
   doPost();
 }
 
@@ -1372,6 +1357,9 @@ export function openProgressModal(postId, first) {
 // ---------------------------------------------------------------------------
 
 export function composeInit() {
+  // A new plan from the server: thread counts, the notice and the summary
+  // read it.
+  document.addEventListener("plan", () => { refreshTargets(); renderMeta(); });
   $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); renderImages(); autoGrow(e.target); });
   autoGrow($("#master")); // size correctly if a draft was already in the field at init
   $("#addimg").addEventListener("click", () => $("#imgfile").click());
