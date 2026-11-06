@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/geofox/publisher/internal/thread"
 )
@@ -60,8 +61,12 @@ func bodyText(body string) string {
 // is false when there was nothing to convert (or the body isn't a JSON
 // object); the body is then returned as it was.
 func ConvertBreakMarkers(body string) (out string, ok bool) {
+	// Numbers stay as written (no float64 round trip for, say, a large
+	// integer in an option).
 	var p map[string]any
-	if json.Unmarshal([]byte(body), &p) != nil || p == nil {
+	dec := json.NewDecoder(strings.NewReader(body))
+	dec.UseNumber()
+	if dec.Decode(&p) != nil || p == nil {
 		return body, false
 	}
 	changed := false
@@ -71,8 +76,14 @@ func ConvertBreakMarkers(body string) (out string, ok bool) {
 		if t, isStr := content["text"].(string); isStr {
 			text, breaks, ps := thread.FromMarkers(t)
 			parts = ps
+			// A marker that made no break (first, last, doubled) goes
+			// too: "---" is text now, and the old splitter dropped it.
+			if text != t {
+				content["text"] = text
+				changed = true
+			}
 			if len(breaks) > 0 {
-				content["text"], content["breaks"] = text, breaks
+				content["breaks"] = breaks
 				changed = true
 			}
 		}
@@ -88,10 +99,15 @@ func ConvertBreakMarkers(body string) (out string, ok bool) {
 		if mm == nil {
 			continue
 		}
-		if f, has := mm["part"].(float64); has {
+		if v, has := mm["part"]; has {
 			delete(mm, "part")
 			changed = true
-			if k := int(f); k > 0 {
+			f := 0.0
+			if n, isNum := v.(json.Number); isNum {
+				f, _ = n.Float64()
+			}
+			if f >= 1 && f < 1e6 {
+				k := int(f)
 				partOf[i], anyPart = k, true
 				mm["at"] = parts[min(k, len(parts)-1)]
 			}
@@ -109,12 +125,20 @@ func ConvertBreakMarkers(body string) (out string, ok bool) {
 			continue
 		}
 		text, breaks, own := thread.FromMarkers(s)
+		if text != s {
+			c["text"] = text
+			changed = true
+		}
 		if len(breaks) == 0 && !anyPart {
 			continue
 		}
-		th := map[string]any{}
+		// Merged into a thread the body may already have.
+		th, _ := tm["thread"].(map[string]any)
+		if th == nil {
+			th = map[string]any{}
+		}
 		if len(breaks) > 0 {
-			c["text"], th["breaks"] = text, breaks
+			th["breaks"] = breaks
 		}
 		if anyPart {
 			at := make([]int, len(media))

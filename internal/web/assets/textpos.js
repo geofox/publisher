@@ -193,3 +193,21 @@ export function fromMarkers(text) {
   }
   return { text: body, breaks: kept, parts: parts.length ? parts : [0] };
 }
+
+// toLF turns CRLF and lone CR line breaks into LF, as the server does
+// (thread.NormalizeNewlines) and as a textarea shows them, and answers the
+// text and a function moving a UTF-16 position of the old text into it.
+export function toLF(text) {
+  text = String(text || "");
+  if (!text.includes("\r")) return { text, move: u => u };
+  const removedBefore = new Array(text.length + 1);
+  let out = "", gone = 0;
+  for (let u = 0; u < text.length; u++) {
+    removedBefore[u] = gone;
+    const c = text[u];
+    if (c === "\r" && text[u + 1] === "\n") { gone++; continue; }
+    out += c === "\r" ? "\n" : c;
+  }
+  removedBefore[text.length] = gone;
+  return { text: out, move: u => (u >= 0 && u <= text.length ? u - removedBefore[u] : u) };
+}

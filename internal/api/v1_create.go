@@ -279,7 +279,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 			at := 0
 			if cm.At != nil {
 				at = *cm.At
-				checkAt(rawText, at, ptr+"/at", add)
+				checkAt(utf8.RuneCountInString(rawText), at, ptr+"/at", add)
 			}
 			alt := m.Alt
 			if cm.Alt != nil {
@@ -466,8 +466,12 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 		}
 	}
 
-	// The planner's split must stay a reasonable thread.
+	// The planner's split must stay a reasonable thread. Planning costs
+	// time on long texts: only for an otherwise valid request.
 	// (Planned without the link card: a card only shortens the text.)
+	if len(errs) > 0 {
+		return plan, errs, nil
+	}
 	for _, pt := range plan.targets {
 		cp := dispatch.PlanTarget(pt.caps, dispatch.TargetInput{Text: pt.text, Layout: plan.layoutOf(pt),
 			Number: plan.spec.Number, ContentWarning: pt.ov.ContentWarning})
@@ -914,8 +918,8 @@ func checkBreaks(text string, breaks []int, ptr string, add func(ptr, code, deta
 }
 
 // checkAt validates a media position in text: from 0 to the text's length.
-func checkAt(text string, at int, ptr string, add func(ptr, code, detail string)) {
-	if n := utf8.RuneCountInString(text); at < 0 || at > n {
+func checkAt(n int, at int, ptr string, add func(ptr, code, detail string)) {
+	if at < 0 || at > n {
 		add(ptr, "out_of_range", "a code point position in the text, from 0 to "+strconv.Itoa(n))
 	}
 }
@@ -948,8 +952,9 @@ func targetLayout(req *v1CreatePostReq, t v1CreateTarget, own bool, text string,
 				strconv.Itoa(len(req.Content.Media))+")")
 			return lay
 		}
+		n := utf8.RuneCountInString(text)
 		for j, k := range plan.mediaReq {
-			checkAt(text, th.MediaAt[k], ptr+"/thread/media_at/"+strconv.Itoa(k), add)
+			checkAt(n, th.MediaAt[k], ptr+"/thread/media_at/"+strconv.Itoa(k), add)
 			lay.MediaAt[j] = th.MediaAt[k]
 		}
 	}

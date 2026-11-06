@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 
 	"github.com/geofox/publisher/internal/destination"
@@ -334,4 +335,48 @@ func TestPlanShortTailOfWordsIsEvenedOut(t *testing.T) {
 		t.Errorf("tail %d characters", n)
 	}
 	checkRanges(t, text, items, Rules{Limit: 500})
+}
+
+// A media at a hand-made break goes with the post after it, even when
+// whitespace follows the break (blank lines around an old "---").
+func TestPlanMediaAtBreakBeforeWhitespace(t *testing.T) {
+	text, breaks, parts := FromMarkers("para1\n\n---\n\npara2")
+	items, _ := Plan(text, Layout{Breaks: breaks, MediaAt: []int{parts[1]}}, Rules{})
+	if len(items) != 2 || len(items[0].Media) != 0 || !reflect.DeepEqual(items[1].Media, []int{0}) {
+		t.Fatalf("items %+v", items)
+	}
+}
+
+// Media over a post's cap spill to later posts, never earlier ones.
+func TestPlanMediaSpillsForward(t *testing.T) {
+	text := "First post.\n\nSecond post."
+	at := strings.Index(text, "Second")
+	items, _ := Plan(text, Layout{Breaks: []int{at}, MediaAt: []int{at, at, at, at, at, at}}, Rules{ImgCap: 4})
+	if len(items) != 3 {
+		t.Fatalf("want 3 posts (a media-only one after), got %d: %+v", len(items), items)
+	}
+	if len(items[0].Media) != 0 || !reflect.DeepEqual(items[1].Media, []int{0, 1, 2, 3}) || !reflect.DeepEqual(items[2].Media, []int{4, 5}) {
+		t.Fatalf("media %v %v %v", items[0].Media, items[1].Media, items[2].Media)
+	}
+}
+
+// A long run with nowhere to break is cut without recounting the post for
+// every character (that was O(n × limit): seconds for a 50 000-character
+// request with Mastodon's rules).
+func TestPlanHardSplitIsFast(t *testing.T) {
+	text := strings.Repeat("a", 50000)
+	r := Rules{Limit: 500, Number: true, Counting: destination.Counting{URLLength: 23, MentionLocalPartOnly: true}}
+	start := time.Now()
+	items, _ := Plan(text, Layout{}, r)
+	if d := time.Since(start); d > 1500*time.Millisecond {
+		t.Errorf("took %v", d)
+	}
+	for i, it := range items {
+		if it.Length > 500 {
+			t.Fatalf("post %d counts %d", i, it.Length)
+		}
+	}
+	if len(items) != 102 { // 50 000 / (500 - " 102/102")
+		t.Errorf("%d posts", len(items))
+	}
 }

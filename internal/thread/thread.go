@@ -75,30 +75,28 @@ func Plan(text string, lay Layout, r Rules) (items []Item, warnings []string) {
 
 	nMedia := len(lay.MediaAt)
 	ranges, manual, warns := p.splitAll(pieces, r.Limit)
-	counts := PlanMedia(nMedia, len(ranges), r.ImgCap)
-	if r.Number && len(counts) >= 2 && r.Limit > 0 {
+	total := postsFor(ranges, lay.MediaAt, r.ImgCap)
+	if r.Number && total >= 2 && r.Limit > 0 {
 		// The counter costs room, and its width depends on the total, which
 		// depends on the room: iterate to a fixpoint. Splitting is monotone
 		// (less room, same or more posts), so the total only grows; it
 		// settles once it stops crossing a digit boundary.
-		total := len(counts)
 		for i := 0; i < 8; i++ {
 			eff := r.Limit - counterWidth(total)
 			if eff < 1 {
 				break // a pathological tiny limit: no room for counters
 			}
 			ranges, manual, warns = p.splitAll(pieces, eff)
-			counts = PlanMedia(nMedia, len(ranges), r.ImgCap)
-			if len(counts) == total {
+			next := postsFor(ranges, lay.MediaAt, r.ImgCap)
+			if next == total {
 				break
 			}
-			total = len(counts)
+			total = next
 		}
 	}
 	warnings = warns
 
 	end := len(rs)
-	total := len(counts)
 	numbered := r.Number && total >= 2
 	for i := 0; i < total; i++ {
 		it := Item{From: end, To: end, Media: []int{}}
@@ -143,15 +141,52 @@ func Plan(text string, lay Layout, r Rules) (items []Item, warnings []string) {
 }
 
 // postAt is the text post holding position at: the last one starting at or
-// before it.
+// before it, where a post starts right after the one before it ends (the
+// whitespace between two posts, where a hand-made break sits, belongs to
+// the later one).
 func postAt(ranges [][2]int, at int) int {
 	j := 0
 	for i, rg := range ranges {
-		if rg[0] <= at {
+		if rg[0] <= at || (i > 0 && at > ranges[i-1][1]) {
 			j = i
 		}
 	}
 	return j
+}
+
+// postsFor is how many posts a plan of the text posts in ranges needs for
+// media at positions mediaAt, at most imgCap per post: each goes on the
+// post holding its position or, that one full, a later one; media-only posts
+// are added at the end for what doesn't fit. PlaceMedia fills the same way.
+func postsFor(ranges [][2]int, mediaAt []int, imgCap int) int {
+	n := max(len(ranges), 1)
+	if len(mediaAt) == 0 || imgCap <= 0 {
+		return n
+	}
+	used := make([]int, n)
+	put := func(from int) {
+		for j := from; ; j++ {
+			if j == len(used) {
+				used = append(used, 0)
+			}
+			if used[j] < imgCap {
+				used[j]++
+				return
+			}
+		}
+	}
+	// Anchored media first, then those on the first post, as PlaceMedia.
+	for _, at := range mediaAt {
+		if a := postAt(ranges, at); a > 0 {
+			put(a)
+		}
+	}
+	for _, at := range mediaAt {
+		if postAt(ranges, at) == 0 {
+			put(0)
+		}
+	}
+	return len(used)
 }
 
 type planner struct {
@@ -339,19 +374,44 @@ func (p *planner) words(a, b int) [][2]int {
 
 // hard cuts a word longer than limit between graphemes.
 func (p *planner) hard(a, b, limit int) [][2]int {
-	var out [][2]int
+	// Grapheme boundaries of [a, b).
+	bounds := []int{a}
 	g := uniseg.NewGraphemes(string(p.rs[a:b]))
-	start, pos := a, a
+	pos := a
 	for g.Next() {
-		n := len([]rune(g.Str()))
-		if pos > start && p.count(start, pos+n) > limit {
-			out = append(out, [2]int{start, pos})
-			start = pos
-		}
-		pos += n
+		pos += len([]rune(g.Str()))
+		bounds = append(bounds, pos)
 	}
-	if pos > start {
-		out = append(out, [2]int{start, pos})
+	// Each post takes the most graphemes that fit: found by binary search
+	// (the count grows with the text, but for a mention rule that can
+	// shrink it, so the pick is checked and stepped back), which keeps a
+	// long unbroken run O(n log n) rather than O(n × limit).
+	var out [][2]int
+	i := 0
+	for i < len(bounds)-1 {
+		// Gallop from about a limit's worth (a URL rule can make many
+		// graphemes cost little), then search between the last fit and
+		// the first miss.
+		last := len(bounds) - 1
+		lo, step := i+1, max(limit, 1) // the first grapheme always goes
+		for lo < last && p.count(bounds[i], bounds[min(lo+step, last)]) <= limit {
+			lo = min(lo+step, last)
+			step *= 2
+		}
+		hi := min(lo+step, last)
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			if p.count(bounds[i], bounds[mid]) <= limit {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		for lo > i+1 && p.count(bounds[i], bounds[lo]) > limit {
+			lo--
+		}
+		out = append(out, [2]int{bounds[i], bounds[lo]})
+		i = lo
 	}
 	return out
 }

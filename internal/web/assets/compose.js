@@ -8,7 +8,7 @@ import { followPost } from "./follow.js";
 import { brandTile, icon, PLATFORM_META } from "./brands.js";
 import { planFor, lastPlanFor, planError } from "./plan.js";
 import { editorInit, renderEditor, setTab } from "./editor.js";
-import { fromMarkers } from "./textpos.js";
+import { fromMarkers, toLF } from "./textpos.js";
 import { countFor, limitFor } from "./count.js";
 
 export function markDirty() {
@@ -310,6 +310,8 @@ export function loadDraft(input) {
       state.breaks = conv.breaks;
       state.anchors = {};
       state.tab = "shared";
+      // Breaks and wording made for the text it replaces don't fit it.
+      for (const p of ORDER) Object.assign(state.ov[p], { text: null, breaks: null, mediaAt: null });
       clearImages();
       if (input.lang) {
         state.ov.bluesky.langs = input.lang;
@@ -384,6 +386,7 @@ export function loadDraft(input) {
       if (!Number.isInteger(v) || v <= 0) continue;
       state.anchors[id] = old ? conv.parts[Math.min(v, conv.parts.length - 1)] : v;
     }
+    normalizeLines();
     state.activeDraftId = input.id || null;
     state.draftETag = input.etag || "";
     state.dirty = false;
@@ -409,6 +412,27 @@ export function loadDraft(input) {
     return;
   }
   doLoad();
+}
+
+// normalizeLines turns CRLF in the loaded texts into LF, as the cards show
+// them, moving every position with it (a draft made through the API may
+// have CRLF).
+function normalizeLines() {
+  const sh = toLF(state.master);
+  state.master = sh.text;
+  state.breaks = state.breaks.map(sh.move);
+  for (const k of Object.keys(state.anchors)) state.anchors[k] = sh.move(state.anchors[k]);
+  for (const p of ORDER) {
+    const ov = state.ov[p];
+    if (ov.text == null) {
+      if (ov.breaks) ov.breaks = ov.breaks.map(sh.move);
+      continue;
+    }
+    const own = toLF(ov.text);
+    ov.text = own.text;
+    if (ov.breaks) ov.breaks = ov.breaks.map(own.move);
+    if (ov.mediaAt) for (const k of Object.keys(ov.mediaAt)) ov.mediaAt[k] = own.move(ov.mediaAt[k]);
+  }
 }
 
 // localInput turns an RFC 3339 time into a datetime-local value (local

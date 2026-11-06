@@ -175,7 +175,7 @@ func (a *API) checkDraft(ctx context.Context, owner string, in *v1DraftIn) ([]fi
 				add(ptr+"/part", "replaced", "parts are gone: place the media with at, a position in the text")
 			}
 			if cm.At != nil {
-				checkAt(sharedText, *cm.At, ptr+"/at", add)
+				checkAt(utf8.RuneCountInString(sharedText), *cm.At, ptr+"/at", add)
 			}
 		}
 	}
@@ -239,9 +239,11 @@ func (a *API) checkDraft(ctx context.Context, owner string, in *v1DraftIn) ([]fi
 				}
 				if th.MediaAt != nil && len(th.MediaAt) != len(p.Content.Media) {
 					add(ptr+"/thread/media_at", "length_mismatch", "one position per media in content.media")
-				}
-				for k, at := range th.MediaAt {
-					checkAt(text, at, ptr+"/thread/media_at/"+strconv.Itoa(k), add)
+				} else if len(th.MediaAt) > 0 {
+					n := utf8.RuneCountInString(text)
+					for k, at := range th.MediaAt {
+						checkAt(n, at, ptr+"/thread/media_at/"+strconv.Itoa(k), add)
+					}
 				}
 			}
 		}

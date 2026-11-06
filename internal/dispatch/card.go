@@ -44,7 +44,10 @@ type TargetInput struct {
 func Rules(caps destination.Capabilities, number bool, cw string) thread.Rules {
 	limit := caps.Text.MaxLength
 	if limit > 0 && cw != "" && caps.Text.Counting.ContentWarningCounts {
-		limit = max(1, limit-caps.Text.Counting.Count(cw))
+		// The warning is plain text to the destination: no link or mention
+		// discount (Mastodon counts spoiler_text as it is).
+		plain := destination.Counting{Unit: caps.Text.Counting.Unit, EmojiUTF8Bytes: caps.Text.Counting.EmojiUTF8Bytes}
+		limit = max(1, limit-plain.Count(cw))
 	}
 	return thread.Rules{Limit: limit, Counting: caps.Text.Counting, ImgCap: caps.Media.Images.MaxCount,
 		Number: number, MaxLinks: caps.Text.MaxLinks}

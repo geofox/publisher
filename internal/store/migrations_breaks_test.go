@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -94,5 +95,39 @@ func TestMigrateDraftBreaks(t *testing.T) {
 	}
 	if body != `{"content":{"text":"plain"},"targets":[]}` || version != 5 {
 		t.Fatalf("d2 changed: %s v%d", body, version)
+	}
+}
+
+// A marker that made no break is taken out too: it would post as text now.
+func TestConvertBreakMarkersDropsEdgeMarkers(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"content":{"text":"Intro\n---"}}`: "Intro\n", // the post trims it
+		`{"content":{"text":"---\nIntro"}}`: "Intro",
+	} {
+		out, ok := ConvertBreakMarkers(in)
+		var p struct{ Content struct{ Text string } }
+		if err := json.Unmarshal([]byte(out), &p); err != nil || !ok || p.Content.Text != want {
+			t.Errorf("%s → %v %s", in, ok, out)
+		}
+		if _, again := ConvertBreakMarkers(out); again {
+			t.Errorf("%s converted twice", in)
+		}
+	}
+	out, _ := ConvertBreakMarkers(`{"content":{"text":"a"},"targets":[{"account":"x","content":{"text":"own\n---"}}]}`)
+	if !strings.Contains(out, `"text":"own\n"`) {
+		t.Errorf("own text kept its marker: %s", out)
+	}
+}
+
+// Converting keeps numbers as written and merges into a thread object the
+// body already has.
+func TestConvertBreakMarkersKeepsTheRest(t *testing.T) {
+	out, ok := ConvertBreakMarkers(`{"content":{"text":"a\n---\nb"},"big":9007199254740993,` +
+		`"targets":[{"account":"x","content":{"text":"o\n---\np"},"thread":{"note":1}}]}`)
+	if !ok || !strings.Contains(out, `"big":9007199254740993`) {
+		t.Fatalf("number changed: %s", out)
+	}
+	if !strings.Contains(out, `"note":1`) || !strings.Contains(out, `"breaks":[2]`) {
+		t.Fatalf("thread not merged: %s", out)
 	}
 }

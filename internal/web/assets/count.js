@@ -47,15 +47,26 @@ function unitLen(c, s) {
   }
 }
 
+function trimURL(u) {
+  for (;;) {
+    const last = u[u.length - 1];
+    if (last && ".,:;!?'\"".includes(last)) u = u.slice(0, -1);
+    else if (last === ")" && (u.match(/\(/g) || []).length < (u.match(/\)/g) || []).length) u = u.slice(0, -1);
+    else return u;
+  }
+}
+
 // count measures s under counting c (a destination.Counting as JSON).
 export function count(c, s) {
   c = c || {};
   s = String(s || "");
   let n = 0;
   if (c.url_length > 0) {
-    const urls = s.match(URL_RE) || [];
-    n += urls.length * c.url_length;
-    s = s.replace(URL_RE, "");
+    // As Go trimURL: trailing sentence punctuation isn't part of the URL.
+    s = s.replace(URL_RE, u => {
+      n += c.url_length;
+      return u.slice(trimURL(u).length);
+    });
   }
   if (c.mention_local_part_only) s = s.replace(MENTION_RE, "$1$2");
   return n + unitLen(c, s);

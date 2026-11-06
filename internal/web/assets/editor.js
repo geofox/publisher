@@ -57,8 +57,14 @@ function onKey(e) {
     if (e.key === "Escape" && cmpOpen) closeCompare();
     return;
   }
+  const inField = e.target.closest && e.target.closest("input, textarea, select, [contenteditable]");
+  // Alt+key types characters on some layouts (Option on a Mac: ¡ “ ç; AltGr
+  // brackets): in a text field the shortcut only counts when the key
+  // still reads as itself.
   if (e.altKey && !e.ctrlKey && !e.metaKey) {
     const n = /^Digit([1-9])$/.exec(e.code);
+    if (n && inField && e.key !== n[1]) return;
+    if (e.code === "KeyC" && inField && e.key.toLowerCase() !== "c") return;
     if (n) {
       const t = tabKeys()[+n[1] - 1];
       if (t) { e.preventDefault(); setTab(t); }
@@ -66,10 +72,12 @@ function onKey(e) {
     }
     if (e.code === "KeyC" && wide()) { e.preventDefault(); openCompare(); return; }
   }
-  const inField = e.target.closest && e.target.closest("input, textarea, select, [contenteditable]");
+  // Enter and Escape act on the picked word unless something else has the
+  // keys (a field, a button, a link).
   if (inField || !picked || state.tab !== picked.p) return;
-  if (e.key === "Escape") { picked = null; renderPlatform(state.tab); }
-  if (e.key === "Enter") platformPane.querySelector(".pp-here")?.click();
+  if (e.target.closest && e.target.closest("button, a, [tabindex]")) return;
+  if (e.key === "Escape") { e.preventDefault(); picked = null; renderPlatform(state.tab); }
+  if (e.key === "Enter") { e.preventDefault(); platformPane.querySelector(".pp-here")?.click(); }
 }
 
 const wide = () => window.matchMedia("(min-width: 1100px)").matches;
@@ -144,7 +152,7 @@ function cards(d) {
   for (let i = 0; i + 1 < bounds.length; i++) {
     const start = bounds[i], next = bounds[i + 1];
     const last = i + 2 === bounds.length;
-    const end = last ? next : start + t.slice(start, next).replace(/\s+$/, "").length;
+    const end = last ? next : start + t.slice(start, next).trimEnd().length;
     out.push({ start, end, next });
   }
   return out;
@@ -216,7 +224,7 @@ export function renderEditor() {
   sharedPane.hidden = !shared;
   platformPane.hidden = shared;
   renderStack(SHARED, sharedPane);
-  if (shared) platformPane.replaceChildren();
+  if (shared) { platformPane.replaceChildren(); delete platformPane.dataset.doc; }
   else renderPlatform(state.tab);
 }
 
@@ -250,14 +258,28 @@ function autoGrow(ta) {
 }
 
 function renderStack(d, host, keep) {
-  // Redrawn under the cursor (an upload finished, accounts arrived): the
-  // cursor stays where it was.
-  const act = document.activeElement;
-  if (!keep && act && act.classList && act.classList.contains("ec-text") && host.contains(act)) {
-    keep = { card: act._card, caret: act.selectionStart };
-  }
   const cs = cards(d);
   const t = docText(d);
+  // Redrawn with the same cards (an upload finished, accounts arrived): the
+  // textareas stay, with their cursor, selection, undo history and any
+  // IME composition; only what's around them is drawn again.
+  if (!keep) {
+    const tas = [...host.querySelectorAll(":scope > .ec-stack > .ecard > textarea.ec-text")];
+    if (host.dataset.doc === (d.p || "shared") && tas.length === cs.length && tas.every((ta, i) => ta.value === t.slice(cs[i].start, cs[i].end))) {
+      host.querySelectorAll(":scope > .ec-stack > .ecard").forEach((card, i) => {
+        card.querySelector(":scope > .ec-foot").replaceWith(cardFoot(d, cs, i, host));
+      });
+      if (d.p && host.firstElementChild && host.firstElementChild.classList.contains("pp-head")) {
+        host.firstElementChild.replaceWith(platformHead(d.p));
+      }
+      refreshChips(d, host);
+      return;
+    }
+    const act = document.activeElement;
+    if (act && act.classList && act.classList.contains("ec-text") && host.contains(act)) {
+      keep = { card: act._card, caret: act.selectionStart, end: act.selectionEnd };
+    }
+  }
   const list = el("div", { class: "ec-stack" });
   cs.forEach((c, i) => {
     if (i > 0) list.append(breakDivider(d, i));
@@ -285,13 +307,14 @@ function renderStack(d, host, keep) {
     list.append(card);
   });
   host.replaceChildren(...(d.p ? [platformHead(d.p)] : []), list);
+  host.dataset.doc = d.p || "shared"; // whose cards these are (their listeners hold it)
   requestAnimationFrame(() => host.querySelectorAll("textarea.ec-text").forEach(autoGrow));
   if (keep) {
     const ta = host.querySelectorAll("textarea.ec-text")[Math.min(keep.card, cs.length - 1)];
     if (ta) {
       ta.focus();
       const at = Math.min(keep.caret, ta.value.length);
-      ta.setSelectionRange(at, at);
+      ta.setSelectionRange(at, Math.max(at, Math.min(keep.end ?? at, ta.value.length)));
     }
   }
   refreshChips(d, host);
@@ -332,14 +355,26 @@ function onCardInput(d, ta, host) {
   const c = before[ta._card];
   if (!c) return;
   const e = diff(ta._val, ta.value);
-  applyEdit(d, c.start + e.at, e.removed, e.inserted);
+  const at = c.start + e.at;
+  applyEdit(d, at, e.removed, e.inserted);
+  // Typed at the very end of a card that runs straight into the next one
+  // (a split with no space): it belongs to this card, so the next card's
+  // start (its break, and media on it) moves past it.
+  if (at === c.next && ta._card < before.length - 1 && e.inserted.length) {
+    const to = c.next + e.inserted.length;
+    setDocBreaks(d, docBreaks(d).map(b => (b === c.next ? to : b)));
+    const media = docMedia(d);
+    for (const k of Object.keys(media)) if (media[k] === c.next) media[k] = to;
+  }
   ta._val = ta.value;
-  // A finished line of "---" is a break.
+  // A finished line of "---" in this card is a break.
   let made = null;
-  for (let m = nextMarker(docText(d)); m; m = nextMarker(docText(d))) {
-    applyEdit(d, m.at, m.removed, "");
-    setDocBreaks(d, [...docBreaks(d), m.at]);
-    made = m.at;
+  let len = ta.value.length;
+  for (let m = nextMarker(docText(d).slice(c.start, c.start + len)); m; m = nextMarker(docText(d).slice(c.start, c.start + len))) {
+    applyEdit(d, c.start + m.at, m.removed, "");
+    setDocBreaks(d, [...docBreaks(d), c.start + m.at]);
+    made = c.start + m.at;
+    len -= m.removed;
   }
   const after = cards(d);
   if (made != null) {
@@ -527,9 +562,11 @@ function renderPlatform(p) {
   const pl = fresh || lastPlanFor(p);
   const head = platformHead(p);
   if (!pl) {
+    delete platformPane.dataset.doc;
     platformPane.replaceChildren(head, el("p", { class: "muted pp-wait", text: "Planning…" }));
     return;
   }
+  delete platformPane.dataset.doc;
   platformPane.replaceChildren(head, thread(p, pl, !!fresh));
 }
 
@@ -650,14 +687,19 @@ function breakLine(p, items, i, u, text, editable) {
       if (e.target.closest("button")) return;
       e.preventDefault();
       line.classList.add("dragging");
-      const up = ev => {
+      const done = () => {
         document.removeEventListener("pointerup", up);
+        document.removeEventListener("pointercancel", done);
         line.classList.remove("dragging");
+      };
+      const up = ev => {
+        done();
         const w = document.elementFromPoint(ev.clientX, ev.clientY);
         const at = w && w.closest && w.closest(".pp-w") ? +w.closest(".pp-w").dataset.at : NaN;
-        if (Number.isInteger(at)) placeBreak(p, items, i, u, at);
+        if (Number.isInteger(at) && line.isConnected) placeBreak(p, items, i, u, at);
       };
       document.addEventListener("pointerup", up);
+      document.addEventListener("pointercancel", done);
     });
   }
   line.append(el("span", { class: "pp-break-line" }));

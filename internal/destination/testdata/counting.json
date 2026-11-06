@@ -177,6 +177,39 @@
    },
    "text": "https://a.io",
    "want": 12
+  },
+  {
+   "name": "url trailing period is text",
+   "counting": {
+    "unit": "graphemes",
+    "url_length": 23,
+    "mention_local_part_only": true,
+    "content_warning_counts": true
+   },
+   "text": "x https://e.com/a.",
+   "want": 26
+  },
+  {
+   "name": "url in parentheses",
+   "counting": {
+    "unit": "graphemes",
+    "url_length": 23,
+    "mention_local_part_only": true,
+    "content_warning_counts": true
+   },
+   "text": "(https://e.com/a)",
+   "want": 25
+  },
+  {
+   "name": "url with its own parentheses",
+   "counting": {
+    "unit": "graphemes",
+    "url_length": 23,
+    "mention_local_part_only": true,
+    "content_warning_counts": true
+   },
+   "text": "https://en.wikipedia.org/wiki/Foo_(bar)",
+   "want": 23
   }
  ]
 }

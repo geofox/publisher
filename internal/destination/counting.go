@@ -47,9 +47,12 @@ var (
 func (c Counting) Count(s string) int {
 	n := 0
 	if c.URLLength > 0 {
-		urls := countURL.FindAllString(s, -1)
-		n += len(urls) * c.URLLength
-		s = countURL.ReplaceAllString(s, "")
+		// A URL costs URLLength; punctuation that ends a sentence after it
+		// isn't part of it and counts as text (as Mastodon's extractor).
+		s = countURL.ReplaceAllStringFunc(s, func(u string) string {
+			n += c.URLLength
+			return u[len(trimURL(u)):]
+		})
 	}
 	if c.MentionLocalPartOnly {
 		s = countMention.ReplaceAllString(s, "$1$2")
@@ -98,6 +101,23 @@ func isEmoji(cluster string) bool {
 		}
 	}
 	return false
+}
+
+// trimURL takes trailing sentence punctuation off a matched URL, and a
+// closing parenthesis it doesn't open itself.
+func trimURL(u string) string {
+	for len(u) > 0 {
+		last := u[len(u)-1]
+		switch {
+		case strings.IndexByte(".,:;!?'\"", last) >= 0:
+			u = u[:len(u)-1]
+		case last == ')' && strings.Count(u, "(") < strings.Count(u, ")"):
+			u = u[:len(u)-1]
+		default:
+			return u
+		}
+	}
+	return u
 }
 
 // CountURLs is the number of distinct http(s) URLs in s, as a platform that

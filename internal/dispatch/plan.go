@@ -30,9 +30,10 @@ func (d *Dispatcher) planTarget(ctx context.Context, postID, plat, text string, 
 	copy(at, lay.MediaAt)
 	lay.MediaAt = at
 	caps, _ := d.Caps(ctx, plat)
-	cw := ov.ContentWarning
+	// As publishing picks it (SpoilerText first).
+	cw := ov.SpoilerText
 	if cw == "" {
-		cw = ov.SpoilerText
+		cw = ov.ContentWarning
 	}
 	cp := PlanTarget(caps, TargetInput{Text: text, Card: ov.LinkCard, Layout: lay, Number: number, ContentWarning: cw})
 	ov.LinkCard = cp.Card // persist the card only as placed

@@ -172,8 +172,11 @@ func TestV1CreatePostValidation(t *testing.T) {
 		{"long option", `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `","options":{"reply_gate":"` + strings.Repeat("a", 501) + `"}}]}`,
 			[]string{"/targets/0/options/reply_gate:invalid_option"}},
 		// Pointers name the request's own fields, past a target that failed.
-		{"thread parts", `{"content":{"text":"x"},"targets":[{"account":"acc_nope"},{"account":"` + bsky + `","content":{"text":"` + manyParts + `"}}]}`,
-			[]string{"/targets/0/account:unknown_account", "/targets/1/content/text:too_many_parts"}},
+		{"thread parts", `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `","content":{"text":"` + manyParts + `"}}]}`,
+			[]string{"/targets/0/content/text:too_many_parts"}},
+		// Planning (costly on long texts) is only for an otherwise valid request.
+		{"not planned when invalid", `{"content":{"text":"x"},"targets":[{"account":"acc_nope"},{"account":"` + bsky + `","content":{"text":"` + manyParts + `"}}]}`,
+			[]string{"/targets/0/account:unknown_account"}},
 		{"unknown account", `{"content":{"text":"x"},"targets":[{"account":"acc_nope"}]}`, []string{"/targets/0/account:unknown_account"}},
 		{"disabled account", `{"content":{"text":"x"},"targets":[{"account":"` + masto + `"}]}`, []string{"/targets/0/account:account_disabled"}},
 		{"duplicate", `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `"},{"account":"` + bsky + `"}]}`,
@@ -189,7 +192,7 @@ func TestV1CreatePostValidation(t *testing.T) {
 		{"bad language", `{"content":{"text":"x","languages":["english!"]},"targets":[{"account":"` + bsky + `"}]}`,
 			[]string{"/content/languages/0:invalid_language"}},
 		{"too long", `{"content":{"text":"` + long + `"},"targets":[{"account":"` + bsky + `"}]}`,
-			[]string{"/content/text:too_long", "/content/text:too_many_parts"}},
+			[]string{"/content/text:too_long"}},
 		{"past", `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `"}],"schedule":{"at":"2001-01-01T00:00:00Z"}}`,
 			[]string{"/schedule/at:in_past"}},
 		{"bad time", `{"content":{"text":"x"},"targets":[{"account":"` + bsky + `"}],"schedule":{"at":"soon"}}`,
