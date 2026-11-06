@@ -369,6 +369,7 @@ export function newDraft() {
 // schedule, numbering, targets and tags.
 function clearComposer() {
   openSeq++; // a draft still opening must not land afterwards
+  clearRecovery(); // what was thrown away (or deleted) must not come back
   state.activeDraftId = null;
   state.draftETag = "";
   state.dirty = false;
@@ -396,8 +397,10 @@ function renderTagChips(tags) {
     const chip = pressable(el("span", { class: "tag-chip", text: "#" + t + " ✕", "aria-label": "Remove tag " + t }));
     chip.dataset.tag = t;
     chip.addEventListener("click", () => {
+      const kbd = document.activeElement === chip;
       chip.remove();
       markDirty();
+      if (kbd) document.querySelector("#draft-tags-input input")?.focus(); // not lost to <body>
     });
     host.append(chip);
   }
@@ -430,6 +433,11 @@ function maybeShowRecoveryBanner() {
   const r = document.getElementById("draft-recovery-restore");
   const d = document.getElementById("draft-recovery-discard");
   if (r) r.addEventListener("click", async () => {
+    if (r.disabled) return;
+    r.disabled = true; // resolving a reply's post takes a moment: one restore
+    try { await restore(); } finally { r.disabled = false; }
+  });
+  const restore = async () => {
     const all = recovered.images || [];
     const refs = all.filter(i => i.blossom_url);
     // A reply or quote in progress stays one: its post is read again. If
@@ -448,13 +456,18 @@ function maybeShowRecoveryBanner() {
     // loaded draft; fresh local-File images cannot survive localStorage.
     // Edits to an open draft go back into it (its etag finds it changed).
     loadDraft({ ...recovered, interaction, id: recovered.draft_id || null, etag: recovered.etag || "", media: refs,
-      onLoaded: () => { renderTagChips(Array.isArray(recovered.tags) ? recovered.tags : []); renderList(); refreshActiveControls(); } });
-    if (all.length > refs.length) {
-      flash((all.length - refs.length) + " attachment(s) couldn't be restored — re-attach them");
-    }
-    markDirty();
-    banner.hidden = true;
-  });
+      // Once it has loaded (after "Replace?" when Compose wasn't empty):
+      // the restored edits are unsaved.
+      onLoaded: () => {
+        renderTagChips(Array.isArray(recovered.tags) ? recovered.tags : []);
+        markDirty();
+        banner.hidden = true;
+        renderList(); refreshActiveControls();
+        if (all.length > refs.length) {
+          flash((all.length - refs.length) + " attachment(s) couldn't be restored — re-attach them");
+        }
+      } });
+  };
   if (d) d.addEventListener("click", () => {
     clearRecovery();
     banner.hidden = true;

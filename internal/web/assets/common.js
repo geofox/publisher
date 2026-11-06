@@ -52,14 +52,15 @@ export function pressable(n, role = "button") {
 // asDialog gives a modal its dialog semantics: role and aria-modal on the
 // card, focus moved into it (focusEl), Escape calls close, and focus goes
 // back where it was once the backdrop leaves the page. It answers close
-// wrapped to do that cleanup.
-export function asDialog(bk, card, close, focusEl) {
+// wrapped to do that cleanup. escape: false leaves Escape alone (a dialog
+// whose content can't be shown again).
+export function asDialog(bk, card, close, focusEl, { escape = true } = {}) {
   const before = document.activeElement;
   card.setAttribute("role", "dialog");
   card.setAttribute("aria-modal", "true");
   const title = card.querySelector(".modal-title, .pm-title");
   if (title) { title.id = title.id || "dlg-" + Math.random().toString(36).slice(2, 9); card.setAttribute("aria-labelledby", title.id); }
-  const onKey = e => { if (e.key === "Escape" && bk.isConnected) { e.preventDefault(); done(); } };
+  const onKey = e => { if (escape && e.key === "Escape" && bk.isConnected) { e.preventDefault(); done(); } };
   const done = () => {
     document.removeEventListener("keydown", onKey);
     close();

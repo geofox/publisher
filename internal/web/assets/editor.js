@@ -743,6 +743,7 @@ function openCompare() {
 function closeCompare() {
   if (cmpOpen) cmpOpen.remove();
   cmpOpen = null;
+  document.getElementById("editor")?.querySelector("button, [tabindex]")?.focus({ preventScroll: true });
 }
 
 // renderCompare draws one column per selected platform, post k of each on
@@ -777,12 +778,14 @@ function renderCompare() {
           (item.problems || []).length ? el("span", { class: "pp-problem", text: "⚠ " + item.problems.join("; ") }) : null)));
     }
   }
-  const card = el("div", { class: "modal cmp" },
+  const card = el("div", { class: "modal cmp", role: "dialog", "aria-modal": "true", "aria-labelledby": "cmp-title" },
     el("div", { class: "cmp-top" },
-      el("p", { class: "modal-title", text: "Compare threads" }),
+      el("p", { class: "modal-title", id: "cmp-title", text: "Compare threads" }),
       el("span", { class: "muted", text: "Solid line: your break · dashed: split to fit" }),
       el("span", { class: "grow" }),
       el("button", { class: "ghost sm", type: "button", text: "Close", onclick: closeCompare })),
     grid);
+  const had = cmpOpen.contains(document.activeElement);
   cmpOpen.replaceChildren(card);
+  if (!had) card.querySelector("button")?.focus({ preventScroll: true }); // keyboard into the dialog
 }

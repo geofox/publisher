@@ -179,7 +179,7 @@ function showNewTokenSecret(token, name) {
   );
   bk.append(card);
   document.body.append(bk);
-  close = asDialog(bk, card, close, secretInput);
+  close = asDialog(bk, card, close, secretInput, { escape: false }); // shown once: Done or ✕ only
   // Auto-select the secret so the user can copy immediately
   setTimeout(() => secretInput.select(), 60);
 }

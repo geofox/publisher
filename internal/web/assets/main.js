@@ -2,7 +2,7 @@
 import { $, META, ORDER } from "./common.js";
 import { state, defaultOv } from "./state.js";
 import { composeInit, applyIdentity, rerenderComposer, setAccountsReloader } from "./compose.js";
-import { loadAccounts, accountFor, identityFromAccounts, loadInstance } from "./accounts.js";
+import { loadAccounts, reloadAccounts, accountFor, identityFromAccounts, loadInstance } from "./accounts.js";
 import { historyInit, loadHistory } from "./history.js";
 import { toolsInit, loadTools } from "./tools.js";
 import { verifyInit } from "./verify.js";
@@ -73,7 +73,7 @@ async function init() {
   composed = true;
   accounts.then(applyAccounts); // now with the profiles, drawn into the composer
   // A Post that finds no account asks again first (they may have failed to load).
-  setAccountsReloader(() => loadAccounts().then(applyAccounts));
+  setAccountsReloader(() => reloadAccounts().then(applyAccounts));
   historyInit();
   toolsInit();
   verifyInit();

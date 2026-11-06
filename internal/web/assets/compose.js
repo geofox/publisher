@@ -1,5 +1,5 @@
 "use strict";
-import { el, $, wcount, flash, confirmModal, META, ORDER, v1, problemError, TZ, whenText, localInput, pressable } from "./common.js";
+import { el, $, wcount, flash, confirmModal, META, ORDER, v1, problemError, TZ, whenText, localInput, pressable, asDialog } from "./common.js";
 import { state, postedText, v1PostBody, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen } from "./state.js";
 import { renderPreview, mediaMax, previewMedia } from "./preview.js";
 import { openDetail } from "./history.js";
@@ -308,6 +308,8 @@ export function detachDraft() {
   state.activeDraftId = null;
   state.draftETag = "";
   const tags = document.querySelector("#draft-tags-input .tag-chips"); if (tags) tags.replaceChildren();
+  // Unsaved edits of that draft must not come back as its recovery.
+  import("./drafts_recovery.js").then(m => m.clearRecovery());
   document.dispatchEvent(new Event("draft-detached"));
 }
 
@@ -1093,8 +1095,13 @@ async function submit() {
   if (state.platforms.size === 0) { flash("Select at least one platform."); return; }
   let missing = missingAccounts();
   if (missing.length && reloadAccounts) {
-    // The accounts may just have failed to load (a blip at start): ask again.
+    // The accounts may have failed to load (a blip at start), or one was
+    // added since: ask again. The button waits, so a second tap can't post.
+    const btn = $("#submit");
+    if (btn.disabled) return;
+    btn.disabled = true;
     try { await reloadAccounts(); } catch (e) { flash("Couldn't read your accounts: " + e.message); return; }
+    finally { btn.disabled = false; }
     missing = missingAccounts();
   }
   if (missing.length) { flash("No account to post to " + missing.join(", ") + " is configured"); return; }
@@ -1103,8 +1110,7 @@ async function submit() {
 
 // reloadAccounts reads the accounts again and applies them (main.js sets it).
 let reloadAccounts = null;
-export function setAccountsReloader(fn) { reloadAccounts = fn;
-}
+export function setAccountsReloader(fn) { reloadAccounts = fn; }
 
 // ---------------------------------------------------------------------------
 // Progress modal — a post's targets as they send
@@ -1154,7 +1160,8 @@ export function openProgressModal(postId, first) {
   document.body.append(bk);
 
   let stop = null;
-  const close = () => { if (stop) stop(); stop = null; clearInflight(); bk.remove(); };
+  // A dialog: focus moves in, Escape closes (the post goes on sending).
+  const close = asDialog(bk, card, () => { if (stop) stop(); stop = null; clearInflight(); bk.remove(); });
 
   const render = (post) => {
     const settled = post.status !== "publishing";

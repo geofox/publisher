@@ -57,6 +57,7 @@ test("a new token's one-time secret survives a stray tap on the backdrop", async
   await page.locator("#tok-create-btn").click();
   await expect(page.locator(".tok-secret-input")).toBeVisible();
   await page.mouse.click(5, 300); // backdrop
+  await page.keyboard.press("Escape");
   await expect(page.locator(".tok-secret-input"), "the secret is shown only once").toBeVisible();
 });
 
