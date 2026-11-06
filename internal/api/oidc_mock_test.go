@@ -160,7 +160,8 @@ func TestCallbackHappyPath(t *testing.T) {
 // TestRoutesGatesOnWhenAuthEnabled exercises the gate-on path through the real
 // Routes() handler (not the middleware in isolation): an unauthenticated
 // browser navigation is redirected to login, the removed pre-1.0 routes say so
-// (410) even signed out, and the always-open /healthz stays reachable.
+// (410) even signed out, the always-open /healthz stays reachable, and only
+// the manifest and its icons are served without a session.
 func TestRoutesGatesOnWhenAuthEnabled(t *testing.T) {
 	issuer := newMockOIDC(t)
 	au, err := auth.New(context.Background(), auth.Config{
@@ -198,6 +199,29 @@ func TestRoutesGatesOnWhenAuthEnabled(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/healthz: code=%d want 200", rec.Code)
+	}
+
+	// The manifest and its icons load without a session (Chrome and Edge
+	// fetch the manifest in cors mode without cookies).
+	for _, p := range []string{"/manifest.json", "/icon-32.png", "/icon-180.png", "/icon-192.png", "/icon-512.png"} {
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodGet, p, nil)
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Body.Len() == 0 {
+			t.Fatalf("%s: code=%d len=%d want 200 with a body", p, rec.Code, rec.Body.Len())
+		}
+	}
+
+	// Everything else in the web app stays gated, including near misses.
+	for _, p := range []string{"/main.js", "/app.css", "/index.html", "/icon-999.png", "/manifest.json/../main.js"} {
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodGet, p, nil)
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: code=%d want 401", p, rec.Code)
+		}
 	}
 }
 

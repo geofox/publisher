@@ -91,6 +91,20 @@ func hostOnly(h string) string {
 	return h
 }
 
+// publicAssets are the web app files a browser fetches without the session
+// cookie: Chrome and Edge load the manifest (and the icons it lists) in
+// credentials-omitted mode, and the OS fetches the install and touch icons on
+// its own, so gating them made installing the app fail outside Safari. They
+// hold nothing private. The list is exact on purpose: the rest of the web app
+// stays behind the session.
+var publicAssets = map[string]bool{
+	"/manifest.json": true,
+	"/icon-32.png":   true,
+	"/icon-180.png":  true,
+	"/icon-192.png":  true,
+	"/icon-512.png":  true,
+}
+
 // withGates applies session/token gates per path. When auth is disabled it is a
 // pass-through, preserving the pre-OIDC behavior (and keeping the existing test
 // suite green).
@@ -107,7 +121,8 @@ func (a *API) withGates(next http.Handler) http.Handler {
 		switch {
 		case p == "/healthz" || p == "/readyz" || p == "/metrics" ||
 			strings.HasPrefix(p, "/auth/") ||
-			p == "/v1" || strings.HasPrefix(p, "/v1/") || isOldAPIPath(p):
+			p == "/v1" || strings.HasPrefix(p, "/v1/") || isOldAPIPath(p) ||
+			publicAssets[p]:
 			next.ServeHTTP(w, r) // always-open / separately-gated (/v1 authenticates per route; old paths answer 410)
 		default:
 			session.ServeHTTP(w, r) // the web app
