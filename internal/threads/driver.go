@@ -121,9 +121,9 @@ func (a *Account) Publish(ctx context.Context, req destination.PublishRequest) (
 
 // Identity implements destination.Identifier.
 func (a *Account) Identity(ctx context.Context) (destination.Identity, error) {
-	handle, name, avatar, err := a.C.Profile(ctx)
+	me, err := a.C.Me(ctx)
 	if err != nil {
 		return destination.Identity{}, err
 	}
-	return destination.Identity{Handle: handle, DisplayName: name, AvatarURL: avatar}, nil
+	return destination.Identity{RemoteID: me.ID, Handle: me.Handle, DisplayName: me.Name, AvatarURL: me.Avatar}, nil
 }

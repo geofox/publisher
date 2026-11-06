@@ -2,110 +2,62 @@ package resolve
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"testing"
 	"time"
 
-	bsky "github.com/geofox/publisher/internal/bluesky"
-	mast "github.com/geofox/publisher/internal/mastodon"
-	pubnostr "github.com/geofox/publisher/internal/nostr"
+	"github.com/geofox/publisher/internal/destination"
 )
 
-type fakeNostr struct{ ev *pubnostr.SourceEvent }
-
-func (f fakeNostr) ResolveSource(context.Context, string) (*pubnostr.SourceEvent, error) {
-	return f.ev, nil
+type fakeResolver struct {
+	rs  destination.ResolvedSource
+	err error
 }
 
-func TestNostrAdapterAllowsEverything(t *testing.T) {
-	ev := &pubnostr.SourceEvent{
-		IDHex: "ab12cd", Author: "f00dbabef00dbabef00dbabef00dbabef00dbabef00dbabef00dbabef00dbabe",
-		Kind: 1, Content: "hello", CreatedAt: time.Now(),
+func (f fakeResolver) ResolveSource(context.Context, string) (destination.ResolvedSource, error) {
+	return f.rs, f.err
+}
+
+// Every field a driver returns reaches /v1/resolve's shape.
+func TestAccountAdapterCarriesEveryField(t *testing.T) {
+	at := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	rs := destination.ResolvedSource{
+		Ref: destination.SourceRef{Type: "x", URI: "at://u", CID: "c", ReplyRootURI: "at://r", ReplyRootCID: "rc",
+			LocalID: "9", EventID: "e", Author: "a", RelayHints: []string{"wss://h"}, EventKind: 1,
+			ThreadRootID: "t", Mentions: []string{"m"}},
+		Preview: destination.SourcePreview{AuthorName: "N", AuthorHandle: "@h", Text: "hi",
+			Media: []destination.SourceMedia{{URL: "https://m", Alt: "alt", Video: true}}, CreatedAt: at, WebURL: "https://w"},
+		Actions: destination.SourceActions{
+			Reply:  destination.ActionAllowed{Allowed: true},
+			Quote:  destination.ActionAllowed{Reason: "no"},
+			Repost: destination.ActionAllowed{Allowed: true, Reason: "note"},
+		},
 	}
-	a := NostrAdapter{P: fakeNostr{ev: ev}}
-	ref, err := a.ResolveSource(context.Background(), "nevent1x")
+	got, err := AccountAdapter{R: fakeResolver{rs: rs}}.ResolveSource(context.Background(), "in")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ref.Caps.Reply.Allowed || !ref.Caps.Quote.Allowed || !ref.Caps.Repost.Allowed {
-		t.Errorf("nostr caps should all be allowed: %+v", ref.Caps)
+	want := &SourceRef{
+		Platform: "x",
+		Ref: PlatformRef{URI: "at://u", CID: "c", ReplyRootURI: "at://r", ReplyRootCID: "rc", LocalID: "9",
+			EventID: "e", Author: "a", RelayHints: []string{"wss://h"}, Kind: 1, ThreadRootID: "t", Mentions: []string{"m"}},
+		Preview: Preview{AuthorName: "N", AuthorHandle: "@h", Text: "hi",
+			Media: []Media{{URL: "https://m", Alt: "alt", Video: true}}, CreatedAt: at, WebURL: "https://w"},
+		Caps: Caps{Reply: Cap{Allowed: true}, Quote: Cap{Reason: "no"}, Repost: Cap{Allowed: true, Reason: "note"}},
 	}
-	if ref.Preview.WebURL == "" || ref.Ref.EventID != "ab12cd" {
-		t.Errorf("ref/web url wrong: %+v", ref)
-	}
-}
-
-func TestNostrAdapterProtectedRepostReason(t *testing.T) {
-	ev := &pubnostr.SourceEvent{IDHex: "ab12cd", Author: "f00d", Kind: 1, Protected: true}
-	a := NostrAdapter{P: fakeNostr{ev: ev}}
-	ref, _ := a.ResolveSource(context.Background(), "x")
-	if ref.Caps.Repost.Reason == "" {
-		t.Error("protected event should annotate the repost reason")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got\n%+v\nwant\n%+v", got, want)
 	}
 }
 
-type fakeBskySource struct{ p *bsky.SourcePost }
-
-func (f fakeBskySource) GetPost(context.Context, string) (*bsky.SourcePost, error) {
-	return f.p, nil
-}
-
-func TestBlueskyAdapterMapsViewerFlags(t *testing.T) {
-	a := BlueskyAdapter{C: fakeBskySource{p: &bsky.SourcePost{
-		URI: "at://x", CID: "cid1", AuthorHandle: "alice.bsky.social",
-		Text: "hi", EmbeddingDisabled: true, ReplyDisabled: false,
-	}}}
-	ref, err := a.ResolveSource(context.Background(), "https://bsky.app/...")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ref.Caps.Quote.Allowed || ref.Caps.Quote.Reason == "" {
-		t.Errorf("embeddingDisabled should block quote with a reason: %+v", ref.Caps.Quote)
-	}
-	if !ref.Caps.Reply.Allowed || !ref.Caps.Repost.Allowed {
-		t.Errorf("reply/repost should be allowed: %+v", ref.Caps)
-	}
-	if ref.Ref.URI != "at://x" || ref.Ref.CID != "cid1" {
-		t.Errorf("ref not carried: %+v", ref.Ref)
-	}
-}
-
-func TestBlueskyAdapterCarriesReplyRoot(t *testing.T) {
-	a := BlueskyAdapter{C: fakeBskySource{p: &bsky.SourcePost{
-		URI: "at://x", CID: "cidx", AuthorHandle: "a",
-		ReplyRootURI: "at://root", ReplyRootCID: "cidroot",
-	}}}
-	ref, err := a.ResolveSource(context.Background(), "https://bsky.app/...")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ref.Ref.ReplyRootURI != "at://root" || ref.Ref.ReplyRootCID != "cidroot" {
-		t.Fatalf("reply root not carried into ref: %+v", ref.Ref)
-	}
-}
-
-type fakeMastSource struct{ st *mast.SourceStatus }
-
-func (f fakeMastSource) ResolveStatus(context.Context, string) (*mast.SourceStatus, error) {
-	return f.st, nil
-}
-
-func TestMastodonAdapterCaps(t *testing.T) {
-	a := MastodonAdapter{C: fakeMastSource{st: &mast.SourceStatus{
-		LocalID: "9", AuthorAcct: "a@x", Visibility: "private", QuoteCurrentUser: "denied",
-	}}}
-	ref, _ := a.ResolveSource(context.Background(), "https://x/@a/9")
-	if ref.Caps.Repost.Allowed || ref.Caps.Quote.Allowed {
-		t.Errorf("private+denied should block boost and native quote: %+v", ref.Caps)
-	}
-	if !ref.Caps.Reply.Allowed {
-		t.Error("reply should be allowed")
-	}
-
-	a2 := MastodonAdapter{C: fakeMastSource{st: &mast.SourceStatus{
-		LocalID: "9", Visibility: "public", QuoteCurrentUser: "automatic",
-	}}}
-	ref2, _ := a2.ResolveSource(context.Background(), "x")
-	if !ref2.Caps.Quote.Allowed || !ref2.Caps.Repost.Allowed {
-		t.Errorf("public+automatic should allow quote+boost: %+v", ref2.Caps)
+// The driver's error comes back unchanged, so the API can still tell a
+// network failure from a missing post.
+func TestAccountAdapterKeepsErrors(t *testing.T) {
+	he := &destination.HTTPError{Op: "search", StatusCode: 503}
+	_, err := AccountAdapter{R: fakeResolver{err: he}}.ResolveSource(context.Background(), "in")
+	var got *destination.HTTPError
+	if !errors.As(err, &got) || got.StatusCode != 503 {
+		t.Fatalf("err = %v, want the HTTP error", err)
 	}
 }

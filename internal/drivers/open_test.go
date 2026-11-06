@@ -43,6 +43,22 @@ func TestOpen(t *testing.T) {
 			if acct.Manifest().Type != c.typ {
 				t.Errorf("opened a %s account", acct.Manifest().Type)
 			}
+			// Every account checks itself and describes itself; Threads
+			// can't look posts up (its API has no URL lookup).
+			if _, ok := acct.(destination.Checker); !ok {
+				t.Error("not a Checker")
+			}
+			if _, ok := acct.(destination.Identifier); !ok {
+				t.Error("not an Identifier")
+			}
+			if _, ok := acct.(destination.SourceResolver); ok != (c.typ != "threads") {
+				t.Errorf("SourceResolver = %v", ok)
+			}
+			for _, p := range host.Policies() {
+				if p != destination.NetTrusted {
+					t.Errorf("asked for policy %v; an account from the environment reaches operator-set addresses", p)
+				}
+			}
 			// Every required field missing in turn.
 			for k := range c.config {
 				if c.typ == "threads" || (c.typ == "nostr" && k != "bootstrap_relay") {

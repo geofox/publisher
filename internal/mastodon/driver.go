@@ -240,11 +240,11 @@ func (a *Account) Repost(ctx context.Context, src destination.SourceRef) (destin
 
 // Identity implements destination.Identifier.
 func (a *Account) Identity(ctx context.Context) (destination.Identity, error) {
-	handle, name, avatar, err := a.C.Profile(ctx)
+	me, err := a.C.Me(ctx)
 	if err != nil {
 		return destination.Identity{}, err
 	}
-	return destination.Identity{Handle: handle, DisplayName: name, AvatarURL: avatar}, nil
+	return destination.Identity{RemoteID: me.URI, Handle: me.Handle, DisplayName: me.DisplayName, AvatarURL: me.Avatar}, nil
 }
 
 // classify maps go-mastodon's APIError (which carries the status) and the

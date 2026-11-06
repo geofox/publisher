@@ -222,12 +222,13 @@ func main() {
 	}
 	// A platform without an account resolves to "not configured" (a
 	// client with no credentials used to fail later, at sign-in).
-	rs := &resolve.Service{Nostr: resolve.NostrAdapter{P: np}}
-	if bc != nil {
-		rs.Bluesky = resolve.BlueskyAdapter{C: bc}
-	}
-	if mc != nil {
-		rs.Mastodon = resolve.MastodonAdapter{C: mc}
+	rs := &resolve.Service{}
+	for typ, field := range map[string]*resolve.Source{
+		bluesky.Type: &rs.Bluesky, mastodon.Type: &rs.Mastodon, pubnostr.Type: &rs.Nostr,
+	} {
+		if r, ok := accounts[typ].(destination.SourceResolver); ok {
+			*field = resolve.AccountAdapter{R: r}
+		}
 	}
 	a.Resolve = rs
 	// SIGTERM/SIGINT start a graceful stop: readiness fails, new work stops

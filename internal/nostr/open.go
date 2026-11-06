@@ -2,6 +2,7 @@ package nostr
 
 import (
 	"context"
+	"time"
 
 	gonostr "fiatjaf.com/nostr"
 
@@ -81,7 +82,7 @@ func (Driver) Open(_ context.Context, req destination.OpenRequest) (destination.
 	if powDefault < 0 || powMax < 0 {
 		return nil, destination.InvalidField(ConfigPOWDefault, "must not be negative")
 	}
-	return &Account{P: New(Config{
+	return &Account{HTTP: req.Host.Net(destination.NetTrusted).Client(10 * time.Second), P: New(Config{
 		NSEC:                 sk,
 		OwnerPubkey:          gonostr.GetPublicKey(sk),
 		NIP65BootstrapRelay:  home,

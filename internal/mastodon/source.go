@@ -197,18 +197,32 @@ func (c *Client) QuotePost(ctx context.Context, p Post, quotedID string) (Result
 	return Result{RemoteID: st.ID, RemoteURL: st.URL}, nil
 }
 
-// Profile fetches the authenticated operator's own account (acct, display name,
-// avatar) via /api/v1/accounts/verify_credentials. The acct is bare on the local
+// Me is the authenticated account's profile.
+type Me struct {
+	ID string // on its instance
+	// URI is the ActivityPub actor id (Mastodon 4.2 and later), else the
+	// profile page URL: the account's stable id across the network.
+	URI         string
+	Handle      string // @user@host
+	DisplayName string
+	Avatar      string
+}
+
+// Me fetches the authenticated account via
+// /api/v1/accounts/verify_credentials. The acct is bare on the local
 // instance, so it is normalized to @user@host using the instance base URL.
-func (c *Client) Profile(ctx context.Context) (handle, displayName, avatar string, err error) {
+func (c *Client) Me(ctx context.Context) (Me, error) {
 	var a struct {
+		ID          string `json:"id"`
+		URI         string `json:"uri"`
+		URL         string `json:"url"`
 		Username    string `json:"username"`
 		Acct        string `json:"acct"`
 		DisplayName string `json:"display_name"`
 		Avatar      string `json:"avatar"`
 	}
 	if err := c.getJSON(ctx, "/api/v1/accounts/verify_credentials", nil, &a); err != nil {
-		return "", "", "", err
+		return Me{}, err
 	}
 	h := a.Acct
 	if h == "" {
@@ -220,7 +234,18 @@ func (c *Client) Profile(ctx context.Context) (handle, displayName, avatar strin
 	} else if h != "" && !strings.HasPrefix(h, "@") {
 		h = "@" + h
 	}
-	return h, a.DisplayName, a.Avatar, nil
+	uri := a.URI
+	if uri == "" {
+		uri = a.URL
+	}
+	return Me{ID: a.ID, URI: uri, Handle: h, DisplayName: a.DisplayName, Avatar: a.Avatar}, nil
+}
+
+// Profile fetches the authenticated operator's own handle, display name
+// and avatar (see Me).
+func (c *Client) Profile(ctx context.Context) (handle, displayName, avatar string, err error) {
+	me, err := c.Me(ctx)
+	return me.Handle, me.DisplayName, me.Avatar, err
 }
 
 // OwnAccountID is the authenticated account's id on its instance.
