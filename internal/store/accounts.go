@@ -91,7 +91,17 @@ func (s *Store) SeedEnvAccounts(ctx context.Context, owner string, configured []
 
 // Accounts lists the owner's accounts, enabled or not, oldest first.
 func (s *Store) Accounts(ctx context.Context, owner string) ([]Account, error) {
-	rows, err := s.sql.QueryContext(ctx, `SELECT `+accountColumns+` FROM accounts WHERE owner_id = ? ORDER BY created_at, id`, owner)
+	return s.queryAccounts(ctx, `SELECT `+accountColumns+` FROM accounts WHERE owner_id = ? ORDER BY created_at, id`, owner)
+}
+
+// AllAccounts lists every owner's accounts, oldest first (the account
+// registry loads them all: account ids are global).
+func (s *Store) AllAccounts(ctx context.Context) ([]Account, error) {
+	return s.queryAccounts(ctx, `SELECT `+accountColumns+` FROM accounts ORDER BY created_at, id`)
+}
+
+func (s *Store) queryAccounts(ctx context.Context, query string, args ...any) ([]Account, error) {
+	rows, err := s.sql.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

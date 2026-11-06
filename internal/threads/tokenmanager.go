@@ -48,6 +48,10 @@ func NewTokenManager(s TokenStore, c tokenClient, n Notifier, seed string) *Toke
 	return &TokenManager{store: s, client: c, notifier: n, seed: seed, now: time.Now}
 }
 
+// SeedHash identifies an environment token without keeping it: the
+// stored token's seed hash says which environment token it descends from.
+func SeedHash(token string) string { return seedHash(token) }
+
 func seedHash(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(h[:])

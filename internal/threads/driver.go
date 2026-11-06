@@ -3,6 +3,8 @@ package threads
 import (
 	"context"
 	"encoding/json"
+	"sync"
+	"time"
 
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/transcode"
@@ -71,6 +73,11 @@ func (Driver) Manifest() destination.Manifest {
 // Account is one Threads identity.
 type Account struct {
 	C *Client
+
+	host   destination.AccountHost // saves refreshed tokens (nil: can't refresh)
+	now    func() time.Time        // nil: time.Now
+	mu     sync.Mutex
+	tokens tokenState
 }
 
 var (

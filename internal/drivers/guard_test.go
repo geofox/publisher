@@ -14,7 +14,7 @@ import (
 // built-in destination type in a string literal.
 func TestCoreNamesNoDestination(t *testing.T) {
 	Register()
-	core := []string{"../dispatch", "../api", "../store"}
+	core := []string{"../dispatch", "../api", "../store", "../accounts"}
 	lit := regexp.MustCompile(`"(bluesky|mastodon|nostr|threads)"`)
 	for _, dir := range core {
 		files, err := filepath.Glob(filepath.Join(dir, "*.go"))

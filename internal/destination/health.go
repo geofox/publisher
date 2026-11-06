@@ -59,6 +59,15 @@ type Refresher interface {
 	Refresh(ctx context.Context) error
 }
 
+// Expirer is implemented by accounts whose credentials expire at a time
+// they know without asking the network (a Threads token's expiry, kept with
+// it). The host alerts when it comes close.
+type Expirer interface {
+	// CredentialsExpireAt is when the credentials stop working, or zero
+	// when unknown or never.
+	CredentialsExpireAt() time.Time
+}
+
 // CheckReachable is the Health of an unauthenticated GET: any answer below
 // 500 means the server is up. client must not add credentials.
 func CheckReachable(ctx context.Context, client *http.Client, url string, header http.Header) Health {
