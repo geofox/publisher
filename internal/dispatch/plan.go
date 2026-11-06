@@ -9,6 +9,7 @@ import (
 
 	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/store"
+	"github.com/geofox/publisher/internal/thread"
 	"github.com/geofox/publisher/internal/unfurl"
 )
 
@@ -16,50 +17,41 @@ import (
 // part) with their text, media and idempotency key, written in one
 // transaction before anything is sent.
 
-// planTarget plans one target's items from its text, overrides and media:
-// split to the account's limits with media placed (PlanTarget), the link
-// card on the part that carries its URL. imgs maps the media list the
-// splitter sees onto the post's media (post index) or the item's own
-// (attach). Returns the target with Items set, planned and due at due (nil:
-// not until a retry).
+// planTarget plans one target's items from its text, overrides, layout and
+// media: split to the account's limits with media placed by position
+// (PlanTarget), the link card on the part that carries its URL. imgs maps
+// the media list the splitter sees onto the post's media (post index) or
+// the item's own (attach); a media past the layout's positions goes with
+// the first post. Returns the target with Items set, planned and due at due
+// (nil: not until a retry).
 func (d *Dispatcher) planTarget(ctx context.Context, postID, plat, text string, ov Overrides, imgs []planMedia,
-	imgParts []int, number bool, due *time.Time, status string) store.Target {
-	parts := make([]int, len(imgs))
-	copy(parts, imgParts)
+	lay thread.Layout, number bool, due *time.Time, status string) store.Target {
+	at := make([]int, len(imgs))
+	copy(at, lay.MediaAt)
+	lay.MediaAt = at
 	caps, _ := d.Caps(ctx, plat)
-	cp := PlanTarget(caps, text, ov.LinkCard, parts, number)
+	cw := ov.ContentWarning
+	if cw == "" {
+		cw = ov.SpoilerText
+	}
+	cp := PlanTarget(caps, TargetInput{Text: text, Card: ov.LinkCard, Layout: lay, Number: number, ContentWarning: cw})
 	ov.LinkCard = cp.Card // persist the card only as placed
 	fields, _ := json.Marshal(ov2fields(ov))
 	tg := store.Target{Platform: plat, FinalText: cp.Text, FieldsJSON: string(fields), Status: status}
-	add := func(ordinal int, text string, idx []int) {
-		it := store.Item{Ordinal: ordinal, Text: text, Status: store.ItemPlanned,
-			IdemKey: store.ItemKey(postID, plat, ordinal), NextAttemptAt: due}
-		for _, i := range idx {
-			if i < 0 || i >= len(imgs) {
+	for i, pi := range cp.Items {
+		it := store.Item{Ordinal: i, Text: pi.Text, Status: store.ItemPlanned,
+			IdemKey: store.ItemKey(postID, plat, i), NextAttemptAt: due, Range: &[2]int{pi.From, pi.To}}
+		for _, k := range pi.Media {
+			if k < 0 || k >= len(imgs) {
 				continue
 			}
-			if m := imgs[i]; m.attach != nil {
+			if m := imgs[k]; m.attach != nil {
 				it.Attach = append(it.Attach, *m.attach)
 			} else {
 				it.Media = append(it.Media, m.post)
 			}
 		}
 		tg.Items = append(tg.Items, it)
-	}
-	if len(cp.Segs) <= 1 {
-		all := make([]int, len(imgs))
-		for i := range all {
-			all[i] = i
-		}
-		add(0, cp.Text, all) // a single post carries every attachment
-		return tg
-	}
-	for i, seg := range cp.Segs {
-		var idx []int
-		if i < len(cp.Plan) {
-			idx = cp.Plan[i]
-		}
-		add(i, seg, idx)
 	}
 	return tg
 }
@@ -164,7 +156,7 @@ func (d *Dispatcher) planPostCards(ctx context.Context, id string, spec PostSpec
 	n := mediaCount(spec.Images, spec.MediaRecords)
 	for _, plat := range platforms {
 		tg := d.planTarget(ctx, id, plat, finalText(spec, plat), spec.Overrides[plat],
-			postMedia(n), spec.ImgParts, spec.Number, due, targetStatusFor(status))
+			postMedia(n), spec.Layouts[plat], spec.Number, due, targetStatusFor(status))
 		tg.AccountID = spec.Accounts[plat]
 		rec.Targets = append(rec.Targets, tg)
 	}
@@ -331,7 +323,7 @@ func (d *Dispatcher) planInteract(ctx context.Context, id string, spec InteractS
 	case actionReply, actionQuote:
 		rec.Platforms = append(rec.Platforms, spec.SourcePlatform)
 		tg := d.planTarget(ctx, id, spec.SourcePlatform, interactText(spec, spec.SourcePlatform),
-			spec.Overrides[spec.SourcePlatform], postMedia(nUser), nil, spec.Number, &now, "sending")
+			spec.Overrides[spec.SourcePlatform], postMedia(nUser), spec.Layout, spec.Number, &now, "sending")
 		tg.AccountID = spec.Accounts[spec.SourcePlatform]
 		rec.Targets = append(rec.Targets, tg)
 		for _, p := range dedupStrings(spec.Fanout) {
@@ -340,7 +332,7 @@ func (d *Dispatcher) planInteract(ctx context.Context, id string, spec InteractS
 			}
 			rec.Platforms = append(rec.Platforms, p)
 			tg := d.planTarget(ctx, id, p, ReproductionText(spec, p), spec.Overrides[p],
-				reproductionMedia(nUser, spec, d.mediaMax(ctx, p)), nil, spec.Number, &now, "sending")
+				reproductionMedia(nUser, spec, d.mediaMax(ctx, p)), thread.Layout{}, spec.Number, &now, "sending")
 			tg.AccountID = spec.Accounts[p]
 			rec.Targets = append(rec.Targets, tg)
 		}

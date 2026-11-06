@@ -10,6 +10,10 @@ import (
 
 // CardPlan is a target's chain layout with an optional link-card placement.
 type CardPlan struct {
+	// Items are the planned posts, with their ranges in Text.
+	Items []thread.Item
+	// Segs and Plan are the items' texts and media, for callers that only
+	// need those.
 	Segs     []string
 	Plan     [][]int
 	Warnings []string
@@ -22,23 +26,56 @@ type CardPlan struct {
 	Card *unfurl.Card
 }
 
-// PlanTarget splits text into a chain for a destination with the given
-// capabilities: segments within its text limit, images placed within its
-// per-post cap and, for a destination that builds link previews itself
-// (LinkPreview "client"), the link card placed. Shared by runChain, Schedule
-// and the thread-preview endpoint so preview and dispatch cannot diverge.
+// TargetInput is what a target is planned from.
+type TargetInput struct {
+	Text string
+	// Card is the link card to place, if any.
+	Card *unfurl.Card
+	// Layout is the target's breaks and media positions, in Text.
+	Layout thread.Layout
+	Number bool
+	// ContentWarning goes with every post; a destination that counts it
+	// toward the limit (Mastodon) has that much less room.
+	ContentWarning string
+}
+
+// Rules are the planner's rules for a destination's capabilities and a
+// post's content warning.
+func Rules(caps destination.Capabilities, number bool, cw string) thread.Rules {
+	limit := caps.Text.MaxLength
+	if limit > 0 && cw != "" && caps.Text.Counting.ContentWarningCounts {
+		limit = max(1, limit-caps.Text.Counting.Count(cw))
+	}
+	return thread.Rules{Limit: limit, Counting: caps.Text.Counting, ImgCap: caps.Media.Images.MaxCount,
+		Number: number, MaxLinks: caps.Text.MaxLinks}
+}
+
+// PlanTarget plans a target's chain for a destination with the given
+// capabilities: posts within its text limit as it counts them, media placed
+// by their positions within its per-post cap and, for a destination that
+// builds link previews itself (LinkPreview "client"), the link card placed.
+// Shared by the engine and the API's preview and validation, so preview and
+// dispatch cannot diverge.
 //
 // Card placement is a deterministic strip-then-revert: tentatively strip a trailing card URL,
 // split, locate the card's segment (last segment for trailing, the
 // URL-bearing segment otherwise), then revert entirely — no card, no strip —
 // when that segment already holds images, so the link can never silently
-// disappear from a post that can't carry the card.
-func PlanTarget(caps destination.Capabilities, text string, card *unfurl.Card, imgParts []int, number bool) CardPlan {
-	limit, imgCap := caps.Text.MaxLength, caps.Media.Images.MaxCount
-	plain := func() CardPlan {
-		segs, plan, warns := thread.SplitPlace(text, limit, imgParts, imgCap, thread.Opts{Number: number})
-		return CardPlan{Segs: segs, Plan: plan, Warnings: warns, Text: text}
+// disappear from a post that can't carry the card. Stripping only shortens
+// the text's end, so the layout's positions stay valid.
+func PlanTarget(caps destination.Capabilities, in TargetInput) CardPlan {
+	rules := Rules(caps, in.Number, in.ContentWarning)
+	planned := func(text string) CardPlan {
+		items, warns := thread.Plan(text, in.Layout, rules)
+		cp := CardPlan{Items: items, Warnings: warns, Text: text}
+		for _, it := range items {
+			cp.Segs = append(cp.Segs, it.Text)
+			cp.Plan = append(cp.Plan, it.Media)
+		}
+		return cp
 	}
+	text, card := in.Text, in.Card
+	plain := func() CardPlan { return planned(text) }
 	if card == nil || caps.LinkPreview != destination.LinkPreviewClient {
 		return plain()
 	}
@@ -54,12 +91,12 @@ func PlanTarget(caps destination.Capabilities, text string, card *unfurl.Card, i
 			eff, trailing = text, false
 		}
 	}
-	segs, plan, warns := thread.SplitPlace(eff, limit, imgParts, imgCap, thread.Opts{Number: number})
+	cp := planned(eff)
 	target := -1
 	if trailing {
-		target = len(segs) - 1
+		target = len(cp.Segs) - 1
 	} else {
-		for i, s := range segs {
+		for i, s := range cp.Segs {
 			if strings.Contains(s, card.URI) {
 				target = i
 				break
@@ -68,10 +105,11 @@ func PlanTarget(caps destination.Capabilities, text string, card *unfurl.Card, i
 	}
 	// target == -1 means the URL got hard-split across segments — no card.
 	// len(plan[target]) > 0 means images own that segment's embed slot — revert.
-	if target < 0 || len(plan[target]) > 0 {
+	if target < 0 || len(cp.Plan[target]) > 0 {
 		return plain()
 	}
 	c := *card
 	c.Segment = target
-	return CardPlan{Segs: segs, Plan: plan, Warnings: warns, Text: eff, Card: &c}
+	cp.Card = &c
+	return cp
 }

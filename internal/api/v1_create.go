@@ -16,6 +16,7 @@ import (
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
+	"github.com/geofox/publisher/internal/thread"
 	"github.com/geofox/publisher/internal/transcode"
 	"github.com/geofox/publisher/internal/unfurl"
 )
@@ -102,6 +103,8 @@ type createPlan struct {
 	media   []*store.MediaObject // the post's media, in order
 	// mediaReq is each media's index in the request.
 	mediaReq []int
+	// mediaPart is the part (of the text's "---" parts) each media goes with.
+	mediaPart []int
 	// ix is the reply, quote or repost, with the post it acts on.
 	ix     *dispatch.InteractSpec
 	source *resolve.SourceRef
@@ -110,10 +113,12 @@ type createPlan struct {
 	upstream bool
 }
 
-// imgParts is the part each media goes with, for the planner (which must
-// not share the spec's slice).
-func (p *createPlan) imgParts() []int {
-	return append(make([]int, 0, len(p.media)), p.spec.ImgParts...)
+// layoutOf is a target's layout for the planner, with a media position
+// for each of the post's media.
+func (p *createPlan) layoutOf(pt plannedTarget) thread.Layout {
+	lay := pt.layout
+	lay.MediaAt = append([]int(nil), lay.MediaAt...)
+	return lay
 }
 
 type plannedTarget struct {
@@ -123,6 +128,8 @@ type plannedTarget struct {
 	textPtr string // where text came from, for errors
 	reqPtr  string // the target in the request: /targets/i
 	ov      dispatch.Overrides
+	// layout is the target's breaks and media positions in text.
+	layout thread.Layout
 	// warnings are notes about request fields the account ignores.
 	warnings []string
 }
@@ -186,6 +193,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 			add("/content/text", "too_long", "at most 50000 characters")
 		}
 	}
+	text, sharedBreaks, sharedParts := thread.FromMarkers(text)
 	checkCW := func(ptr string, cw *string) {
 		if cw != nil && utf8.RuneCountInString(*cw) > maxCWRunes {
 			add(ptr, "too_long", "at most 1000 characters")
@@ -260,7 +268,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 			}
 			plan.media = append(plan.media, m)
 			plan.mediaReq = append(plan.mediaReq, j)
-			plan.spec.ImgParts = append(plan.spec.ImgParts, part)
+			plan.mediaPart = append(plan.mediaPart, part)
 			plan.spec.MediaRecords = append(plan.spec.MediaRecords, mediaRecord(m, len(plan.spec.MediaRecords), alt))
 		}
 		switch {
@@ -323,13 +331,17 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 		caps := a.caps(ctx, ac.Type)
 		name := drv.Manifest().Name
 		pt := plannedTarget{account: ac, caps: caps, text: text, textPtr: "/content/text", reqPtr: ptr}
+		parts := sharedParts
+		pt.layout.Breaks = sharedBreaks
 		ov := dispatch.Overrides{}
 		cw, sensitive, langs := req.Content.ContentWarning, req.Content.Sensitive, req.Content.Languages
 		if c := t.Content; c != nil {
 			if c.Text != nil {
 				// The engine reads an empty override as "inherit", so a
 				// blank one would preview empty and publish the shared text.
-				pt.text, ov.Text, pt.textPtr = *c.Text, *c.Text, ptr+"/content/text"
+				own, breaks, ownParts := thread.FromMarkers(*c.Text)
+				pt.text, ov.Text, pt.textPtr = own, own, ptr+"/content/text"
+				pt.layout.Breaks, parts = breaks, ownParts
 				switch {
 				case strings.TrimSpace(*c.Text) == "":
 					add(ptr+"/content/text", "empty", "leave text out (or null) to post the shared text")
@@ -389,11 +401,18 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 				break
 			}
 		}
+		for _, mp := range plan.mediaPart {
+			pt.layout.MediaAt = append(pt.layout.MediaAt, parts[min(mp, len(parts)-1)])
+		}
 		pt.ov = ov
 		plan.targets = append(plan.targets, pt)
 		plan.spec.Platforms = append(plan.spec.Platforms, ac.Type)
 		plan.spec.Overrides[ac.Type] = ov
 		plan.spec.Accounts[ac.Type] = ac.ID
+		if plan.spec.Layouts == nil {
+			plan.spec.Layouts = map[string]thread.Layout{}
+		}
+		plan.spec.Layouts[ac.Type] = pt.layout
 	}
 
 	// Threading and schedule.
@@ -427,7 +446,8 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 	// The planner's split must stay a reasonable thread.
 	// (Planned without the link card: a card only shortens the text.)
 	for _, pt := range plan.targets {
-		cp := dispatch.PlanTarget(pt.caps, pt.text, nil, plan.imgParts(), plan.spec.Number)
+		cp := dispatch.PlanTarget(pt.caps, dispatch.TargetInput{Text: pt.text, Layout: plan.layoutOf(pt),
+			Number: plan.spec.Number, ContentWarning: pt.ov.ContentWarning})
 		if len(cp.Segs) > maxThreadParts {
 			add(pt.textPtr, "too_many_parts", "the text makes "+strconv.Itoa(len(cp.Segs))+
 				" thread parts on "+pt.account.ID+"; at most 100")
@@ -738,7 +758,8 @@ func (a *API) v1PreviewPost(w http.ResponseWriter, r *http.Request) {
 				card = c
 			}
 		}
-		cp := dispatch.PlanTarget(pt.caps, pt.text, card, plan.imgParts(), plan.spec.Number)
+		cp := dispatch.PlanTarget(pt.caps, dispatch.TargetInput{Text: pt.text, Card: card, Layout: plan.layoutOf(pt),
+			Number: plan.spec.Number, ContentWarning: pt.ov.ContentWarning})
 		vt := v1PreviewTarget{Account: pt.account.ID, Type: pt.account.Type, Role: "post", Items: []v1PreviewItem{},
 			Warnings: append(append([]string{}, pt.warnings...), cp.Warnings...), Media: []v1PreviewNote{}}
 		if ix := plan.ix; ix != nil {

@@ -30,7 +30,10 @@ type Item struct {
 	Media   []int // indices into the post's media
 	// Attach is media the item carries beyond the post's own: a quote
 	// reproduction's re-hosted source media (Ordinal = the source index).
-	Attach        []Media
+	Attach []Media
+	// Range is the code points of the target's text this item posts
+	// (counter excluded); nil on items planned before ranges were kept.
+	Range         *[2]int
 	Status        string
 	IdemKey       string
 	RemoteID      string
@@ -57,6 +60,7 @@ type itemContent struct {
 	Text   string  `json:"text"`
 	Media  []int   `json:"media,omitempty"`
 	Attach []Media `json:"attach,omitempty"`
+	Range  *[2]int `json:"range,omitempty"`
 }
 
 // itemStatusOf maps the target and segment vocabulary (success, pending,
@@ -97,7 +101,7 @@ func insertItem(ctx context.Context, x itemExec, targetID int64, it Item) error 
 }
 
 func insertItemID(ctx context.Context, x itemExec, targetID int64, it Item) (int64, error) {
-	content, _ := json.Marshal(itemContent{Text: it.Text, Media: it.Media, Attach: it.Attach})
+	content, _ := json.Marshal(itemContent{Text: it.Text, Media: it.Media, Attach: it.Attach, Range: it.Range})
 	if it.IdemKey == "" {
 		it.IdemKey = newID()
 	}
@@ -133,7 +137,7 @@ func (s *Store) loadItems(targetID int64) ([]Item, error) {
 		}
 		var c itemContent
 		_ = json.Unmarshal([]byte(content), &c)
-		it.Text, it.Media, it.Attach = c.Text, c.Media, c.Attach
+		it.Text, it.Media, it.Attach, it.Range = c.Text, c.Media, c.Attach, c.Range
 		if ref != "" {
 			it.Ref = json.RawMessage(ref)
 		}

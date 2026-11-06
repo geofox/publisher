@@ -1,20 +1,471 @@
-// Package thread splits a long draft into platform-sized segments for posting
-// as a reply-chain. It is pure (no I/O) so all splitting logic — including the
-// counter-budget fixpoint — lives in one well-tested place.
+// Package thread plans how one text is posted as a thread on one
+// destination: where it breaks (by hand, then to the destination's length
+// limit), which media go with which post, and the " k/n" counters. It is
+// pure (no I/O), so the API's preview, validation and the engine all plan
+// the same way.
+//
+// Positions (breaks, media, item ranges) are Unicode code point offsets
+// into the text.
 package thread
 
 import (
+	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/rivo/uniseg"
+
+	"github.com/geofox/publisher/internal/destination"
 )
 
-// Opts controls splitting behaviour.
-type Opts struct {
-	// Number appends a " k/n" counter to each segment when the resulting chain
-	// has >= 2 segments. A single-segment chain is never numbered.
+// Layout is what the author decided about a text: where it breaks by hand
+// and where each media goes.
+type Layout struct {
+	// Breaks are hand-made breaks: code point offsets, each starting a new
+	// post. The planner ignores ones out of range and sorts the rest.
+	Breaks []int
+	// MediaAt has one position per media: the media goes with the post that
+	// holds it (0, or none given: the first post).
+	MediaAt []int
+}
+
+// Rules are the destination's: how long a post may be and how it is
+// counted, how many images a post takes, and whether posts are numbered.
+type Rules struct {
+	// Limit is the most a post may count; 0 = unlimited (nothing is split
+	// for length).
+	Limit    int
+	Counting destination.Counting
+	// ImgCap is the most images one post takes; 0 = unlimited.
+	ImgCap int
+	// Number appends a " k/n" counter to every post of a thread of two or
+	// more.
 	Number bool
+	// MaxLinks caps the distinct URLs in one post; 0 = no cap. A post over
+	// it is reported in Item.Problems (splitting doesn't fix it).
+	MaxLinks int
+}
+
+// Item is one post of the plan.
+type Item struct {
+	// Text is what is posted, counter included.
+	Text string
+	// From and To are the code points of the text the post carries,
+	// counter excluded. A media-only post appended for media that didn't
+	// fit has From == To == the text's length.
+	From, To int
+	// Manual is set when a hand-made break starts this post.
+	Manual bool
+	// Media are the media (by index) the post carries.
+	Media []int
+	// Length is Text as the destination counts it.
+	Length int
+	// Problems are what the destination will refuse about this post.
+	Problems []string
+}
+
+// Plan plans text under the rules. Every text gets at least one item. The
+// planner is deterministic: planning the same input again (a retry, a
+// restart) gives the same items.
+func Plan(text string, lay Layout, r Rules) (items []Item, warnings []string) {
+	rs := []rune(text)
+	p := planner{rs: rs, r: r}
+	pieces := p.pieces(lay.Breaks)
+
+	nMedia := len(lay.MediaAt)
+	ranges, manual, warns := p.splitAll(pieces, r.Limit)
+	counts := PlanMedia(nMedia, len(ranges), r.ImgCap)
+	if r.Number && len(counts) >= 2 && r.Limit > 0 {
+		// The counter costs room, and its width depends on the total, which
+		// depends on the room: iterate to a fixpoint. Splitting is monotone
+		// (less room, same or more posts), so the total only grows; it
+		// settles once it stops crossing a digit boundary.
+		total := len(counts)
+		for i := 0; i < 8; i++ {
+			eff := r.Limit - counterWidth(total)
+			if eff < 1 {
+				break // a pathological tiny limit: no room for counters
+			}
+			ranges, manual, warns = p.splitAll(pieces, eff)
+			counts = PlanMedia(nMedia, len(ranges), r.ImgCap)
+			if len(counts) == total {
+				break
+			}
+			total = len(counts)
+		}
+	}
+	warnings = warns
+
+	end := len(rs)
+	total := len(counts)
+	numbered := r.Number && total >= 2
+	for i := 0; i < total; i++ {
+		it := Item{From: end, To: end, Media: []int{}}
+		if i < len(ranges) {
+			it.From, it.To, it.Manual = ranges[i][0], ranges[i][1], manual[i]
+		}
+		body := string(rs[it.From:it.To])
+		it.Text = body
+		if numbered {
+			c := strconv.Itoa(i+1) + "/" + strconv.Itoa(total)
+			if body == "" {
+				it.Text = c
+			} else {
+				it.Text = body + " " + c
+			}
+		}
+		it.Length = r.Counting.Count(it.Text)
+		if r.MaxLinks > 0 {
+			if n := destination.CountURLs(it.Text); n > r.MaxLinks {
+				it.Problems = append(it.Problems, "has "+strconv.Itoa(n)+" links; at most "+strconv.Itoa(r.MaxLinks)+" per post")
+			}
+		}
+		items = append(items, it)
+	}
+
+	// Media: each goes with the text post holding its position, spilling
+	// forward when that post is full.
+	if nMedia > 0 {
+		anchors := make([]int, nMedia)
+		for m, at := range lay.MediaAt {
+			anchors[m] = postAt(ranges, at)
+		}
+		postPart := make([]int, total)
+		for j := range postPart {
+			postPart[j] = min(j, max(len(ranges)-1, 0))
+		}
+		for j, idx := range PlaceMedia(anchors, postPart, r.ImgCap) {
+			items[j].Media = idx
+		}
+	}
+	return items, warnings
+}
+
+// postAt is the text post holding position at: the last one starting at or
+// before it.
+func postAt(ranges [][2]int, at int) int {
+	j := 0
+	for i, rg := range ranges {
+		if rg[0] <= at {
+			j = i
+		}
+	}
+	return j
+}
+
+type planner struct {
+	rs []rune
+	r  Rules
+}
+
+// count is a range's length as the destination counts it.
+func (p *planner) count(a, b int) int { return p.r.Counting.Count(string(p.rs[a:b])) }
+
+// pieces cuts the text at the hand-made breaks.
+func (p *planner) pieces(breaks []int) [][2]int {
+	cuts := []int{}
+	for _, b := range breaks {
+		if b > 0 && b < len(p.rs) {
+			cuts = append(cuts, b)
+		}
+	}
+	slices.Sort(cuts)
+	cuts = slices.Compact(cuts)
+	out := make([][2]int, 0, len(cuts)+1)
+	start := 0
+	for _, c := range cuts {
+		out = append(out, [2]int{start, c})
+		start = c
+	}
+	return append(out, [2]int{start, len(p.rs)})
+}
+
+// splitAll splits every piece to limit. manual[i] is set on the first post
+// of every piece after the first that has text. A text with no text at all
+// is one empty post.
+func (p *planner) splitAll(pieces [][2]int, limit int) (ranges [][2]int, manual []bool, warns []string) {
+	for k, pc := range pieces {
+		a, b := p.trim(pc[0], pc[1])
+		if a == b {
+			continue
+		}
+		chunks, w := p.split(a, b, limit)
+		warns = append(warns, w...)
+		for i, c := range chunks {
+			ranges = append(ranges, c)
+			manual = append(manual, i == 0 && k > 0 && len(ranges) > 1)
+		}
+	}
+	if len(ranges) == 0 {
+		a, _ := p.trim(0, len(p.rs))
+		ranges, manual = [][2]int{{a, a}}, []bool{false}
+	}
+	return ranges, manual, warns
+}
+
+func (p *planner) trim(a, b int) (int, int) {
+	for a < b && unicode.IsSpace(p.rs[a]) {
+		a++
+	}
+	for b > a && unicode.IsSpace(p.rs[b-1]) {
+		b--
+	}
+	return a, b
+}
+
+// split splits [a, b) into posts of at most limit: whole paragraphs where
+// they fit, else sentences, else words, else graphemes. Then it evens out
+// the end of the thread (rebalance).
+func (p *planner) split(a, b, limit int) ([][2]int, []string) {
+	if limit <= 0 || p.count(a, b) <= limit {
+		return [][2]int{{a, b}}, nil
+	}
+	var warns []string
+	chunks := p.pack(p.paragraphs(a, b), limit, func(a, b int) [][2]int {
+		return p.pack(p.sentences(a, b), limit, func(a, b int) [][2]int {
+			return p.pack(p.words(a, b), limit, func(a, b int) [][2]int {
+				warns = append(warns, "a word or link longer than the "+strconv.Itoa(limit)+"-character limit was split")
+				return p.hard(a, b, limit)
+			})
+		})
+	})
+	return p.rebalance(chunks, limit), slices.Compact(warns)
+}
+
+// pack greedily joins consecutive pieces (keeping the text between them)
+// while they fit. A piece that doesn't fit alone goes to fallback.
+func (p *planner) pack(pieces [][2]int, limit int, fallback func(a, b int) [][2]int) [][2]int {
+	var out [][2]int
+	cur := [2]int{-1, -1}
+	flush := func() {
+		if cur[0] >= 0 {
+			out = append(out, cur)
+			cur = [2]int{-1, -1}
+		}
+	}
+	for _, pc := range pieces {
+		if p.count(pc[0], pc[1]) > limit {
+			flush()
+			out = append(out, fallback(pc[0], pc[1])...)
+			continue
+		}
+		if cur[0] >= 0 && p.count(cur[0], pc[1]) <= limit {
+			cur[1] = pc[1]
+			continue
+		}
+		flush()
+		cur = pc
+	}
+	flush()
+	return out
+}
+
+// paragraphs are separated by a blank line.
+func (p *planner) paragraphs(a, b int) [][2]int {
+	var out [][2]int
+	start := a
+	for i := a; i < b; i++ {
+		if p.rs[i] != '\n' {
+			continue
+		}
+		j := i + 1
+		for j < b && (p.rs[j] == ' ' || p.rs[j] == '\t' || p.rs[j] == '\r') {
+			j++
+		}
+		if j < b && p.rs[j] == '\n' {
+			out = p.appendTrimmed(out, start, i)
+			for j < b && unicode.IsSpace(p.rs[j]) {
+				j++
+			}
+			start, i = j, j-1
+		}
+	}
+	return p.appendTrimmed(out, start, b)
+}
+
+// sentences end at ., ! or ? (and any closing quotes or brackets) followed
+// by whitespace.
+func (p *planner) sentences(a, b int) [][2]int {
+	var out [][2]int
+	start := a
+	for i := a; i < b; i++ {
+		if end := p.sentenceEnd(i, b); end > 0 {
+			out = p.appendTrimmed(out, start, end)
+			start = end
+		}
+	}
+	out = p.appendTrimmed(out, start, b)
+	if len(out) == 0 {
+		return [][2]int{{a, b}}
+	}
+	return out
+}
+
+// sentenceEnd answers the end of a sentence whose terminator is at i (just
+// past any closing quotes or brackets), when whitespace follows; else 0.
+func (p *planner) sentenceEnd(i, b int) int {
+	if r := p.rs[i]; r != '.' && r != '!' && r != '?' && r != '…' {
+		return 0
+	}
+	j := i + 1
+	for j < b && strings.ContainsRune(`"')]»”’`, p.rs[j]) {
+		j++
+	}
+	if j < b && unicode.IsSpace(p.rs[j]) {
+		return j
+	}
+	return 0
+}
+
+func (p *planner) words(a, b int) [][2]int {
+	var out [][2]int
+	start := -1
+	for i := a; i < b; i++ {
+		if unicode.IsSpace(p.rs[i]) {
+			if start >= 0 {
+				out = append(out, [2]int{start, i})
+				start = -1
+			}
+		} else if start < 0 {
+			start = i
+		}
+	}
+	if start >= 0 {
+		out = append(out, [2]int{start, b})
+	}
+	return out
+}
+
+// hard cuts a word longer than limit between graphemes.
+func (p *planner) hard(a, b, limit int) [][2]int {
+	var out [][2]int
+	g := uniseg.NewGraphemes(string(p.rs[a:b]))
+	start, pos := a, a
+	for g.Next() {
+		n := len([]rune(g.Str()))
+		if pos > start && p.count(start, pos+n) > limit {
+			out = append(out, [2]int{start, pos})
+			start = pos
+		}
+		pos += n
+	}
+	if pos > start {
+		out = append(out, [2]int{start, pos})
+	}
+	return out
+}
+
+func (p *planner) appendTrimmed(out [][2]int, a, b int) [][2]int {
+	if a, b = p.trim(a, b); a < b {
+		out = append(out, [2]int{a, b})
+	}
+	return out
+}
+
+// rebalance evens out the end of a thread. A last post that is only links,
+// hashtags or mentions takes the last word (or sentence) of the post before
+// it, so it doesn't stand alone. A last post under a quarter of the limit
+// takes the last sentence of the post before it, when both still fit and
+// the one before keeps at least a quarter.
+func (p *planner) rebalance(chunks [][2]int, limit int) [][2]int {
+	n := len(chunks)
+	if n < 2 {
+		return chunks
+	}
+	prev, last := chunks[n-2], chunks[n-1]
+	try := func(cut int) bool {
+		pa, pb := p.trim(prev[0], cut)
+		la, lb := p.trim(cut, last[1])
+		if pa >= pb || la >= lb || p.count(la, lb) > limit {
+			return false
+		}
+		chunks[n-2], chunks[n-1] = [2]int{pa, pb}, [2]int{la, lb}
+		return true
+	}
+	if p.onlyTokens(last[0], last[1]) {
+		if c := p.lastSentenceStart(prev); c > 0 && try(c) {
+			return chunks
+		}
+		if c := p.lastWordStart(prev); c > 0 && try(c) {
+			return chunks
+		}
+		return chunks
+	}
+	quarter := limit / 4
+	if p.count(last[0], last[1]) >= quarter {
+		return chunks
+	}
+	if c := p.lastSentenceStart(prev); c > 0 {
+		if pa, pb := p.trim(prev[0], c); pa < pb && p.count(pa, pb) >= quarter && try(c) {
+			return chunks
+		}
+	}
+	// No sentence to move (one long run of words): move the fewest words
+	// that make the tail a quarter.
+	ws := p.words(prev[0], prev[1])
+	for k := len(ws) - 1; k > 0; k-- {
+		c := ws[k][0]
+		if p.count(prev[0], ws[k-1][1]) < quarter || p.count(c, last[1]) > limit {
+			break
+		}
+		if p.count(c, last[1]) >= quarter {
+			try(c)
+			break
+		}
+	}
+	return chunks
+}
+
+// onlyTokens reports whether [a, b) is nothing but links, hashtags and
+// mentions.
+func (p *planner) onlyTokens(a, b int) bool {
+	ws := p.words(a, b)
+	if len(ws) == 0 {
+		return false
+	}
+	for _, w := range ws {
+		s := string(p.rs[w[0]:w[1]])
+		if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") &&
+			!strings.HasPrefix(s, "#") && !strings.HasPrefix(s, "@") {
+			return false
+		}
+	}
+	return true
+}
+
+// lastSentenceStart is where the last sentence (or paragraph) of rg starts,
+// when it has more than one; else 0.
+func (p *planner) lastSentenceStart(rg [2]int) int {
+	c := 0
+	for i := rg[0]; i < rg[1]; i++ {
+		if end := p.sentenceEnd(i, rg[1]); end > 0 {
+			c = end
+		} else if p.rs[i] == '\n' {
+			c = i
+		}
+	}
+	if a, _ := p.trim(c, rg[1]); c <= rg[0] || a >= rg[1] {
+		return 0
+	}
+	return c
+}
+
+// lastWordStart is where the last word of rg starts, when it has more than
+// one; else 0.
+func (p *planner) lastWordStart(rg [2]int) int {
+	ws := p.words(rg[0], rg[1])
+	if len(ws) < 2 {
+		return 0
+	}
+	return ws[len(ws)-1][0]
+}
+
+// counterWidth is the most a " k/n" counter costs: a space, a slash and two
+// numbers of up to n's digits.
+func counterWidth(n int) int {
+	d := len(strconv.Itoa(n))
+	return 2 + 2*d
 }
 
 // PlanMedia assigns nImages images to a chain's segments: up to cap per
@@ -36,248 +487,88 @@ func PlanMedia(nImages, nSegments, cap int) []int {
 	}
 	rem := nImages
 	for i := 0; i < nSegments && rem > 0; i++ {
-		c := cap
-		if rem < c {
-			c = rem
-		}
+		c := min(cap, rem)
 		counts[i] = c
 		rem -= c
 	}
 	for rem > 0 {
-		c := cap
-		if rem < c {
-			c = rem
-		}
+		c := min(cap, rem)
 		counts = append(counts, c)
 		rem -= c
 	}
 	return counts
 }
 
-// Split returns the ordered segments for one platform plus any warnings (e.g. a
-// token longer than the limit had to be hard-split). limit <= 0 means no length
-// splitting (manual --- markers are still honoured).
-func Split(text string, limit int, opts Opts) (segments []string, warnings []string) {
+// NormalizeNewlines turns CRLF (and lone CR) into LF, moving the positions
+// in each list to match.
+func NormalizeNewlines(text string, positions ...[]int) string {
+	if !strings.ContainsRune(text, '\r') {
+		return text
+	}
+	rs := []rune(text)
+	// shift[i] is how many runes before i are removed.
+	removed := make([]int, len(rs)+1)
+	out := make([]rune, 0, len(rs))
+	n := 0
+	for i, r := range rs {
+		removed[i] = n
+		if r == '\r' {
+			if i+1 < len(rs) && rs[i+1] == '\n' {
+				n++
+				continue
+			}
+			r = '\n'
+		}
+		out = append(out, r)
+	}
+	removed[len(rs)] = n
+	for _, ps := range positions {
+		for k, pos := range ps {
+			if pos >= 0 && pos <= len(rs) {
+				ps[k] = pos - removed[pos]
+			}
+		}
+	}
+	return string(out)
+}
+
+// FromMarkers converts the old way of breaking a thread by hand, lines of
+// "---", into a text without them and the breaks they made. parts[i] is
+// the code point where part i (0-based, empty parts not counted, as the
+// old splitter counted them) starts, for media placed by part.
+func FromMarkers(text string) (out string, breaks []int, parts []int) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
-	segs, warns := splitAt(text, limit)
-	if !opts.Number || len(segs) < 2 {
-		return segs, warns
-	}
-	if limit <= 0 {
-		// No length budget (Nostr): segments are marker-driven and fixed, so the
-		// counter has no budget to reserve — just append it.
-		return appendCounters(segs, len(segs)), warns
-	}
-	s, _, w := number(text, limit, 0)
-	return s, w
-}
-
-// SplitWithMedia splits text for one platform AND assigns its images to the
-// resulting chain (PlanMedia). When images outrun the text segments
-// (Mastodon's 4-attachment cap), image-only segments are appended: empty text,
-// or just the "k/n" counter when numbering is on. Numbering interacts with the
-// plan — counters consume grapheme budget, which can grow the text segment
-// count, which shrinks the appended-extras count — so this is the single
-// orchestrating entry point; dispatch and the thread-preview endpoint must
-// both use it so they cannot diverge. len(segs) == len(plan) always.
-func SplitWithMedia(text string, limit, nImages, cap int, opts Opts) (segs []string, plan []int, warnings []string) {
-	segs, _, plan, warnings = splitWithMediaPlan(text, limit, nImages, cap, opts)
-	return segs, plan, warnings
-}
-
-// splitAtParts is splitAt that also returns, for each emitted segment, the part
-// index it came from — a CONTIGUOUS counter over non-empty --- parts (empty
-// blocks are skipped and do NOT advance the index), so it matches the client's
-// masterParts() which filters empties. partOf aligns 1:1 with segs.
-func splitAtParts(text string, limit int) (segs []string, partOf []int, warns []string) {
-	pi := -1
-	for _, u := range splitMarkers(text) {
-		if u == "" {
-			continue
-		}
-		pi++
-		if limit <= 0 || graphemeLen(u) <= limit {
-			segs = append(segs, u)
-			partOf = append(partOf, pi)
-			continue
-		}
-		chunks, w := packParagraphs(u, limit)
-		for _, c := range chunks {
-			segs = append(segs, c)
-			partOf = append(partOf, pi)
-		}
-		warns = append(warns, w...)
-	}
-	return segs, partOf, warns
-}
-
-// splitAt now delegates (existing callers unchanged).
-func splitAt(text string, limit int) (segs []string, warns []string) {
-	segs, _, warns = splitAtParts(text, limit)
-	return segs, warns
-}
-
-// splitMarkers breaks text on lines that consist solely of "---", trimming each
-// resulting user segment. With no markers it returns the whole (trimmed) text.
-func splitMarkers(text string) []string {
-	var out, cur []string
-	for _, ln := range strings.Split(text, "\n") {
-		if strings.TrimSpace(ln) == "---" {
-			out = append(out, strings.TrimSpace(strings.Join(cur, "\n")))
-			cur = nil
-			continue
-		}
-		cur = append(cur, ln)
-	}
-	out = append(out, strings.TrimSpace(strings.Join(cur, "\n")))
-	return out
-}
-
-// packParagraphs greedily packs paragraphs (\n\n) into <= limit chunks, falling
-// back to sentence-, then word-, then hard-splitting for oversized pieces.
-func packParagraphs(text string, limit int) ([]string, []string) {
-	return packPieces(strings.Split(text, "\n\n"), "\n\n", limit, packSentences)
-}
-
-func packSentences(para string, limit int) ([]string, []string) {
-	return packPieces(splitSentences(para), " ", limit, packWords)
-}
-
-func packWords(sent string, limit int) ([]string, []string) {
-	// NOTE: strings.Fields collapses runs of internal whitespace to single
-	// spaces. This is only reached when a single sentence exceeds the limit, and
-	// is acceptable for social-post drafts (no meaningful multi-space runs).
-	return packPieces(strings.Fields(sent), " ", limit, hardSplit)
-}
-
-// packPieces greedily joins pieces with sep into chunks <= limit. A piece that
-// itself exceeds limit is handed to fallback.
-func packPieces(pieces []string, sep string, limit int, fallback func(string, int) ([]string, []string)) (chunks []string, warns []string) {
-	cur := ""
-	flush := func() {
-		if cur != "" {
-			chunks = append(chunks, cur)
-			cur = ""
-		}
-	}
-	for _, p := range pieces {
-		if p == "" {
-			continue
-		}
-		if graphemeLen(p) > limit {
-			flush()
-			fc, fw := fallback(p, limit)
-			chunks = append(chunks, fc...)
-			warns = append(warns, fw...)
-			continue
-		}
-		cand := p
-		if cur != "" {
-			cand = cur + sep + p
-		}
-		if graphemeLen(cand) <= limit {
-			cur = cand
-		} else {
-			flush()
-			cur = p
-		}
-	}
-	flush()
-	return chunks, warns
-}
-
-// hardSplit chops a single token longer than limit at grapheme boundaries.
-func hardSplit(s string, limit int) (chunks []string, warns []string) {
-	warns = append(warns, "a word/URL longer than the "+strconv.Itoa(limit)+"-char limit was split")
-	g := uniseg.NewGraphemes(s)
+	lines := strings.Split(text, "\n")
 	var b strings.Builder
 	n := 0
-	for g.Next() {
-		if n == limit {
-			chunks = append(chunks, b.String())
-			b.Reset()
-			n = 0
+	partStart, partHasText := 0, false
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) == "---" {
+			if partHasText {
+				parts = append(parts, partStart)
+			}
+			breaks = append(breaks, n)
+			partStart, partHasText = n, false
+			continue
 		}
-		b.WriteString(g.Str())
-		n++
-	}
-	if b.Len() > 0 {
-		chunks = append(chunks, b.String())
-	}
-	return chunks, warns
-}
-
-// splitSentences splits on ./!/? followed by whitespace, keeping the terminator.
-func splitSentences(s string) []string {
-	var out []string
-	r := []rune(s)
-	start := 0
-	for i := 0; i < len(r); i++ {
-		if (r[i] == '.' || r[i] == '!' || r[i] == '?') && i+1 < len(r) && (r[i+1] == ' ' || r[i+1] == '\n') {
-			out = append(out, strings.TrimSpace(string(r[start:i+1])))
-			start = i + 1
+		if strings.TrimSpace(ln) != "" {
+			partHasText = true
+		}
+		b.WriteString(ln)
+		n += len([]rune(ln))
+		if i < len(lines)-1 {
+			b.WriteString("\n")
+			n++
 		}
 	}
-	if start < len(r) {
-		out = append(out, strings.TrimSpace(string(r[start:])))
+	if partHasText {
+		parts = append(parts, partStart)
 	}
-	if len(out) == 0 {
-		out = []string{strings.TrimSpace(s)}
+	if len(breaks) == 0 {
+		return text, nil, []int{0}
 	}
-	return out
-}
-
-func graphemeLen(s string) int { return uniseg.GraphemeClusterCount(s) }
-
-// number computes a stable segment count under the counter-budget constraint
-// (the " k/n" suffix consumes graphemes, and its width depends on n, which
-// depends on the budget) by iterating to a fixpoint, then appends the counters.
-// extra counts trailing image-only posts appended after the text segments:
-// they are part of the chain, so counters render k/(n+extra) and the counter
-// budget is sized to the full total.
-//
-// Convergence: splitAt is monotone (smaller limit ⇒ same-or-more segments), so n
-// only grows across iterations, and counterWidth is a step function of n's digit
-// count. n stabilizes once it stops crossing a digit boundary (9→10, 99→100,
-// 999→1000) — at most three transitions, each costing one iteration, so the loop
-// converges in ≤4 passes; the cap of 6 is a safety margin.
-func number(text string, limit, extra int) (segs []string, partOf []int, warns []string) {
-	segs, partOf, warns = splitAtParts(text, limit)
-	n := len(segs)
-	for i := 0; i < 6; i++ {
-		w := counterWidth(n + extra)
-		eff := limit - w
-		if eff < 1 {
-			return segs, partOf, warns // pathological tiny limit: skip numbering
-		}
-		segs, partOf, warns = splitAtParts(text, eff)
-		// Defensive: with extra==0, Split only calls number when the full-budget
-		// split already yields >=2 segments, and reducing the budget can only add
-		// segments — guard rather than emit a "1/1" lone post. With extras the
-		// chain has >=2 posts even for a single text segment.
-		if len(segs)+extra < 2 {
-			return splitAtParts(text, limit)
-		}
-		if len(segs) == n {
-			break
-		}
-		n = len(segs)
+	if len(parts) == 0 {
+		parts = []int{0}
 	}
-	return appendCounters(segs, len(segs)+extra), partOf, warns
-}
-
-// appendCounters appends a " k/total" suffix to each segment in a chain.
-func appendCounters(segs []string, total int) []string {
-	out := make([]string, len(segs))
-	for i, s := range segs {
-		out[i] = s + " " + strconv.Itoa(i+1) + "/" + strconv.Itoa(total)
-	}
-	return out
-}
-
-// counterWidth is the worst-case grapheme cost of a " k/n" suffix: a space, a
-// slash, and two numbers each up to len(n) digits.
-func counterWidth(n int) int {
-	d := len(strconv.Itoa(n))
-	return 2 + 2*d
+	return b.String(), breaks, parts
 }

@@ -3118,6 +3118,9 @@ components:
           properties:
             max_length:
               type: integer
+            max_links:
+              type: integer
+              description: The most distinct URLs one post may hold (Threads 5); absent means no cap.
             counting:
               type: object
               additionalProperties: false
@@ -3131,6 +3134,13 @@ components:
                   description: The fixed cost of every URL, when the network has one.
                 mention_local_part_only:
                   type: boolean
+                  description: A remote mention (@user@host) counts as @user.
+                emoji_utf8_bytes:
+                  type: boolean
+                  description: An emoji counts as its UTF-8 length (Threads).
+                content_warning_counts:
+                  type: boolean
+                  description: The content warning counts toward the limit of every post it goes with (Mastodon).
         title:
           type: object
           additionalProperties: false

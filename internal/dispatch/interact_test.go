@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"github.com/geofox/publisher/internal/thread"
 	"strings"
 	"testing"
 	"time"
@@ -172,8 +173,9 @@ func TestInteractReplyThreads(t *testing.T) {
 	d := &Dispatcher{Store: openDispatchStore(t), Accounts: legacyAccounts(legacy{Bluesky: f})}
 	post := d.Interact(context.Background(), InteractSpec{
 		Action: actionReply, SourcePlatform: "bluesky",
-		Ref:  InteractRef{URI: "at://src", CID: "csrc", ReplyRootURI: "at://src", ReplyRootCID: "csrc"},
-		Text: "aaa\n---\nbbb",
+		Ref:    InteractRef{URI: "at://src", CID: "csrc", ReplyRootURI: "at://src", ReplyRootCID: "csrc"},
+		Text:   "aaa\nbbb",
+		Layout: thread.Layout{Breaks: []int{4}},
 	})
 	if len(post.Targets) != 1 {
 		t.Fatalf("reply → 1 target, got %d", len(post.Targets))

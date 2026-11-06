@@ -136,7 +136,7 @@ func TestIdempotencyKeys(t *testing.T) {
 			return published(n), nil
 		}}
 	d := stubDispatcher(t, acct)
-	rec := d.Post(context.Background(), PostSpec{MasterText: "aaaa bbbb\n---\ncccc dddd", Platforms: []string{"stub"}})
+	rec := d.Post(context.Background(), marked(PostSpec{MasterText: "aaaa bbbb\n---\ncccc dddd", Platforms: []string{"stub"}}))
 	if rec.Targets[0].ErrorClass != string(destination.ClassUnknownOutcome) {
 		t.Fatalf("error class = %q", rec.Targets[0].ErrorClass)
 	}

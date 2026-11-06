@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"github.com/geofox/publisher/internal/thread"
 	"os"
 	"path/filepath"
 	"testing"
@@ -97,7 +98,13 @@ func (d *Dispatcher) runChain(ctx context.Context, plat, text string, ov Overrid
 	st := d.testStore()
 	id := d.freshID(postID)
 	now := d.now()
-	tg := d.planTarget(ctx, id, plat, text, ov, postMedia(len(imgs)), imgParts, number, &now, "sending")
+	// Cases write breaks the old way, as "---" lines, and place media by part.
+	text, breaks, parts := thread.FromMarkers(text)
+	lay := thread.Layout{Breaks: breaks}
+	for _, p := range imgParts {
+		lay.MediaAt = append(lay.MediaAt, parts[min(max(p, 0), len(parts)-1)])
+	}
+	tg := d.planTarget(ctx, id, plat, text, ov, postMedia(len(imgs)), lay, number, &now, "sending")
 	rec := &store.Post{ID: id, CreatedAt: now, MasterText: text, Platforms: []string{plat}, Source: "test",
 		Status: "sending", Media: mediaRecords(imgs), Targets: []store.Target{tg}}
 	if head != nil {
@@ -161,4 +168,15 @@ func segRef(sg store.Segment) destination.ItemRef {
 		ref.Data = b
 	}
 	return ref
+}
+
+// marked is spec with its "---" lines turned into breaks for every platform.
+func marked(spec PostSpec) PostSpec {
+	text, breaks, _ := thread.FromMarkers(spec.MasterText)
+	spec.MasterText = text
+	spec.Layouts = map[string]thread.Layout{}
+	for _, p := range spec.Platforms {
+		spec.Layouts[p] = thread.Layout{Breaks: breaks}
+	}
+	return spec
 }

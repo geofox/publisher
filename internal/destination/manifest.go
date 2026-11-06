@@ -64,6 +64,8 @@ type TextCaps struct {
 	// MaxLength is the limit, measured per Counting. 0 = unlimited.
 	MaxLength int      `json:"max_length"`
 	Counting  Counting `json:"counting"`
+	// MaxLinks caps the distinct URLs in one post; 0 = no cap.
+	MaxLinks int `json:"max_links,omitempty"`
 }
 
 // TitleCaps describes an article title.

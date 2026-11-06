@@ -18,6 +18,7 @@ import (
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
+	"github.com/geofox/publisher/internal/thread"
 )
 
 // Replies, quotes and reposts. A client names the source post by its URL
@@ -202,6 +203,7 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 		MediaRecords:  plan.spec.MediaRecords,
 		SourcePreview: dispatch.SourcePreview{Author: author, Text: src.Preview.Text},
 		Source:        "api", Accounts: plan.spec.Accounts,
+		Layout: plan.spec.Layouts[src.Platform],
 	}
 	plan.ix, plan.source = ix, src
 	if allowed.Allowed && allowed.Reason != "" {
@@ -216,7 +218,10 @@ func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *c
 		case i == native:
 			pt.text = dispatch.InteractText(*ix, pt.account.Type)
 		default:
+			// A link-quote copy is split automatically, every media on
+			// its first post.
 			pt.text = dispatch.ReproductionText(*ix, pt.account.Type)
+			pt.layout = thread.Layout{MediaAt: make([]int, len(plan.media))}
 		}
 	}
 }

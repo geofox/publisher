@@ -287,7 +287,9 @@ func TestV1PreviewPost(t *testing.T) {
 	e := newV1Env(t, true)
 	e.withEngine()
 	img := e.upload("x")
-	text := strings.Repeat("word ", 100) // 500 chars: a thread on Bluesky, one Mastodon post
+	// 495 characters and a 2-character content warning, which Mastodon
+	// counts in: a thread on Bluesky, one Mastodon post.
+	text := strings.Repeat("word ", 99)
 	r := e.do(req{method: "POST", path: "/v1/posts:preview", body: `{"content":{"text":"` + text + `","media":[{"id":"` + img + `"}],
 		"content_warning":"cw"},"targets":[{"account":"` + e.acct("bluesky") + `"},{"account":"` + e.acct("mastodon") + `"}],
 		"threading":{"numbering":true}}`})

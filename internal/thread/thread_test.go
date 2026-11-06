@@ -10,29 +10,63 @@ import (
 
 func glen(s string) int { return uniseg.GraphemeClusterCount(s) }
 
+// marked turns lines of "---" into hand-made breaks, so cases read like
+// the text the author sees.
+func marked(s string) (string, []int) {
+	var b strings.Builder
+	var breaks []int
+	n := 0
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) == "---" {
+			breaks = append(breaks, n)
+			continue
+		}
+		b.WriteString(ln)
+		n += len([]rune(ln))
+		if i < len(lines)-1 {
+			b.WriteString("\n")
+			n++
+		}
+	}
+	return b.String(), breaks
+}
+
+// split plans s (with "---" lines as breaks) at limit, counting graphemes,
+// and answers the posts' texts.
+func split(s string, limit int, number bool) ([]string, []string) {
+	text, breaks := marked(s)
+	items, warns := Plan(text, Layout{Breaks: breaks}, Rules{Limit: limit, Number: number})
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.Text
+	}
+	return out, warns
+}
+
 func TestSplitNoLimitIsSingle(t *testing.T) {
-	segs, warns := Split("a fairly long nostr note that has no length cap at all", 0, Opts{})
+	segs, warns := split("a fairly long nostr note that has no length cap at all", 0, false)
 	if len(segs) != 1 || len(warns) != 0 {
 		t.Fatalf("nostr no-limit should be 1 segment, got %v / warns %v", segs, warns)
 	}
 }
 
 func TestSplitUnderLimitIsSingle(t *testing.T) {
-	segs, _ := Split("short", 300, Opts{})
+	segs, _ := split("short", 300, false)
 	if len(segs) != 1 || segs[0] != "short" {
 		t.Fatalf("got %v", segs)
 	}
 }
 
 func TestSplitMarkers(t *testing.T) {
-	segs, _ := Split("one\n---\ntwo\n---\nthree", 300, Opts{})
+	segs, _ := split("one\n---\ntwo\n---\nthree", 300, false)
 	if len(segs) != 3 || segs[0] != "one" || segs[1] != "two" || segs[2] != "three" {
 		t.Fatalf("markers: got %v", segs)
 	}
 }
 
 func TestSplitMarkersHonoredAtNoLimit(t *testing.T) {
-	segs, _ := Split("a\n---\nb", 0, Opts{})
+	segs, _ := split("a\n---\nb", 0, false)
 	if len(segs) != 2 {
 		t.Fatalf("markers at no-limit: got %v", segs)
 	}
@@ -40,7 +74,7 @@ func TestSplitMarkersHonoredAtNoLimit(t *testing.T) {
 
 func TestSplitWrapsAtWordBoundary(t *testing.T) {
 	words := strings.Repeat("word ", 100)
-	segs, _ := Split(strings.TrimSpace(words), 50, Opts{})
+	segs, _ := split(strings.TrimSpace(words), 50, false)
 	if len(segs) < 2 {
 		t.Fatalf("expected multiple segments, got %d", len(segs))
 	}
@@ -55,7 +89,7 @@ func TestSplitWrapsAtWordBoundary(t *testing.T) {
 }
 
 func TestSplitNeverBreaksMidWord(t *testing.T) {
-	segs, _ := Split("alpha bravo charlie delta echo foxtrot", 12, Opts{})
+	segs, _ := split("alpha bravo charlie delta echo foxtrot", 12, false)
 	for _, s := range segs {
 		for _, w := range strings.Fields(s) {
 			if w == "" {
@@ -67,7 +101,7 @@ func TestSplitNeverBreaksMidWord(t *testing.T) {
 
 func TestSplitHardSplitsGiantToken(t *testing.T) {
 	url := "https://example.com/" + strings.Repeat("x", 100)
-	segs, warns := Split(url, 40, Opts{})
+	segs, warns := split(url, 40, false)
 	if len(segs) < 2 {
 		t.Fatalf("giant token should hard-split, got %d", len(segs))
 	}
@@ -83,7 +117,7 @@ func TestSplitHardSplitsGiantToken(t *testing.T) {
 
 func TestSplitGraphemeAware(t *testing.T) {
 	fam := "👨‍👩‍👧‍👦"
-	segs, _ := Split(strings.Repeat(fam+" ", 10), 3, Opts{})
+	segs, _ := split(strings.Repeat(fam+" ", 10), 3, false)
 	for _, s := range segs {
 		if glen(s) > 3 {
 			t.Errorf("emoji segment over grapheme limit: %d (%q)", glen(s), s)
@@ -96,7 +130,7 @@ func TestSplitParagraphPath(t *testing.T) {
 	// paragraph boundary (each paragraph becomes its own segment).
 	p1 := strings.Repeat("a", 40)
 	p2 := strings.Repeat("b", 40)
-	segs, _ := Split(p1+"\n\n"+p2, 50, Opts{})
+	segs, _ := split(p1+"\n\n"+p2, 50, false)
 	if len(segs) != 2 || segs[0] != p1 || segs[1] != p2 {
 		t.Fatalf("paragraph packing: got %v", segs)
 	}
@@ -104,7 +138,7 @@ func TestSplitParagraphPath(t *testing.T) {
 
 func TestSplitSentencePath(t *testing.T) {
 	// One paragraph, multiple sentences, over limit → break at sentence boundaries.
-	segs, _ := Split("First sentence here. Second sentence here. Third sentence here.", 25, Opts{})
+	segs, _ := split("First sentence here. Second sentence here. Third sentence here.", 25, false)
 	if len(segs) < 2 {
 		t.Fatalf("expected sentence splitting, got %v", segs)
 	}
@@ -116,20 +150,20 @@ func TestSplitSentencePath(t *testing.T) {
 }
 
 func TestSplitNormalizesCRLF(t *testing.T) {
-	segs, _ := Split("one\r\n---\r\ntwo", 300, Opts{})
+	segs, _ := split(NormalizeNewlines("one\r\n---\r\ntwo"), 300, false)
 	if len(segs) != 2 || segs[0] != "one" || segs[1] != "two" {
 		t.Fatalf("CRLF markers: got %v", segs)
 	}
 	p1 := strings.Repeat("a", 40)
 	p2 := strings.Repeat("b", 40)
-	segs2, _ := Split(p1+"\r\n\r\n"+p2, 50, Opts{})
+	segs2, _ := split(NormalizeNewlines(p1+"\r\n\r\n"+p2), 50, false)
 	if len(segs2) != 2 {
 		t.Fatalf("CRLF paragraph break: got %v", segs2)
 	}
 }
 
 func TestSplitLimitOne(t *testing.T) {
-	segs, _ := Split("ab cd", 1, Opts{})
+	segs, _ := split("ab cd", 1, false)
 	if len(segs) == 0 {
 		t.Fatal("expected segments")
 	}
@@ -141,7 +175,7 @@ func TestSplitLimitOne(t *testing.T) {
 }
 
 func TestNumberingAppendsCounters(t *testing.T) {
-	segs, _ := Split("alpha bravo charlie delta echo foxtrot", 12, Opts{Number: true})
+	segs, _ := split("alpha bravo charlie delta echo foxtrot", 12, true)
 	if len(segs) < 2 {
 		t.Fatalf("expected a multi-segment chain, got %d", len(segs))
 	}
@@ -158,7 +192,7 @@ func TestNumberingAppendsCounters(t *testing.T) {
 }
 
 func TestNumberingSkippedForSingleSegment(t *testing.T) {
-	segs, _ := Split("short", 300, Opts{Number: true})
+	segs, _ := split("short", 300, true)
 	if len(segs) != 1 || strings.Contains(segs[0], "/") {
 		t.Fatalf("single segment must not be numbered: %v", segs)
 	}
@@ -166,7 +200,7 @@ func TestNumberingSkippedForSingleSegment(t *testing.T) {
 
 func TestNumberingNeverExceedsLimit(t *testing.T) {
 	body := strings.TrimSpace(strings.Repeat("lorem ipsum dolor ", 60))
-	segs, _ := Split(body, 40, Opts{Number: true})
+	segs, _ := split(body, 40, true)
 	for i, s := range segs {
 		if glen(s) > 40 {
 			t.Fatalf("numbered segment %d exceeds limit: %d graphemes (%q)", i, glen(s), s)
@@ -181,7 +215,7 @@ func TestNumberingNeverExceedsLimit(t *testing.T) {
 func TestNumberingNoLimitNostr(t *testing.T) {
 	// Nostr has no length limit, so a chain only forms via --- markers. Numbering
 	// must still apply (the suffix has no budget to reserve — just append it).
-	segs, _ := Split("part one\n---\npart two\n---\npart three", 0, Opts{Number: true})
+	segs, _ := split("part one\n---\npart two\n---\npart three", 0, true)
 	want := []string{"part one 1/3", "part two 2/3", "part three 3/3"}
 	if len(segs) != len(want) {
 		t.Fatalf("want %d segments, got %d: %v", len(want), len(segs), segs)
@@ -195,7 +229,7 @@ func TestNumberingNoLimitNostr(t *testing.T) {
 
 func TestNumberingNoLimitSingleSegment(t *testing.T) {
 	// A single no-limit segment (no markers) must stay unnumbered.
-	segs, _ := Split("just one note, no markers here", 0, Opts{Number: true})
+	segs, _ := split("just one note, no markers here", 0, true)
 	if len(segs) != 1 || strings.Contains(segs[0], "/") {
 		t.Fatalf("single nostr segment must not be numbered: %v", segs)
 	}

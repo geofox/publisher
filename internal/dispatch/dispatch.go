@@ -11,6 +11,7 @@ import (
 
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/store"
+	"github.com/geofox/publisher/internal/thread"
 	"github.com/geofox/publisher/internal/unfurl"
 )
 
@@ -117,7 +118,10 @@ type PostSpec struct {
 	Source       string
 	Overrides    map[string]Overrides // keyed by platform
 	Images       []Img
-	ImgParts     []int         // per-image part anchor, parallel to Images; nil ⇒ all front-load
+	// Layouts are each platform's hand-made breaks and media positions in
+	// the text it posts; a platform left out is split automatically with
+	// every media on its first post.
+	Layouts      map[string]thread.Layout
 	MediaRecords []store.Media // already uploaded to Blossom, for archival
 	Number       bool          // append k/n counters to threaded segments
 	// Accounts names the account each platform posts as (platform →

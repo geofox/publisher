@@ -41,7 +41,11 @@ func (Driver) Manifest() destination.Manifest {
 			}},
 		},
 		Defaults: destination.Capabilities{
-			Text:      destination.TextCaps{MaxLength: 500, Counting: destination.Counting{Unit: destination.UnitGraphemes}},
+			// 500 characters, an emoji counting as its UTF-8 bytes, and at
+			// most 5 distinct links (refused since 2025-12-22): see
+			// https://developers.facebook.com/docs/threads/posts
+			Text: destination.TextCaps{MaxLength: 500, MaxLinks: 5,
+				Counting: destination.Counting{Unit: destination.UnitGraphemes, EmojiUTF8Bytes: true}},
 			Threading: destination.ThreadingCaps{Supported: true},
 			Media: destination.MediaCaps{
 				// Meta fetches media by URL, and accepts only JPEG/PNG up to
