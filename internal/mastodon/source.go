@@ -145,6 +145,9 @@ func (c *Client) Reblog(ctx context.Context, id string) (Result, error) {
 	if err := ctx.Err(); err != nil { // nothing sent
 		return Result{}, fmt.Errorf("reblog: %w", err)
 	}
+	if err := destination.BeforeCommit(ctx); err != nil { // nothing sent
+		return Result{}, fmt.Errorf("reblog: %w", err)
+	}
 	if err := c.postForm(ctx, "/api/v1/statuses/"+id+"/reblog", nil, &st); err != nil {
 		return Result{}, destination.Committing(fmt.Errorf("reblog: %w", err))
 	}
@@ -183,6 +186,9 @@ func (c *Client) QuotePost(ctx context.Context, p Post, quotedID string) (Result
 		URL string `json:"url"`
 	}
 	if err := ctx.Err(); err != nil { // nothing sent
+		return Result{}, fmt.Errorf("quote: %w", err)
+	}
+	if err := destination.BeforeCommit(ctx); err != nil { // nothing sent
 		return Result{}, fmt.Errorf("quote: %w", err)
 	}
 	if err := c.postForm(WithIdempotencyKey(ctx, p.IdempotencyKey), "/api/v1/statuses", form, &st); err != nil {

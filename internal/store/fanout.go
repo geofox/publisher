@@ -1,6 +1,9 @@
 package store
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // FanoutJob is one (signed event × secondary relay) delivery owed by the async
 // fan-out worker.
@@ -78,4 +81,20 @@ func (s *Store) MarkFanoutRetry(id int64, next time.Time) error {
 func (s *Store) MarkFanoutGaveUp(id int64) error {
 	_, err := s.sql.Exec(`UPDATE nostr_fanout SET status='gave_up' WHERE id=?`, id)
 	return err
+}
+
+// FanoutRetention is how long settled fan-out jobs (delivered or given up)
+// are kept before PurgeFanout deletes them.
+const FanoutRetention = 7 * 24 * time.Hour
+
+// PurgeFanout deletes fan-out jobs that settled more than FanoutRetention
+// before now. Each holds a whole signed event, one per item and relay.
+func (s *Store) PurgeFanout(ctx context.Context, now time.Time) (int, error) {
+	res, err := s.sql.ExecContext(ctx, `DELETE FROM nostr_fanout WHERE status IN ('ok', 'gave_up') AND created_at < ?`,
+		now.Add(-FanoutRetention).UTC())
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }

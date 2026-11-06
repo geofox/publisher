@@ -63,6 +63,7 @@ func (Driver) Manifest() destination.Manifest {
 			// from a URL to a media id, so external posts can't be targeted.
 			Interactions: destination.InteractionCaps{},
 			Idempotent:   destination.IdempotentNone,
+			CommitMarks:  true,
 		},
 	}
 }

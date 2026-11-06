@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -79,5 +80,25 @@ func TestFanoutRetryDefersThenGiveUp(t *testing.T) {
 		t.Fatalf("DueFanout: %v", err)
 	} else if len(jobs) != 0 {
 		t.Fatalf("gave-up job still due: %d", len(jobs))
+	}
+}
+
+func TestPurgeFanoutDeletesOnlySettledOldJobs(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	old := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	for _, row := range []struct{ status string }{{"ok"}, {"gave_up"}, {"pending"}, {"failed"}} {
+		if _, err := st.sql.Exec(`INSERT INTO nostr_fanout(post_id,signed_event_json,relay_url,status,retry_count,next_attempt_at,created_at)
+			VALUES ('p','{}','wss://r',?,0,?,?)`, row.status, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := st.PurgeFanout(ctx, time.Now()); err != nil || n != 2 {
+		t.Fatalf("purged %d, %v; want 2", n, err)
+	}
+	var left int
+	_ = st.sql.QueryRow(`SELECT COUNT(*) FROM nostr_fanout`).Scan(&left)
+	if left != 2 {
+		t.Errorf("left %d jobs, want the 2 unsettled ones", left)
 	}
 }

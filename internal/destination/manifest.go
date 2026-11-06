@@ -50,6 +50,10 @@ type Capabilities struct {
 	// IdempotencyKeyTTLSecs is how long the server remembers a key, for
 	// IdempotentKey (0 = indefinitely). A repeat after it can duplicate.
 	IdempotencyKeyTTLSecs int64 `json:"idempotency_key_ttl_secs,omitempty"`
+	// CommitMarks: Publish calls BeforeCommit right before the request that
+	// publishes the item, so a restart before it is known to have sent
+	// nothing. Internal: not part of the API.
+	CommitMarks bool `json:"-"`
 }
 
 // Link preview modes.

@@ -81,8 +81,9 @@ func (s *Store) ResolveItem(ctx context.Context, r Resolution) error {
 		// attempt_count restarts: the owner says nothing went out, so the
 		// engine's duplicate guard (an uncertain attempt older than the
 		// destination remembers keys) no longer applies.
-		_, err = tx.ExecContext(ctx, `UPDATE target_items SET status = ?, next_attempt_at = ?, attempt_count = 0 WHERE id = ?`,
-			ItemFailed, next, itemID)
+		_, err = tx.ExecContext(ctx, `UPDATE target_items SET status = ?, next_attempt_at = ?, attempt_count = 0,
+			doubt_reset_at = ? WHERE id = ?`,
+			ItemFailed, next, at, itemID)
 	}
 	if err != nil {
 		return err

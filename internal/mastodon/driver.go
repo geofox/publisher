@@ -52,6 +52,7 @@ func (Driver) Manifest() destination.Manifest {
 			Visibility:     []string{"public", "unlisted", "private", "direct"},
 			Interactions:   destination.InteractionCaps{Reply: true, Quote: true, Repost: true}, // a quote carries text and images only
 			Idempotent:     destination.IdempotentKey,
+			CommitMarks:    true,
 			// Mastodon keeps an Idempotency-Key for an hour.
 			IdempotencyKeyTTLSecs: 3600,
 		},

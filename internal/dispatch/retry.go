@@ -64,6 +64,9 @@ func (d *Dispatcher) RetryTargetRelay(ctx context.Context, postID string, target
 	}
 	dl := rd.Redeliver(ctx, destination.ItemRef{ID: target.RemoteID, URL: target.RemoteURL,
 		Data: []byte(target.SignedEventJSON)}, relayURL)
+	if dl.Status != "ok" && ctx.Err() != nil {
+		return nil, ctx.Err() // stopped or canceled, not the relay's failure: no retry is spent
+	}
 	if err := d.Store.UpdateRelayStatus(target.ID, relayURL, dl.Status, dl.Message); err != nil {
 		return nil, err
 	}

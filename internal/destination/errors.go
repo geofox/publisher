@@ -108,6 +108,27 @@ type commitErr struct{ err error }
 func (e *commitErr) Error() string { return e.err.Error() }
 func (e *commitErr) Unwrap() error { return e.err }
 
+type commitHookKey struct{}
+
+// WithCommitHook returns ctx carrying fn, which BeforeCommit calls.
+func WithCommitHook(ctx context.Context, fn func() error) context.Context {
+	return context.WithValue(ctx, commitHookKey{}, fn)
+}
+
+// BeforeCommit tells the core that the request that publishes the item is
+// about to be sent. Drivers whose Capabilities.CommitMarks is set call it
+// right before that request (createRecord, threads_publish, POST /statuses,
+// the relay publish); what they did before it (uploads, transcodes,
+// containers) published nothing. Calling it more than once is harmless.
+// An error means the mark couldn't be recorded: the driver must not send,
+// and returns the error (nothing was published).
+func BeforeCommit(ctx context.Context) error {
+	if fn, ok := ctx.Value(commitHookKey{}).(func() error); ok && fn != nil {
+		return fn()
+	}
+	return nil
+}
+
 // Committing marks err as coming from the request that publishes the item
 // (createRecord, threads_publish, POST /statuses), so Classify may read a
 // timeout or a dropped connection as an unknown outcome. A nil err gives nil.

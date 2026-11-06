@@ -263,8 +263,8 @@ func main() {
 			"allowed_subjects", len(cfg.OIDCAllowedSubjects),
 			"allowed_emails", len(cfg.OIDCAllowedEmails))
 	}
-	// Expired Idempotency-Key records and old events are dead weight: purge
-	// them hourly.
+	// Expired Idempotency-Key records, old events and settled fan-out jobs
+	// are dead weight: purge them hourly.
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
@@ -283,6 +283,11 @@ func main() {
 				slog.Warn("event purge failed", "err", err)
 			} else if n > 0 {
 				slog.Debug("purged events", "count", n)
+			}
+			if n, err := st.PurgeFanout(ctx, time.Now()); err != nil {
+				slog.Warn("fan-out purge failed", "err", err)
+			} else if n > 0 {
+				slog.Debug("purged settled fan-out jobs", "count", n)
 			}
 		}
 	}()

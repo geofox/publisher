@@ -113,6 +113,9 @@ func (cl *Client) Post(ctx context.Context, p Post) (Result, error) {
 	if err := ctx.Err(); err != nil { // nothing sent
 		return Result{}, err
 	}
+	if err := destination.BeforeCommit(ctx); err != nil { // nothing sent
+		return Result{}, err
+	}
 	st, err := cl.c.PostStatus(ctx, &gomast.Toot{
 		Status: p.Text, SpoilerText: p.SpoilerText, Sensitive: p.Sensitive,
 		Visibility: p.Visibility, Language: p.Language, MediaIDs: mediaIDs,

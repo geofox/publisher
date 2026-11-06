@@ -74,9 +74,15 @@ func (f *Fanout) runDue(ctx context.Context) {
 		if sentThisPass[j.RelayURL] {
 			continue // pace: at most one delivery per relay per pass (no relay is bursted)
 		}
+		if ctx.Err() != nil {
+			return // shutting down: the rest wait, and none loses a retry
+		}
 		sentThisPass[j.RelayURL] = true
 		dl := rd.Redeliver(ctx, destination.ItemRef{Data: []byte(j.SignedEventJSON)}, j.RelayURL)
 		msg := dl.Message
+		if dl.Status != "ok" && ctx.Err() != nil {
+			return // failed because the process is stopping, not the relay
+		}
 		if dl.Status == "ok" {
 			if err := f.disp.Store.MarkFanoutOK(j.ID); err != nil {
 				slog.ErrorContext(ctx, "fan-out: mark ok failed", "id", j.ID, "err", err)

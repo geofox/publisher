@@ -556,6 +556,9 @@ func (c *Client) createRecord(ctx context.Context, s session, collection, rkey s
 	if err := ctx.Err(); err != nil { // nothing sent
 		return "", "", fmt.Errorf("createRecord: %w", err)
 	}
+	if err := destination.BeforeCommit(ctx); err != nil { // nothing sent
+		return "", "", fmt.Errorf("createRecord: %w", err)
+	}
 	if err := c.do(ctx, "/xrpc/com.atproto.repo.createRecord", "application/json", s.AccessJwt, body, &resp); err != nil {
 		return "", "", destination.Committing(fmt.Errorf("createRecord: %w", err))
 	}
