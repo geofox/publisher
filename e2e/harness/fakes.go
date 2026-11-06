@@ -192,7 +192,7 @@ func (f *fakeAccount) Capabilities(context.Context) destination.Capabilities {
 	return f.drv.Manifest().Defaults
 }
 
-func (f *fakeAccount) Publish(_ context.Context, req destination.PublishRequest) (destination.PublishResult, error) {
+func (f *fakeAccount) Publish(ctx context.Context, req destination.PublishRequest) (destination.PublishResult, error) {
 	c := call{Platform: f.drv.Manifest().Type, Action: "post", Text: req.Text, Images: f.images(req.Media)}
 	switch {
 	case req.Quote != nil:
@@ -202,18 +202,23 @@ func (f *fakeAccount) Publish(_ context.Context, req destination.PublishRequest)
 	case req.InReplyTo != nil:
 		c.Action, c.ReplyTo = "reply", req.InReplyTo.Parent.ID
 	}
-	return f.result(c)
+	return f.result(ctx, c)
 }
 
-func (f fakeReposter) Repost(_ context.Context, src destination.SourceRef) (destination.PublishResult, error) {
-	return f.result(call{Platform: f.drv.Manifest().Type, Action: "repost", ReplyTo: sourceID(src)})
+func (f fakeReposter) Repost(ctx context.Context, src destination.SourceRef) (destination.PublishResult, error) {
+	return f.result(ctx, call{Platform: f.drv.Manifest().Type, Action: "repost", ReplyTo: sourceID(src)})
 }
 
 func (f fakeRelayAccount) Redeliver(_ context.Context, _ destination.ItemRef, endpoint string) destination.Delivery {
 	return destination.Delivery{Endpoint: endpoint, Status: "ok"}
 }
 
-func (f *fakeAccount) result(c call) (destination.PublishResult, error) {
+func (f *fakeAccount) result(ctx context.Context, c call) (destination.PublishResult, error) {
+	// As the real drivers do (their manifests say CommitMarks): mark the
+	// item right before the request that publishes it.
+	if err := destination.BeforeCommit(ctx); err != nil {
+		return destination.PublishResult{Status: destination.StatusFailed}, err
+	}
 	seq, err := f.rec.record(c)
 	if err != nil {
 		class := destination.ClassTransient
