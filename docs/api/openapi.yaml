@@ -3305,6 +3305,9 @@ components:
           type: array
           items:
             type: string
+        max_aspect:
+          type: number
+          description: The widest long-edge to short-edge ratio an image may have (Threads 10).
         max_duration_secs:
           type: integer
         advisory_duration_secs:

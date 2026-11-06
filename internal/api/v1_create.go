@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -411,6 +412,16 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 		}
 		for j, m := range plan.media {
 			mptr := "/content/media/" + strconv.Itoa(plan.mediaReq[j])
+			if max := caps.Media.AltMaxLength; max > 0 && utf8.RuneCountInString(plan.spec.MediaRecords[j].Alt) > max {
+				pt.warnings = append(pt.warnings, fmt.Sprintf("%s takes alt text up to %d characters: media %d's is cut to that",
+					name, max, plan.mediaReq[j]+1))
+			}
+			if !strings.HasPrefix(m.Mime, "video/") {
+				mw, mh := transcode.ParseDim(m.Dim)
+				if why := dispatch.ImageRejects(name, caps.Media, transcode.Meta{SizeBytes: m.SizeBytes, Mime: m.Mime, W: mw, H: mh}); why != "" {
+					add(mptr, "media_unsupported", "for "+ac.ID+": "+name+" can't take this image: "+why)
+				}
+			}
 			if strings.HasPrefix(m.Mime, "video/") {
 				if fail, warns := dispatch.VideoCheck(name, caps.Media, m.SizeBytes, m.DurationSecs); fail != "" {
 					add(mptr, "media_unsupported", "for "+ac.ID+": "+fail)

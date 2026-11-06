@@ -20,10 +20,11 @@ type MediaHost func(ctx context.Context, body []byte, mime string) (string, erro
 // imageProfile builds the transcode profile an account's image limits imply.
 // ok=false when the limits impose nothing (Nostr): images pass through.
 func imageProfile(name string, l destination.Limit) (transcode.Profile, bool) {
-	if l.MaxBytes == 0 && l.MaxPixels == 0 && len(l.Mimes) == 0 {
+	if l.MaxBytes == 0 && l.MaxPixels == 0 && len(l.Mimes) == 0 && l.MaxAspect == 0 {
 		return transcode.Profile{}, false
 	}
-	return transcode.Profile{Name: name, MaxBytes: l.MaxBytes, MaxPixels: l.MaxPixels, Mimes: l.Mimes, Quality: 85}, true
+	return transcode.Profile{Name: name, MaxBytes: l.MaxBytes, MaxPixels: l.MaxPixels, Mimes: l.Mimes, Quality: 85,
+		MaxAspect: l.MaxAspect}, true
 }
 
 // VideoCheck reports a hard failure reason ("" = none) and advisories for a
@@ -115,11 +116,14 @@ func prepareMedia(ctx context.Context, name string, mc destination.MediaCaps, im
 	v, images := splitVideo(imgs)
 	var out []destination.MediaItem
 	if v != nil {
-		out = append(out, mediaItem(*v))
+		item := mediaItem(*v)
+		item.Alt = FitAlt(item.Alt, mc.AltMaxLength)
+		out = append(out, item)
 	}
 	prof, fit := imageProfile(name, mc.Images)
 	for i, im := range images {
 		item := mediaItem(im)
+		item.Alt = FitAlt(item.Alt, mc.AltMaxLength)
 		if len(im.Bytes) == 0 {
 			if mc.Transport == destination.TransportBytes {
 				return nil, errBytesUnavailable("image", i, name)

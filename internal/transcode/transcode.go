@@ -89,23 +89,36 @@ func Image(src []byte, mime string, p ImageParams) (Result, error) {
 	}
 	underCap := p.MaxBytes == 0 || int64(len(src)) <= p.MaxBytes
 
+	// What is kept as is loses its metadata first (GPS, camera), and a
+	// turned JPEG is turned upright (StripMetadata), so a passthrough
+	// publishes no more than a re-encode would, at its display size.
+	orig := src
+	src, stripped := StripMetadata(src, mime)
+	keep := func(r Result) Result {
+		r.Changed = stripped
+		if !stripped {
+			r.Bytes = orig
+		}
+		return r
+	}
+	underCap = p.MaxBytes == 0 || int64(len(src)) <= p.MaxBytes
 	cfg, _, cerr := image.DecodeConfig(bytes.NewReader(src))
 	if cerr == nil && int64(cfg.Width)*int64(cfg.Height) > maxPixels {
 		if underCap {
-			return Result{Bytes: src, Mime: mime}, nil
+			return keep(Result{Bytes: src, Mime: mime}), nil
 		}
 		return Result{}, fmt.Errorf("image %dx%d exceeds %d-pixel cap", cfg.Width, cfg.Height, maxPixels)
 	}
 	if p.Format == KeepIfAllowed && underCap &&
 		cerr == nil && edgeOK(cfg.Width, cfg.Height, p.MaxLongEdge) &&
 		areaOK(cfg.Width, cfg.Height, p.MaxPixels) {
-		return Result{Bytes: src, Mime: mime, W: cfg.Width, H: cfg.Height}, nil
+		return keep(Result{Bytes: src, Mime: mime, W: cfg.Width, H: cfg.Height}), nil
 	}
 
 	img, err := decode(src, mime)
 	if err != nil {
 		if underCap {
-			return Result{Bytes: src, Mime: mime}, nil
+			return keep(Result{Bytes: src, Mime: mime}), nil
 		}
 		return Result{}, fmt.Errorf("transcode decode: %w", err)
 	}

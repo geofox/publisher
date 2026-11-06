@@ -53,7 +53,7 @@ func (Driver) Manifest() destination.Manifest {
 				Transport: destination.TransportURL,
 				// Carousels take up to 20 items; 10 keeps posts readable.
 				Images: destination.Limit{Supported: true, MaxCount: 10,
-					MaxBytes: transcode.Threads.MaxBytes, Mimes: transcode.Threads.Mimes},
+					MaxBytes: transcode.Threads.MaxBytes, Mimes: transcode.Threads.Mimes, MaxAspect: transcode.Threads.MaxAspect},
 				Video: destination.Limit{Supported: true, MaxCount: 1, MaxBytes: transcode.ThreadsVideoMaxBytes,
 					MaxDurationSecs: transcode.ThreadsVideoMaxSecs},
 				AltText: true,

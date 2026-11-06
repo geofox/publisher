@@ -52,7 +52,10 @@ func normalizeArgs(in, out string, p NormParams) []string {
 	} else {
 		args = append(args, "-an")
 	}
+	// No edit lists (Threads' video spec forbids them; B-frames and AAC
+	// priming make the muxer write one by default), timestamps from zero.
 	args = append(args, "-map_metadata", "-1", "-map_chapters", "-1", "-movflags", "+faststart",
+		"-use_editlist", "0", "-avoid_negative_ts", "make_zero",
 		"-progress", "pipe:1", out)
 	return args
 }

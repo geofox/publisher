@@ -83,6 +83,11 @@ func (p *Pipeline) Process(ctx context.Context, body []byte, mime string) (Resul
 		}
 		body, mime = conv.Bytes, conv.Mime
 	}
+	// The canonical never carries EXIF/GPS, XMP or text metadata: Blossom
+	// is public, and platforms that keep blobs as uploaded (Bluesky) would
+	// publish it. A turned JPEG is turned upright, so dim and blurhash
+	// describe what is shown.
+	body, _ = transcode.StripMetadata(body, mime)
 	sum := sha256.Sum256(body)
 	sha := hex.EncodeToString(sum[:])
 	if mime == "" {
@@ -210,16 +215,33 @@ var fetchCapBytes int64 = FetchCap
 // Fetch GETs the bytes at url (used to re-pull archived media from Blossom for
 // retries). Returns the body and Content-Type. Errors beyond fetchCapBytes
 // rather than silently truncating.
+//
+// It streams on StreamHTTP: a video of up to FetchCap can't fit the 30 s
+// budget of the small-object client on an ordinary link. The read gets a
+// budget sized to the body (60 s plus a second per 256 KiB, at least 256
+// KiB/s), so a stalled server still ends it.
 func (p *Pipeline) Fetch(ctx context.Context, url string) ([]byte, string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, "", err
 	}
-	resp, err := p.HTTP.Do(req)
+	cl := p.StreamHTTP
+	if cl == nil {
+		cl = p.HTTP
+	}
+	resp, err := cl.Do(req)
 	if err != nil {
 		return nil, "", err
 	}
 	defer resp.Body.Close()
+	size := resp.ContentLength
+	if size < 0 || size > fetchCapBytes {
+		size = fetchCapBytes
+	}
+	budget := time.AfterFunc(60*time.Second+time.Duration(size/(256<<10))*time.Second, cancel)
+	defer budget.Stop()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, "", fmt.Errorf("fetch %s: %d", url, resp.StatusCode)
 	}

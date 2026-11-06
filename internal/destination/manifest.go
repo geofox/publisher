@@ -139,6 +139,9 @@ type Limit struct {
 	MaxPixels int64 `json:"max_pixels,omitempty"`
 	// Mimes accepted as-is; empty = any of the kind.
 	Mimes []string `json:"mimes,omitempty"`
+	// MaxAspect is the widest long-edge:short-edge ratio an image may have
+	// (0 = any). No re-encode fixes a wider one.
+	MaxAspect float64 `json:"max_aspect,omitempty"`
 	// MaxDurationSecs is a hard limit for video; AdvisoryDurationSecs a
 	// length past which the network may degrade playback.
 	MaxDurationSecs      int64 `json:"max_duration_secs,omitempty"`
