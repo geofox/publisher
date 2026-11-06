@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -18,6 +19,22 @@ type Account struct {
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// RemoteID is the account's stable id on its network ("" until its
+	// identity was first read).
+	RemoteID string `json:"remote_id,omitempty"`
+	// DefaultSelected: the composer selects the account for a new post.
+	DefaultSelected bool `json:"default_selected"`
+	// PublicFeed: the account's posts go to the public feed.
+	PublicFeed bool `json:"public_feed"`
+}
+
+// AccountMeta is what the owner can change on an account; a nil field is
+// left as it is.
+type AccountMeta struct {
+	Label           *string
+	Enabled         *bool
+	DefaultSelected *bool
+	PublicFeed      *bool
 }
 
 // EnvKeyDefault is the env_key of the account seeded from a type's
@@ -74,22 +91,92 @@ func (s *Store) SeedEnvAccounts(ctx context.Context, owner string, configured []
 
 // Accounts lists the owner's accounts, enabled or not, oldest first.
 func (s *Store) Accounts(ctx context.Context, owner string) ([]Account, error) {
-	rows, err := s.sql.QueryContext(ctx, `SELECT id, owner_id, type, label, COALESCE(handle, ''), source, COALESCE(env_key, ''),
-		enabled, created_at, updated_at FROM accounts WHERE owner_id = ? ORDER BY created_at, id`, owner)
+	rows, err := s.sql.QueryContext(ctx, `SELECT `+accountColumns+` FROM accounts WHERE owner_id = ? ORDER BY created_at, id`, owner)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Account
 	for rows.Next() {
-		var a Account
-		if err := rows.Scan(&a.ID, &a.OwnerID, &a.Type, &a.Label, &a.Handle, &a.Source, &a.EnvKey,
-			&a.Enabled, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		a, err := scanAccount(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+const accountColumns = `id, owner_id, type, label, COALESCE(handle, ''), source, COALESCE(env_key, ''),
+	enabled, created_at, updated_at, COALESCE(remote_id, ''), default_selected, public_feed`
+
+func scanAccount(r interface{ Scan(...any) error }) (Account, error) {
+	var a Account
+	err := r.Scan(&a.ID, &a.OwnerID, &a.Type, &a.Label, &a.Handle, &a.Source, &a.EnvKey,
+		&a.Enabled, &a.CreatedAt, &a.UpdatedAt, &a.RemoteID, &a.DefaultSelected, &a.PublicFeed)
+	return a, err
+}
+
+// ErrAccountNotFound: no account of that owner has that id.
+var ErrAccountNotFound = errors.New("account not found")
+
+// Account returns one of the owner's accounts.
+func (s *Store) Account(ctx context.Context, owner, id string) (Account, error) {
+	a, err := scanAccount(s.sql.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts WHERE owner_id = ? AND id = ?`, owner, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, ErrAccountNotFound
+	}
+	return a, err
+}
+
+// UpdateAccountMeta changes what the owner set on an account. updated_at
+// moves only when a value changes, so it can serve as the account's ETag.
+func (s *Store) UpdateAccountMeta(ctx context.Context, owner, id string, m AccountMeta) (Account, error) {
+	tx, err := s.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return Account{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	cur, err := scanAccount(tx.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts WHERE owner_id = ? AND id = ?`, owner, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, ErrAccountNotFound
+	}
+	if err != nil {
+		return Account{}, err
+	}
+	next := cur
+	if m.Label != nil {
+		next.Label = *m.Label
+	}
+	if m.Enabled != nil {
+		next.Enabled = *m.Enabled
+	}
+	if m.DefaultSelected != nil {
+		next.DefaultSelected = *m.DefaultSelected
+	}
+	if m.PublicFeed != nil {
+		next.PublicFeed = *m.PublicFeed
+	}
+	if next == cur {
+		return cur, nil
+	}
+	next.UpdatedAt = time.Now().UTC()
+	if !next.UpdatedAt.After(cur.UpdatedAt) {
+		next.UpdatedAt = cur.UpdatedAt.Add(time.Microsecond)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET label = ?, enabled = ?, default_selected = ?, public_feed = ?, updated_at = ?
+		WHERE id = ?`, next.Label, next.Enabled, next.DefaultSelected, next.PublicFeed, next.UpdatedAt, id); err != nil {
+		return Account{}, err
+	}
+	return next, tx.Commit()
+}
+
+// SetAccountIdentity records the handle and remote id an account's network
+// reported. It is not an owner's change, so updated_at stays.
+func (s *Store) SetAccountIdentity(ctx context.Context, id, handle, remoteID string) error {
+	_, err := s.sql.ExecContext(ctx, `UPDATE accounts SET handle = ?, remote_id = ? WHERE id = ?`,
+		nullStr(handle), nullStr(remoteID), id)
+	return err
 }
 
 // envAccountFor returns the id of the owner's env account of type typ,

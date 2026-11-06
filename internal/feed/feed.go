@@ -71,14 +71,15 @@ func publicVisible(platform, fieldsJSON string) bool {
 }
 
 // targetLink returns the public link for a target, or false if it should not
-// appear. A target qualifies when it is publicly visible, carries a URL, and
+// appear. A target qualifies when its account takes part in the feed, it is
+// publicly visible, carries a URL, and
 // actually went live — status "success", or "partial". "partial" only arises
 // for Nostr, where it means the note reached at least one relay (the njump.me
 // URL resolves) while another relay failed; that note is publicly live, so it
 // must not be hidden until every relay is green. The RemoteURL guard keeps
 // truly-failed targets (which have no URL) out.
 func targetLink(t store.Target) (Link, bool) {
-	if t.RemoteURL == "" || !publicVisible(t.Platform, t.FieldsJSON) {
+	if t.FeedExcluded || t.RemoteURL == "" || !publicVisible(t.Platform, t.FieldsJSON) {
 		return Link{}, false
 	}
 	if t.Status != "success" && t.Status != "partial" {

@@ -68,6 +68,9 @@ type Target struct {
 	Segments        []Segment    `json:"segments,omitempty"`
 	SignedEventJSON string       `json:"-"` // nostr only; never sent to the client
 	Items           []Item       `json:"-"`
+	// FeedExcluded: the target's account is kept out of the public feed
+	// (accounts.public_feed = 0). The zero value includes it.
+	FeedExcluded bool `json:"-"`
 }
 
 type Attempt struct {
@@ -292,7 +295,9 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		return nil, err
 	}
 
-	trows, err := s.sql.Query(`SELECT id,account_id,platform,final_text,fields_json,status,latency_ms,attempt_count,last_attempt_at,gave_up_at,COALESCE(error_class,'') FROM post_targets WHERE post_id=? ORDER BY id`, id)
+	trows, err := s.sql.Query(`SELECT pt.id, pt.account_id, pt.platform, pt.final_text, pt.fields_json, pt.status, pt.latency_ms,
+		  pt.attempt_count, pt.last_attempt_at, pt.gave_up_at, COALESCE(pt.error_class, ''), COALESCE(a.public_feed, 1) = 0
+		FROM post_targets pt LEFT JOIN accounts a ON a.id = pt.account_id WHERE pt.post_id = ? ORDER BY pt.id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +307,8 @@ func (s *Store) GetPost(id string) (*Post, error) {
 		var fields, ftext sql.NullString
 		var la, gu sql.NullTime
 		var lat sql.NullInt64
-		if err := trows.Scan(&tg.ID, &tg.AccountID, &tg.Platform, &ftext, &fields, &tg.Status, &lat, &tg.AttemptCount, &la, &gu, &tg.ErrorClass); err != nil {
+		if err := trows.Scan(&tg.ID, &tg.AccountID, &tg.Platform, &ftext, &fields, &tg.Status, &lat, &tg.AttemptCount, &la, &gu,
+			&tg.ErrorClass, &tg.FeedExcluded); err != nil {
 			return nil, err
 		}
 		tg.FieldsJSON, tg.FinalText, tg.LatencyMS = fields.String, ftext.String, int(lat.Int64)

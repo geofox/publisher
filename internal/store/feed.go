@@ -85,15 +85,16 @@ func (s *Store) PublicFeed(limit int) ([]Post, error) {
 
 	for i := range out {
 		trows, err := s.sql.Query(`SELECT pt.platform, pt.status,
-			(SELECT ti.remote_url FROM target_items ti WHERE ti.target_id = pt.id AND ti.ordinal = 0), pt.fields_json
-			FROM post_targets pt WHERE pt.post_id=? ORDER BY pt.id`, out[i].ID)
+			(SELECT ti.remote_url FROM target_items ti WHERE ti.target_id = pt.id AND ti.ordinal = 0), pt.fields_json,
+			COALESCE(a.public_feed, 1) = 0
+			FROM post_targets pt LEFT JOIN accounts a ON a.id = pt.account_id WHERE pt.post_id=? ORDER BY pt.id`, out[i].ID)
 		if err != nil {
 			return nil, err
 		}
 		for trows.Next() {
 			var tg Target
 			var rurl, fields sql.NullString
-			if err := trows.Scan(&tg.Platform, &tg.Status, &rurl, &fields); err != nil {
+			if err := trows.Scan(&tg.Platform, &tg.Status, &rurl, &fields, &tg.FeedExcluded); err != nil {
 				trows.Close()
 				return nil, err
 			}

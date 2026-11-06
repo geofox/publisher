@@ -153,3 +153,20 @@ func TestBuildIncludesPartialNostr(t *testing.T) {
 }
 
 func ptr(t time.Time) *time.Time { return &t }
+
+// An account kept out of the feed contributes no link; a post whose only
+// links are from such accounts is not in the feed (nor sent to the
+// webhook, which uses Eligible).
+func TestFeedExcludedAccounts(t *testing.T) {
+	out := store.Target{Platform: "mastodon", Status: "success", RemoteURL: "https://m/1", FeedExcluded: true}
+	in := store.Target{Platform: "bluesky", Status: "success", RemoteURL: "https://b/1"}
+	p := store.Post{ID: "p", Targets: []store.Target{out, in}}
+	r := Build([]store.Post{p}, 10)
+	if len(r.Posts) != 1 || len(r.Posts[0].Links) != 1 || r.Posts[0].Links[0].URL != "https://b/1" {
+		t.Fatalf("feed = %+v", r.Posts)
+	}
+	p.Targets = []store.Target{out}
+	if Eligible(p) || len(Build([]store.Post{p}, 10).Posts) != 0 {
+		t.Fatal("a post only on excluded accounts is in the feed")
+	}
+}
