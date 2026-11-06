@@ -358,10 +358,14 @@ Readiness: can this instance accept and persist work right now?
 `error` class (`timeout`, `unreachable`, `schema mismatch`, `low space`, …);
 details are logged once when a check starts failing and when it recovers.
 
-Add `?external=1` to also check upstream reachability — `blossom`,
-`nostr_relay` (NIP-11), and `bluesky` / `mastodon` / `threads` when
-configured. These never make the instance unavailable, are cached for 30 s,
-and send no credentials (reachability only, not token validity).
+Add `?external=1` to also check upstream reachability — `blossom`, and
+`account:<id>` for each account that is turned on and open (its server: a
+Nostr account's bootstrap relay, by NIP-11). These never make the
+instance unavailable, are cached for 30 s, and send no credentials
+(reachability only, not token validity). Earlier versions named these
+checks `nostr_relay`, `bluesky`, `mastodon` and `threads`; a monitor that
+matched those names must match `account:` names now (the ids are in
+`GET /v1/accounts`).
 
 `/healthz` and `/readyz` are open even when OIDC is enabled.
 

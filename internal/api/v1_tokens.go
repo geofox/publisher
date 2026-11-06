@@ -168,6 +168,16 @@ func (a *API) v1CreateToken(w http.ResponseWriter, r *http.Request) {
 				Detail: "one of " + strings.Join(v1Scopes, ", ")})
 		}
 	}
+	// A token can't grant what only the signed-in owner may (re-signing
+	// in will be asked for once sign-in has it).
+	if p, _ := principalFrom(r.Context()); p.Token != nil {
+		for i, s := range req.Scopes {
+			if slices.Contains(sessionOnlyScopes, s) {
+				errs = append(errs, fieldError{Pointer: "/scopes/" + strconv.Itoa(i), Code: "exceeds_caller",
+					Detail: "only the signed-in owner can create a token with " + s + "; a token can't"})
+			}
+		}
+	}
 	// Documentation order, without repeats.
 	for _, s := range v1Scopes {
 		if slices.Contains(req.Scopes, s) {

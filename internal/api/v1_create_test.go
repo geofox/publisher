@@ -51,6 +51,7 @@ func (e *v1Env) disable(id string) {
 	if _, err := e.st.UpdateAccountMeta(context.Background(), store.DefaultOwner, id, store.AccountMeta{Enabled: &off}); err != nil {
 		e.t.Fatal(err)
 	}
+	e.syncRegistry(id)
 }
 
 // savePost saves p, each target without an account sent as the env's
@@ -669,6 +670,12 @@ func (s statusOf) Get(id string) (accounts.Entry, bool) {
 	}
 	return accounts.Entry{Row: store.Account{ID: id}, Status: st, Reason: reason}, true
 }
+
+func (statusOf) List(string) []accounts.Entry { return nil }
+func (statusOf) Acquire(id string) (destination.Account, func(), error) {
+	return nil, nil, accounts.ErrNoAccount
+}
+func (statusOf) Profile(string) (accounts.Profile, bool) { return accounts.Profile{}, false }
 
 // TestV1CreatePostUnavailableAccount: an account the registry says can't
 // send (here, the environment no longer configures it) is refused, saying

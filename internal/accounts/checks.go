@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/health"
 )
 
 const (
@@ -63,6 +64,76 @@ func (r *Registry) CheckNow(ctx context.Context, id string) (h destination.Healt
 	cancel()
 	r.applyHealth(ctx, id, l, h)
 	return h, true
+}
+
+// Probe runs an unauthenticated check of an open account: whether its
+// network answers, with no credential sent (the readiness probe). It never
+// changes the account's status. ok is false when the account isn't open,
+// the owner turned it off, or it can't check itself.
+func (r *Registry) Probe(ctx context.Context, id string) (h destination.Health, ok bool) {
+	r.mu.RLock()
+	e, found := r.entries[id]
+	enabled := found && e.row.Enabled
+	r.mu.RUnlock()
+	if !enabled {
+		return h, false
+	}
+	l, release := r.leaseAny(id)
+	if l == nil {
+		return h, false
+	}
+	defer release()
+	c, isChecker := l.acct.(destination.Checker)
+	if !isChecker {
+		return h, false
+	}
+	return c.Check(ctx, destination.CheckRequest{}), true
+}
+
+// Probeable lists the owner's accounts Probe can check: turned on and open
+// (connected, or open but refused by its network), in registry order.
+func (r *Registry) Probeable(owner string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []string
+	for _, id := range r.order {
+		e := r.entries[id]
+		if e.row.OwnerID != owner || !e.row.Enabled || e.live == nil {
+			continue
+		}
+		if _, ok := e.live.acct.(destination.Checker); ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// probeTimeout bounds one readiness probe.
+const probeTimeout = 5 * time.Second
+
+// Readiness is the external readiness checks for the owner's accounts:
+// one per account Probe can check, named account:<id>, never critical. A
+// failure is reported by class only ("unreachable", "timeout"); the
+// network's message goes to the log.
+func (r *Registry) Readiness(owner string) []health.Check {
+	var out []health.Check
+	for _, id := range r.Probeable(owner) {
+		out = append(out, health.Check{Name: "account:" + id, Timeout: probeTimeout, Run: func(ctx context.Context) error {
+			h, ok := r.Probe(ctx, id)
+			switch {
+			case !ok || h.OK:
+				// Turned off or closed since the list was made, or fine.
+				return nil
+			case ctx.Err() != nil:
+				return health.Fail("timeout", errors.New(h.Message))
+			case h.Reachable:
+				return health.Fail("not ok", errors.New(h.Message))
+			default:
+				return health.Fail("unreachable", errors.New(h.Message))
+			}
+		}})
+	}
+	return out
 }
 
 // applyHealth records a check's outcome on the account it was made with

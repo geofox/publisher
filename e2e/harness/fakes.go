@@ -184,7 +184,18 @@ var (
 	_ destination.Account     = (*fakeAccount)(nil)
 	_ destination.Reposter    = fakeReposter{}
 	_ destination.Redeliverer = fakeRelayAccount{}
+	_ nostr.RelayLister       = fakeRelayAccount{}
 )
+
+// e2eNostrKey is the harness Nostr account's public key.
+var e2eNostrKey = gonostr.GetPublicKey(gonostr.Generate())
+
+// HomeRelay, OwnerPubkey and ResolveWriteRelays give the Tools tab a relay
+// list to show, as the real Nostr account does: a home relay that is never
+// dialled (the harness sets no relay sync) and no NIP-65 relays.
+func (f fakeRelayAccount) HomeRelay() string                                    { return "wss://relay.e2e.invalid" }
+func (f fakeRelayAccount) OwnerPubkey() gonostr.PubKey                          { return e2eNostrKey }
+func (f fakeRelayAccount) ResolveWriteRelays(context.Context) ([]string, error) { return nil, nil }
 
 func (f *fakeAccount) Manifest() destination.Manifest { return f.drv.Manifest() }
 

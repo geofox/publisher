@@ -249,7 +249,8 @@ paths:
         time it is shown: the server keeps only a hash.
 
         A token creating a token must give it an expiry no later than its
-        own (`422 exceeds_caller`).
+        own, and can't give it `accounts:write` (`422 exceeds_caller`);
+        sign in to create such a token.
 
         Not idempotent, deliberately: replaying the response would mean
         storing the secret. A retried create makes a second token; revoke
@@ -555,12 +556,14 @@ paths:
         Needs `posts:write`. Resolves a post URL (Bluesky, Mastodon) or a
         Nostr nevent/note id: its author, text and media, the account of
         yours on its network, and whether you can reply to, quote or
-        repost it. Threads posts can't be resolved (its API has no URL
-        lookup). Problems with the URL are `422` with a field code on
-        `/url`: `unrecognized` (not a post URL or Nostr id),
-        `not_supported` (Threads), `not_configured` (the network isn't
-        configured here), `unresolvable` (not found, deleted, private, or
-        not yet known to your server), `too_long`. When the post's network
+        repost it. The post is looked up with your first connected
+        account on its network, and `account` is that account. Threads
+        posts can't be resolved (its API has no URL lookup). Problems
+        with the URL are `422` with a field code on `/url`:
+        `unrecognized` (not a post URL or Nostr id), `not_supported`
+        (Threads), `not_configured` (none of your accounts on that network
+        is connected), `unresolvable` (not found, deleted, private, or not
+        yet known to your server), `too_long`. When the post's network
         can't be reached (a timeout, a 5xx), the answer is `502`
         `upstream_failed`: try again.
       security:
@@ -694,8 +697,10 @@ paths:
         Needs `admin`. Relay sync copies your events between your home
         relay and your other relays: the NIP-65 write relays your profile
         lists, and a secondary list kept on this server. `targets` is what
-        a scan or sync goes through. `404` for an account that isn't the
-        server's configured Nostr account. Relay URLs are stored and
+        a scan or sync goes through. Each Nostr account has its own home
+        relay, key and list. `404` for an account that isn't one of your
+        Nostr accounts; `409` while it can't be used (turned off, not
+        configured), saying why. Relay URLs are stored and
         compared in one form: scheme and host in lower case, no default
         port, no trailing slash.
       security:
@@ -2606,6 +2611,12 @@ components:
                       type: string
                     url:
                       type: string
+                    account:
+                      type: string
+                      description: The id of the account that posted it (absent for posts from before accounts had ids).
+                    handle:
+                      type: string
+                      description: That account's handle as last seen; absent until its network first answered.
     ResolvedSource:
       type: object
       additionalProperties: false
@@ -3042,7 +3053,11 @@ components:
       format: date-time
     Scope:
       type: string
-      enum: ["posts:read", "posts:write", "media:write", "drafts:read", "drafts:write", "accounts:read", admin]
+      description: |
+        `admin` includes every scope listed before `accounts:write`. Scopes
+        added since must be granted by name, and only the signed-in owner
+        (not a token) can create a token holding `accounts:write`.
+      enum: ["posts:read", "posts:write", "media:write", "drafts:read", "drafts:write", "accounts:read", "accounts:write", admin]
     Instance:
       type: object
       additionalProperties: false
@@ -3071,7 +3086,7 @@ components:
               description: The public feed has a token.
             relay_sync:
               type: boolean
-              description: Nostr relay-list sync is available.
+              description: Nostr relay-list sync is available (a Nostr account of yours is connected).
         user_languages:
           type: array
           description: The operator's languages (ISO 639-1), in preference order.

@@ -67,9 +67,10 @@ func (a *API) v1Instance(w http.ResponseWriter, r *http.Request) {
 		version = "dev"
 	}
 	writeV1(w, http.StatusOK, v1InstanceBody{
-		Version:          version,
-		Auth:             authMode,
-		Features:         v1Features{Translate: a.Translator != nil, Video: a.VideoJobs != nil, PublicFeed: a.PublicFeedToken != "", RelaySync: a.Sync != nil},
+		Version: version,
+		Auth:    authMode,
+		Features: v1Features{Translate: a.Translator != nil, Video: a.VideoJobs != nil, PublicFeed: a.PublicFeedToken != "",
+			RelaySync: a.relaySyncAvailable(r.Context())},
 		UserLanguages:    langs,
 		TranslateTargets: targets,
 		Limits: v1Limits{
@@ -113,16 +114,10 @@ type v1AccountBody struct {
 	UpdatedAt    string                    `json:"updated_at"`
 }
 
-// v1AccountViews renders accounts, filling the default account of each type
-// from the profile the identity service fetched (handle, name, avatar).
+// v1AccountViews renders accounts, each with its profile as its network
+// last reported it (handle, name, avatar). Profiles never wait on the
+// network: a stale one is fetched in the background for the next call.
 func (a *API) v1AccountViews(r *http.Request, accts []store.Account) []v1AccountBody {
-	var profiles map[string]v1Profile
-	if a.Identity != nil {
-		profiles = map[string]v1Profile{}
-		for typ, p := range a.Identity.Get(r.Context()).Accounts {
-			profiles[typ] = v1Profile{p.Handle, p.DisplayName, p.Avatar}
-		}
-	}
 	out := make([]v1AccountBody, 0, len(accts))
 	for _, ac := range accts {
 		v := v1AccountBody{
@@ -133,19 +128,18 @@ func (a *API) v1AccountViews(r *http.Request, accts []store.Account) []v1Account
 			c := a.caps(r.Context(), ac.ID, ac.Type)
 			v.Capabilities = &c
 		}
-		// The identity service knows one profile per type: the env account's.
-		if p, ok := profiles[ac.Type]; ok && ac.Enabled && ac.Source == "env" && ac.EnvKey == store.EnvKeyDefault {
-			if v.Handle == "" {
-				v.Handle = p.handle
+		if a.Accounts != nil {
+			if p, ok := a.Accounts.Profile(ac.ID); ok {
+				if p.Handle != "" {
+					v.Handle = p.Handle
+				}
+				v.DisplayName, v.Avatar = p.DisplayName, absoluteHTTPURL(p.AvatarURL)
 			}
-			v.DisplayName, v.Avatar = p.name, absoluteHTTPURL(p.avatar)
 		}
 		out = append(out, v)
 	}
 	return out
 }
-
-type v1Profile struct{ handle, name, avatar string }
 
 // absoluteHTTPURL returns s when it is an absolute http(s) URL, else "":
 // profiles carry whatever the network serves (a relative Mastodon default,

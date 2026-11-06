@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http/httptest"
@@ -8,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/geofox/publisher/internal/accounts"
+	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/relaysync"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/verify"
@@ -33,10 +36,11 @@ func (f *v1FakeVerifier) Verify(_ context.Context, in verify.Input) verify.Verdi
 type v1FakeSyncer struct {
 	scanned []relaysync.Target
 	dir     string
+	who     relaysync.Owner
 }
 
-func (f *v1FakeSyncer) Scan(_ context.Context, ts []relaysync.Target) []relaysync.RelayDiff {
-	f.scanned = ts
+func (f *v1FakeSyncer) Scan(_ context.Context, who relaysync.Owner, ts []relaysync.Target) []relaysync.RelayDiff {
+	f.scanned, f.who = ts, who
 	out := []relaysync.RelayDiff{}
 	for _, t := range ts {
 		out = append(out, relaysync.RelayDiff{URL: t.URL, Group: t.Group, MissingAtHome: 1, Status: "ok"})
@@ -44,8 +48,8 @@ func (f *v1FakeSyncer) Scan(_ context.Context, ts []relaysync.Target) []relaysyn
 	return out
 }
 
-func (f *v1FakeSyncer) Apply(_ context.Context, ts []relaysync.Target, dir string) []relaysync.ApplyResult {
-	f.scanned, f.dir = ts, dir
+func (f *v1FakeSyncer) Apply(_ context.Context, who relaysync.Owner, ts []relaysync.Target, dir string) []relaysync.ApplyResult {
+	f.scanned, f.dir, f.who = ts, dir, who
 	out := []relaysync.ApplyResult{}
 	for i, t := range ts {
 		res := relaysync.ApplyResult{URL: t.URL, Direction: dir, Published: 2, Status: "ok"}
@@ -58,14 +62,15 @@ func (f *v1FakeSyncer) Apply(_ context.Context, ts []relaysync.Target, dir strin
 }
 
 // withNostr gives the env a Nostr account (besides Bluesky and Mastodon)
-// and a home relay; it returns the Nostr account's id.
+// whose home relay is wss://home.example, and loads the accounts; it
+// returns the Nostr account's id.
 func (e *v1Env) withNostr() string {
 	e.t.Helper()
 	if _, err := e.st.SeedEnvAccounts(context.Background(), store.DefaultOwner, []store.EnvAccount{
 		{Type: "bluesky", Label: "Bluesky"}, {Type: "mastodon", Label: "Mastodon"}, {Type: "nostr", Label: "Nostr"}}); err != nil {
 		e.t.Fatal(err)
 	}
-	e.api.HomeRelay = "wss://home.example"
+	e.withAccounts()
 	return e.acct("nostr")
 }
 
@@ -189,15 +194,119 @@ func TestV1Relays(t *testing.T) {
 	// Only a Nostr account has relays.
 	wantProblem(t, e.do(req{method: "GET", path: "/v1/accounts/" + e.acct("bluesky") + "/nostr/relays"}), 404, codeNotFound)
 	wantProblem(t, e.do(req{method: "GET", path: "/v1/accounts/acc_nope/nostr/relays"}), 404, codeNotFound)
-	// A disabled Nostr account.
+	// A turned-off Nostr account, saying so.
 	e.disable(e.acct("nostr"))
-	wantProblem(t, e.do(req{method: "GET", path: base}), 409, codeInvalidState)
+	if p := wantProblem(t, e.do(req{method: "GET", path: base}), 409, codeInvalidState); !strings.Contains(p.Detail, "turned off") {
+		t.Errorf("detail = %q", p.Detail)
+	}
 	// Relay sync needs admin.
 	_, raw, err := e.st.CreateScopedToken("w", []string{"posts:write"}, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantProblem(t, e.do(req{method: "GET", path: base, auth: raw}), 403, codeInsufficientScope)
+}
+
+// Each Nostr account has its own relay list, home relay and key: a scan
+// or sync works on the path's account only, and another owner's account
+// isn't found.
+func TestV1RelaysPerAccount(t *testing.T) {
+	e := newV1Env(t, true)
+	ctx := context.Background()
+	if _, err := e.st.SeedEnvAccounts(ctx, store.DefaultOwner, []store.EnvAccount{{Type: "nostr", Label: "Nostr"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.InsertAccount(ctx, store.Account{ID: "acc_n2", Type: "nostr", Label: "Second", Source: "env", EnvKey: "2",
+		Enabled: true, CreatedAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	fs := &v1FakeSyncer{}
+	e.api.Sync = fs
+	e.withAccounts()
+	first := e.acct("nostr")
+	path := func(id string) string { return "/v1/accounts/" + id + "/nostr/relays" }
+	put := func(id, list string) v1RelaysBody {
+		t.Helper()
+		r := e.do(req{method: "PUT", path: path(id), body: `{"secondary":` + list + `}`})
+		wantStatus(t, r, 200)
+		var got v1RelaysBody
+		r.json(&got)
+		return got
+	}
+	a := put(first, `["wss://a.example"]`)
+	b := put("acc_n2", `["wss://b.example","wss://home.example"]`)
+	if a.Home != "wss://home.example" || strings.Join(a.Secondary, " ") != "wss://a.example" {
+		t.Errorf("first account = %+v", a)
+	}
+	// The first account's home relay is just another relay to the second.
+	if b.Home != "wss://home-1.example" || strings.Join(b.Secondary, " ") != "wss://b.example wss://home.example" {
+		t.Errorf("second account = %+v", b)
+	}
+	var got v1RelaysBody
+	r := e.do(req{method: "GET", path: path(first)})
+	wantStatus(t, r, 200)
+	r.json(&got)
+	if strings.Join(got.Secondary, " ") != "wss://a.example" {
+		t.Errorf("the second account's PUT changed the first's list: %+v", got)
+	}
+
+	wantStatus(t, e.do(req{method: "POST", path: path("acc_n2") + ":scan"}), 200)
+	if fs.who.Home != "wss://home-1.example" || len(fs.scanned) != 2 {
+		t.Errorf("scan ran as %+v over %+v, want the second account's home and list", fs.who, fs.scanned)
+	}
+	wantStatus(t, e.do(req{method: "POST", path: path(first) + ":sync", body: `{"direction":"pull"}`}), 200)
+	if fs.who.Home != "wss://home.example" || len(fs.scanned) != 1 || fs.scanned[0].URL != "wss://a.example" {
+		t.Errorf("sync ran as %+v over %+v, want the first account's", fs.who, fs.scanned)
+	}
+	if bytes.Equal(fs.who.Pubkey[:], make([]byte, 32)) {
+		t.Error("sync was given no public key")
+	}
+
+	e.api.Accounts = withForeign{e.reg, t}
+	for _, m := range []string{"GET", "PUT"} {
+		wantProblem(t, e.do(req{method: m, path: path("acc_theirs"), body: `{"secondary":[]}`}), 404, codeNotFound)
+	}
+	wantProblem(t, e.do(req{method: "POST", path: path("acc_theirs") + ":scan"}), 404, codeNotFound)
+	e.api.Accounts = e.reg
+
+	// Relay sync is offered while a Nostr account is connected.
+	features := func() bool {
+		var inst v1InstanceBody
+		r := e.do(req{method: "GET", path: "/v1/instance"})
+		wantStatus(t, r, 200)
+		r.json(&inst)
+		return inst.Features.RelaySync
+	}
+	if !features() {
+		t.Error("relay_sync off with two connected Nostr accounts")
+	}
+	e.disable(first)
+	e.disable("acc_n2")
+	if features() {
+		t.Error("relay_sync on with every Nostr account turned off")
+	}
+}
+
+// withForeign is the registry plus acc_theirs, another owner's connected
+// Nostr account, which must never be leased for this owner.
+type withForeign struct {
+	*accounts.Registry
+	t *testing.T
+}
+
+func (w withForeign) Get(id string) (accounts.Entry, bool) {
+	if id == "acc_theirs" {
+		return accounts.Entry{Row: store.Account{ID: id, OwnerID: "own_other", Type: "nostr", Enabled: true},
+			Status: accounts.Connected}, true
+	}
+	return w.Registry.Get(id)
+}
+
+func (w withForeign) Acquire(id string) (destination.Account, func(), error) {
+	if id == "acc_theirs" {
+		w.t.Error("another owner's account was leased")
+	}
+	return w.Registry.Acquire(id)
 }
 
 func TestV1PublicFeed(t *testing.T) {

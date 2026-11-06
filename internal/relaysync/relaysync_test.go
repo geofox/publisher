@@ -148,8 +148,8 @@ func TestScanCountsAndStatus(t *testing.T) {
 		},
 		fetchErr: map[string]error{"wss://t2": ErrRelayAuth},
 	}
-	s := New(io, "wss://home", gonostr.GetPublicKey(sk))
-	out := s.Scan(context.Background(), []Target{{URL: "wss://t1", Group: "nip65"}, {URL: "wss://t2", Group: "secondary"}})
+	s := New(io)
+	out := s.Scan(context.Background(), Owner{"wss://home", gonostr.GetPublicKey(sk)}, []Target{{URL: "wss://t1", Group: "nip65"}, {URL: "wss://t2", Group: "secondary"}})
 	if len(out) != 2 {
 		t.Fatalf("scan len = %d", len(out))
 	}
@@ -172,12 +172,12 @@ func TestApplyPushAndPull(t *testing.T) {
 	}
 	owner := gonostr.GetPublicKey(sk)
 	io := mk()
-	New(io, "wss://home", owner).Apply(context.Background(), []Target{{URL: "wss://t1"}}, "pull")
+	New(io).Apply(context.Background(), Owner{"wss://home", owner}, []Target{{URL: "wss://t1"}}, "pull")
 	if got := io.published["wss://home"]; len(got) != 1 || got[0] != c.ID {
 		t.Errorf("pull published to home = %v, want [c]", got)
 	}
 	io = mk()
-	New(io, "wss://home", owner).Apply(context.Background(), []Target{{URL: "wss://t1"}}, "push")
+	New(io).Apply(context.Background(), Owner{"wss://home", owner}, []Target{{URL: "wss://t1"}}, "push")
 	if got := io.published["wss://t1"]; len(got) != 1 || got[0] != a.ID {
 		t.Errorf("push published to t1 = %v, want [a]", got)
 	}
@@ -190,7 +190,7 @@ func TestApplyInSyncSkipsPublish(t *testing.T) {
 		"wss://home": evmap(a, b),
 		"wss://t1":   evmap(a, b), // identical → nothing to publish
 	}}
-	out := New(io, "wss://home", gonostr.GetPublicKey(sk)).Apply(context.Background(), []Target{{URL: "wss://t1"}}, "push")
+	out := New(io).Apply(context.Background(), Owner{"wss://home", gonostr.GetPublicKey(sk)}, []Target{{URL: "wss://t1"}}, "push")
 	if len(io.published) != 0 {
 		t.Errorf("in-sync relay should skip publish, got %v", io.published)
 	}
@@ -205,7 +205,7 @@ func TestApplyHomeFetchFails(t *testing.T) {
 		events:   map[string]map[gonostr.ID]gonostr.Event{"wss://t1": evmap(mkEvent(sk, "x"))},
 		fetchErr: map[string]error{"wss://home": ErrRelayUnreachable},
 	}
-	out := New(io, "wss://home", gonostr.GetPublicKey(sk)).Apply(context.Background(), []Target{{URL: "wss://t1"}}, "pull")
+	out := New(io).Apply(context.Background(), Owner{"wss://home", gonostr.GetPublicKey(sk)}, []Target{{URL: "wss://t1"}}, "pull")
 	if out[0].Status != "error" || !strings.Contains(out[0].Message, "home fetch failed") {
 		t.Errorf("home-fetch-fail result = %+v, want error/home-fetch-failed", out[0])
 	}
@@ -221,7 +221,7 @@ func TestApplySurfacesFailureDetail(t *testing.T) {
 		},
 		pubFail: 1, pubDetail: "restricted: sign up ×1",
 	}
-	out := New(io, "wss://home", gonostr.GetPublicKey(sk)).Apply(context.Background(), []Target{{URL: "wss://t1"}}, "push")
+	out := New(io).Apply(context.Background(), Owner{"wss://home", gonostr.GetPublicKey(sk)}, []Target{{URL: "wss://t1"}}, "push")
 	if out[0].Status != "partial" || out[0].Message != "restricted: sign up ×1" {
 		t.Errorf("result = %+v, want partial + detail message", out[0])
 	}

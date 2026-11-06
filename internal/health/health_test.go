@@ -172,10 +172,7 @@ func TestWritableDirAndDiskSpace(t *testing.T) {
 }
 
 func TestHTTPReachable(t *testing.T) {
-	var gotAccept, gotMethod atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAccept.Store(r.Header.Get("Accept"))
-		gotMethod.Store(r.Method)
 		if r.Header.Get("Authorization") != "" {
 			t.Error("readiness probes must not send credentials")
 		}
@@ -214,12 +211,42 @@ func TestHTTPReachable(t *testing.T) {
 		}
 	}
 
-	relay := NostrRelay("relay", srv.Client(), strings.Replace(srv.URL, "http://", "ws://", 1)+"/ok")
-	rep = (&Checker{Local: []Check{relay}}).Run(context.Background(), false)
-	if rep.Checks["relay"].Status != CheckOK {
-		t.Fatalf("relay check = %+v", rep.Checks["relay"])
+}
+
+// Checks that come and go (one per account) are asked for at each refresh
+// of the external results, and cached with the fixed ones.
+func TestMoreExternalAskedAtEachRefresh(t *testing.T) {
+	now := time.Unix(1000, 0)
+	var asked atomic.Int32
+	names := []string{"account:a"}
+	c := &Checker{
+		External: []Check{ok("blossom", false)},
+		MoreExternal: func() []Check {
+			asked.Add(1)
+			var out []Check
+			for _, n := range names {
+				out = append(out, ok(n, false))
+			}
+			return out
+		},
+		now: func() time.Time { return now },
 	}
-	if gotAccept.Load() != "application/nostr+json" || gotMethod.Load() != http.MethodGet {
-		t.Errorf("NIP-11 probe sent %v %v", gotMethod.Load(), gotAccept.Load())
+	if rep := c.Run(context.Background(), false); len(rep.Checks) != 0 || asked.Load() != 0 {
+		t.Fatalf("external checks ran unasked: %+v", rep)
+	}
+	rep := c.Run(context.Background(), true)
+	if _, ok := rep.Checks["account:a"]; !ok || rep.Checks["blossom"].Status != CheckOK || rep.Status != StatusOK {
+		t.Fatalf("rep = %+v", rep)
+	}
+	names = []string{"account:a", "account:b"}
+	if rep := c.Run(context.Background(), true); len(rep.Checks) != 2 || asked.Load() != 1 {
+		t.Fatalf("within the cache time: %+v, asked %d times", rep, asked.Load())
+	}
+	now = now.Add(DefaultExternalTTL)
+	if rep := c.Run(context.Background(), true); len(rep.Checks) != 3 {
+		t.Fatalf("after the cache time: %+v", rep)
+	}
+	if _, ext := c.Names(); strings.Join(ext, ",") != "account:a,account:b,blossom" {
+		t.Errorf("Names = %v", ext)
 	}
 }

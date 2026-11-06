@@ -51,7 +51,9 @@ valid token.
 
 **403.** The token is valid but lacks the route's scope. The
 `WWW-Authenticate` header names the scope needed. Create a token with that
-scope (`admin` includes every scope).
+scope. `admin` includes every scope except `accounts:write`, which must
+be granted by name; only the signed-in owner (not a token) can create a
+token holding it.
 
 ## cross_origin
 
@@ -91,8 +93,9 @@ bodies; see `GET /v1/instance` for the limits).
 `errors[]` lists every invalid field, so a client can show them all at once.
 Field codes include `required`, `too_long`, `unknown_scope`,
 `invalid_time`, `in_past` and `exceeds_caller` (a token tried to create a
-token that would outlive it). For a reply, quote or repost the source URL
-can be `unrecognized`, `not_supported` (Threads), `not_configured` or
+token that would outlive it, or one holding `accounts:write`). For a reply, quote or repost the source URL
+can be `unrecognized`, `not_supported` (Threads), `not_configured` (none
+of your accounts on the post's network is connected) or
 `unresolvable` (not found, deleted, private, or not yet known to your
 server); `not_allowed` and `missing_source_account` concern the action
 and its targets. The tools add `unsupported_language` (translate) and

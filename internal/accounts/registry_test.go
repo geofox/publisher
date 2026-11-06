@@ -62,7 +62,9 @@ type fakeAcct struct {
 	checks   int
 	ident    destination.Identity
 	identErr error
+	idents   int
 	caps     destination.Capabilities
+	lastReq  destination.CheckRequest
 }
 
 func (a *fakeAcct) Manifest() destination.Manifest {
@@ -74,10 +76,11 @@ func (a *fakeAcct) Publish(context.Context, destination.PublishRequest) (destina
 	return destination.PublishResult{}, nil
 }
 func (a *fakeAcct) Close() error { a.closed.Add(1); return nil }
-func (a *fakeAcct) Check(context.Context, destination.CheckRequest) destination.Health {
+func (a *fakeAcct) Check(_ context.Context, req destination.CheckRequest) destination.Health {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.checks++
+	a.lastReq = req
 	if a.authOK == nil {
 		return destination.Health{Message: "the server did not answer in time"}
 	}
@@ -86,6 +89,7 @@ func (a *fakeAcct) Check(context.Context, destination.CheckRequest) destination.
 func (a *fakeAcct) Identity(context.Context) (destination.Identity, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.idents++
 	return a.ident, a.identErr
 }
 func (a *fakeAcct) setAuth(ok *bool) { a.mu.Lock(); a.authOK = ok; a.mu.Unlock() }

@@ -30,6 +30,25 @@ the `edge` image.
 - A negative `POW_DIFFICULTY_DEFAULT` or `POW_DIFFICULTY_MAX` stops startup
   with an error naming the variable; it used to mean 0 (no proof of work).
   Use `0` for that.
+- Accounts are known by id everywhere. A post names accounts, not
+  networks, in the engine, retries, the Nostr fan-out and recovery after a
+  restart, so two accounts of one network can be sent to independently.
+- The external readiness checks (`/readyz?external=1`) are named
+  `account:<id>`, one per account that is turned on, instead of
+  `nostr_relay`, `bluesky`, `mastodon` and `threads`; `blossom` stays.
+  Update a monitor that matched the old names.
+- Each Nostr account has its own relay-sync list, home relay and key. On
+  upgrade the existing list moves to the Nostr account set by the
+  environment.
+- Each account shows its own profile (name, avatar, handle) in
+  `GET /v1/accounts`; profiles are fetched in the background and never
+  delay the answer. An account that is turned off isn't asked for its
+  profile.
+- A pasted post is looked up with your first connected account on its
+  network (a reply with the account that replies); with every account on
+  that network turned off it says none is connected.
+- `GET /v1/public/feed` links carry `account` (the id of the account that
+  posted) and its `handle`.
 
 ### Security
 

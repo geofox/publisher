@@ -594,6 +594,52 @@ One commit: every caller moves to the registry and account-keyed specs.
 - [ ] Tests: readiness names; relay handlers per account; feed flag in
   page and webhook.
 
+### As built (A2.4)
+
+- **The API reaches accounts through one interface,** `api.AccountRegistry`
+  (`Get`, `List`, `Acquire`, `Profile`; the registry, or the harness's
+  engine wrapper). `api.New(mp)`; the `np`, `HomeRelay`, `Identity` and
+  `Resolve` fields are gone.
+- **Profiles** come from `Registry.Profile` for every account (two of a
+  network included); `main.go` calls `RefreshProfiles` at startup. An
+  account the owner turned off isn't asked for its profile (its
+  credentials aren't used while off), matching the checks.
+  `internal/identity` is deleted.
+- **Readiness glue lives in the registry** (`Probeable`, `Probe`,
+  `Readiness(owner)`), so it is tested there; `health.Checker` gained
+  `MoreExternal func() []Check`, asked at each refresh of the external
+  results. A probe failure is classed `unreachable`, `timeout` or `not ok`;
+  the network's message only reaches the log. `health.NostrRelay` is gone.
+  `blossom` is listed only when `BLOSSOM_URL` is set.
+- **Looking posts up:** `resolve` keeps the types, `Detect` (now exported,
+  trims space) and `FromResolved`; `Service` and the adapter are deleted.
+  The API looks a post up with the first connected account of the detected
+  type, and an interaction prefers its own target account on that network
+  (pulled forward from A2.5: a Mastodon status id is only valid on its
+  own server). `ErrThreadsUnsupported` became `ErrUnsupported`, its message
+  built from the driver's name. Behaviour change: with every account of
+  the post's network turned off, `/v1/resolve` answers `not_configured`
+  ("none of your accounts on that post's network is connected") instead
+  of a preview with nothing allowed, since looking up uses the account.
+- **Relay sync** works for any of the owner's Nostr accounts (not only the
+  env default): `relaysync.Sync` takes a `relaysync.Owner{Home, Pubkey}`
+  per call; `nostr.RelayLister` is implemented by the Nostr account; lists
+  are `AccountSyncRelays`/`SetAccountSyncRelays`; an unusable account is
+  `409` with the registry's reason; another owner's account is `404`
+  without being leased. `features.relay_sync` is true while a Nostr
+  account of the caller's is connected.
+- **Feed** links carry `account` and `handle` (OpenAPI updated).
+- **Guard tests:** `cmd/publisher` joins the string-literal check; a new
+  test forbids `cmd/publisher` and `internal/accounts` importing a driver
+  package (found by reflection on the registered drivers, so a new driver
+  is covered without editing the test). `main.go` no longer imports any
+  driver package.
+- The startup log no longer prints the Nostr key and bootstrap relay
+  (they belong to an account); it prints `blossom_signer`.
+- Left for A2.7: the global `sync_relays` store functions (`SyncRelays`,
+  `SetSyncRelays`, `AddSyncRelay`, `RemoveSyncRelay`,
+  `SeedSyncRelaysIfEmpty`) are now used only by `AdoptLegacy` and tests.
+
 ### Task A2.5: the API by account
 
 **Files:** `internal/api/{v1,v1_create,v1_interact,v1_drafts,v1_resources,v1_tokens}.go`,

@@ -81,7 +81,28 @@ var (
 	_ destination.Redeliverer = (*Account)(nil)
 	_ destination.Identifier  = (*Account)(nil)
 	_ destination.Preparer    = (*Account)(nil)
+	_ RelayLister             = (*Account)(nil)
 )
+
+// RelayLister is what relay sync needs from a Nostr account: the relay the
+// others are compared with, whose events are synced, and the write relays
+// the account's profile lists (NIP-65).
+type RelayLister interface {
+	HomeRelay() string
+	OwnerPubkey() gonostr.PubKey
+	ResolveWriteRelays(ctx context.Context) ([]string, error)
+}
+
+// HomeRelay implements RelayLister: the account's bootstrap relay.
+func (a *Account) HomeRelay() string { return a.P.HomeRelay() }
+
+// OwnerPubkey implements RelayLister.
+func (a *Account) OwnerPubkey() gonostr.PubKey { return a.P.OwnerPubkey() }
+
+// ResolveWriteRelays implements RelayLister.
+func (a *Account) ResolveWriteRelays(ctx context.Context) ([]string, error) {
+	return a.P.ResolveWriteRelays(ctx)
+}
 
 // Manifest implements destination.Account.
 func (a *Account) Manifest() destination.Manifest { return Driver{}.Manifest() }

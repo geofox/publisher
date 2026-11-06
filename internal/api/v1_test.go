@@ -21,6 +21,7 @@ import (
 	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
 
 	apidocs "github.com/geofox/publisher/docs/api"
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/auth"
 	"github.com/geofox/publisher/internal/store"
 )
@@ -68,6 +69,9 @@ type v1Env struct {
 	h      http.Handler
 	st     *store.Store
 	cookie *http.Cookie // a signed-in session (OIDC on only)
+	reg    *accounts.Registry
+	// lookups are the accounts that looked posts up, in order.
+	lookups []string
 }
 
 // newV1Env serves the real Routes() over a fresh store with two seeded
@@ -352,7 +356,6 @@ func TestV1Conformance(t *testing.T) {
 	e.seedPost("fail", "failed", "mastodon")
 	unknownPath, unknownTarget := e.seedUnknown("unk", "bluesky")
 	e.withEngine()
-	e.api.Resolve = sourcesResolver{}
 	e.api.Translator = v1FakeTranslator{}
 	e.api.Verify = &v1FakeVerifier{}
 	e.api.Sync = &v1FakeSyncer{}

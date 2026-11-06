@@ -1,6 +1,8 @@
 package feed
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -168,5 +170,29 @@ func TestFeedExcludedAccounts(t *testing.T) {
 	p.Targets = []store.Target{out}
 	if Eligible(p) || len(Build([]store.Post{p}, 10).Posts) != 0 {
 		t.Fatal("a post only on excluded accounts is in the feed")
+	}
+}
+
+// Two accounts of one network each get their own link, saying which
+// account posted it; the JSON leaves out a handle not known yet.
+func TestBuildLinksNameTheirAccount(t *testing.T) {
+	a := successTarget("mastodon", "https://m.example/1", "")
+	a.AccountID, a.AccountHandle = "acc_home", "me@m.example"
+	b := successTarget("mastodon", "https://work.example/1", "")
+	b.AccountID = "acc_work"
+	out := Build([]store.Post{{ID: "p", Targets: []store.Target{a, b}}}, 20)
+	if len(out.Posts) != 1 {
+		t.Fatalf("posts = %+v", out.Posts)
+	}
+	want := []Link{
+		{Platform: "mastodon", URL: "https://m.example/1", Account: "acc_home", Handle: "me@m.example"},
+		{Platform: "mastodon", URL: "https://work.example/1", Account: "acc_work"},
+	}
+	if !reflect.DeepEqual(out.Posts[0].Links, want) {
+		t.Errorf("links = %+v, want %+v", out.Posts[0].Links, want)
+	}
+	raw, _ := json.Marshal(out.Posts[0].Links[1])
+	if string(raw) != `{"platform":"mastodon","url":"https://work.example/1","account":"acc_work"}` {
+		t.Errorf("JSON = %s", raw)
 	}
 }

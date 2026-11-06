@@ -21,24 +21,18 @@ import (
 	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/api"
 	"github.com/geofox/publisher/internal/auth"
-	"github.com/geofox/publisher/internal/bluesky"
 	"github.com/geofox/publisher/internal/config"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/drivers"
 	"github.com/geofox/publisher/internal/feed"
 	"github.com/geofox/publisher/internal/health"
-	"github.com/geofox/publisher/internal/identity"
 	"github.com/geofox/publisher/internal/logging"
-	"github.com/geofox/publisher/internal/mastodon"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
-	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/notify"
 	"github.com/geofox/publisher/internal/relaysync"
-	"github.com/geofox/publisher/internal/resolve"
 	"github.com/geofox/publisher/internal/store"
-	"github.com/geofox/publisher/internal/threads"
 	"github.com/geofox/publisher/internal/transcode"
 	"github.com/geofox/publisher/internal/translate"
 	"github.com/geofox/publisher/internal/unfurl"
@@ -132,35 +126,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer reg.Close()
-	// The identity, source resolution and relay-sync services still take
-	// one client per type: the first connected account's (A2.4 makes them
-	// work by account). Their leases are held for the process's life.
-	first := func(typ string) destination.Account {
-		for _, e := range reg.OfType(store.DefaultOwner, typ) {
-			if acct, _, err := reg.Acquire(e.Row.ID); err == nil {
-				return acct
-			}
-		}
-		return nil
-	}
-	na, ok := first(pubnostr.Type).(*pubnostr.Account)
-	if !ok {
-		slog.Error("the Nostr account from NSEC_HEX could not be opened")
-		os.Exit(1)
-	}
-	np := na.P
-	var bc *bluesky.Client
-	if a, ok := first(bluesky.Type).(*bluesky.Account); ok {
-		bc = a.C
-	}
-	var mc *mastodon.Client
-	if a, ok := first(mastodon.Type).(*mastodon.Account); ok {
-		mc = a.C
-	}
-	var tc *threads.Client
-	if a, ok := first(threads.Type).(*threads.Account); ok {
-		tc = a.C
-	}
+	// Profiles are fetched in the background now, so the composer has
+	// them when it first asks.
+	reg.RefreshProfiles()
 	d := &dispatch.Dispatcher{
 		Registry: reg,
 		// Re-encoded variants for URL-transport destinations (Threads) are
@@ -182,7 +150,7 @@ func main() {
 		Workers:       cfg.PublishWorkers,
 		ScheduleGrace: cfg.ScheduleGrace,
 	}
-	a := api.New(np, mp)
+	a := api.New(mp)
 	a.Store = st
 	a.Dispatch = d
 	a.Caps = d.Caps
@@ -219,51 +187,24 @@ func main() {
 			}
 		}
 	}
-	// Operator's own cross-platform identity for the composer (real handle/name/
-	// avatar). Each platform is wired only when its credentials are configured;
-	// Nostr is always available (npub derives from the owner pubkey).
-	ids := &identity.Service{Nostr: np, TTL: 10 * time.Minute, Timeout: 6 * time.Second}
-	if bc != nil {
-		ids.Bluesky = bc
-	}
-	if mc != nil {
-		ids.Mastodon = mc
-	}
-	if tc != nil {
-		ids.Threads = tc
-	}
-	a.Identity = ids
 	if cfg.DeepLAPIKey != "" {
 		a.Translator = translate.NewDeepL(cfg.DeepLAPIKey)
 	}
-	if err := st.SeedSyncRelaysIfEmpty(envSyncRelaysSeed(env)); err != nil {
-		slog.Error("seed sync relays failed", "err", err)
-	}
-	a.Sync = relaysync.New(relaysync.NewLiveIO(), np.HomeRelay(), np.OwnerPubkey())
-	a.HomeRelay = np.HomeRelay()
+	// Relay sync works on the Nostr account a request names (its own
+	// home relay, key and list).
+	a.Sync = relaysync.New(relaysync.NewLiveIO())
 	a.Verify = &verify.Service{
 		Nostr:    verify.NewNostrVerifier(cfg.VerifyHTTPTimeout),
 		Bluesky:  verify.NewBlueskyVerifier(cfg.PLCDirectoryURL, cfg.VerifyHTTPTimeout),
 		Mastodon: verify.NewMastodonVerifier(cfg.VerifyHTTPTimeout),
 		Threads:  verify.NewThreadsVerifier(cfg.VerifyHTTPTimeout),
 	}
-	// A platform without an account resolves to "not configured" (a
-	// client with no credentials used to fail later, at sign-in).
-	rs := &resolve.Service{}
-	for typ, field := range map[string]*resolve.Source{
-		bluesky.Type: &rs.Bluesky, mastodon.Type: &rs.Mastodon, pubnostr.Type: &rs.Nostr,
-	} {
-		if r, ok := first(typ).(destination.SourceResolver); ok {
-			*field = resolve.AccountAdapter{R: r}
-		}
-	}
-	a.Resolve = rs
 	// SIGTERM/SIGINT start a graceful stop: readiness fails, new work stops
 	// being claimed, and what is in flight finishes.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 	var draining atomic.Bool
-	a.Ready = readinessChecks(cfg, st, a.VideoWorkdir, np.HomeRelay(), env)
+	a.Ready = readinessChecks(cfg, st, a.VideoWorkdir, reg)
 	a.Ready.Local = append(a.Ready.Local, health.Check{Name: "accepting_work", Critical: true,
 		Run: func(context.Context) error {
 			if draining.Load() {
@@ -381,9 +322,8 @@ func main() {
 	slog.Info("publisher starting",
 		"port", cfg.Port,
 		"accounts", accountList,
-		"pubkey", np.OwnerPubkey().Hex(),
 		"blossom", cfg.BlossomURL,
-		"bootstrap_relay", np.HomeRelay(),
+		"blossom_signer", mediaPub.Hex(),
 	)
 	select {
 	case err := <-served:
@@ -441,7 +381,7 @@ func gracefulStop(draining *atomic.Bool, srv *http.Server, d *dispatch.Dispatche
 // readinessChecks builds the /readyz checks. Local checks run on every probe;
 // upstream checks only on /readyz?external=1, cached, and never critical. No
 // probe sends credentials.
-func readinessChecks(cfg config.Config, st *store.Store, videoWorkdir, homeRelay string, env []drivers.EnvAccount) *health.Checker {
+func readinessChecks(cfg config.Config, st *store.Store, videoWorkdir string, reg *accounts.Registry) *health.Checker {
 	dataDir := filepath.Dir(cfg.DBPath)
 	c := &health.Checker{Local: []health.Check{
 		health.Database(st, store.LatestSchemaVersion()),
@@ -450,47 +390,14 @@ func readinessChecks(cfg config.Config, st *store.Store, videoWorkdir, homeRelay
 	if videoWorkdir != "" {
 		c.Local = append(c.Local, health.WritableDir("video_workdir", videoWorkdir))
 	}
-	hc := &http.Client{Timeout: 5 * time.Second}
-	c.External = append(c.External,
-		health.HTTPReachable("blossom", hc, http.MethodHead, cfg.BlossomURL, nil),
-		health.NostrRelay("nostr_relay", hc, homeRelay),
-	)
-	// Until the accounts check themselves (part A2), one probe per
-	// configured type, as before.
-	for _, e := range env {
-		switch e.Type {
-		case bluesky.Type:
-			pds, _ := destination.ConfigString(e.Config, bluesky.ConfigPDSURL)
-			c.External = append(c.External, health.HTTPReachable("bluesky", hc, http.MethodGet, pds+"/xrpc/_health", nil))
-		case mastodon.Type:
-			base, _ := destination.ConfigString(e.Config, mastodon.ConfigInstanceURL)
-			c.External = append(c.External, health.HTTPReachable("mastodon", hc, http.MethodGet, base+"/api/v1/instance", nil))
-		case threads.Type:
-			c.External = append(c.External, health.HTTPReachable("threads", hc, http.MethodGet, "https://graph.threads.net/", nil))
-		}
+	if cfg.BlossomURL != "" {
+		hc := &http.Client{Timeout: 5 * time.Second}
+		c.External = append(c.External, health.HTTPReachable("blossom", hc, http.MethodHead, cfg.BlossomURL, nil))
 	}
+	// One check per open account (account:<id>), asked again at each
+	// refresh so an account turned off or reopened is followed.
+	c.MoreExternal = func() []health.Check { return reg.Readiness(store.DefaultOwner) }
 	return c
-}
-
-// envSyncRelaysSeed is the relay-sync list the env Nostr account starts
-// with (SYNC_RELAYS).
-func envSyncRelaysSeed(env []drivers.EnvAccount) []string {
-	e, ok := envAccount(env, pubnostr.Type)
-	if !ok {
-		return nil
-	}
-	relays, _ := destination.ConfigStrings(e.Config, pubnostr.ConfigSyncRelaysSeed)
-	return relays
-}
-
-// envAccount is the environment's account of a type.
-func envAccount(env []drivers.EnvAccount, typ string) (drivers.EnvAccount, bool) {
-	for _, e := range env {
-		if e.Type == typ {
-			return e, true
-		}
-	}
-	return drivers.EnvAccount{}, false
 }
 
 // runHealthcheck is the container healthcheck: it asks /readyz (local checks

@@ -93,4 +93,22 @@ func TestTargetsCarryFeedExclusion(t *testing.T) {
 		t.Fatalf("PublicFeed = %v, %v", feed, err)
 	}
 	check("PublicFeed", feed[0].Targets)
+
+	// The feed names each link's account and its handle as last seen.
+	bsky := ""
+	for _, tg := range got.Targets {
+		if tg.Platform == "bluesky" {
+			bsky = tg.AccountID
+		}
+	}
+	if err := s.SetAccountIdentity(ctx, bsky, "ann.example", "did:plc:ann"); err != nil {
+		t.Fatal(err)
+	}
+	feed, _ = s.PublicFeed(10)
+	for _, tg := range feed[0].Targets {
+		want := map[string]string{"bluesky": "ann.example", "mastodon": ""}[tg.Platform]
+		if tg.AccountID == "" || tg.AccountHandle != want {
+			t.Errorf("PublicFeed %s target: account %q handle %q, want handle %q", tg.Platform, tg.AccountID, tg.AccountHandle, want)
+		}
+	}
 }

@@ -1,23 +1,27 @@
-// Package resolve turns a pasted post URL or Nostr identifier into a SourceRef:
-// the platform-native handle, a preview, and what the owner may do with it. It is
-// the inbound counterpart to internal/dispatch and wraps the platform clients via
-// adapters (see adapters.go).
+// Package resolve holds the shape of a pasted post once it is looked up
+// (SourceRef: the network's reference, a preview, and what the owner may do
+// with it) and Detect, which says which network an input belongs to. The
+// lookup itself is an account's (destination.SourceResolver): the API picks
+// one of the owner's accounts of the detected type.
 package resolve
 
 import (
-	"context"
 	"errors"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/geofox/publisher/internal/destination"
 )
 
 // Sentinel errors surfaced to the UI.
 var (
-	ErrThreadsUnsupported = errors.New("threads posts can't be resolved: the API has no URL→id lookup")
-	ErrUnrecognized       = errors.New("unrecognized post URL or identifier")
-	ErrNotConfigured      = errors.New("that platform is not configured")
+	// ErrUnsupported: the network's accounts can't look posts up (Threads'
+	// API has no URL lookup).
+	ErrUnsupported   = errors.New("that network's posts can't be looked up")
+	ErrUnrecognized  = errors.New("unrecognized post URL or identifier")
+	ErrNotConfigured = errors.New("that platform is not configured")
 )
 
 // SourceRef is a resolved external post.
@@ -79,53 +83,17 @@ type Cap struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
-// Source resolves one platform's input into a SourceRef.
-type Source interface {
-	ResolveSource(ctx context.Context, input string) (*SourceRef, error)
-}
-
-// Service detects the platform and delegates. Each field is nil when that
-// platform isn't configured.
-type Service struct {
-	Bluesky  Source
-	Mastodon Source
-	Nostr    Source
-}
-
-func (s *Service) Resolve(ctx context.Context, input string) (*SourceRef, error) {
-	input = strings.TrimSpace(input)
-	switch detect(input) {
-	case "bluesky":
-		if s.Bluesky == nil {
-			return nil, ErrNotConfigured
-		}
-		return s.Bluesky.ResolveSource(ctx, input)
-	case "mastodon":
-		if s.Mastodon == nil {
-			return nil, ErrNotConfigured
-		}
-		return s.Mastodon.ResolveSource(ctx, input)
-	case "nostr":
-		if s.Nostr == nil {
-			return nil, ErrNotConfigured
-		}
-		return s.Nostr.ResolveSource(ctx, input)
-	case "threads":
-		return nil, ErrThreadsUnsupported
-	default:
-		return nil, ErrUnrecognized
-	}
-}
-
 var (
 	reNostrID = regexp.MustCompile(`^(?:nostr:|web\+nostr:)?(?:nevent|note|naddr)1[0-9a-zA-Z]+$`)
 	reHex64   = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 )
 
-// detect classifies an input as "bluesky" | "mastodon" | "nostr" | "threads" |
+// Detect classifies an input as "bluesky" | "mastodon" | "nostr" | "threads" |
 // "" (unrecognized). Mastodon is the fallthrough for any non-Bluesky/Threads
-// http(s) URL, since Mastodon instances use arbitrary domains.
-func detect(input string) string {
+// http(s) URL, since Mastodon instances use arbitrary domains. Surrounding
+// space is ignored.
+func Detect(input string) string {
+	input = strings.TrimSpace(input)
 	if reNostrID.MatchString(input) || reHex64.MatchString(input) {
 		return "nostr"
 	}
@@ -141,5 +109,29 @@ func detect(input string) string {
 		return "threads"
 	default:
 		return "mastodon"
+	}
+}
+
+// FromResolved converts a driver's ResolvedSource to a SourceRef.
+func FromResolved(rs destination.ResolvedSource) *SourceRef {
+	r := rs.Ref
+	media := make([]Media, 0, len(rs.Preview.Media))
+	for _, m := range rs.Preview.Media {
+		media = append(media, Media{URL: m.URL, Alt: m.Alt, Video: m.Video})
+	}
+	allowed := func(a destination.ActionAllowed) Cap { return Cap{Allowed: a.Allowed, Reason: a.Reason} }
+	return &SourceRef{
+		Platform: r.Type,
+		Ref: PlatformRef{
+			URI: r.URI, CID: r.CID, ReplyRootURI: r.ReplyRootURI, ReplyRootCID: r.ReplyRootCID,
+			LocalID: r.LocalID,
+			EventID: r.EventID, Author: r.Author, RelayHints: r.RelayHints, Kind: r.EventKind,
+			ThreadRootID: r.ThreadRootID, Mentions: r.Mentions,
+		},
+		Preview: Preview{
+			AuthorName: rs.Preview.AuthorName, AuthorHandle: rs.Preview.AuthorHandle,
+			Text: rs.Preview.Text, Media: media, CreatedAt: rs.Preview.CreatedAt, WebURL: rs.Preview.WebURL,
+		},
+		Caps: Caps{Reply: allowed(rs.Actions.Reply), Quote: allowed(rs.Actions.Quote), Repost: allowed(rs.Actions.Repost)},
 	}
 }

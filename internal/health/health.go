@@ -12,6 +12,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -82,9 +83,13 @@ type Report struct {
 
 // Checker runs local checks on every call and external checks on request.
 type Checker struct {
-	Local       []Check
-	External    []Check
-	ExternalTTL time.Duration // 0 → DefaultExternalTTL
+	Local    []Check
+	External []Check
+	// MoreExternal, when set, adds external checks that change while the
+	// server runs (one per account); it is asked each time the external
+	// results are refreshed.
+	MoreExternal func() []Check
+	ExternalTTL  time.Duration // 0 → DefaultExternalTTL
 
 	now func() time.Time
 
@@ -100,7 +105,7 @@ type Checker struct {
 // Run executes the checks and builds the report.
 func (c *Checker) Run(ctx context.Context, external bool) Report {
 	results := c.runAll(ctx, c.Local)
-	if external && len(c.External) > 0 {
+	if external && (len(c.External) > 0 || c.MoreExternal != nil) {
 		for name, r := range c.external() {
 			results[name] = r
 		}
@@ -144,11 +149,20 @@ func (c *Checker) external() map[string]Result {
 	}
 	// Detached from the request: a caller hanging up must not poison the
 	// shared cache with "timeout" results. Each check still has its timeout.
-	r := c.runAll(context.Background(), c.External)
+	r := c.runAll(context.Background(), c.externalChecks())
 	c.cacheMu.Lock()
 	c.extCache, c.extAt = r, c.clock()()
 	c.cacheMu.Unlock()
 	return r
+}
+
+// externalChecks is every external check as of now.
+func (c *Checker) externalChecks() []Check {
+	checks := slices.Clone(c.External)
+	if c.MoreExternal != nil {
+		checks = append(checks, c.MoreExternal()...)
+	}
+	return checks
 }
 
 func (c *Checker) cached(ttl time.Duration) (map[string]Result, bool) {
@@ -256,7 +270,7 @@ func (c *Checker) Names() (local, external []string) {
 	for _, k := range c.Local {
 		local = append(local, k.Name)
 	}
-	for _, k := range c.External {
+	for _, k := range c.externalChecks() {
 		external = append(external, k.Name)
 	}
 	sort.Strings(local)

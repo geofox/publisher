@@ -36,7 +36,8 @@ type profileState struct {
 // Profile returns the account's last known profile at once: before the
 // first answer from its network, the stored handle. A profile older than
 // 10 minutes (1 minute after a failure) is fetched again in the
-// background; the caller never waits on the network.
+// background; the caller never waits on the network. An account the owner
+// turned off isn't asked (its credentials aren't used).
 func (r *Registry) Profile(id string) (Profile, bool) {
 	now := r.now()
 	r.mu.Lock()
@@ -56,7 +57,7 @@ func (r *Registry) Profile(id string) (Profile, bool) {
 	if !e.profile.ok {
 		ttl = profileFailTTL
 	}
-	fetch := e.live != nil && !e.profile.fetching && (e.profile.at.IsZero() || now.Sub(e.profile.at) >= ttl)
+	fetch := e.live != nil && e.row.Enabled && !e.profile.fetching && (e.profile.at.IsZero() || now.Sub(e.profile.at) >= ttl)
 	if fetch {
 		e.profile.fetching = true
 	}

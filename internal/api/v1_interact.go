@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/resolve"
@@ -49,46 +50,88 @@ func (req *v1CreatePostReq) interaction() (action string, src *v1SourceIn, n int
 // maxSourceURL bounds a source URL (or Nostr id).
 const maxSourceURL = 2048
 
-// resolveSource resolves a URL for an action; problems are field errors at
-// ptr. upstream is set instead when the post's network couldn't be reached
-// (a timeout, a dropped connection, a 5xx or rate limit): the request was
-// fine and may be retried. Details stay in the log; clients get fixed text.
-func (a *API) resolveSource(ctx context.Context, url, ptr string, add func(ptr, code, detail string)) (src *resolve.SourceRef, upstream bool) {
+// lookUp resolves a pasted post with one of the owner's connected accounts
+// on its network: prefer when it is one (the account that will act on
+// the post), else the first in registry order that can look posts up. It
+// returns the account used.
+func (a *API) lookUp(ctx context.Context, input, prefer string) (*resolve.SourceRef, string, error) {
+	typ := resolve.Detect(input)
+	if typ == "" {
+		return nil, "", resolve.ErrUnrecognized
+	}
+	if a.Accounts == nil {
+		return nil, "", resolve.ErrNotConfigured
+	}
+	p, _ := principalFrom(ctx)
+	var ids []string
+	for _, e := range a.Accounts.List(p.OwnerID) {
+		if e.Row.Type != typ || e.Status != accounts.Connected {
+			continue
+		}
+		if e.Row.ID == prefer {
+			ids = append([]string{e.Row.ID}, ids...)
+		} else {
+			ids = append(ids, e.Row.ID)
+		}
+	}
+	for _, id := range ids {
+		acct, release, err := a.Accounts.Acquire(id)
+		if err != nil {
+			continue
+		}
+		r, ok := acct.(destination.SourceResolver)
+		if !ok {
+			release()
+			return nil, "", resolve.ErrUnsupported
+		}
+		rs, err := r.ResolveSource(ctx, strings.TrimSpace(input))
+		release()
+		if err != nil {
+			return nil, id, err
+		}
+		return resolve.FromResolved(rs), id, nil
+	}
+	return nil, "", resolve.ErrNotConfigured
+}
+
+// resolveSource resolves a URL for an action, with prefer's account when
+// it is on the post's network; problems are field errors at ptr. upstream
+// is set instead when the post's network couldn't be reached (a timeout, a
+// dropped connection, a 5xx or rate limit): the request was fine and may
+// be retried. Details stay in the log; clients get fixed text.
+func (a *API) resolveSource(ctx context.Context, url, prefer, ptr string, add func(ptr, code, detail string)) (src *resolve.SourceRef, account string, upstream bool) {
 	switch {
 	case strings.TrimSpace(url) == "":
 		add(ptr, "required", "the post's URL (or a Nostr nevent/note id)")
-		return nil, false
+		return nil, "", false
 	case len(url) > maxSourceURL:
 		add(ptr, "too_long", "at most 2048 characters")
-		return nil, false
-	case a.Resolve == nil:
-		add(ptr, "not_configured", "resolving posts is not configured on this server")
-		return nil, false
+		return nil, "", false
 	}
 	rctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	src, err := a.Resolve.Resolve(rctx, url)
+	src, account, err := a.lookUp(rctx, url, prefer)
 	if err == nil {
-		return src, false
+		return src, account, false
 	}
-	slog.InfoContext(ctx, "v1: resolve", "url", url, "err", store.Scrub(err.Error()))
+	slog.InfoContext(ctx, "v1: resolve", "url", url, "account", account, "err", store.Scrub(err.Error()))
 	var he *destination.HTTPError
 	var ne net.Error
 	switch {
 	case errors.Is(err, resolve.ErrUnrecognized):
 		add(ptr, "unrecognized", "not a Bluesky or Mastodon post URL, or a Nostr nevent/note id")
-	case errors.Is(err, resolve.ErrThreadsUnsupported):
-		add(ptr, "not_supported", "Threads posts can't be looked up (its API has no URL lookup)")
+	case errors.Is(err, resolve.ErrUnsupported):
+		add(ptr, "not_supported", displayName(resolve.Detect(url))+" posts can't be looked up (its API has no URL lookup)")
 	case errors.Is(err, resolve.ErrNotConfigured):
-		add(ptr, "not_configured", "that post's network is not configured on this server")
+		add(ptr, "not_configured", "none of your accounts on that post's network is connected")
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &ne),
 		errors.As(err, &he) && (he.StatusCode >= 500 || he.StatusCode == http.StatusTooManyRequests):
-		return nil, true
+		return nil, account, true
 	default:
 		add(ptr, "unresolvable", "the post couldn't be found or read: it may be deleted, private, "+
 			"or not yet known to your server; the server log has details")
 	}
-	return nil, false
+	return nil, account, false
 }
 
 // checkInteraction runs the checks on an interaction that need no network,
@@ -134,7 +177,15 @@ func (a *API) checkInteraction(req *v1CreatePostReq, plan *createPlan, add func(
 func (a *API) planInteraction(ctx context.Context, req *v1CreatePostReq, plan *createPlan, add func(ptr, code, detail string)) {
 	action, in, _ := req.interaction()
 	ptr := map[string]string{"reply": "/reply_to", "quote": "/quote", "repost": "/repost"}[action]
-	src, upstream := a.resolveSource(ctx, in.URL, ptr+"/url", add)
+	// The account that will act on the post looks it up: an id (a
+	// Mastodon status id) is only valid on its own server.
+	prefer := ""
+	for _, pt := range plan.targets {
+		if pt.account.Type == resolve.Detect(in.URL) {
+			prefer = pt.account.ID
+		}
+	}
+	src, _, upstream := a.resolveSource(ctx, in.URL, prefer, ptr+"/url", add)
 	if src == nil {
 		plan.upstream = upstream
 		return
@@ -408,20 +459,13 @@ func (a *API) v1Resolve(w http.ResponseWriter, r *http.Request) {
 	add := func(ptr, code, detail string) {
 		errs = append(errs, fieldError{Pointer: ptr, Code: code, Detail: detail})
 	}
-	src, upstream := a.resolveSource(r.Context(), req.URL, "/url", add)
+	src, account, upstream := a.resolveSource(r.Context(), req.URL, "", "/url", add)
 	if upstream {
 		problem(w, r, http.StatusBadGateway, codeUpstream, "the post's network could not be reached; try again")
 		return
 	}
 	if src == nil {
 		invalid(w, r, errs)
-		return
-	}
-	pr, _ := principalFrom(r.Context())
-	accts, err := a.Store.Accounts(r.Context(), pr.OwnerID)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "v1: resolve accounts", "err", err)
-		problem(w, r, http.StatusInternalServerError, codeInternal, "reading the accounts failed")
 		return
 	}
 	out := v1ResolveBody{Platform: src.Platform, URL: src.Preview.WebURL, Text: src.Preview.Text,
@@ -439,13 +483,10 @@ func (a *API) v1Resolve(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Media = append(out.Media, v1ResolveMedia{URL: m.URL, Alt: m.Alt, Type: kind})
 	}
-	for _, ac := range accts {
-		// The account planCreate would accept.
-		if ac.Type == src.Platform && a.accountUnusable(ac) == "" {
-			id := ac.ID
-			out.Account = &id
-			break
-		}
+	// The account that looked the post up is connected, so a post naming
+	// it is accepted.
+	if account != "" {
+		out.Account = &account
 	}
 	act := func(c resolve.Cap) v1ResolveAction {
 		if out.Account == nil {

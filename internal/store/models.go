@@ -75,6 +75,8 @@ type Target struct {
 	// FeedExcluded: the target's account is kept out of the public feed
 	// (accounts.public_feed = 0). The zero value includes it.
 	FeedExcluded bool `json:"-"`
+	// AccountHandle is the account's handle as last seen (PublicFeed only).
+	AccountHandle string `json:"-"`
 }
 
 type Attempt struct {

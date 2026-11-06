@@ -107,5 +107,12 @@ func (e *engine) Caps(ctx context.Context, id, typ string) destination.Capabilit
 	return e.cur().Caps(ctx, id, typ)
 }
 
-// Get implements api.AccountStatus.
-func (e *engine) Get(id string) (accounts.Entry, bool) { return e.registry().Get(id) }
+// The api.AccountRegistry methods reach the current registry (a restart
+// builds a new one).
+
+func (e *engine) Get(id string) (accounts.Entry, bool)       { return e.registry().Get(id) }
+func (e *engine) List(owner string) []accounts.Entry         { return e.registry().List(owner) }
+func (e *engine) Profile(id string) (accounts.Profile, bool) { return e.registry().Profile(id) }
+func (e *engine) Acquire(id string) (destination.Account, func(), error) {
+	return e.registry().Acquire(id)
+}

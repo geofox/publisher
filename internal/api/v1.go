@@ -26,13 +26,25 @@ const (
 	scopeMediaWrite   = "media:write"
 	scopeDraftsRead   = "drafts:read"
 	scopeDraftsWrite  = "drafts:write"
-	scopeAccountsRead = "accounts:read"
-	scopeAdmin        = "admin"
+	scopeAccountsRead  = "accounts:read"
+	scopeAccountsWrite = "accounts:write"
+	scopeAdmin         = "admin"
 )
 
 // v1Scopes are the scopes a token can hold, in documentation order.
 var v1Scopes = []string{scopePostsRead, scopePostsWrite, scopeMediaWrite, scopeDraftsRead, scopeDraftsWrite,
-	scopeAccountsRead, scopeAdmin}
+	scopeAccountsRead, scopeAccountsWrite, scopeAdmin}
+
+// adminImplies are the scopes admin includes: those that existed before
+// accounts could be changed. A scope added since (accounts:write) must be
+// granted by name, so an old admin token gains nothing new.
+var adminImplies = []string{scopePostsRead, scopePostsWrite, scopeMediaWrite, scopeDraftsRead, scopeDraftsWrite,
+	scopeAccountsRead}
+
+// sessionOnlyScopes are the scopes only a signed-in owner (a session, or
+// the reverse proxy when sign-in is off) may grant to a new token: a
+// token, admin included, can't hand them out.
+var sessionOnlyScopes = []string{scopeAccountsWrite}
 
 // principal is who is calling: the owner in a browser session, a token, or
 // (with OIDC off) whoever the reverse proxy let through.
@@ -49,7 +61,8 @@ type principal struct {
 func (p principal) key() string { return p.Kind + ":" + p.ID }
 
 func (p principal) can(scope string) bool {
-	return p.Scopes == nil || slices.Contains(p.Scopes, scope) || slices.Contains(p.Scopes, scopeAdmin)
+	return p.Scopes == nil || slices.Contains(p.Scopes, scope) ||
+		slices.Contains(p.Scopes, scopeAdmin) && slices.Contains(adminImplies, scope)
 }
 
 type principalKey struct{}

@@ -122,7 +122,7 @@ func run() error {
 		return err
 	}
 	rec.restart = eng.restart
-	a := api.New(nil, mp)
+	a := api.New(mp)
 	a.Store = st
 	a.Dispatch = eng
 	a.Caps = eng.Caps

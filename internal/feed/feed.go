@@ -44,6 +44,10 @@ type Interaction struct {
 type Link struct {
 	Platform string `json:"platform"`
 	URL      string `json:"url"`
+	// Account is the id of the account that posted it; Handle its handle
+	// as last seen (empty before its network first answered).
+	Account string `json:"account,omitempty"`
+	Handle  string `json:"handle,omitempty"`
 }
 
 const defaultLimit, maxLimit = 20, 100
@@ -85,7 +89,7 @@ func targetLink(t store.Target) (Link, bool) {
 	if t.Status != "success" && t.Status != "partial" {
 		return Link{}, false
 	}
-	return Link{Platform: t.Platform, URL: t.RemoteURL}, true
+	return Link{Platform: t.Platform, URL: t.RemoteURL, Account: t.AccountID, Handle: t.AccountHandle}, true
 }
 
 // Eligible reports whether a post may appear in the feed: it is not a reply and
