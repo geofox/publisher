@@ -58,14 +58,28 @@ func New(blossomURL string, nsec nostr.SecretKey, pub nostr.PubKey) *Pipeline {
 	return &Pipeline{
 		BlossomURL: strings.TrimRight(blossomURL, "/"),
 		NSEC:       nsec, OwnerPub: pub,
-		HTTP: &http.Client{Timeout: 30 * time.Second},
-		StreamHTTP: &http.Client{Transport: &http.Transport{
-			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 60 * time.Second,
-		}},
+		HTTP:       &http.Client{Timeout: 30 * time.Second},
+		StreamHTTP: newStreamClient(),
 	}
 }
+
+// newStreamClient carries large bodies: no overall timeout, but the
+// phases that hang (dial, TLS, waiting for the response) are bounded.
+func newStreamClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+	}}
+}
+
+// Fetcher fetches stored media by URL: a retry re-reads what a post's
+// media were uploaded as. It needs no media store, so posts made while
+// one was configured still send after it is removed.
+type Fetcher struct{ HTTP *http.Client }
+
+// NewFetcher returns a Fetcher on a streaming client.
+func NewFetcher() *Fetcher { return &Fetcher{HTTP: newStreamClient()} }
 
 // Process hashes the bytes, extracts image metadata, uploads to Blossom (always),
 // and returns the full Result. mime falls back to application/octet-stream.
@@ -221,17 +235,22 @@ var fetchCapBytes int64 = FetchCap
 // budget sized to the body (60 s plus a second per 256 KiB, at least 256
 // KiB/s), so a stalled server still ends it.
 func (p *Pipeline) Fetch(ctx context.Context, url string) ([]byte, string, error) {
+	cl := p.StreamHTTP
+	if cl == nil {
+		cl = p.HTTP
+	}
+	return (&Fetcher{HTTP: cl}).Fetch(ctx, url)
+}
+
+// Fetch GETs the bytes at url, as Pipeline.Fetch.
+func (f *Fetcher) Fetch(ctx context.Context, url string) ([]byte, string, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, "", err
 	}
-	cl := p.StreamHTTP
-	if cl == nil {
-		cl = p.HTTP
-	}
-	resp, err := cl.Do(req)
+	resp, err := f.HTTP.Do(req)
 	if err != nil {
 		return nil, "", err
 	}

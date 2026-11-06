@@ -1,5 +1,5 @@
-// publisher: HTTP→Nostr signing bridge for the n8n cross-posting
-// workflow on Oppy. See README.md for the HTTP API and env-var contract.
+// publisher: a self-hosted cross-poster (Nostr, Bluesky, Mastodon,
+// Threads). See README.md for the HTTP API and the variables it reads.
 package main
 
 import (
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -53,38 +54,61 @@ func main() {
 		runHealthcheck()
 		return
 	}
+	// SIGTERM/SIGINT start a graceful stop: readiness fails, new work stops
+	// being claimed, and what is in flight finishes. A second signal kills
+	// the process.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+	os.Exit(run(ctx, runOptions{Getenv: os.Getenv, Stopping: stop}))
+}
 
+// runOptions are run's inputs besides its context.
+type runOptions struct {
+	// Getenv reads the configuration (os.Getenv; a test's map).
+	Getenv func(string) string
+	// Started, if set, is told the address the server listens on.
+	Started func(addr string)
+	// Stopping, if set, is called when the context ends, before the
+	// graceful stop (main restores the default signal handling).
+	Stopping func()
+}
+
+// run starts the server and serves until ctx ends, then stops gracefully.
+// It returns the exit code: 0 after a graceful stop, 2 for a configuration
+// error, 1 for any other failure.
+func run(ctx context.Context, o runOptions) int {
+	getenv := o.Getenv
 	// Each driver reads its own variables; every invalid one, from the
 	// config and the drivers, is reported at once.
-	cfg, cfgErr := config.Load()
-	env, envErr := drivers.EnvAccounts(os.Getenv)
+	cfg, cfgErr := config.LoadFrom(getenv)
+	env, envErr := drivers.EnvAccounts(getenv)
 	startErrs := []error{cfgErr, envErr}
-	// Nostr signs the Blossom uploads, so it stays required until media
-	// stores get their own key.
-	if strings.TrimSpace(os.Getenv("NSEC_HEX")) == "" {
-		startErrs = append(startErrs, errors.New("NSEC_HEX is required"))
+	// Media uploads are signed with the environment's Nostr key until the
+	// media store gets a key of its own (part D).
+	mediaKey, mediaPub, haveSigner := drivers.EnvMediaSigner(env)
+	if cfg.BlossomURL != "" && !haveSigner {
+		startErrs = append(startErrs, errors.New("BLOSSOM_URL is set, but uploads to it are signed with the Nostr key: set NSEC_HEX too, or unset BLOSSOM_URL to run without media"))
 	}
 	if err := errors.Join(startErrs...); err != nil {
 		fmt.Fprintln(os.Stderr, "config error:", err)
-		os.Exit(2)
+		return 2
 	}
 	setupLogger(cfg.LogLevel)
 	metrics.SetBuildInfo(version, commit)
 
-	mediaKey, mediaPub, ok := drivers.EnvMediaSigner(env)
-	if !ok {
-		fmt.Fprintln(os.Stderr, "config error: NSEC_HEX is required")
-		os.Exit(2)
-	}
-	mp := media.New(cfg.BlossomURL, mediaKey, mediaPub)
-
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
 		slog.Error("store open failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	defer st.Close()
-	mp.Lookup = st.LookupMediaURL
+	// Without a media store posts carry no media; a retry still fetches
+	// the media of posts made while one was configured.
+	var mp *media.Pipeline
+	if cfg.BlossomURL != "" {
+		mp = media.New(cfg.BlossomURL, mediaKey, mediaPub)
+		mp.Lookup = st.LookupMediaURL
+	}
 
 	uf := unfurl.New()
 	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
@@ -99,7 +123,7 @@ func main() {
 	envRows, err := st.SeedEnvAccounts(context.Background(), store.DefaultOwner, seed)
 	if err != nil {
 		slog.Error("seeding accounts failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	if err := drivers.AdoptLegacy(context.Background(), st, envRows, env); err != nil {
 		slog.Error("adopting 2.x account state failed; it is tried again at the next start", "err", err)
@@ -123,7 +147,7 @@ func main() {
 	})
 	if err := reg.Load(context.Background()); err != nil {
 		slog.Error("loading accounts failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	defer reg.Close()
 	// Profiles are fetched in the background now, so the composer has
@@ -131,17 +155,9 @@ func main() {
 	reg.RefreshProfiles()
 	d := &dispatch.Dispatcher{
 		Registry: reg,
-		// Re-encoded variants for URL-transport destinations (Threads) are
-		// hosted on Blossom; content addressing makes a retry reuse the URL.
-		Host: func(ctx context.Context, body []byte, mime string) (string, error) {
-			res, err := mp.Process(ctx, body, mime)
-			if err != nil {
-				return "", err
-			}
-			return res.URL, nil
-		},
 		Store:    st,
-		Fetcher:  mp,
+		// A plain fetcher, never a nil *Pipeline inside the interface.
+		Fetcher:  media.NewFetcher(),
 		Notify:   feed.NewWebhook(cfg.FeedWebhookURL, cfg.FeedWebhookToken),
 		Unfurler: uf,
 		Alerter:  notifier,
@@ -149,6 +165,18 @@ func main() {
 			Base: cfg.AutoRetryBaseDelay, Max: cfg.AutoRetryMaxDelay},
 		Workers:       cfg.PublishWorkers,
 		ScheduleGrace: cfg.ScheduleGrace,
+	}
+	if mp != nil {
+		// Re-encoded variants for URL-transport destinations (Threads) are
+		// hosted in the media store; content addressing makes a retry
+		// reuse the URL. Without a store they use the canonical URL.
+		d.Host = func(ctx context.Context, body []byte, mime string) (string, error) {
+			res, err := mp.Process(ctx, body, mime)
+			if err != nil {
+				return "", err
+			}
+			return res.URL, nil
+		}
 	}
 	a := api.New(mp)
 	a.Store = st
@@ -162,9 +190,10 @@ func main() {
 	a.Version = version
 	// Drafts saved before /v1 get their /v1 shape, once, before requests.
 	a.ConvertOldDrafts(context.Background())
-	// Video pipeline: enabled only when both ffmpeg and ffprobe are present (dev
-	// hosts without them run image-only; the endpoints 503 with a clear message).
-	{
+	// Video pipeline: enabled only with a media store and both ffmpeg and
+	// ffprobe present (dev hosts without them run image-only; the
+	// endpoints 503 with a clear message).
+	if mp != nil {
 		_, ffmpegErr := os.Stat(cfg.FFmpegPath)
 		_, ffprobeErr := os.Stat(cfg.FFprobePath)
 		switch {
@@ -199,10 +228,6 @@ func main() {
 		Mastodon: verify.NewMastodonVerifier(cfg.VerifyHTTPTimeout),
 		Threads:  verify.NewThreadsVerifier(cfg.VerifyHTTPTimeout),
 	}
-	// SIGTERM/SIGINT start a graceful stop: readiness fails, new work stops
-	// being claimed, and what is in flight finishes.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
-	defer stop()
 	var draining atomic.Bool
 	a.Ready = readinessChecks(cfg, st, a.VideoWorkdir, reg)
 	a.Ready.Local = append(a.Ready.Local, health.Check{Name: "accepting_work", Critical: true,
@@ -226,7 +251,7 @@ func main() {
 		})
 		if err != nil {
 			slog.Error("oidc init failed", "err", err)
-			os.Exit(1)
+			return 1
 		}
 		a.Auth = authn
 		a.Allowlist = auth.NewAllowlist(cfg.OIDCAllowedSubjects, cfg.OIDCAllowedEmails)
@@ -304,7 +329,6 @@ func main() {
 		cfg.FanoutTick,
 	).Start(ctx)
 	srv := &http.Server{
-		Addr:         ":" + cfg.Port,
 		Handler:      a.Routes(),
 		ReadTimeout:  60 * time.Second,
 		WriteTimeout: 120 * time.Second,
@@ -313,29 +337,59 @@ func main() {
 	stopping := make(chan struct{})
 	a.Stopping = stopping
 	srv.RegisterOnShutdown(func() { close(stopping) })
-	served := make(chan error, 1)
-	go func() { served <- srv.ListenAndServe() }()
-	var accountList []string
-	for _, e := range reg.List(store.DefaultOwner) {
-		accountList = append(accountList, e.Row.Type+":"+e.Row.ID+"="+string(e.Status))
+	ln, err := net.Listen("tcp", ":"+cfg.Port)
+	if err != nil {
+		slog.Error("server failed", "err", err)
+		return 1
 	}
-	slog.Info("publisher starting",
-		"port", cfg.Port,
-		"accounts", accountList,
-		"blossom", cfg.BlossomURL,
-		"blossom_signer", mediaPub.Hex(),
-	)
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
+	logStart(cfg, reg, mp)
+	if o.Started != nil {
+		o.Started(ln.Addr().String())
+	}
 	select {
 	case err := <-served:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server failed", "err", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	case <-ctx.Done():
 	}
-	stop() // a second signal kills the process
+	if o.Stopping != nil {
+		o.Stopping()
+	}
 	gracefulStop(&draining, srv, d)
+	return 0
+}
+
+// logStart logs what the server runs with: each account by type and
+// status, and the media store.
+func logStart(cfg config.Config, reg *accounts.Registry, mp *media.Pipeline) {
+	byStatus := map[string][]string{}
+	for _, e := range reg.List(store.DefaultOwner) {
+		byStatus[string(e.Status)] = append(byStatus[string(e.Status)], e.Row.Type+":"+e.Row.ID)
+	}
+	args := []any{"port", cfg.Port, "accounts", byStatus}
+	if mp != nil {
+		args = append(args, "blossom", cfg.BlossomURL, "blossom_signer", mp.OwnerPub.Hex())
+	} else {
+		args = append(args, "media", "none (BLOSSOM_URL is unset: posts carry no media)")
+	}
+	slog.Info("publisher starting", args...)
+	if len(byStatus) == 0 {
+		slog.Warn("no account is configured: set a network's variables to post (see the README)")
+	}
+	for _, e := range reg.List(store.DefaultOwner) {
+		switch e.Status {
+		case accounts.Connected:
+		case accounts.Disabled: // the owner's choice
+			slog.Info("account turned off", "account", e.Row.ID, "type", e.Row.Type)
+		default:
+			slog.Warn("account not connected", "account", e.Row.ID, "type", e.Row.Type, "status", e.Status, "reason", e.Reason)
+		}
+	}
 }
 
 // shutdownGrace bounds a graceful stop. Docker's default stop timeout is

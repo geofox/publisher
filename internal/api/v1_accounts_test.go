@@ -352,3 +352,32 @@ func TestV1ResolveNamedAccount(t *testing.T) {
 		}
 	}
 }
+
+// Without a media store, uploads and compression say so, and the instance
+// tells the composer to hide the attach button.
+func TestV1NoMediaStore(t *testing.T) {
+	e := newV1Env(t, true)
+	var inst v1InstanceBody
+	e.do(req{method: "GET", path: "/v1/instance"}).json(&inst)
+	if inst.Features.Media || inst.Features.Video {
+		t.Fatalf("features = %+v", inst.Features)
+	}
+	png := string(pngBytes(t, 4, 4))
+	img := map[string]string{"Content-Type": "image/png"}
+	for _, path := range []string{"/v1/media", "/v1/media:compress?preset=small"} {
+		p := wantProblem(t, e.do(req{method: "POST", path: path, body: png, header: img}), 503, codeUnavailable)
+		if !strings.Contains(p.Detail, "no media store is configured") {
+			t.Errorf("%s: detail = %q", path, p.Detail)
+		}
+	}
+	vid := map[string]string{"Content-Type": "video/mp4"}
+	p := wantProblem(t, e.do(req{method: "POST", path: "/v1/media", body: "\x00\x00\x00\x18ftypmp42", header: vid}), 503, codeUnavailable)
+	if !strings.Contains(p.Detail, "no media store is configured") {
+		t.Errorf("video: detail = %q", p.Detail)
+	}
+	e.withEngine() // a media store
+	e.do(req{method: "GET", path: "/v1/instance"}).json(&inst)
+	if !inst.Features.Media {
+		t.Fatalf("with a store: features = %+v", inst.Features)
+	}
+}

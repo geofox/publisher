@@ -396,13 +396,16 @@ signs events on request, so treat it like a credential store and read
 
 ### Prerequisites
 
-- A Nostr secret key as 64-char hex (`NSEC_HEX`). Convert your `nsec1…`
-  once with [`nak`](https://github.com/fiatjaf/nak): `nak key decode nsec1…`
-  gives the hex secret. The public key is derived from it.
-- A [Blossom](https://github.com/hzrd149/blossom) server URL for media
-  uploads (`BLOSSOM_URL`).
 - A writable directory for the SQLite archive (mounted at `DB_PATH`).
-- Optional, per platform you want to cross-post to:
+- For media (images and videos): a
+  [Blossom](https://github.com/hzrd149/blossom) server URL
+  (`BLOSSOM_URL`). Uploads to it are signed with the Nostr key, so it
+  needs `NSEC_HEX` too. Without it, posts are text only.
+- Per network you want to post to:
+  - **Nostr:** a secret key as 64-char hex (`NSEC_HEX`). Convert your
+    `nsec1…` once with [`nak`](https://github.com/fiatjaf/nak):
+    `nak key decode nsec1…` gives the hex secret. The public key is
+    derived from it.
   - **Mastodon:** instance URL + access token (both required together).
   - **Bluesky:** PDS URL, handle/identifier, and an app password (all three
     required together).
@@ -410,20 +413,21 @@ signs events on request, so treat it like a credential store and read
 
 ### Configuration
 
-All configuration is via environment variables. Only `NSEC_HEX` and
-`BLOSSOM_URL` are **required**; the relay defaults point at the author's own
-infrastructure and should be overridden. A network is turned on by its
-credential (`MASTODON_TOKEN`, `BLUESKY_APP_PASSWORD`,
-`THREADS_ACCESS_TOKEN`); a credential set without the variables that go with
-it stops startup with an error naming them. Every invalid variable is
+All configuration is via environment variables, and none is required: a
+server with no network configured starts, and says so in its log. The
+relay defaults point at the author's own infrastructure and should be
+overridden. A network is turned on by its credential (`NSEC_HEX`,
+`MASTODON_TOKEN`, `BLUESKY_APP_PASSWORD`, `THREADS_ACCESS_TOKEN`); a
+credential set without the variables that go with it stops startup with an
+error naming them, and so does `BLOSSOM_URL` without `NSEC_HEX`. Every invalid variable is
 reported at once. Boolean variables take `true/false`, `1/0`, `yes/no` or
 `on/off` in any case; any other value is an error, not the default.
 
 | Var | Required | Default | Purpose |
 |---|---|---|---|
-| `NSEC_HEX` | yes | — | Secret key as exactly 64 hex characters (**secret**). Convert `nsec1…` via `nak key decode`; if a tool printed it without its leading zeros, add them back |
+| `NSEC_HEX` | for Nostr and media | — | Secret key as exactly 64 hex characters (**secret**). Convert `nsec1…` via `nak key decode`; if a tool printed it without its leading zeros, add them back |
 | `OWNER_PUBKEY` | no | (derived) | 64-char hex pubkey. Optional: it is derived from `NSEC_HEX`. If set, it must match, or the process refuses to start |
-| `BLOSSOM_URL` | yes | — | Blossom media server base URL, e.g. `https://blossom.example.com` |
+| `BLOSSOM_URL` | for media | — | Blossom media server base URL, e.g. `https://blossom.example.com`. Unset: posts carry no media, and the composer hides the attach button. Posts made while it was set still fetch their media for a retry |
 | `NIP65_BOOTSTRAP_RELAY` | no | `wss://relay.geoffrey.one` | Where to fetch the author's `kind:10002` relay list |
 | `FALLBACK_RELAYS` | no | `wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io` | Used when NIP-65 returns no write-relays. Set it to a single space for none |
 | `SYNC_RELAYS` | no | `wss://nos.lol,wss://relay.damus.io,wss://nostr.wine,wss://nostr.land,wss://relay.nostr.band,wss://purplepag.es,wss://relay.snort.social,wss://nostr.mom` | Default relay set for the relay-sync tool |

@@ -25,7 +25,16 @@ async function loadConfig() {
     if (Array.isArray(data.translate_targets)) {
       state.translateTargets = data.translate_targets;
     }
+    if (data.features && data.features.media === false) noMediaStore();
   } catch (_) { /* keep the "en" defaults; translate button stays hidden */ }
+}
+
+// noMediaStore hides the attach controls on a server without a media
+// store, saying why (an upload would be refused).
+function noMediaStore() {
+  for (const id of ["#addimg", "#vidpreset"]) { const e = $(id); if (e) e.hidden = true; }
+  const meta = $("#media-meta");
+  if (meta) meta.textContent = "no media store on this server (set BLOSSOM_URL)";
 }
 
 // applyAccounts takes each type's name and text limit from its account, so

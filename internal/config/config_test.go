@@ -133,8 +133,8 @@ func TestFanoutTickDefault(t *testing.T) {
 }
 
 func TestFeedEnvVars(t *testing.T) {
-	if got := getEnv("PUBLIC_FEED_TOKEN", ""); got != "" {
-		t.Errorf("default PUBLIC_FEED_TOKEN = %q, want empty", got)
+	if c, _ := LoadFrom(func(string) string { return "" }); c.PublicFeedToken != "" {
+		t.Errorf("default PUBLIC_FEED_TOKEN = %q, want empty", c.PublicFeedToken)
 	}
 
 	// Verify that Load() reads the feed env vars into the correct Config fields.
@@ -229,5 +229,22 @@ func TestLoadReportsEveryError(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q doesn't name %s", err, want)
 		}
+	}
+}
+
+// Nothing is required: a server with no media store (and no Nostr key)
+// starts, and the variables are read through the getenv given.
+func TestLoadFromNothingSet(t *testing.T) {
+	c, err := LoadFrom(func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("LoadFrom with nothing set: %v", err)
+	}
+	if c.BlossomURL != "" || c.Port != DefaultPort {
+		t.Fatalf("config = %+v", c)
+	}
+	env := map[string]string{"BLOSSOM_URL": "https://b.example/", "AUTO_RETRY_ENABLED": "no"}
+	c, err = LoadFrom(func(k string) string { return env[k] })
+	if err != nil || c.BlossomURL != "https://b.example" || c.AutoRetryEnabled {
+		t.Fatalf("config = %+v, %v", c, err)
 	}
 }

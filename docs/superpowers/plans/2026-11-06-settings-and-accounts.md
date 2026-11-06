@@ -724,6 +724,30 @@ One commit: every caller moves to the registry and account-keyed specs.
   `features.media=false`; CI's Docker smoke run gains a second container
   with no destination variables.
 
+### As built (A2.6)
+
+- **`run(ctx, runOptions{Getenv, Started, Stopping})`** holds what `main`
+  did and returns an exit code (2 configuration, 1 failure, 0 after a
+  graceful stop); it listens with `net.Listen` so a test can use port 0.
+  `config.LoadFrom(getenv)` reads through the given function (`Load` is
+  `LoadFrom(os.Getenv)`). Tests in `cmd/publisher`: only `BLUESKY_*` set
+  (ready, `features.media=false`, one connected account, upload 503,
+  graceful exit 0), nothing set (ready), `BLOSSOM_URL` without a Nostr
+  key (exit 2).
+- **No media store:** `mp` is nil; `media.NewFetcher()` (a plain fetcher
+  split out of `Pipeline.Fetch`) is the dispatcher's `Fetcher` either way;
+  `Host` is set only with a store; the video runner is built only with a
+  store. `POST /v1/media` (image or video) and `:compress` answer 503 "no
+  media store is configured (set BLOSSOM_URL)"; `features.media`, and
+  `features.video` now also needs the store. The composer hides the attach
+  button and the video preset and says why.
+- **Startup log:** accounts grouped by status; one warning per account
+  that isn't connected (with its reason), an info line for one turned
+  off, and a warning when there is none.
+- **CI:** a second Docker smoke run with only `DB_PATH` checks `/readyz`,
+  `features.media=false` and the healthcheck (checked locally with the
+  binary; this container has no Docker daemon).
+
 ### Task A2.7: cleanup
 
 - [ ] Delete what the switch left unused: old driver constructors,

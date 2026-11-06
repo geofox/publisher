@@ -456,6 +456,7 @@ func TestV1MediaScope(t *testing.T) {
 
 func TestV1CompressMedia(t *testing.T) {
 	e := newV1Env(t, true)
+	e.withEngine() // a media store
 	r := e.do(req{method: "POST", path: "/v1/media:compress?preset=small", body: string(pngBytes(t, 16, 8)),
 		header: map[string]string{"Content-Type": "image/png"}})
 	wantStatus(t, r, 200)

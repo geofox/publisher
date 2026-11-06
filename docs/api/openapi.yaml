@@ -1217,7 +1217,8 @@ paths:
         `1080p`, the default, `720p` or `480p`): `202`, `processing`; poll
         `GET /v1/media/{id}` until it is `ready` or `failed`. Images are at
         most 64 MiB, videos 1 GiB. Not idempotent: a repeat stores the
-        same file again under a new id.
+        same file again under a new id. A server without a media store
+        (`features.media` false) answers `503 unavailable`.
       security:
         - bearer: ["media:write"]
         - session: []
@@ -1314,6 +1315,8 @@ paths:
         `convert` (full size; turns HEIC into JPEG). Answers the new
         bytes; nothing is stored. Send `multipart/form-data` with `file` and
         `preset` parts, or the image as the body with `preset` in the query.
+        A server without a media store (`features.media` false) answers
+        `503 unavailable`.
       security:
         - bearer: ["media:write"]
         - session: []
@@ -1364,6 +1367,8 @@ paths:
           $ref: "#/components/responses/Problem"
         "422":
           $ref: "#/components/responses/Invalid"
+        "503":
+          $ref: "#/components/responses/Problem"
         default:
           $ref: "#/components/responses/Problem"
   /v1/media/{id}:
@@ -3187,14 +3192,19 @@ components:
         features:
           type: object
           additionalProperties: false
-          required: [translate, video, public_feed, relay_sync]
+          required: [media, translate, video, public_feed, relay_sync]
           properties:
+            media:
+              type: boolean
+              description: |
+                A media store is configured (`BLOSSOM_URL`), so posts can
+                carry images and videos. Without one, uploads answer `503`.
             translate:
               type: boolean
               description: DeepL translation is configured.
             video:
               type: boolean
-              description: ffmpeg is present, so video can be processed.
+              description: A media store is configured and ffmpeg is present, so video can be processed.
             public_feed:
               type: boolean
               description: The public feed has a token.

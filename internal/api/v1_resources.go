@@ -24,6 +24,9 @@ type v1InstanceBody struct {
 }
 
 type v1Features struct {
+	// Media: a media store is configured, so posts can carry images and
+	// videos.
+	Media      bool `json:"media"`
 	Translate  bool `json:"translate"`
 	Video      bool `json:"video"`
 	PublicFeed bool `json:"public_feed"`
@@ -67,8 +70,9 @@ func (a *API) v1Instance(w http.ResponseWriter, r *http.Request) {
 	writeV1(w, http.StatusOK, v1InstanceBody{
 		Version: version,
 		Auth:    authMode,
-		Features: v1Features{Translate: a.Translator != nil, Video: a.VideoJobs != nil, PublicFeed: a.PublicFeedToken != "",
-			RelaySync: a.relaySyncAvailable(r.Context())},
+		Features: v1Features{Media: a.media != nil, Translate: a.Translator != nil, Video: a.media != nil && a.VideoJobs != nil,
+			PublicFeed: a.PublicFeedToken != "",
+			RelaySync:  a.relaySyncAvailable(r.Context())},
 		UserLanguages:    langs,
 		TranslateTargets: targets,
 		Limits: v1Limits{

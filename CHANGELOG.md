@@ -7,6 +7,15 @@ the `edge` image.
 
 ### Changed
 
+- Nothing is required to start. `NSEC_HEX` is needed only for a Nostr
+  account and `BLOSSOM_URL` only for media; a server with only Bluesky,
+  say, starts and posts text. Without `BLOSSOM_URL`, uploads answer `503`
+  ("no media store is configured"), `GET /v1/instance` says
+  `features.media: false`, and the composer hides the attach button.
+  Posts made while it was set still fetch their media for a retry.
+  `BLOSSOM_URL` without `NSEC_HEX` stops startup (uploads are signed with
+  the Nostr key). The startup log lists each account with its status, and
+  warns about each one that isn't connected.
 - Boolean environment variables (`AUTO_RETRY_ENABLED`, `NOSTR_PRIMARY_FANOUT`,
   `OIDC_END_SESSION`) accept `1/true/yes/on` and `0/false/no/off` in any
   case. Any other value now stops startup with an error naming the variable,

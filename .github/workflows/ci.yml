@@ -82,6 +82,26 @@ jobs:
           docker logs smoke
           exit 1
 
+      - name: Smoke run with no destinations and no media store
+        run: |
+          # Nothing is required: accounts and media can come later.
+          docker run -d --name bare -p 8081:8080 \
+            -e DB_PATH=/data/publisher.db \
+            --tmpfs /data \
+            publisher:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8081/readyz; then
+              echo
+              curl -fsS http://127.0.0.1:8081/v1/instance | grep -q '"media":false' && \
+                docker exec bare /publisher -healthcheck && exit 0
+              docker logs bare
+              exit 1
+            fi
+            sleep 1
+          done
+          docker logs bare
+          exit 1
+
   # Playwright drives the real web app against e2e/harness: production API,
   # dispatcher and SQLite, with fake platforms and a fake Blossom (no network).
   e2e:
