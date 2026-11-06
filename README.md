@@ -451,7 +451,7 @@ infrastructure and should be overridden.
 | `OIDC_CLIENT_SECRET` | yes* | — | Client secret (**secret**) |
 | `OIDC_REDIRECT_URL` | yes* | — | Callback URL registered with the provider, e.g. `https://publisher.example.com/auth/callback` |
 | `OIDC_ALLOWED_SUBJECTS` | yes*† | — | CSV of allowed OIDC subjects (`sub`) |
-| `OIDC_ALLOWED_EMAILS` | yes*† | — | CSV of allowed email addresses. Only an email the provider marks verified (`email_verified`) matches; case doesn't matter |
+| `OIDC_ALLOWED_EMAILS` | yes*† | — | CSV of allowed email addresses. Only an email the provider marks verified (`email_verified`) matches; case doesn't matter. A provider that leaves the claim out (e.g. Entra ID) needs `OIDC_ALLOWED_SUBJECTS`; the refused login logs the subject to add |
 | `OIDC_SCOPES` | no | `openid profile email` | Requested scopes (space- or comma-separated) |
 | `OIDC_END_SESSION` | no | `true` | On logout, also end the provider session (RP-initiated logout) when the provider advertises `end_session_endpoint` |
 | `SESSION_TTL` | no | `168h` | Server-side session lifetime. Removing someone from the allowlist ends their sessions at once |

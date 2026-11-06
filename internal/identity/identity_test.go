@@ -25,7 +25,7 @@ func (f fakeN) OwnerProfile(context.Context) (string, string, string, error) {
 func TestGetAggregatesAndIsFailSoft(t *testing.T) {
 	s := &Service{
 		Bluesky:  fakeP{h: "geoffrey.one", n: "Geoffrey", a: "https://cdn/av.jpg"},
-		Mastodon: fakeP{err: errors.New("token expired")},               // empty + error → omitted
+		Mastodon: fakeP{err: errors.New("token expired")},                // empty + error → omitted
 		Threads:  fakeP{h: "@geoffrey", err: errors.New("rate limited")}, // handle despite error → kept
 		Nostr:    fakeN{npub: "npub1abc", n: "Geo"},
 	}

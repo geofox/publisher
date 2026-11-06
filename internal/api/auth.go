@@ -88,7 +88,14 @@ func (a *API) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.Allowlist.Check(claims); err != nil {
-		slog.Warn("oidc identity not allowed", "subject", claims.Subject, "email", claims.Email)
+		if claims.Email != "" && !claims.EmailVerified && a.Allowlist.AllowsUser("", claims.Email) {
+			// Listed, but the provider doesn't say the email is verified
+			// (some leave email_verified out): allow by subject instead.
+			slog.Warn("oidc email is allowed but not verified by the provider: add the subject to OIDC_ALLOWED_SUBJECTS",
+				"subject", claims.Subject, "email", claims.Email)
+		} else {
+			slog.Warn("oidc identity not allowed", "subject", claims.Subject, "email", claims.Email)
+		}
 		httpx.WriteError(w, http.StatusForbidden, "not authorized")
 		return
 	}

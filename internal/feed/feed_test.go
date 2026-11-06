@@ -13,8 +13,8 @@ func successTarget(platform, url, fields string) store.Target {
 
 func TestBuildIncludesPublicLinksOnly(t *testing.T) {
 	posts := []store.Post{{
-		ID:         "p1",
-		MasterText: "hello",
+		ID:             "p1",
+		MasterText:     "hello",
 		FirstSuccessAt: ptr(time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)),
 		Targets: []store.Target{
 			successTarget("nostr", "https://njump.me/x", ""),

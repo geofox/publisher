@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"time"
 	"testing"
+	"time"
 
 	"fiatjaf.com/nostr"
 )
@@ -84,7 +84,6 @@ func TestProcessDimIgnoresOrientation(t *testing.T) {
 		t.Errorf("Dim = %q, want display dims 32x64 for EXIF orientation 6", res.Dim)
 	}
 }
-
 
 // Fetch (the dispatch re-pull of videos up to FetchCap=110 MB) must not run
 // on the small-object client's fixed overall timeout: a video that takes

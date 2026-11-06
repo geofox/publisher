@@ -345,7 +345,8 @@ func (d *Dispatcher) recoverSending(ctx context.Context) {
 			// The driver marks the item right before its publishing request,
 			// and there is no mark: it stopped while preparing (media,
 			// containers, uploads). Nothing was posted, so send it again.
-			res := store.ItemResult{Claim: si.Claim, Status: store.ItemFailed, At: at, NextAttemptAt: &now,
+			// NotSent: no attempt is counted (nor read as maybe-posted).
+			res := store.ItemResult{Claim: si.Claim, Status: store.ItemFailed, At: at, NextAttemptAt: &now, NotSent: true,
 				ErrorClass: string(destination.ClassTransient),
 				Error:      "the publisher stopped before this was sent; sending it again"}
 			if _, err := d.Store.RecordItemResult(ctx, res); err != nil {

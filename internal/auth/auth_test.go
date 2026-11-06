@@ -104,3 +104,20 @@ func TestVerifierRejectsExpiredAndWrongAud(t *testing.T) {
 		t.Fatal("wrong-aud token accepted")
 	}
 }
+
+func TestClaimsEmailVerifiedAsString(t *testing.T) {
+	for in, want := range map[string]bool{
+		`{"sub":"s","email":"a@b.c","email_verified":true}`:    true,
+		`{"sub":"s","email":"a@b.c","email_verified":"true"}`:  true,
+		`{"sub":"s","email":"a@b.c","email_verified":"false"}`: false,
+		`{"sub":"s","email":"a@b.c"}`:                          false,
+	} {
+		var c Claims
+		if err := json.Unmarshal([]byte(in), &c); err != nil {
+			t.Fatalf("%s: %v", in, err)
+		}
+		if c.EmailVerified != want || c.Subject != "s" || c.Email != "a@b.c" {
+			t.Errorf("%s: %+v", in, c)
+		}
+	}
+}

@@ -138,4 +138,3 @@ func TestNormalizeWritesEditList(t *testing.T) {
 		t.Errorf("normalized canonical contains an edts/elst edit list; Threads video spec says \"no edit lists\"")
 	}
 }
-

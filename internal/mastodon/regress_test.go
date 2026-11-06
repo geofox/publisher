@@ -52,12 +52,21 @@ func TestStatusRateLimitIsSurfaced(t *testing.T) {
 	}
 }
 
-// The go-mastodon client that uploads media and creates statuses has no
-// timeout: a server that accepts and never answers blocks the publish
-// until the caller's context ends (dispatch gives it none).
+// The go-mastodon client that uploads media and creates statuses must not
+// hang on a server that accepts and never answers, yet must not cut a
+// slow, large upload short: it bounds the dial, handshake and answer, not
+// the whole request.
 func TestStatusClientHasTimeout(t *testing.T) {
 	c := New("https://m.example", "tok")
-	if c.c.Client.Timeout == 0 {
-		t.Errorf("go-mastodon http.Client.Timeout = 0 (no deadline on POST /api/v2/media and /api/v1/statuses)")
+	if c.c.Client.Timeout != 0 {
+		t.Errorf("overall Timeout = %s: a large video on a slow uplink would never finish", c.c.Client.Timeout)
+	}
+	rl, ok := c.c.Client.Transport.(rateLimitTransport)
+	if !ok {
+		t.Fatalf("transport = %T", c.c.Client.Transport)
+	}
+	tr := rl.base.(idempotencyTransport).base.(*http.Transport)
+	if tr.ResponseHeaderTimeout == 0 || tr.TLSHandshakeTimeout == 0 {
+		t.Errorf("no answer/handshake timeout: %+v", tr)
 	}
 }

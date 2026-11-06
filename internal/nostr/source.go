@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -163,6 +164,9 @@ func (p *Publisher) ResolveSource(ctx context.Context, input string) (*SourceEve
 	ev := fetch(gonostr.Filter{IDs: []gonostr.ID{id}, Limit: 1})
 	if ev == nil {
 		return nil, fmt.Errorf("event %s not found on %d relays", ptr.IDHex[:8], len(urls))
+	}
+	if ptr.Author != "" && ev.PubKey.Hex() != ptr.Author {
+		return nil, fmt.Errorf("event %s is not by the author the reference names", ptr.IDHex[:8])
 	}
 	src := &SourceEvent{
 		IDHex:      ptr.IDHex,
@@ -327,6 +331,24 @@ func (p *Publisher) fetchFrom(ctx context.Context, own, foreign []string, filter
 	return nil
 }
 
+// matches reports whether ev is genuinely what filter asked for. A relay
+// is matched against the event's claimed id, and the signature check
+// recomputes the id on a copy: a validly signed event with someone else's
+// id gets through. So the id is checked against the content here, and the
+// id and author against the filter.
+func matches(ev *gonostr.Event, filter gonostr.Filter) bool {
+	if ev == nil || !ev.CheckID() || !ev.VerifySignature() {
+		return false
+	}
+	if len(filter.IDs) > 0 && !slices.Contains(filter.IDs, ev.ID) {
+		return false
+	}
+	if len(filter.Authors) > 0 && !slices.Contains(filter.Authors, ev.PubKey) {
+		return false
+	}
+	return true
+}
+
 // guardedWS dials websockets only to public addresses, checked on the
 // address actually dialed.
 var guardedWS = &http.Client{Transport: &http.Transport{
@@ -352,7 +374,9 @@ func queryGuarded(ctx context.Context, url string, filter gonostr.Filter) *gonos
 	}
 	defer r.Close()
 	for ev := range r.QueryEvents(filter) {
-		return &ev
+		if matches(&ev, filter) {
+			return &ev
+		}
 	}
 	return nil
 }
@@ -366,7 +390,9 @@ func (p *Publisher) fetchOne(ctx context.Context, urls []string, filter gonostr.
 	}
 	if re := p.pool.QuerySingle(ctx, urls, filter, gonostr.SubscriptionOptions{}); re != nil {
 		ev := re.Event
-		return &ev
+		if matches(&ev, filter) {
+			return &ev
+		}
 	}
 	return nil
 }

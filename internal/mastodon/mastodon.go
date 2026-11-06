@@ -63,7 +63,9 @@ func New(baseURL, token string) *Client {
 	// go-mastodon copies http.DefaultClient: no timeout, and it retries a
 	// 429 itself with sleeps of up to an hour while holding the worker.
 	// Bound the hang-prone phases (a server that accepts and never answers)
-	// with an overall ceiling sized for a large video upload, and hand a 429
+	// by the dial, handshake and answer timeouts, not an overall one: a
+	// large video on a slow uplink takes longer than any fixed ceiling (the
+	// caller's context still bounds the whole). Hand a 429
 	// back as an error so the engine sees the rate limit and its reset time.
 	gc.Client = http.Client{
 		Transport: rateLimitTransport{base: idempotencyTransport{base: &http.Transport{
@@ -72,7 +74,6 @@ func New(baseURL, token string) *Client {
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 120 * time.Second,
 		}}},
-		Timeout: 10 * time.Minute,
 	}
 	return &Client{
 		c:                gc,

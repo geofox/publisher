@@ -6,6 +6,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -23,6 +24,24 @@ type Claims struct {
 	// address on their own account.
 	EmailVerified bool   `json:"email_verified"`
 	Name          string `json:"name"`
+}
+
+// UnmarshalJSON also reads email_verified sent as the string "true", as
+// some IdPs (AWS Cognito) do.
+func (c *Claims) UnmarshalJSON(p []byte) error {
+	var raw struct {
+		Subject       string          `json:"sub"`
+		Email         string          `json:"email"`
+		EmailVerified json.RawMessage `json:"email_verified"`
+		Name          string          `json:"name"`
+	}
+	if err := json.Unmarshal(p, &raw); err != nil {
+		return err
+	}
+	v := strings.TrimSpace(string(raw.EmailVerified))
+	*c = Claims{Subject: raw.Subject, Email: raw.Email, Name: raw.Name,
+		EmailVerified: v == "true" || strings.EqualFold(v, `"true"`)}
+	return nil
 }
 
 // Config configures the Relying Party.
