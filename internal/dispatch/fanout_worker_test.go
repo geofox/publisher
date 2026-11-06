@@ -51,7 +51,7 @@ func newFanoutTest(t *testing.T) (*store.Store, *countingRebroadcaster, *Dispatc
 
 func TestFanoutWorkerDeliversAndMarksOK(t *testing.T) {
 	st, cr, d := newFanoutTest(t)
-	_ = st.EnqueueFanout("p", `{"id":"ev"}`, []string{"wss://a", "wss://b"})
+	_ = st.EnqueueFanout("p", 0, `{"id":"ev"}`, []string{"wss://a", "wss://b"})
 	f := NewFanout(d, true, 6, time.Minute, time.Hour, time.Second) // different relays → both delivered in one pass
 	f.runDue(context.Background())
 	if len(cr.calls) != 2 {
@@ -65,8 +65,8 @@ func TestFanoutWorkerDeliversAndMarksOK(t *testing.T) {
 func TestFanoutWorkerPacesPerRelay(t *testing.T) {
 	st, cr, d := newFanoutTest(t)
 	// Two events to the SAME relay; per-relay pacing sends one per pass.
-	_ = st.EnqueueFanout("p", `{"id":"ev1"}`, []string{"wss://a"})
-	_ = st.EnqueueFanout("p", `{"id":"ev2"}`, []string{"wss://a"})
+	_ = st.EnqueueFanout("p", 0, `{"id":"ev1"}`, []string{"wss://a"})
+	_ = st.EnqueueFanout("p", 0, `{"id":"ev2"}`, []string{"wss://a"})
 	f := NewFanout(d, true, 6, time.Minute, time.Hour, time.Minute)
 	f.runDue(context.Background())
 	if len(cr.calls) != 1 {
@@ -77,7 +77,7 @@ func TestFanoutWorkerPacesPerRelay(t *testing.T) {
 func TestFanoutWorkerBacksOffOnFailure(t *testing.T) {
 	st, cr, d := newFanoutTest(t)
 	cr.fail = true
-	_ = st.EnqueueFanout("p", `{"id":"ev"}`, []string{"wss://a"})
+	_ = st.EnqueueFanout("p", 0, `{"id":"ev"}`, []string{"wss://a"})
 	f := NewFanout(d, true, 6, time.Minute, time.Hour, 0)
 	f.runDue(context.Background())
 	// Failed → deferred, not due now.

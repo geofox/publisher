@@ -47,11 +47,21 @@ type Item struct {
 	Deliveries    []RelayState
 }
 
-// ItemKey is the idempotency key of item ordinal of a post's target of type
-// typ. It is derived, not random, so the key a destination saw before an
-// upgrade is the key the item keeps after it.
-func ItemKey(postID, typ string, ordinal int) string {
+// LegacyItemKey is the idempotency key of item ordinal of a post's target
+// of type typ, as items planned before step 4 (and by the v4 migration) were
+// keyed. It is derived, not random, so the key a destination saw before an
+// upgrade is the key the item keeps after it. A stored key is always read
+// back, never recomputed.
+func LegacyItemKey(postID, typ string, ordinal int) string {
 	sum := sha256.Sum256([]byte("publisher\x00" + postID + "\x00" + typ + "\x00" + strconv.Itoa(ordinal)))
+	return hex.EncodeToString(sum[:16])
+}
+
+// AccountItemKey is the idempotency key of item ordinal of a post's target
+// on account accountID. Items are keyed by account from step 4 on, so two
+// accounts of one type never share a key.
+func AccountItemKey(postID, accountID string, ordinal int) string {
+	sum := sha256.Sum256([]byte("publisher-account\x00" + postID + "\x00" + accountID + "\x00" + strconv.Itoa(ordinal)))
 	return hex.EncodeToString(sum[:16])
 }
 

@@ -79,7 +79,7 @@ func TestNewItemsKeyedAndDue(t *testing.T) {
 		return gp.Targets[0].Items
 	}
 	for _, it := range items() {
-		if it.IdemKey != ItemKey("nk", "bluesky", it.Ordinal) {
+		if it.IdemKey != LegacyItemKey("nk", "bluesky", it.Ordinal) {
 			t.Errorf("item %d key %q, want the derived key", it.Ordinal, it.IdemKey)
 		}
 		if it.NextAttemptAt == nil || !it.NextAttemptAt.Equal(at) {

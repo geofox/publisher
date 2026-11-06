@@ -23,6 +23,11 @@ type Claim struct {
 	ItemID   int64
 	Ordinal  int
 	Platform string
+	// AccountID is the account the item is sent from.
+	AccountID string
+	// IdemKey is the item's stored idempotency key: always read back,
+	// never recomputed.
+	IdemKey string
 	// Attempts is how many times the item was tried before this claim.
 	Attempts int
 }
@@ -85,17 +90,16 @@ func (s *Store) ClaimItem(ctx context.Context, now time.Time, f ClaimFilter) (*C
 		     AND NOT EXISTS (SELECT 1 FROM target_items x WHERE x.target_id = ti.target_id AND x.ordinal < ti.ordinal
 		                       AND x.status NOT IN ('published', 'partial'))
 		   ORDER BY ti.next_attempt_at, ti.id LIMIT 1)
-		RETURNING id, target_id, ordinal, attempt_count`,
-		now, now, f.TargetID, f.TargetID, string(exclude), missed, missed).Scan(&c.ItemID, &c.TargetID, &c.Ordinal, &c.Attempts)
+		RETURNING id, target_id, ordinal, attempt_count, idem_key`,
+		now, now, f.TargetID, f.TargetID, string(exclude), missed, missed).Scan(&c.ItemID, &c.TargetID, &c.Ordinal, &c.Attempts, &c.IdemKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var account string
 	if err := tx.QueryRowContext(ctx, `SELECT post_id, platform, account_id FROM post_targets WHERE id = ?`, c.TargetID).
-		Scan(&c.PostID, &c.Platform, &account); err != nil {
+		Scan(&c.PostID, &c.Platform, &c.AccountID); err != nil {
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE post_targets SET status = 'sending' WHERE id = ?`, c.TargetID); err != nil {
@@ -112,7 +116,7 @@ func (s *Store) ClaimItem(ctx context.Context, now time.Time, f ClaimFilter) (*C
 	}
 	ord := c.Ordinal
 	if err := emit(ctx, tx, c.PostID, EventItemSending, EventData{Status: ItemSending, TargetID: c.TargetID,
-		AccountID: account, Platform: c.Platform, Ordinal: &ord}, now); err != nil {
+		AccountID: c.AccountID, Platform: c.Platform, Ordinal: &ord}, now); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -441,8 +445,8 @@ func (s *Store) MarkCommitting(ctx context.Context, itemID int64, at time.Time) 
 // SendingItems lists the items left sending. Only startup recovery may call
 // it, before any worker runs.
 func (s *Store) SendingItems(ctx context.Context) ([]SendingItem, error) {
-	rows, err := s.sql.QueryContext(ctx, `SELECT ti.id, ti.target_id, ti.ordinal, ti.attempt_count, ti.next_attempt_at,
-		  pt.post_id, pt.platform, ti.committing_at IS NOT NULL
+	rows, err := s.sql.QueryContext(ctx, `SELECT ti.id, ti.target_id, ti.ordinal, ti.attempt_count, ti.idem_key, ti.next_attempt_at,
+		  pt.post_id, pt.platform, pt.account_id, ti.committing_at IS NOT NULL
 		FROM target_items ti JOIN post_targets pt ON pt.id = ti.target_id
 		WHERE ti.status = 'sending' ORDER BY ti.id`)
 	if err != nil {
@@ -453,7 +457,8 @@ func (s *Store) SendingItems(ctx context.Context) ([]SendingItem, error) {
 	for rows.Next() {
 		var si SendingItem
 		var sent sql.NullTime
-		if err := rows.Scan(&si.ItemID, &si.TargetID, &si.Ordinal, &si.Attempts, &sent, &si.PostID, &si.Platform, &si.Committing); err != nil {
+		if err := rows.Scan(&si.ItemID, &si.TargetID, &si.Ordinal, &si.Attempts, &si.IdemKey, &sent, &si.PostID, &si.Platform,
+			&si.AccountID, &si.Committing); err != nil {
 			return nil, err
 		}
 		if sent.Valid {
@@ -602,8 +607,8 @@ type Unscheduled struct {
 // UnscheduledFailures lists failed and unknown items that have no retry
 // time and whose target hasn't given up.
 func (s *Store) UnscheduledFailures(ctx context.Context) ([]Unscheduled, error) {
-	rows, err := s.sql.QueryContext(ctx, `SELECT ti.id, ti.target_id, ti.ordinal, ti.attempt_count, COALESCE(ti.error_class, ''),
-		  pt.post_id, pt.platform, pt.last_attempt_at
+	rows, err := s.sql.QueryContext(ctx, `SELECT ti.id, ti.target_id, ti.ordinal, ti.attempt_count, ti.idem_key, COALESCE(ti.error_class, ''),
+		  pt.post_id, pt.platform, pt.account_id, pt.last_attempt_at
 		FROM target_items ti JOIN post_targets pt ON pt.id = ti.target_id
 		WHERE ti.status IN ('failed', 'unknown') AND ti.next_attempt_at IS NULL AND pt.gave_up_at IS NULL
 		ORDER BY ti.id`)
@@ -615,7 +620,8 @@ func (s *Store) UnscheduledFailures(ctx context.Context) ([]Unscheduled, error) 
 	for rows.Next() {
 		var u Unscheduled
 		var la sql.NullTime
-		if err := rows.Scan(&u.ItemID, &u.TargetID, &u.Ordinal, &u.Attempts, &u.ErrorClass, &u.PostID, &u.Platform, &la); err != nil {
+		if err := rows.Scan(&u.ItemID, &u.TargetID, &u.Ordinal, &u.Attempts, &u.IdemKey, &u.ErrorClass, &u.PostID, &u.Platform,
+			&u.AccountID, &la); err != nil {
 			return nil, err
 		}
 		if la.Valid {

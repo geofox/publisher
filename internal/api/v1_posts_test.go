@@ -162,7 +162,7 @@ func TestV1PostsNeedingAttention(t *testing.T) {
 	now := time.Now().UTC()
 	p := &store.Post{ID: "x", CreatedAt: now, Platforms: []string{"bluesky"}, Source: "test", Status: "sending",
 		Targets: []store.Target{{Platform: "bluesky", Status: "sending", Items: []store.Item{
-			{Ordinal: 0, Text: "x", Status: store.ItemPlanned, IdemKey: store.ItemKey("x", "bluesky", 0), NextAttemptAt: &now}}}}}
+			{Ordinal: 0, Text: "x", Status: store.ItemPlanned, IdemKey: store.LegacyItemKey("x", "bluesky", 0), NextAttemptAt: &now}}}}}
 	if err := e.st.SavePost(p); err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +467,7 @@ func TestV1PostEventsFollowsAPost(t *testing.T) {
 	now := time.Now().UTC()
 	p := &store.Post{ID: "x", CreatedAt: now, Platforms: []string{"bluesky"}, Source: "test", Status: "sending",
 		Targets: []store.Target{{Platform: "bluesky", Status: "sending", Items: []store.Item{
-			{Ordinal: 0, Text: "x", Status: store.ItemPlanned, IdemKey: store.ItemKey("x", "bluesky", 0), NextAttemptAt: &now}}}}}
+			{Ordinal: 0, Text: "x", Status: store.ItemPlanned, IdemKey: store.LegacyItemKey("x", "bluesky", 0), NextAttemptAt: &now}}}}}
 	if err := e.st.SavePost(p); err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +597,7 @@ func TestV1RetryEdgeCases(t *testing.T) {
 		Targets: []store.Target{{Platform: "bluesky", Status: "sending"}}}
 	for i := 0; i < 2; i++ {
 		p.Targets[0].Items = append(p.Targets[0].Items, store.Item{Ordinal: i, Text: "x", Status: store.ItemPlanned,
-			IdemKey: store.ItemKey("t", "bluesky", i), NextAttemptAt: &now})
+			IdemKey: store.LegacyItemKey("t", "bluesky", i), NextAttemptAt: &now})
 	}
 	if err := e.st.SavePost(p); err != nil {
 		t.Fatal(err)

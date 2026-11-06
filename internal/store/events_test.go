@@ -49,7 +49,7 @@ func scheduledPost(t *testing.T, s *Store, id string, at time.Time, n int, platf
 		tg := Target{Platform: pl, Status: "scheduled"}
 		for i := 0; i < n; i++ {
 			d := at
-			tg.Items = append(tg.Items, Item{Ordinal: i, Text: pl, Status: ItemPlanned, IdemKey: ItemKey(id, pl, i), NextAttemptAt: &d})
+			tg.Items = append(tg.Items, Item{Ordinal: i, Text: pl, Status: ItemPlanned, IdemKey: LegacyItemKey(id, pl, i), NextAttemptAt: &d})
 		}
 		p.Targets = append(p.Targets, tg)
 	}

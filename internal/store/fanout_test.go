@@ -19,7 +19,7 @@ func openFanoutStore(t *testing.T) *Store {
 
 func TestFanoutEnqueueAndDue(t *testing.T) {
 	s := openFanoutStore(t)
-	if err := s.EnqueueFanout("post1", `{"id":"ev1"}`, []string{"wss://a", "wss://b"}); err != nil {
+	if err := s.EnqueueFanout("post1", 0, `{"id":"ev1"}`, []string{"wss://a", "wss://b"}); err != nil {
 		t.Fatalf("EnqueueFanout: %v", err)
 	}
 	now := time.Now()
@@ -34,7 +34,7 @@ func TestFanoutEnqueueAndDue(t *testing.T) {
 
 func TestFanoutMarkOKRemovesFromDue(t *testing.T) {
 	s := openFanoutStore(t)
-	_ = s.EnqueueFanout("post1", `{"id":"ev1"}`, []string{"wss://a"})
+	_ = s.EnqueueFanout("post1", 0, `{"id":"ev1"}`, []string{"wss://a"})
 	jobs, err := s.DueFanout(time.Now().Add(time.Minute), 10)
 	if err != nil {
 		t.Fatalf("DueFanout: %v", err)
@@ -53,7 +53,7 @@ func TestFanoutMarkOKRemovesFromDue(t *testing.T) {
 
 func TestFanoutRetryDefersThenGiveUp(t *testing.T) {
 	s := openFanoutStore(t)
-	_ = s.EnqueueFanout("post1", `{"id":"ev1"}`, []string{"wss://a"})
+	_ = s.EnqueueFanout("post1", 0, `{"id":"ev1"}`, []string{"wss://a"})
 	jobs, err := s.DueFanout(time.Now().Add(time.Minute), 10)
 	if err != nil {
 		t.Fatalf("DueFanout: %v", err)
@@ -100,5 +100,50 @@ func TestPurgeFanoutDeletesOnlySettledOldJobs(t *testing.T) {
 	_ = st.sql.QueryRow(`SELECT COUNT(*) FROM nostr_fanout`).Scan(&left)
 	if left != 2 {
 		t.Errorf("left %d jobs, want the 2 unsettled ones", left)
+	}
+}
+
+// A job knows its item and the account that signed it; a job queued
+// without an item id is matched by its post and event.
+func TestFanoutJobCarriesItemAndAccount(t *testing.T) {
+	s := openFanoutStore(t)
+	ctx := context.Background()
+	due := time.Now().UTC().Add(-time.Minute)
+	p := &Post{ID: "fp", CreatedAt: time.Now().UTC(), Platforms: []string{"nostr"}, Source: "test", Status: "sending",
+		Targets: []Target{{Platform: "nostr", Status: "sending", Items: []Item{
+			{Ordinal: 0, Text: "gm", Status: ItemPlanned, IdemKey: "k", NextAttemptAt: &due}}}}}
+	if err := s.SavePost(p); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetPost("fp")
+	account, itemID := got.Targets[0].AccountID, got.Targets[0].Items[0].ID
+	if _, err := s.sql.ExecContext(ctx, `UPDATE target_items SET ref_json = ? WHERE id = ?`, `{"id":"ev"}`, itemID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnqueueFanout("fp", itemID, `{"id":"ev"}`, []string{"wss://a"}); err != nil {
+		t.Fatal(err)
+	}
+	// As an older binary queued it: no item id.
+	if err := s.EnqueueFanout("fp", 0, `{"id":"ev"}`, []string{"wss://b"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnqueueFanout("gone", 0, `{"id":"other"}`, []string{"wss://c"}); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := s.DueFanout(time.Now().Add(time.Minute), 10)
+	if err != nil || len(jobs) != 3 {
+		t.Fatalf("DueFanout = %v, %v", jobs, err)
+	}
+	for _, j := range jobs {
+		switch j.RelayURL {
+		case "wss://a", "wss://b":
+			if j.ItemID != itemID || j.AccountID != account {
+				t.Errorf("%s: item %d account %q, want %d %q", j.RelayURL, j.ItemID, j.AccountID, itemID, account)
+			}
+		case "wss://c":
+			if j.ItemID != 0 || j.AccountID != "" {
+				t.Errorf("orphan job: item %d account %q", j.ItemID, j.AccountID)
+			}
+		}
 	}
 }

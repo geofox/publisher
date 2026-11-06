@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"time"
 )
 
@@ -12,12 +13,17 @@ type FanoutJob struct {
 	SignedEventJSON string
 	RelayURL        string
 	RetryCount      int
+	// ItemID is the item the event published (0 for a job queued before
+	// v11 whose item couldn't be found); AccountID the account that signed
+	// it ("" when unknown).
+	ItemID    int64
+	AccountID string
 }
 
 // EnqueueFanout records one pending fan-out row per relay for a signed event,
 // due immediately. post_id is a loose tag for tracing/cleanup (no FK), so events
 // already live on the primary relay fan out regardless of post-row timing.
-func (s *Store) EnqueueFanout(postID, signedEventJSON string, relays []string) error {
+func (s *Store) EnqueueFanout(postID string, itemID int64, signedEventJSON string, relays []string) error {
 	if signedEventJSON == "" || len(relays) == 0 {
 		return nil
 	}
@@ -29,9 +35,9 @@ func (s *Store) EnqueueFanout(postID, signedEventJSON string, relays []string) e
 	defer func() { _ = tx.Rollback() }()
 	for _, r := range relays {
 		if _, err := tx.Exec(
-			`INSERT INTO nostr_fanout(post_id,signed_event_json,relay_url,status,retry_count,next_attempt_at,created_at)
-			 VALUES(?,?,?,'pending',0,?,?)`,
-			postID, signedEventJSON, r, now, now,
+			`INSERT INTO nostr_fanout(post_id,item_id,signed_event_json,relay_url,status,retry_count,next_attempt_at,created_at)
+			 VALUES(?,?,?,?,'pending',0,?,?)`,
+			postID, nullInt(itemID), signedEventJSON, r, now, now,
 		); err != nil {
 			return err
 		}
@@ -44,10 +50,16 @@ func (s *Store) DueFanout(now time.Time, limit int) ([]FanoutJob, error) {
 	if limit <= 0 {
 		limit = 50
 	}
+	// A job without an item id (queued before v11, its item not found then)
+	// is matched by post and event, else has no account.
 	rows, err := s.sql.Query(
-		`SELECT id,signed_event_json,relay_url,retry_count FROM nostr_fanout
-		  WHERE status IN ('pending','failed') AND next_attempt_at <= ?
-		  ORDER BY next_attempt_at, id LIMIT ?`, now.UTC(), limit)
+		`SELECT f.id, f.signed_event_json, f.relay_url, f.retry_count,
+		        COALESCE(f.item_id, (SELECT ti.id FROM target_items ti JOIN post_targets pt ON pt.id = ti.target_id
+		                              WHERE pt.post_id = f.post_id AND ti.ref_json = f.signed_event_json
+		                              ORDER BY ti.id LIMIT 1), 0)
+		   FROM nostr_fanout f
+		  WHERE f.status IN ('pending','failed') AND f.next_attempt_at <= ?
+		  ORDER BY f.next_attempt_at, f.id LIMIT ?`, now.UTC(), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -55,12 +67,25 @@ func (s *Store) DueFanout(now time.Time, limit int) ([]FanoutJob, error) {
 	var out []FanoutJob
 	for rows.Next() {
 		var j FanoutJob
-		if err := rows.Scan(&j.ID, &j.SignedEventJSON, &j.RelayURL, &j.RetryCount); err != nil {
+		if err := rows.Scan(&j.ID, &j.SignedEventJSON, &j.RelayURL, &j.RetryCount, &j.ItemID); err != nil {
 			return nil, err
 		}
 		out = append(out, j)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range out {
+		if out[i].ItemID == 0 {
+			continue
+		}
+		if err := s.sql.QueryRow(`SELECT pt.account_id FROM target_items ti JOIN post_targets pt ON pt.id = ti.target_id
+			WHERE ti.id = ?`, out[i].ItemID).Scan(&out[i].AccountID); err != nil && err != sql.ErrNoRows {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // MarkFanoutOK marks a delivered job done.

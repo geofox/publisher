@@ -222,7 +222,7 @@ func backfillItems(ctx context.Context, tx execer) error {
 }
 
 // legacyItems derives a pre-v4 target's items, keyed as the dispatcher
-// keyed them (ItemKey), with planned items due when the engine should claim
+// keyed them (LegacyItemKey), with planned items due when the engine should claim
 // them: a scheduled target's at its time, a missed one's never (until a
 // retry), any other's now (they wait for the item before them).
 func legacyItems(t legacyTarget) ([]Item, error) {
@@ -244,7 +244,7 @@ func legacyItems(t legacyTarget) ([]Item, error) {
 		due = &at
 	}
 	for i := range items {
-		items[i].IdemKey = ItemKey(t.postID, t.platform, items[i].Ordinal)
+		items[i].IdemKey = LegacyItemKey(t.postID, t.platform, items[i].Ordinal)
 		if items[i].Status == ItemPlanned {
 			items[i].NextAttemptAt = due
 		}

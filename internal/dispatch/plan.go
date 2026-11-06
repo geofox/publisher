@@ -41,7 +41,7 @@ func (d *Dispatcher) planTarget(ctx context.Context, postID, plat, text string, 
 	tg := store.Target{Platform: plat, FinalText: cp.Text, FieldsJSON: string(fields), Status: status}
 	for i, pi := range cp.Items {
 		it := store.Item{Ordinal: i, Text: pi.Text, Status: store.ItemPlanned,
-			IdemKey: store.ItemKey(postID, plat, i), NextAttemptAt: due, Range: &[2]int{pi.From, pi.To}}
+			IdemKey: store.LegacyItemKey(postID, plat, i), NextAttemptAt: due, Range: &[2]int{pi.From, pi.To}}
 		for _, k := range pi.Media {
 			if k < 0 || k >= len(imgs) {
 				continue
@@ -320,7 +320,7 @@ func (d *Dispatcher) planInteract(ctx context.Context, id string, spec InteractS
 		rec.Targets = append(rec.Targets, store.Target{Platform: spec.SourcePlatform, FieldsJSON: string(fields), Status: "sending",
 			AccountID: spec.Accounts[spec.SourcePlatform],
 			Items: []store.Item{{Ordinal: 0, Status: store.ItemPlanned, NextAttemptAt: &now,
-				IdemKey: store.ItemKey(id, spec.SourcePlatform, 0)}}})
+				IdemKey: store.LegacyItemKey(id, spec.SourcePlatform, 0)}}})
 	case actionReply, actionQuote:
 		rec.Platforms = append(rec.Platforms, spec.SourcePlatform)
 		tg := d.planTarget(ctx, id, spec.SourcePlatform, interactText(spec, spec.SourcePlatform),

@@ -520,7 +520,7 @@ func (d *Dispatcher) runClaim(ctx context.Context, c *store.Claim, mm *memMedia,
 		return res.Status
 	}
 	logItemResult(ctx, c, res)
-	d.enqueueFanout(ctx, c.PostID, r.Status, r.SignedEventJSON, r.PendingRelays)
+	d.enqueueFanout(ctx, c.PostID, c.ItemID, r.Status, r.SignedEventJSON, r.PendingRelays)
 	if out.PostBefore == "scheduled" {
 		metrics.IncSchedulerFire()
 	}

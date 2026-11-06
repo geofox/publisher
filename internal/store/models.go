@@ -194,7 +194,7 @@ func (s *Store) SavePost(p *Post) error {
 		var headID int64
 		for i, it := range items {
 			if it.IdemKey == "" {
-				it.IdemKey = ItemKey(p.ID, tg.Platform, it.Ordinal)
+				it.IdemKey = LegacyItemKey(p.ID, tg.Platform, it.Ordinal)
 			}
 			// Planned items the caller passed carry their own due time (nil:
 			// not until a retry). Derived ones are due at the post's time, or now.
@@ -517,6 +517,14 @@ func nullStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+// nullInt stores 0 as NULL.
+func nullInt(n int64) any {
+	if n == 0 {
+		return nil
+	}
+	return n
 }
 
 // ErrNotPending is returned by cancel/reschedule when a post is not 'scheduled'.

@@ -120,7 +120,7 @@ func TestMigrateTargetItemsCarriesEverything(t *testing.T) {
 		if it.NextAttemptAt == nil || !it.NextAttemptAt.Equal(*sched.ScheduledAt) {
 			t.Errorf("scheduled item %d due %v, want %v", it.Ordinal, it.NextAttemptAt, sched.ScheduledAt)
 		}
-		if it.IdemKey != ItemKey("sched", "threads", it.Ordinal) {
+		if it.IdemKey != LegacyItemKey("sched", "threads", it.Ordinal) {
 			t.Errorf("scheduled item %d key %q", it.Ordinal, it.IdemKey)
 		}
 	}

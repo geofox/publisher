@@ -30,7 +30,7 @@ type item struct {
 	thread *destination.ThreadRef // segment k+1 replies to segment k
 	head   *headSpec              // only on a thread's first item
 	// postID and ordinal name the item; idemKey is its idempotency key
-	// (store.ItemKey when unset), stable across every attempt.
+	// (store.LegacyItemKey when unset), stable across every attempt.
 	postID  string
 	ordinal int
 	idemKey string
@@ -241,7 +241,7 @@ func (d *Dispatcher) request(ctx context.Context, acct destination.Account, name
 		case it.idemKey != "":
 			req.IdempotencyKey = it.idemKey
 		case it.postID != "":
-			req.IdempotencyKey = store.ItemKey(it.postID, name, it.ordinal)
+			req.IdempotencyKey = store.LegacyItemKey(it.postID, name, it.ordinal)
 		}
 	}
 	return req, nil

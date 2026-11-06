@@ -180,11 +180,11 @@ type Dispatcher struct {
 // enqueueFanout records async relay deliveries for a freshly-published Nostr
 // event (no-op without a store, an empty event, no pending relays, or a
 // failed primary publish — a failed delivery must not fan out).
-func (d *Dispatcher) enqueueFanout(ctx context.Context, postID, status, signedEventJSON string, relays []string) {
+func (d *Dispatcher) enqueueFanout(ctx context.Context, postID string, itemID int64, status, signedEventJSON string, relays []string) {
 	if d.Store == nil || status == "failed" || signedEventJSON == "" || len(relays) == 0 {
 		return
 	}
-	if err := d.Store.EnqueueFanout(postID, signedEventJSON, relays); err != nil {
+	if err := d.Store.EnqueueFanout(postID, itemID, signedEventJSON, relays); err != nil {
 		slog.WarnContext(ctx, "enqueue fan-out failed", "post_id", postID, "err", err)
 	}
 }
