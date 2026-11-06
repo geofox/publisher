@@ -31,7 +31,10 @@ export function planBody() {
     for (const t of body.targets) {
       const p = typeFor(t.account);
       const txt = p ? postedText(p) : "";
-      if (p && txt.trim() && txt !== state.master) t.content = { ...(t.content || {}), text: txt };
+      if (p && txt.trim() && txt !== state.master) {
+        t.content = { ...(t.content || {}), text: txt };
+        delete t.thread; // a copy is split automatically
+      }
     }
   }
   return body;
@@ -88,6 +91,12 @@ function set(next) {
 // composer as it is now, else null (still loading, refused, or stale).
 export function planFor(p) {
   if (current.key !== JSON.stringify(planBody())) return null;
+  return current.byType[p] || null;
+}
+
+// lastPlanFor answers platform p's preview target from the last plan, even
+// if the composer changed since: for counts that may lag a keystroke.
+export function lastPlanFor(p) {
   return current.byType[p] || null;
 }
 

@@ -17,7 +17,11 @@ test("saves a draft, survives a reload, reopens it and deletes it", async ({ pag
   await expect(page.locator("#chips .target-row")).toHaveCount(4);
   await page.locator("#master").fill(""); // nothing unsaved → no discard prompt
   await page.locator("#draft-list .draft-row", { hasText: m }).click();
-  await expect(page.locator("#master")).toHaveValue(text);
+  // The "---" line became a break: two cards, two posts.
+  const cards = page.locator("#editor .ed-shared textarea.ec-text");
+  await expect(cards).toHaveCount(2);
+  await expect(cards.nth(0)).toHaveValue(`Draft body ${m}`);
+  await expect(cards.nth(1)).toHaveValue("second part");
   await expect(page.locator("#preview .pv-seg")).toHaveCount(2);
 
   page.once("dialog", d => d.accept());
@@ -132,7 +136,7 @@ test("a draft keeps its targets, numbering and tags", async ({ page }) => {
   const list = await (await page.request.get(`/v1/drafts?q=${m}&tag=work`)).json();
   expect(list.data).toHaveLength(1);
   const d = await (await page.request.get(`/v1/drafts/${list.data[0].id}`)).json();
-  // The composer's "---" line is sent as a break, not as text.
+  // The "---" line typed in the composer is a break, not text.
   expect(d.post.content.text).toBe(`Settings ${m}\nsecond`);
   expect(d.post.content.breaks).toEqual([`Settings ${m}\n`.length]);
   expect(d.post.targets).toHaveLength(3);
@@ -142,7 +146,10 @@ test("a draft keeps its targets, numbering and tags", async ({ page }) => {
   await expect(page.locator("#chips .target-row")).toHaveCount(4);
   await expect(page.locator("#threadnum")).toBeChecked();
   await page.locator("#draft-list .draft-row", { hasText: m }).click();
-  await expect(page.locator("#master")).toHaveValue(`Settings ${m}\n---\nsecond`);
+  const cards = page.locator("#editor .ed-shared textarea.ec-text");
+  await expect(cards).toHaveCount(2);
+  await expect(cards.nth(0)).toHaveValue(`Settings ${m}`);
+  await expect(cards.nth(1)).toHaveValue("second");
   await expect(page.locator("#threadnum")).not.toBeChecked();
   await expect(page.locator("#chips .target-row.p-threads")).toHaveClass(/\boff\b/);
   await expect(page.locator("#chips .target-row.p-bluesky")).not.toHaveClass(/\boff\b/);

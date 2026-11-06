@@ -90,7 +90,7 @@ test("auto-threads a long post per platform limits", async ({ page, fakes }) => 
   expect(masto[1].reply_to).toBe(masto[0].remote_id);
 });
 
-test("splits on a manual --- marker on every platform", async ({ page, fakes }) => {
+test("a line of --- typed in the composer splits the post on every platform", async ({ page, fakes }) => {
   const m = marker("manual");
   await openApp(page);
   await page.locator("#master").fill(`${m} first part\n---\nsecond part`);
@@ -182,14 +182,17 @@ test("Nostr images carry their alt text in the imeta tag", async ({ page, fakes 
   expect(nostr.images?.[0]?.alt).toBe("A blue gradient");
 });
 
-test("places an image on the thread part its chip names", async ({ page, fakes }) => {
+test("an image moved to the second post goes out with it", async ({ page, fakes }) => {
   const m = marker("place");
   await openApp(page);
   await page.locator("#master").fill(`${m} first part\n---\nsecond part`);
   await page.locator("#imgfile").setInputFiles(path.join(__dirname, "assets", "gradient.png"));
   const thumb = page.locator("#images .thumb");
   await thumb.getByPlaceholder("alt text").fill("On part two");
-  await thumb.locator("select.place-chip").selectOption("1");
+  // The editor shows it on the first card; Move to… puts it on the second.
+  const first = page.locator("#editor .ed-shared .ecard").nth(0);
+  await first.locator("select.ec-move").selectOption("1");
+  await expect(page.locator("#editor .ed-shared .ecard").nth(1).locator(".ec-mitem")).toHaveCount(1);
   // The server preview plans it on the second post.
   await expect(page.locator("#preview .pv-seg").nth(1).locator(".pv-media img")).toHaveCount(1);
   await expect(page.locator("#preview .pv-seg").nth(0).locator(".pv-media img")).toHaveCount(0);

@@ -1,9 +1,8 @@
 "use strict";
-import { el, $, gcount, graphemes, META, v1 } from "./common.js";
-import { state, focusedPlatform, postedText, mediaPart, fromMarkers } from "./state.js";
-import { accountFor } from "./accounts.js";
+import { el, $, gcount, graphemes, META } from "./common.js";
+import { state, focusedPlatform, postedText } from "./state.js";
 import { brandTile, icon } from "./brands.js";
-import { requestPlan } from "./plan.js";
+import { requestPlan, planFor, lastPlanFor } from "./plan.js";
 
 // threadBadgeStatic → the indigo "{N}-post thread" pill shown in a threaded
 // preview header (non-interactive; the row/banner badges open the review sheet).
@@ -146,42 +145,18 @@ function appendFitNotes(host, platform, notes, media) {
   }
 }
 
-// threadPreview fetches the per-platform split for the focused platform and
-// renders the segment chain into `container`. Returns true if it rendered a
-// multi-segment thread, false if the draft fits in one post (caller renders the
-// normal single-post preview).
-export async function threadPreview(container, text, platform, number, isStale = () => false) {
-  if (!text.trim()) return false;
-  const acct = accountFor(platform);
-  if (!acct) return false;
-  // The focused platform's post as POST /v1/posts:preview plans it: the text
-  // it will post (in a reply or quote, the commentary or the copy — see
-  // postedText) and the attachments in media storage, each with its part.
-  // The original's images a copy re-hosts aren't media objects: they show
-  // after yours, as in the single-post card.
-  const sent = []; // previewMedia index of each media sent
-  const reqMedia = [];
-  const marked = fromMarkers(text);
+// threadPreview renders platform's thread, as the server's plan has it
+// (plan.js), into container. Returns false when the post is one post with
+// nothing the plan adds (the single-post card stands). stale marks a plan
+// for an earlier state of the composer, shown until the new one comes.
+function threadPreview(container, platform, vt, stale) {
+  if (!vt || !vt.items || !vt.items.length) return false;
+  // Plan media indices are the attachments the body sent (state.js
+  // postMedia); the preview's are all attachments (previewMedia).
+  const sent = [];
   state.images.forEach((img, k) => {
-    if (!img.media_id || (img.video && img.phase !== "ready")) return;
-    const m = { id: img.media_id };
-    const part = state.interaction ? 0 : mediaPart(img);
-    if (part > 0) m.at = marked.parts[Math.min(part, marked.parts.length - 1)];
-    reqMedia.push(m);
-    sent.push(k);
+    if (img.media_id && !(img.video && img.phase !== "ready")) sent.push(k);
   });
-  let data;
-  try {
-    data = await v1("/v1/posts:preview", { method: "POST", body: {
-      content: marked.breaks.length ? { text: marked.text, breaks: marked.breaks, media: reqMedia } : { text, media: reqMedia },
-      targets: [{ account: acct.id }],
-      threading: { numbering: number },
-    } });
-  } catch {
-    return false; // refused or unreachable → the single-post preview stands
-  }
-  const vt = (data.targets || [])[0];
-  if (!vt) return false;
   // In the shape the renderer below reads: segments, per-segment media (as
   // previewMedia indices), the link card, fit notes.
   const pv = {
@@ -198,14 +173,11 @@ export async function threadPreview(container, text, platform, number, isStale =
     const n = state.images.length, extra = previewMedia(platform).length - n;
     for (let i = 0; i < extra; i++) pv.imgs[0].push(n + i);
   }
-  // A newer renderPreview() call already owns the container; discard this response
-  // without touching the DOM. Return true so the caller's !rendered branch (which
-  // would repaint a single-post card) is also skipped — the newer render stands.
-  if (isStale()) return true;
   const fitNotes = pv.fit_notes;
   const pvMedia = previewMedia(platform);
   if (pv.count < 2) {
-    if (!pv.card && !fitNotes.length) return false;
+    // A stale one-post plan has an old text: the composer's card stands.
+    if (stale || (!pv.card && !fitNotes.length)) return false;
     // Single post with a link card or fit notes: re-render with the authoritative
     // (possibly URL-stripped) text and the planned card attached.
     container.innerHTML = "";
@@ -218,8 +190,8 @@ export async function threadPreview(container, text, platform, number, isStale =
   container.innerHTML = "";
   // The whole thread view is wrapped in a p-{platform} card so .pv-tok token
   // highlighting picks up the platform tint, and the left border is tinted too.
-  const wrap = el("div", { class: "pv-card pv-thread p-" + platform });
-  const limit = META[platform].limit;
+  const wrap = el("div", { class: "pv-card pv-thread p-" + platform + (stale ? " stale" : "") });
+  const limit = vt.limit;
   // Header mirrors the single-post card: brand tile + platform switcher (so the
   // operator can change the previewed platform even while viewing a thread) +
   // the "{N}-post thread" badge.
@@ -236,7 +208,7 @@ export async function threadPreview(container, text, platform, number, isStale =
     const rail = el("div", { class: "pv-seg-rail" }, el("div", { class: "pv-seg-num", text: String(i + 1) }));
     if (i < pv.count - 1) rail.append(el("div", { class: "pv-seg-line" }));
     const body = el("div", { class: "pv-seg-body" }, ...highlight(seg));
-    const segLen = gcount(seg);
+    const segLen = vt.items[i].length;
     const main = el("div", { class: "pv-seg-main" }, body,
       el("div", { class: "pv-seg-n", style: "margin-top:4px", text: `${i + 1}/${pv.count}` }),
       el("div", { class: "pv-seg-count" + (limit && segLen > limit ? " over" : ""), text: limit ? `${segLen}/${limit}` : `${segLen} chars` }),
@@ -256,12 +228,6 @@ export async function threadPreview(container, text, platform, number, isStale =
   container.appendChild(wrap);
   return true;
 }
-
-// _threadDebounce holds the pending debounce timer for thread-preview fetches.
-let _threadDebounce = null;
-// _threadSeq is incremented on every renderPreview() call so in-flight async
-// responses that resolve after a newer render can detect they are stale.
-let _threadSeq = 0;
 
 // escapeHTML-free: we build text nodes via el(); highlight() returns an array of
 // nodes (plain text + accent spans) for hashtags, @mentions, and URLs.
@@ -347,8 +313,8 @@ function _renderSinglePost(host, p, opts = {}) {
 }
 
 // renderPreview paints the focused platform's preview into #preview.
-// For multi-segment threads it shows the thread chain (debounced network call);
-// for single posts it renders the existing single-post card immediately.
+// The single-post card renders at once from the composer; a thread (or a
+// link card, or media notes) replaces it from the server's plan.
 export function renderPreview() {
   // Every change to the composer comes through here: ask for a fresh plan.
   requestPlan();
@@ -356,61 +322,17 @@ export function renderPreview() {
   if (!host) return;
   host.innerHTML = "";
   const p = focusedPlatform();
-  // Increment the sequence counter on every call so any in-flight async response
-  // that resolves after this render can detect it is stale and discard its write.
-  const seq = ++_threadSeq;
   if (!p) { host.append(el("p", { class: "muted", text: "no targets selected" })); return; }
 
   // Render the single-post preview immediately (synchronous, no flicker).
   _renderSinglePost(host, p);
 
-  // Debounce the thread-preview network call (~250 ms) so we don't fire a
-  // request per keystroke. If the server says it's a multi-segment thread, we
-  // swap the host content for the threaded view; otherwise the single-post
-  // preview already rendered above stays in place.
-  const text = postedText(p);
-  const number = document.getElementById("threadnum")?.checked ?? true;
-  // A draft can only become a thread if it has a manual `---` marker line,
-  // exceeds the platform's limit, or carries more images than the platform's
-  // cap (overflow spills into appended image-only posts). Otherwise the
-  // synchronous single-post card above is already correct — skip the network
-  // round-trip so typing stays snappy (the seq bump above discards any thread
-  // fetch still in flight from a longer earlier state).
-  const limit = META[p].limit;
-  // Any attached media needs the server round-trip: fit_notes (e.g. "image 1
-  // → JPEG (over 1.9 MB)") and per-platform overflow splits only exist in the
-  // server response.
-  const pvMedia = previewMedia(p);
-  const hasMedia = pvMedia.length > 0;
-  // A bluesky draft containing a URL also needs the server round-trip: the
-  // card plan (and trailing-URL strip) only exists server-side. Interactions
-  // never carry cards in v1, so they keep the fast path.
-  const wantsCard = p === "bluesky" && !state.interaction && /https?:\/\/\S+/.test(text);
-  if (!wantsCard && !hasMedia && !/^[ \t]*---[ \t]*$/m.test(text) && (!limit || gcount(text) <= limit)) {
-    clearTimeout(_threadDebounce);
-    return;
-  }
-  clearTimeout(_threadDebounce);
-  _threadDebounce = setTimeout(() => {
-    _threadDebounce = null;
-    threadPreview(host, text, p, number, () => seq !== _threadSeq).then(rendered => {
-      // Discard the response if a newer renderPreview() call owns the view now.
-      if (seq !== _threadSeq) return;
-      // If threadPreview returned false the single-post preview is still showing
-      // — nothing to do. If it returned true it already replaced host's content.
-      if (!rendered) {
-        // Defensive: the synchronous single-post render at the top of this
-        // renderPreview() call already shows the single post, so re-assert it to
-        // ensure a prior thread view can never linger when the draft now fits.
-        // _renderSinglePost re-appends the quoted card itself — no double-append.
-        host.innerHTML = "";
-        _renderSinglePost(host, p);
-      } else {
-        // threadPreview cleared host and rendered the thread chain, wiping the
-        // quoted card the synchronous single-post render appended — re-append it
-        // so the source card persists under the thread view.
-        maybeAppendQuotedCard(host, p);
-      }
-    }).catch(() => { /* network error — single-post preview remains */ });
-  }, 250);
+  // The thread, link card and media notes come from the server's plan
+  // (plan.js; a new one fires a "plan" event, which renders again). Until
+  // the plan for the composer as it is arrives, the last one shows, dimmed,
+  // rather than flicking back to a single post.
+  const fresh = planFor(p);
+  const vt = fresh || lastPlanFor(p);
+  if (!vt || !threadPreview(host, p, vt, !fresh)) return;
+  maybeAppendQuotedCard(host, p);
 }

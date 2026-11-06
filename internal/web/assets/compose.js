@@ -1,20 +1,15 @@
 "use strict";
-import { el, $, gcount, wcount, flash, confirmModal, META, ORDER, v1, problemError } from "./common.js";
-import { state, effectiveText, postedText, v1PostBody, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen, masterParts } from "./state.js";
+import { el, $, wcount, flash, confirmModal, META, ORDER, v1, problemError } from "./common.js";
+import { state, postedText, v1PostBody, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen } from "./state.js";
 import { renderPreview, mediaMax, previewMedia } from "./preview.js";
 import { openDetail } from "./history.js";
 import { accountFor } from "./accounts.js";
 import { followPost } from "./follow.js";
 import { brandTile, icon, PLATFORM_META } from "./brands.js";
-import { planFor, planError } from "./plan.js";
-
-// autoGrow sizes a textarea to its content (up to its CSS max-height, then it
-// scrolls). No-op when the element is hidden (scrollHeight is 0 then).
-function autoGrow(ta) {
-  if (!ta || ta.offsetParent === null) return;
-  ta.style.height = "auto";
-  ta.style.height = ta.scrollHeight + "px";
-}
+import { planFor, lastPlanFor, planError } from "./plan.js";
+import { editorInit, renderEditor, setTab } from "./editor.js";
+import { fromMarkers } from "./textpos.js";
+import { countFor, limitFor } from "./count.js";
 
 export function markDirty() {
   state.dirty = true;
@@ -37,10 +32,8 @@ function counterClass(n, limit) {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-threading estimate (client-side, mirrors Go dispatch + the design's
-// splitThread: word-boundary wrap reserving room for a " n/n" suffix). Used for
-// the live thread badge, banner, and the review sheet's segments; the live
-// preview pane still fetches the authoritative split from /v1/posts:preview.
+// Live counts. How a post splits is the server's plan (plan.js); the counts
+// here keep up with typing, measured the way each platform counts.
 // ---------------------------------------------------------------------------
 
 // bskyCardText strips a trailing URL for the Bluesky effective-text estimate,
@@ -71,88 +64,28 @@ function effectivePostedText(p) {
   return p === "bluesky" ? bskyCardText(t) : t;
 }
 
-function numberingOn() { return document.getElementById("threadnum")?.checked ?? true; }
-
-// splitMarkers mirrors internal/thread.splitMarkers: break on lines that are
-// solely "---", trimming each block and dropping empties. Manual breaks let the
-// operator force a thread (and shape it via the Edit-split sheet).
-function splitMarkers(text) {
-  const blocks = []; let cur = [];
-  for (const ln of text.split(/\r?\n/)) {
-    if (ln.trim() === "---") { blocks.push(cur.join("\n")); cur = []; }
-    else cur.push(ln);
-  }
-  blocks.push(cur.join("\n"));
-  return blocks.map(b => b.trim()).filter(Boolean);
-}
-
-// splitLength wraps one block on word boundaries, reserving room for a " n/n"
-// suffix when numbering is on. limit 0 (Nostr) → never length-splits.
-function splitLength(text, limit, number) {
-  if (!limit || gcount(text) <= limit) return [text];
-  const reserve = number ? 6 : 0; // " 99/99"
-  const eff = Math.max(limit - reserve, 1);
-  const parts = []; let cur = "";
-  for (const w of text.split(/(\s+)/)) {
-    if (gcount(cur + w) > eff && cur.trim()) { parts.push(cur.trim()); cur = w.replace(/^\s+/, ""); }
-    else cur += w;
-  }
-  if (cur.trim()) parts.push(cur.trim());
-  return parts.length ? parts : [text];
-}
-
-// splitThread mirrors the backend: honor manual --- markers first, then
-// length-split each block. A chain forms when there are multiple blocks OR a
-// single block exceeds the limit.
-function splitThread(text, limit, number = true) {
-  const blocks = splitMarkers(text);
-  if (blocks.length > 1) {
-    const out = [];
-    for (const b of blocks) out.push(...splitLength(b, limit, number));
-    return out.length ? out : [text];
-  }
-  return splitLength(text, limit, number);
-}
-
+// threadInfoFor is platform p's post count from the server's plan (the last
+// one while a newer is on its way).
 function threadInfoFor(p) {
-  // The server's plan, once it has answered for the composer as it is: the
-  // estimate below can disagree with it (it packs words, not paragraphs).
-  const pl = planFor(p);
-  if (pl && pl.items.length) {
-    const posts = pl.items.length;
-    return { posts, threaded: posts > 1, parts: pl.items.map(it => it.text) };
-  }
-  const parts = splitThread(effectivePostedText(p), META[p].limit, numberingOn());
-  // Media overflow forms a chain too: images beyond the platform cap spill
-  // into appended image-only posts (mirrors thread.PlanMedia's totals).
-  const mmax = mediaMax(p);
-  const mediaPosts = mmax > 0 ? Math.ceil(previewMedia(p).length / mmax) : 0;
-  const posts = Math.max(parts.length, mediaPosts, 1);
-  return { posts, threaded: posts > 1, parts };
+  const pl = planFor(p) || lastPlanFor(p);
+  const posts = pl && pl.items.length ? pl.items.length : 1;
+  return { posts, threaded: posts > 1 };
+}
+
+// cwOf is platform p's content warning, which Mastodon counts in.
+function cwOf(p) {
+  const ov = state.ov[p];
+  return p === "mastodon" ? ov.spoiler_text || "" : p === "nostr" ? ov.content_warning || "" : "";
 }
 
 // targetCount → {text, cls} for a platform's live count. State colors mirror the
 // design: under 90% → ink2 (no class), >90% → amber, over → indigo (will thread,
 // informational), no-limit → teal ∞.
 function targetCount(p) {
-  const limit = META[p].limit, n = gcount(effectivePostedText(p));
+  const limit = limitFor(p, cwOf(p)), n = countFor(p, effectivePostedText(p));
   if (!limit) return { text: "∞", cls: "inf", n };
   const pct = n / limit;
   return { text: `${n}/${limit}`, cls: n > limit ? "over" : pct > 0.9 ? "near" : "", n };
-}
-
-// Token highlighter for the thread sheet; .pv-tok picks up the platform tint from
-// the --pa set by the p-{platform} ancestor class.
-const SHEET_TOKEN = /(https?:\/\/[^\s]+|#[\w]+|@[\w.]+|\b[a-z0-9-]+\.(?:one|com|social|net|io)\b[^\s]*)/gi;
-function highlightTokens(text) {
-  const out = []; let last = 0, m; SHEET_TOKEN.lastIndex = 0;
-  while ((m = SHEET_TOKEN.exec(text)) !== null) {
-    if (m.index > last) out.push(document.createTextNode(text.slice(last, m.index)));
-    out.push(el("span", { class: "pv-tok", text: m[0] }));
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) out.push(document.createTextNode(text.slice(last)));
-  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,8 +96,8 @@ function iosSwitch(on) { return el("div", { class: "ios-switch" + (on ? " on" : 
 
 function threadBadge(p) {
   const ti = threadInfoFor(p);
-  const badge = el("span", { class: "thread-badge",
-    onclick: e => { e.stopPropagation(); openThreadSheet(p); } });
+  const badge = el("span", { class: "thread-badge", title: "See and shape the thread",
+    onclick: e => { e.stopPropagation(); showThread(p); } });
   const ic = icon("thread", { size: 12, sw: 1.9 }); if (ic) badge.append(ic);
   badge.append(el("span", { class: "tb-txt", text: `${ti.posts} posts` }));
   return badge;
@@ -193,7 +126,7 @@ function renderChips() {
         if (locked || barred) return; // source platform stays selected in interaction mode
         on ? state.platforms.delete(p) : state.platforms.add(p);
         if (!state.platforms.has(state.focus)) state.focus = p;
-        renderChips(); renderCards(); renderPreview();
+        renderChips(); renderCards(); renderEditor(); renderPreview();
       },
     },
       brandTile(p, { size: 29 }),
@@ -274,158 +207,31 @@ export function applyIdentity(id) {
 // rerenderComposer redraws every composer view, after something they all
 // read changed (the accounts' limits arrived).
 export function rerenderComposer() {
-  renderChips(); renderCards(); renderMeta(); renderPreview();
+  renderChips(); renderCards(); renderMeta(); renderEditor(); renderPreview();
+}
+
+// showThread opens platform p's tab in the thread editor.
+function showThread(p) {
+  setTab(p);
+  document.getElementById("editor")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 // renderThreadNotice shows the calm informational banner above POST TO whenever
-// ≥1 selected target overflows; tapping it opens the review sheet.
+// ≥1 selected target is a thread; tapping it opens that platform's tab.
 function renderThreadNotice() {
   const host = $("#threadnotice"); if (!host) return;
   host.innerHTML = "";
   const threaded = ORDER.filter(p => state.platforms.has(p) && threadInfoFor(p).threaded);
   if (!threaded.length) return;
   const names = threaded.map(p => `${META[p].label} (${threadInfoFor(p).posts})`).join(", ");
-  const banner = el("div", { class: "thread-notice", onclick: () => openThreadSheet(threaded[0]) });
+  const banner = el("div", { class: "thread-notice", onclick: () => showThread(threaded[0]) });
   const ic = icon("thread", { size: 20, sw: 1.8 }); if (ic) banner.append(ic);
   banner.append(el("div", { class: "tn-body" },
     el("div", { class: "tn-title", text: `Auto-threading on ${names}` }),
-    el("div", { class: "tn-sub", text: "Over the limit — we'll split it into a numbered thread." }),
+    el("div", { class: "tn-sub", text: "Each platform gets a thread that fits its limit: tap to see and shape it." }),
   ));
   const ch = icon("chevron", { size: 16 }); if (ch) banner.append(ch);
   host.append(banner);
-}
-
-// openThreadSheet presents the glass bottom sheet reviewing how an over-limit
-// draft splits for one platform — and, via "Edit split", lets the operator
-// reshape the breakpoints (saved back into the source text as \n---\n markers,
-// which the backend honors verbatim on send).
-function openThreadSheet(p) {
-  const meta = META[p];
-  const it = state.interaction;
-  const ov = state.ov[p];
-  // Edit-split writes back to the text that produced the segments: a per-platform
-  // override if one is set, else the master draft. Disabled in interaction mode
-  // (the previewed text there is an assembled reproduction, not directly owned).
-  const editable = !it;
-  const srcIsOverride = ov.text != null;
-  const number = numberingOn();
-  const sourceText = effectivePostedText(p);
-
-  let segs = splitThread(sourceText, meta.limit, number);
-  let editing = false;
-  let segInputs = [];
-
-  const bk = el("div", { class: "sheet-bk" });
-  const close = () => bk.remove();
-  bk.addEventListener("click", e => { if (e.target === bk) close(); });
-  const sheet = el("div", { class: "sheet p-" + p });
-  bk.append(sheet);
-
-  const collectRaw = () => segInputs.map(t => t.value);
-
-  // segLen = a segment's length including the " n/n" numbering it will gain on
-  // send; over = whether that pushes it past the limit.
-  function segLen(seg, total) {
-    const n = number ? gcount(seg) + (` ${total}/${total}`).length : gcount(seg);
-    return { n, over: meta.limit ? n > meta.limit : false };
-  }
-
-  function viewTimeline() {
-    const tl = el("div", { class: "seg-timeline" });
-    segs.forEach((seg, i) => {
-      const { n, over } = segLen(seg, segs.length);
-      const rail = el("div", { class: "seg-rail" }, el("div", { class: "seg-node", text: String(i + 1) }));
-      if (i < segs.length - 1) rail.append(el("div", { class: "seg-conn" }));
-      const txt = el("div", { class: "sc-text" }, ...highlightTokens(seg));
-      if (number) txt.append(el("span", { class: "sc-num", text: ` ${i + 1}/${segs.length}` }));
-      const card = el("div", { class: "seg-card" }, txt,
-        el("div", { class: "sc-meta" },
-          el("span", { class: "sc-count" + (over ? " over" : ""), text: meta.limit ? `${n}/${meta.limit}` : `${n} chars` }),
-          meta.limit ? el("div", { class: "track" }, el("i", { style: `width:${Math.min(n / meta.limit * 100, 100)}%` })) : null,
-        ),
-      );
-      tl.append(el("div", { class: "seg-item" }, rail, card));
-    });
-    return tl;
-  }
-
-  function editTimeline() {
-    segInputs = [];
-    const tl = el("div", { class: "seg-timeline" });
-    segs.forEach((seg, i) => {
-      const rail = el("div", { class: "seg-rail" }, el("div", { class: "seg-node", text: String(i + 1) }));
-      if (i < segs.length - 1) rail.append(el("div", { class: "seg-conn" }));
-
-      const count = el("span", { class: "sa-count" });
-      const updateCount = (val) => {
-        const { n, over } = segLen(val, segs.length);
-        count.textContent = meta.limit ? `${n}/${meta.limit}` : `${n} chars`;
-        count.className = "sa-count" + (over ? " over" : "");
-      };
-      const ta = el("textarea", { class: "seg-edit", rows: 3,
-        oninput: e => updateCount(e.target.value) });
-      ta.value = seg; updateCount(seg);
-      segInputs.push(ta);
-
-      const actions = el("div", { class: "seg-actions" });
-      if (i > 0) actions.append(el("button", { class: "sa-btn", type: "button", text: "⤺ merge up",
-        onclick: () => { const cur = collectRaw(); cur[i - 1] = (cur[i - 1].trimEnd() + " " + cur[i].trimStart()).trim(); cur.splice(i, 1); segs = cur; render(); } }));
-      actions.append(el("button", { class: "sa-btn", type: "button", text: "✂ break here",
-        onclick: () => { const cur = collectRaw(); const caret = ta.selectionStart ?? cur[i].length; cur.splice(i, 1, cur[i].slice(0, caret), cur[i].slice(caret)); segs = cur; render(); } }));
-      actions.append(count);
-
-      const card = el("div", { class: "seg-card" }, ta, actions);
-      tl.append(el("div", { class: "seg-item" }, rail, card));
-    });
-    return tl;
-  }
-
-  function save() {
-    const next = collectRaw().map(s => s.trim()).filter(Boolean);
-    if (!next.length) { close(); return; }
-    const joined = next.join("\n---\n");
-    if (srcIsOverride) ov.text = joined;
-    else { state.master = joined; const m = $("#master"); if (m) { m.value = joined; autoGrow(m); } }
-    markDirty();
-    renderChips(); renderCards(); refreshCounts(); renderMeta(); renderPreview();
-    close();
-    flash(`Thread split saved · ${next.length} posts`);
-  }
-
-  function render() {
-    sheet.innerHTML = "";
-    sheet.append(el("div", { class: "sheet-grabber" }));
-    const total = gcount(sourceText);
-    const head = el("div", { class: "sheet-head" },
-      brandTile(p, { size: 30 }),
-      el("div", { class: "sh-main" },
-        el("div", { class: "sh-title", text: `${meta.label} thread` }),
-        el("div", { class: "sh-sub", text: editing
-          ? `${segs.length} posts · edit text, break, or merge`
-          : (meta.limit ? `${total} chars over ${meta.limit} → ${segs.length} posts` : `${segs.length} posts`) }),
-      ),
-    );
-    if (editable) head.append(el("button", { class: "sh-edit", type: "button",
-      text: editing ? "Done" : "Edit split",
-      onclick: () => { if (editing) segs = collectRaw().map(s => s.trim()).filter(Boolean); editing = !editing; render(); } }));
-    sheet.append(head);
-
-    sheet.append(editing ? editTimeline() : viewTimeline());
-
-    const foot = el("div", { class: "sheet-foot" });
-    const lk = icon("link", { size: 16 }); if (lk) foot.append(lk);
-    foot.append(el("span", { text: editing
-      ? "Manual breaks apply to every network · numbering added on send"
-      : "Replies chain automatically · numbering added on send" }));
-    sheet.append(foot);
-
-    sheet.append(editing
-      ? el("button", { class: "sheet-cta", type: "button", text: "Save split", onclick: save })
-      : el("button", { class: "sheet-cta", type: "button", text: "Looks good — keep thread", onclick: close }));
-  }
-
-  render();
-  document.body.append(bk);
 }
 
 // ---------------------------------------------------------------------------
@@ -448,13 +254,14 @@ export function startInteraction(src, action) {
         ? state.interaction.prevPlatforms : new Set(state.platforms),
     };
     state.master = "";
+    state.breaks = [];
+    state.tab = "shared";
     clearImages();
     ORDER.forEach((p) => { state.ov[p] = defaultOv(p); }); // drop stale per-platform overrides
     state.platforms = new Set([src.platform]);
     state.focus = src.platform;
     const tab = document.querySelector('.tab[data-view="compose"]');
     if (tab) tab.click();
-    const m = $("#master"); if (m) { m.value = ""; autoGrow(m); }
     window.scrollTo({ top: 0, behavior: "smooth" });
     flash((action === "quote" ? "Quoting " : "Replying to ") + (src.preview.author_handle || src.platform));
     renderImages(); // entry cleared state.images → refresh the thumbnail strip (symmetric with exit)
@@ -477,8 +284,9 @@ export function exitInteraction() {
   const prev = state.interaction && state.interaction.prevPlatforms;
   state.interaction = null;
   state.master = "";
+  state.breaks = [];
+  state.tab = "shared";
   clearImages();
-  const m = $("#master"); if (m) { m.value = ""; autoGrow(m); }
   state.platforms = prev && prev.size ? new Set(prev) : new Set(ORDER);
   if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
   renderImages();
@@ -496,7 +304,12 @@ export function loadDraft(input) {
     // legacy {text, lang}
     if (input.text !== undefined && input.master_text === undefined) {
       state.interaction = null;
-      state.master = input.text || "";
+      // An old post's text may break its thread with lines of "---".
+      const conv = fromMarkers(input.text || "");
+      state.master = conv.text;
+      state.breaks = conv.breaks;
+      state.anchors = {};
+      state.tab = "shared";
       clearImages();
       if (input.lang) {
         state.ov.bluesky.langs = input.lang;
@@ -508,7 +321,6 @@ export function loadDraft(input) {
       state.dirty = true;
       const tab = document.querySelector('.tab[data-view="compose"]');
       if (tab) tab.click();
-      const m = $("#master"); if (m) { m.value = state.master; autoGrow(m); }
       window.scrollTo({ top: 0, behavior: "smooth" });
       renderImages();
       renderInteractionUI(); // re-renders chips/cards/preview and hides the banner
@@ -518,7 +330,13 @@ export function loadDraft(input) {
 
     // full spec shape
     state.interaction = input.interaction || null;
-    state.master = input.master_text || "";
+    // Before v2 (a recovered snapshot from an older app) breaks were lines
+    // of "---" in the text and media went by part number.
+    const old = input.v !== 2;
+    const conv = old ? fromMarkers(input.master_text || "") : null;
+    state.master = old ? conv.text : input.master_text || "";
+    state.breaks = old ? conv.breaks : (input.breaks || []).filter(Number.isInteger);
+    state.tab = "shared";
     clearImages();
     state.platforms = new Set(input.platforms && input.platforms.length ? input.platforms : ORDER);
     if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
@@ -528,6 +346,15 @@ export function loadDraft(input) {
       for (const p of Object.keys(input.overrides)) {
         if (!state.ov[p]) continue;
         Object.assign(state.ov[p], input.overrides[p]);
+        const ov = state.ov[p];
+        if (old && typeof ov.text === "string") {
+          const own = fromMarkers(ov.text);
+          ov.text = own.text;
+          ov.breaks = own.breaks.length ? own.breaks : null;
+        }
+        if (ov.text != null && typeof ov.text !== "string") ov.text = null;
+        if (!Array.isArray(ov.breaks)) ov.breaks = null;
+        if (!ov.mediaAt || typeof ov.mediaAt !== "object" || ov.text == null) ov.mediaAt = null;
       }
       // buildSpec serializes bluesky.langs as a JSON array; the editor input
       // holds it as a comma-separated string. Convert back so the field round-
@@ -551,8 +378,12 @@ export function loadDraft(input) {
       id: m.client_id || m.id || newKey(),
     }));
     bumpImagesGen();
-    // Hydrate media-placement anchors from the draft spec (id-keyed map).
-    state.anchors = input.anchors || {};
+    // Media positions, by attachment id (before v2: part numbers).
+    state.anchors = {};
+    for (const [id, v] of Object.entries(input.anchors || {})) {
+      if (!Number.isInteger(v) || v <= 0) continue;
+      state.anchors[id] = old ? conv.parts[Math.min(v, conv.parts.length - 1)] : v;
+    }
     state.activeDraftId = input.id || null;
     state.draftETag = input.etag || "";
     state.dirty = false;
@@ -560,7 +391,6 @@ export function loadDraft(input) {
     const sched = $("#schedat"); if (sched) sched.value = input.interaction ? "" : localInput(input.scheduled_at);
     const tab = document.querySelector('.tab[data-view="compose"]');
     if (tab) tab.click();
-    const master = $("#master"); if (master) { master.value = state.master; autoGrow(master); }
     window.scrollTo({ top: 0, behavior: "smooth" });
     renderImages();
     renderInteractionUI(); // re-renders chips/cards/preview and hides the banner
@@ -595,7 +425,7 @@ function renderInteractionUI() {
   renderSrcBanner();
   const sched = $("#schedrow"); if (sched) sched.hidden = state.interaction != null;
   $("#submit").textContent = state.interaction ? (state.interaction.action === "quote" ? "Quote" : "Reply") : "Post";
-  renderChips(); renderCards(); renderMeta(); renderPreview();
+  renderChips(); renderCards(); renderMeta(); renderEditor(); renderPreview();
 }
 
 // renderSrcBanner shows the source post being replied-to / quoted (or hides it).
@@ -651,29 +481,35 @@ function renderCards() {
 // type. Edited cards track their own text, so they're left untouched.
 function refreshCounts() {
   for (const p of ORDER) {
-    if (!state.platforms.has(p) || state.ov[p].text != null) continue;
+    if (!state.platforms.has(p)) continue;
     const card = $(`#cards .ocard.p-${p}`);
     if (!card) continue;
-    const limit = META[p].limit;
-    const n = gcount(effectivePostedText(p)); // full posted text (reproduction on fan-out) — matches the preview
+    const limit = limitFor(p, cwOf(p));
+    const n = countFor(p, effectivePostedText(p)); // full posted text (reproduction on fan-out) — matches the preview
     const span = card.querySelector(".cnt");
     if (span) { span.textContent = limit ? `${n}/${limit}` : "∞"; span.className = counterClass(n, limit); }
-    const ta = card.querySelector("textarea");
-    if (ta && document.activeElement !== ta) ta.value = state.master;
+    const snip = card.querySelector(".ocard-snip");
+    if (snip) snip.textContent = wordingNote(p);
   }
 }
 
+// wordingNote says where platform p's text comes from.
+function wordingNote(p) {
+  const ov = state.ov[p];
+  if (ov.text != null) return `own text: "${ov.text.slice(0, 40)}"`;
+  return ov.breaks ? "shared text · own breaks" : "mirrors the shared text";
+}
+
+// overrideCard is platform p's options. Its wording and breaks are edited in
+// the thread editor (its tab there).
 function overrideCard(p) {
   const ov = state.ov[p], meta = META[p];
-  const edited = ov.text != null;
-  // textarea/snippet show your editable commentary; the count reflects the full
-  // posted text (the reproduction on a fan-out platform), matching the preview.
-  const text = effectiveText(p), n = gcount(effectivePostedText(p));
+  const edited = ov.text != null || ov.breaks != null;
+  const limit = limitFor(p, cwOf(p)), n = countFor(p, effectivePostedText(p));
   const card = el("div", { class: "ocard p-" + p + (edited ? " edited" : "") });
 
   // collapsed summary row (always visible, clickable to expand)
-  const cnt = el("span", { class: counterClass(n, meta.limit), text: meta.limit ? `${n}/${meta.limit}` : "∞" });
-  const snippet = edited ? `"${text.slice(0, 40)}"` : "mirrors master";
+  const cnt = el("span", { class: counterClass(n, limit), text: limit ? `${n}/${limit}` : "∞" });
   const body = el("div", { class: "ocard-body", hidden: true });
   const caret = el("span", { class: "ocard-caret", text: "▸" });
   const summary = el("button", { class: "ocard-summary", type: "button",
@@ -684,28 +520,11 @@ function overrideCard(p) {
     caret,
     el("span", { class: "ocard-name", text: meta.label }),
     cnt,
-    el("span", { class: "ocard-snip muted", text: snippet }),
+    el("span", { class: "ocard-snip muted", text: wordingNote(p) }),
   );
-
-  // expanded editor + fields
-  const resetBtn = el("button", { class: "reset", type: "button", text: "reset to master", hidden: !edited,
-    onclick: () => { ov.text = null; renderCards(); refreshTargets(); renderPreview(); } });
-  const ta = el("textarea", {
-    oninput: e => {
-      ov.text = e.target.value;
-      const m = gcount(effectivePostedText(p));
-      cnt.textContent = meta.limit ? `${m}/${meta.limit}` : "∞";
-      cnt.className = counterClass(m, meta.limit);
-      card.classList.add("edited");
-      resetBtn.hidden = false;
-      // refreshTargets so this platform's thread badge + the thread notice track
-      // the per-platform text (every other text-change path refreshes them too).
-      refreshTargets();
-      renderMeta(); renderPreview();
-    },
-  });
-  ta.value = text;
-  body.append(ta, fieldsFor(p, ov), resetBtn);
+  const wording = el("button", { class: "ghost xs", type: "button", text: `${meta.label}'s thread and wording →`,
+    onclick: () => showThread(p) });
+  body.append(fieldsFor(p, ov, () => { refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); }), wording);
 
   card.append(summary, body);
   return card;
@@ -733,7 +552,7 @@ function langField(value, onChange) {
   return el("span", { class: "lang-static muted", text: value });
 }
 
-function fieldsFor(p, ov) {
+function fieldsFor(p, ov, onText = renderPreview) {
   const f = el("div", { class: "fields" });
   if (p === "bluesky") {
     f.append(lbl("lang (ISO 639-1)", langField(ov.langs, v => { ov.langs = v; })));
@@ -745,7 +564,7 @@ function fieldsFor(p, ov) {
     f.append(lbl("disable quotes", el("input", { type: "checkbox", checked: ov.disable_quotes, onchange: e => { ov.disable_quotes = e.target.checked; renderPreview(); } })));
   }
   if (p === "mastodon") {
-    f.append(lbl("CW", el("input", { type: "text", value: ov.spoiler_text, oninput: e => { ov.spoiler_text = e.target.value; renderPreview(); } })));
+    f.append(lbl("CW", el("input", { type: "text", value: ov.spoiler_text, oninput: e => { ov.spoiler_text = e.target.value; onText(); } })));
     f.append(lbl("sensitive", el("input", { type: "checkbox", checked: !!ov.sensitive, onchange: e => { ov.sensitive = e.target.checked; renderPreview(); } })));
     const sel = el("select", { onchange: e => { ov.visibility = e.target.value; renderPreview(); } });
     [["", "default"], ["public", "public"], ["unlisted", "unlisted"], ["private", "private"], ["direct", "direct"]]
@@ -1028,22 +847,6 @@ export function renderImages() {
       // A draft attachment the server couldn't turn into media to post.
       kids.push(el("div", { class: "imgsize bad", text: "can't be posted: attach it again" }));
     }
-    if (masterParts().length >= 2 && !state.interaction) {
-      const sel = el("select", { class: "place-chip",
-        onchange: e => { state.anchors[img.id] = parseInt(e.target.value, 10); markDirty(); renderPreview(); refreshCounts(); } });
-      const n = masterParts().length;
-      // Clamp to the available parts so the selected option matches what
-      // buildSpec/dispatch will use (img_parts clamps to nParts-1); otherwise a
-      // stale anchor past a reduced part count shows part 1 while dispatch posts
-      // the clamped part.
-      const cur = Math.min(state.anchors[img.id] || 0, Math.max(0, n - 1));
-      for (let p = 0; p < n; p++) {
-        const o = el("option", { value: String(p), text: `▸ part ${p + 1}` });
-        if (cur === p) o.selected = true;
-        sel.append(o);
-      }
-      kids.push(sel);
-    }
     kids.push(el("button", { class: "rm", type: "button", text: "remove",
       onclick: () => {
         if (img._compressAbort) img._compressAbort.abort();
@@ -1054,6 +857,7 @@ export function renderImages() {
     c.append(el("div", { class: "thumb" }, ...kids));
   });
   const vp = $("#vidpreset"); if (vp) vp.hidden = state.images.some(i => i.video);
+  renderEditor(); // the attachments on its cards
   renderMeta(); renderPreview();
 }
 
@@ -1118,9 +922,11 @@ function updateSched() {
 export function resetComposer() {
   clearImages();
   state.master = "";
+  state.breaks = [];
+  state.anchors = {};
+  state.tab = "shared";
   state.interaction = null;
   for (const p of Object.keys(state.ov)) state.ov[p] = defaultOv(p);
-  const m = $("#master"); if (m) { m.value = ""; autoGrow(m); }
   const sched = $("#schedat"); if (sched) { sched.value = ""; updateSched(); }
   // A posted draft's tags don't carry over to the next one.
   const tags = document.querySelector("#draft-tags-input .tag-chips"); if (tags) tags.replaceChildren();
@@ -1359,9 +1165,11 @@ export function openProgressModal(postId, first) {
 export function composeInit() {
   // A new plan from the server: thread counts, the notice and the summary
   // read it.
-  document.addEventListener("plan", () => { refreshTargets(); renderMeta(); });
-  $("#master").addEventListener("input", e => { state.master = e.target.value; refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); renderImages(); autoGrow(e.target); });
-  autoGrow($("#master")); // size correctly if a draft was already in the field at init
+  document.addEventListener("plan", () => { refreshTargets(); renderMeta(); renderPreview(); });
+  editorInit({
+    changed: () => { refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); },
+    tab: t => { if (t !== "shared") state.focus = t; renderPreview(); },
+  });
   $("#addimg").addEventListener("click", () => $("#imgfile").click());
   $("#imgfile").addEventListener("change", async e => {
     const file = e.target.files[0]; if (!file) return;

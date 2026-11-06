@@ -1,5 +1,6 @@
 "use strict";
-import { state, v1PostBody, clearImages, toMarkers, partAt } from "./state.js";
+import { state, v1PostBody, clearImages } from "./state.js";
+import { cpIndex } from "./textpos.js";
 import { loadDraft, markDirty, mediaReady, newKey, resetComposer, rerenderComposer } from "./compose.js";
 import { loadRecovery, clearRecovery, snapshot } from "./drafts_recovery.js";
 import { flash, el, v1, problemError, confirmModal, ORDER } from "./common.js";
@@ -115,10 +116,20 @@ function renderTagFilters() {
 
 // ovFromTarget reads a target back into the composer's per-platform card:
 // the reverse of state.js v1Target.
-function ovFromTarget(p, t) {
+// u16 turns the API's code point positions in text into the composer's
+// UTF-16 offsets.
+function u16(text, positions) {
+  const ix = cpIndex(text);
+  return positions.filter(Number.isInteger).map(cp => ix[Math.max(0, Math.min(cp, ix.length - 1))]);
+}
+
+function ovFromTarget(p, t, shared) {
   const o = {}, opts = t.options || {}, c = t.content || {};
   const langs = Array.isArray(c.languages) ? c.languages : [];
-  o.text = typeof c.text === "string" ? toMarkers(c.text, t.thread && t.thread.breaks) : null;
+  o.text = typeof c.text === "string" ? c.text : null;
+  const th = t.thread || {};
+  const text = o.text != null ? o.text : shared;
+  if (Array.isArray(th.breaks)) o.breaks = u16(text, th.breaks);
   if (p === "bluesky") {
     o.reply = opts.reply_gate || "";
     o.disable_quotes = !!opts.disable_quotes;
@@ -167,20 +178,22 @@ async function sourceInteraction(post, platforms) {
 async function specFromDraft(d, etag) {
   const accountsRead = await loadAccounts().then(() => true, () => false);
   const post = d.post || {}, c = post.content || {};
-  const platforms = [], overrides = {};
+  const platforms = [], overrides = {}, ownMedia = {};
   let skipped = 0;
   for (const t of post.targets || []) {
     const a = accountByID(t.account);
     if (!a || !ORDER.includes(a.type) || platforms.includes(a.type)) { skipped++; continue; }
     platforms.push(a.type);
-    overrides[a.type] = ovFromTarget(a.type, t);
+    overrides[a.type] = ovFromTarget(a.type, t, typeof c.text === "string" ? c.text : "");
+    if (Array.isArray((t.thread || {}).media_at)) ownMedia[a.type] = t.thread.media_at;
   }
   const objects = new Map((d.media || []).map(m => [m.id, m]));
   const media = [], anchors = {};
   let missing = 0;
-  for (const cm of c.media || []) {
+  const sharedText = typeof c.text === "string" ? c.text : "";
+  (c.media || []).forEach((cm, k) => {
     const m = objects.get(cm.id);
-    if (!m) { missing++; continue; }
+    if (!m) { missing++; return; }
     const id = newKey();
     media.push({
       client_id: id, media_id: m.id, blossom_url: m.url, mime: m.mime, dim: m.dim || "",
@@ -188,9 +201,14 @@ async function specFromDraft(d, etag) {
       alt: typeof cm.alt === "string" ? cm.alt : (m.alt || ""),
       duration_secs: m.duration_secs || 0, poster_url: m.poster_url || "",
     });
-    const part = Number.isInteger(cm.at) ? partAt(c.breaks, cm.at) : 0;
-    if (part > 0) anchors[id] = part;
-  }
+    if (Number.isInteger(cm.at) && cm.at > 0) anchors[id] = u16(sharedText, [cm.at])[0];
+    for (const [p, at] of Object.entries(ownMedia)) {
+      const ov = overrides[p];
+      if (ov.text == null || !Number.isInteger(at[k])) continue;
+      ov.mediaAt = ov.mediaAt || {};
+      ov.mediaAt[id] = u16(ov.text, [at[k]])[0];
+    }
+  });
   const { interaction, lost } = await sourceInteraction(post, platforms);
   const notes = [];
   if (!accountsRead && (post.targets || []).length) {
@@ -200,7 +218,9 @@ async function specFromDraft(d, etag) {
   if (lost) notes.push(lost);
   return {
     id: d.id, etag,
-    master_text: typeof c.text === "string" ? toMarkers(c.text, c.breaks) : "",
+    v: 2,
+    master_text: sharedText,
+    breaks: Array.isArray(c.breaks) ? u16(sharedText, c.breaks) : [],
     platforms: interaction ? [interaction.platform, ...platforms.filter(p => p !== interaction.platform)] : platforms,
     overrides, media, anchors, interaction,
     number: post.threading ? !!post.threading.numbering : true,

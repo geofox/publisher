@@ -1,13 +1,18 @@
 "use strict";
 import { ORDER } from "./common.js";
 import { accountFor } from "./accounts.js";
+import { u16ToCp, cleanBreaks } from "./textpos.js";
 
 export function defaultOv(p) {
   // Read state.userLanguages at call time so callers (initial module load,
   // post-/v1/instance init, startInteraction reset) all pick up the operator's
   // first configured language as the default. Falls back to "en" pre-fetch.
   const lang = (state.userLanguages && state.userLanguages[0]) || "en";
-  const o = { text: null };
+  // text: the platform's own wording (null: the shared text). breaks: its
+  // own breaks in the text it posts (null: the shared ones, or none with its
+  // own text). mediaAt: with its own text, each attachment's position in it
+  // (by attachment id). Positions are UTF-16 offsets.
+  const o = { text: null, breaks: null, mediaAt: null };
   if (p === "bluesky")  { o.langs = lang; o.reply = ""; o.disable_quotes = false; }
   if (p === "mastodon") { o.spoiler_text = ""; o.sensitive = false; o.visibility = ""; o.language = lang; }
   if (p === "threads")  { o.topic_tag = ""; o.reply_control = ""; }
@@ -17,6 +22,8 @@ export function defaultOv(p) {
 
 export const state = {
   master: "",
+  breaks: [],          // shared breaks: UTF-16 offsets into master, ascending
+  tab: "shared",       // the thread editor's tab: "shared" or a platform
   platforms: new Set(ORDER),
   ov: {},
   images: [],
@@ -35,65 +42,23 @@ export const state = {
   draftETag: "",       // its version as last read or saved, for If-Match
   dirty: false,        // true when in-memory spec differs from last saved state
   edits: 0,            // counts edits (markDirty), so a save knows if more came meanwhile
-  anchors: {},         // image id → 0-based part index (keyed by stable image id)
+  anchors: {},         // image id → its position in master (UTF-16); it goes with the post holding it
 };
 ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
 
-export function masterParts() {
-  // mirrors internal/thread.splitMarkers — split on lines that are solely "---"
-  const blocks = []; let cur = [];
-  for (const ln of state.master.replace(/\r\n/g, "\n").split("\n")) {
-    if (ln.trim() === "---") { blocks.push(cur.join("\n").trim()); cur = []; }
-    else cur.push(ln);
-  }
-  blocks.push(cur.join("\n").trim());
-  return blocks.filter(Boolean);
+// layoutBreaks is the breaks platform p's text is cut at: its own, else the
+// shared ones when it posts the shared text, else none.
+export function layoutBreaks(p) {
+  const ov = state.ov[p];
+  if (ov.breaks) return ov.breaks;
+  return ov.text != null ? [] : state.breaks;
 }
 
-// fromMarkers mirrors Go thread.FromMarkers: the text without its lines of
-// "---", the breaks they made (code point positions) and where each
-// non-empty part starts, for media placed by part.
-export function fromMarkers(text) {
-  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
-  const out = []; const breaks = []; const parts = [];
-  let n = 0, partStart = 0, partHasText = false;
-  lines.forEach((ln, i) => {
-    if (ln.trim() === "---") {
-      if (partHasText) parts.push(partStart);
-      breaks.push(n); partStart = n; partHasText = false;
-      return;
-    }
-    if (ln.trim() !== "") partHasText = true;
-    out.push(ln + (i < lines.length - 1 ? "\n" : ""));
-    n += Array.from(ln).length + (i < lines.length - 1 ? 1 : 0);
-  });
-  if (partHasText) parts.push(partStart);
-  const txt = out.join("");
-  const total = Array.from(txt).length;
-  const kept = breaks.filter((b, i, a) => b > 0 && b < total && (i === 0 || b > a[i - 1]) && a.indexOf(b) === i);
-  if (!parts.length) parts.push(0);
-  return { text: kept.length ? txt : String(text || "").replace(/\r\n/g, "\n"), breaks: kept, parts };
-}
-
-// toMarkers is the other way round, for the composer while it still edits
-// breaks as lines of "---": the text with a marker line at each break.
-export function toMarkers(text, breaks) {
-  const cps = Array.from(String(text || ""));
-  const bs = (breaks || []).filter(b => b > 0 && b < cps.length);
-  if (!bs.length) return String(text || "");
-  let out = "", from = 0;
-  for (const b of bs) {
-    const head = cps.slice(from, b).join("");
-    out += head + (head.endsWith("\n") ? "" : "\n") + "---\n";
-    from = b;
-  }
-  return out + cps.slice(from).join("");
-}
-
-// partAt is the 0-based part of a text broken at breaks that position at
-// falls in.
-export function partAt(breaks, at) {
-  return (breaks || []).filter(b => b <= at).length;
+// mediaPosFor is attachment img's position in platform p's text.
+export function mediaPosFor(p, img) {
+  const ov = state.ov[p];
+  if (ov.text != null) return (ov.mediaAt && ov.mediaAt[img.id]) || 0;
+  return state.anchors[img.id] || 0;
 }
 
 export function effectiveText(p) { return state.ov[p].text != null ? state.ov[p].text : state.master; }
@@ -157,6 +122,8 @@ export function focusedPlatform() {
 function ovFor(p) {
   const ov = state.ov[p], o = {};
   if (ov.text != null) o.text = ov.text;
+  if (ov.breaks) o.breaks = [...ov.breaks];
+  if (ov.mediaAt) o.mediaAt = { ...ov.mediaAt };
   if (p === "bluesky") {
     // langs may be a string (editor input) or an array (a draft rehydrated
     // from a stored spec where buildSpec previously serialized it as []).
@@ -195,19 +162,17 @@ export function imageSpecs() {
 export function buildSpec() {
   const overrides = {};
   for (const p of state.platforms) overrides[p] = ovFor(p);
-  const nParts = masterParts().length;
-  const imgs = imageSpecs();
-  const img_parts = state.images
-    .filter(i => !(i.video && i.phase !== "ready"))
-    .map(i => Math.min(state.anchors[i.id] || 0, Math.max(0, nParts - 1)));
   const spec = {
+    // 2: breaks and anchors are positions (UTF-16); before, "---" lines in
+    // the text and part numbers (loadDraft converts those).
+    v: 2,
     master_text: state.master,
+    breaks: [...state.breaks],
     platforms: [...state.platforms],
     delay_seconds: 0,
     overrides,
-    images: imgs,
-    img_parts,
-    anchors: state.anchors,   // media placement, keyed by attachment id
+    images: imageSpecs(),
+    anchors: state.anchors,   // media positions, keyed by attachment id
     // mirror the preview's numbering toggle so the posted thread matches what was shown
     number: document.getElementById("threadnum")?.checked ?? true,
   };
@@ -265,15 +230,21 @@ export function v1Target(p, { repost = false } = {}) {
   const ov = state.ov[p], options = {}, content = {};
   // The server refuses a blank override; the composer treats one as "use the
   // shared text".
-  if (ov.text != null && ov.text.trim() !== "") {
-    const own = fromMarkers(ov.text);
-    content.text = own.text;
+  // In a reply or a quote only the shared breaks apply (to the native
+  // target; copies are split automatically).
+  const own = ov.text != null && ov.text.trim() !== "";
+  if (own) content.text = ov.text;
+  if (!state.interaction) {
+    const text = own ? ov.text : state.master;
     const th = {};
-    if (own.breaks.length) th.breaks = own.breaks;
-    // Its own text places media by its own parts.
-    const parts = state.interaction ? [] : postMedia().map(mediaPart);
-    if (parts.some(k => k > 0)) th.media_at = parts.map(k => own.parts[Math.min(k, own.parts.length - 1)]);
-    if (Object.keys(th).length) t.thread = th;
+    if (ov.breaks && (own || ov.text == null)) th.breaks = cpBreaks(text, ov.breaks);
+    else if (own) th.breaks = [];
+    if (own) {
+      const at = postMedia().map(i => u16ToCp(text, Math.min((ov.mediaAt && ov.mediaAt[i.id]) || 0, text.length)));
+      if (at.some(x => x > 0)) th.media_at = at;
+    }
+    // Absent breaks already mean the shared ones (or none with own text).
+    if (th.media_at || (th.breaks && (th.breaks.length || !own))) t.thread = th;
   }
   if (p === "bluesky") {
     options.reply_gate = ov.reply || "";
@@ -307,11 +278,9 @@ export function postMedia() {
   return state.images.filter(i => i.media_id && !(i.video && i.phase !== "ready"));
 }
 
-// mediaPart is the text part an attachment goes with (its placement chip),
-// clamped to the parts there are.
-export function mediaPart(img) {
-  const n = masterParts().length;
-  return Math.min(state.anchors[img.id] || 0, Math.max(0, n - 1));
+// cpBreaks is breaks in text as the API takes them: valid, in code points.
+function cpBreaks(text, breaks) {
+  return cleanBreaks(text, breaks).map(b => u16ToCp(text, b));
 }
 
 // v1PostBody is the composer as a POST /v1/posts body: shared text and
@@ -319,15 +288,16 @@ export function mediaPart(img) {
 // the reply/quote it makes.
 export function v1PostBody() {
   const it = state.interaction;
-  const shared = it ? { text: state.master, breaks: [], parts: [0] } : fromMarkers(state.master);
+  const text = state.master;
   const media = postMedia().map(i => {
     const m = { id: i.media_id, alt: i.alt || "" };
-    const part = it ? 0 : mediaPart(i);
-    if (part > 0) m.at = shared.parts[Math.min(part, shared.parts.length - 1)];
+    const at = it ? 0 : u16ToCp(text, Math.min(state.anchors[i.id] || 0, text.length));
+    if (at > 0) m.at = at;
     return m;
   });
-  const content = { text: shared.text, media };
-  if (shared.breaks.length) content.breaks = shared.breaks;
+  const content = { text, media };
+  const breaks = cpBreaks(text, state.breaks);
+  if (breaks.length) content.breaks = breaks;
   const body = {
     content,
     targets: ORDER.filter(p => state.platforms.has(p)).map(p => v1Target(p)),

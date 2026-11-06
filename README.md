@@ -302,6 +302,20 @@ served from the root path. It talks to the publisher through `/v1` like any
 other client. Without OIDC it is unauthenticated by the service itself; see
 [Security](#security).
 
+The composer's **thread editor** has a tab for the shared text and one
+per selected account. The shared text is a stack of cards, one per post
+you break by hand: Ctrl/⌘+Enter (or ✂ split) starts a new post at the
+cursor, Backspace at the start of a card joins it to the one above, and a
+line of `---` becomes a break as soon as you start the next line. An
+account's tab shows its thread as the server will post it, counted the way
+that platform counts: solid lines are your breaks, dashed ones are splits
+made to fit its limit. Tap a word and **Break here**, move a break with ↑
+and ↓ (a sentence; Shift: a word) or by dragging it onto a word, and that
+account gets its own breaks while its wording still follows the shared
+text (**Reset to shared** undoes it). **Edit wording** gives it its own
+text. Images go with the post they sit on: drag them between cards, or
+use **Move to…**.
+
 The **Interact** tab accepts a pasted post URL or Nostr identifier, previews
 the source post, and reports which of reply/quote/repost the post allows.
 **Repost** is one-click. **Reply** and **Quote** open the **Compose** tab in
