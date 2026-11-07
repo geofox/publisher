@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"net/http"
 
 	gonostr "fiatjaf.com/nostr"
 
@@ -47,7 +48,8 @@ func (a *resolvingAccount) ResolveSource(ctx context.Context, in string) (destin
 // relayAccount is a Nostr account: it looks posts up and has relays.
 type nostrAccount struct {
 	resolvingAccount
-	home string
+	home   string
+	client *http.Client // the account's relay client
 }
 
 func (a *nostrAccount) HomeRelay() string { return a.home }
@@ -57,6 +59,7 @@ func (a *nostrAccount) OwnerPubkey() gonostr.PubKey {
 	return pk
 }
 func (a *nostrAccount) ResolveWriteRelays(context.Context) ([]string, error) { return nil, nil }
+func (a *nostrAccount) RelayClient() *http.Client                            { return a.client }
 
 var _ pubnostr.RelayLister = (*nostrAccount)(nil)
 
@@ -87,7 +90,7 @@ func (e *v1Env) withAccounts() *accounts.Registry {
 					home = "wss://home-" + string(rune('0'+nostrs)) + ".example"
 				}
 				nostrs++
-				return &nostrAccount{resolvingAccount{base}, home}, nil
+				return &nostrAccount{resolvingAccount{base}, home, &http.Client{}}, nil
 			case "threads":
 				return &base, nil
 			}

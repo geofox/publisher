@@ -214,6 +214,7 @@ var e2eNostrKey = gonostr.GetPublicKey(gonostr.Generate())
 func (f fakeRelayAccount) HomeRelay() string                                    { return "wss://relay.e2e.invalid" }
 func (f fakeRelayAccount) OwnerPubkey() gonostr.PubKey                          { return e2eNostrKey }
 func (f fakeRelayAccount) ResolveWriteRelays(context.Context) ([]string, error) { return nil, nil }
+func (f fakeRelayAccount) RelayClient() *http.Client                            { return nil }
 
 func (f *fakeAccount) Manifest() destination.Manifest { return f.drv.Manifest() }
 

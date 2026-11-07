@@ -16,6 +16,7 @@ import (
 	"github.com/geofox/publisher/internal/localauth"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
+	"github.com/geofox/publisher/internal/netguard"
 	"github.com/geofox/publisher/internal/relaysync"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/unfurl"
@@ -118,7 +119,11 @@ type API struct {
 	Store    *store.Store // set by cmd/publisher
 	// Sync scans and syncs a Nostr account's relays (relaysync.Sync); the
 	// account comes from Accounts. nil: relay sync is off.
-	Sync   Syncer
+	Sync Syncer
+	// Guard is who owner-set addresses may reach (PRIVATE_DESTINATIONS
+	// and the server's own addresses): relay sync's targets go through
+	// it. The zero value allows public addresses only.
+	Guard  netguard.Policy
 	Verify Verifier // set by cmd/publisher; verifies pasted events / post URLs
 	// relaySyncMu lets one /v1 relay scan or sync run at a time.
 	relaySyncMu sync.Mutex

@@ -30,6 +30,14 @@ the `edge` image.
   With OIDC, creating a token in the web app (any token) sends you
   through your provider's login again (Authelia 4.39 or later). A token
   can no longer create a token holding `admin` (`403 session_required`).
+- **Relay sync reaches only public relays unless you list a private
+  one.** The relays a scan or sync compares with the home relay (your
+  NIP-65 ones and those added under Tools) are addresses you set in the
+  app, so they now go through the same guard as accounts added in the
+  app: a relay on a private address (`ws://192.168.1.5:7777`, a
+  Tailscale name) needs `PRIVATE_DESTINATIONS`, and loopback, link-local
+  and the server's own addresses are never reached. The home relay is
+  dialed as before.
 
 ### Changed
 
@@ -187,6 +195,13 @@ the `edge` image.
   of its subdomains. A `MASTODON_BASE_URL` or `BLUESKY_PDS_URL` that
   redirects elsewhere now fails with "refused to send a request body to
   another host": set it to the address the server redirects to.
+- A Nostr account's relays (publishing, the NIP-65 lookup, relay sync's
+  home relay) are dialed through the account's network policy, as every
+  other network request is; they used the Nostr library's own client.
+- A connection refused because of its address no longer says what the
+  name resolved to ("dial tcp: refused to connect to a private or local
+  address"): the error can reach the owner, and the server's internal
+  addresses are not theirs to learn.
 
 ### Other changes
 

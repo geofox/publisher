@@ -18,6 +18,8 @@ import (
 	gonostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip13"
 	"fiatjaf.com/nostr/nip19"
+
+	"github.com/geofox/publisher/internal/destination"
 )
 
 // ErrInvalidInput is returned by Publish when the caller supplies an empty text field.
@@ -85,6 +87,10 @@ type Config struct {
 	// ContentClient dials relays named by content (the hints in a pasted
 	// nevent); nil: public addresses only, through the network guard.
 	ContentClient *http.Client
+	// RelayClient dials the account's own relays (home, fallback, primary
+	// and NIP-65 ones) with the host's network policy for the account;
+	// nil: destination.TrustedNet, as for an account the operator set up.
+	RelayClient *http.Client
 }
 
 // publishPool is the subset of *gonostr.Pool that Publisher needs; an
@@ -112,12 +118,19 @@ type relayCacheEntry struct {
 
 // New constructs a Publisher with a fresh connection pool.
 func New(cfg Config) *Publisher {
+	if cfg.RelayClient == nil {
+		cfg.RelayClient = destination.TrustedNet().Client(0)
+	}
 	return &Publisher{
 		cfg:   cfg,
-		pool:  gonostr.NewPool(),
+		pool:  newRelayPool(cfg.RelayClient),
 		cache: map[gonostr.PubKey]relayCacheEntry{},
 	}
 }
+
+// RelayClient is the client the account's own relays are dialed with
+// (relay sync reaches the home relay through it).
+func (p *Publisher) RelayClient() *http.Client { return p.cfg.RelayClient }
 
 // Close stops the relay pool and its connections. The Publisher can't be
 // used after it.
@@ -387,11 +400,11 @@ func (p *Publisher) resolveRelays(ctx context.Context, pubkey gonostr.PubKey) ([
 
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	relay, err := gonostr.RelayConnect(rctx, p.cfg.NIP65BootstrapRelay, gonostr.RelayOptions{})
-	if err != nil {
+	relay := gonostr.NewRelay(context.Background(), p.cfg.NIP65BootstrapRelay, gonostr.RelayOptions{})
+	defer relay.Close()
+	if err := relay.ConnectWithClient(rctx, p.cfg.RelayClient); err != nil {
 		return nil, fmt.Errorf("bootstrap connect: %w", err)
 	}
-	defer relay.Close()
 
 	filter := gonostr.Filter{
 		Kinds:   []gonostr.Kind{10002},

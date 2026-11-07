@@ -3,6 +3,7 @@ package relaysync
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -25,12 +26,26 @@ func NewLiveIO() *LiveIO {
 
 var _ relayIO = (*LiveIO)(nil) // compile-time check LiveIO satisfies the engine's interface
 
-func (io *LiveIO) Fetch(ctx context.Context, relayURL string, pubkey gonostr.PubKey) (map[gonostr.ID]gonostr.Event, error) {
+// connect dials relayURL with client; nil refuses (no network was given).
+// The connection lives until it is closed.
+func connect(ctx context.Context, client *http.Client, relayURL string) (*gonostr.Relay, error) {
+	if client == nil {
+		return nil, fmt.Errorf("%w: no network was given for this relay", ErrRelayUnreachable)
+	}
+	relay := gonostr.NewRelay(context.Background(), relayURL, gonostr.RelayOptions{})
+	if err := relay.ConnectWithClient(ctx, client); err != nil {
+		_ = relay.Close()
+		return nil, fmt.Errorf("%w: %v", ErrRelayUnreachable, err)
+	}
+	return relay, nil
+}
+
+func (io *LiveIO) Fetch(ctx context.Context, client *http.Client, relayURL string, pubkey gonostr.PubKey) (map[gonostr.ID]gonostr.Event, error) {
 	cctx, cancel := context.WithTimeout(ctx, io.TotalTimeout)
 	defer cancel()
-	relay, err := gonostr.RelayConnect(cctx, relayURL, gonostr.RelayOptions{})
+	relay, err := connect(cctx, client, relayURL)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrRelayUnreachable, err)
+		return nil, err
 	}
 	defer relay.Close()
 
@@ -79,15 +94,15 @@ func (io *LiveIO) Fetch(ctx context.Context, relayURL string, pubkey gonostr.Pub
 	return out, nil
 }
 
-func (io *LiveIO) Publish(ctx context.Context, relayURL string, events []gonostr.Event) (int, int, string, error) {
+func (io *LiveIO) Publish(ctx context.Context, client *http.Client, relayURL string, events []gonostr.Event) (int, int, string, error) {
 	if len(events) == 0 {
 		return 0, 0, "", nil
 	}
 	cctx, cancel := context.WithTimeout(ctx, io.TotalTimeout)
 	defer cancel()
-	relay, err := gonostr.RelayConnect(cctx, relayURL, gonostr.RelayOptions{})
+	relay, err := connect(cctx, client, relayURL)
 	if err != nil {
-		return 0, 0, "", fmt.Errorf("%w: %v", ErrRelayUnreachable, err)
+		return 0, 0, "", err
 	}
 	defer relay.Close()
 

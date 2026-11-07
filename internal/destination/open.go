@@ -239,7 +239,21 @@ func ContentNet(blocked func(net.IP) bool) Net {
 			}
 			return nil
 		}}
-	return Net{DialContext: d.DialContext, CheckRedirect: SafeRedirect}
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := d.DialContext(ctx, network, addr)
+		return c, hideAddress(network, err)
+	}
+	return Net{DialContext: dial, CheckRedirect: SafeRedirect}
+}
+
+// hideAddress drops the address from a refused dial's error (net.Dialer
+// names the address it refused): the error can reach the owner, and what
+// a name resolves to inside the server's network is not theirs to learn.
+func hideAddress(network string, err error) error {
+	if errors.Is(err, ErrBlockedAddress) {
+		return &net.OpError{Op: "dial", Net: network, Err: ErrBlockedAddress}
+	}
+	return err
 }
 
 // GuardedNet reaches addresses through allow, which judges every
@@ -266,7 +280,8 @@ func GuardedNet(allow func(host string, ip net.IP) error) Net {
 				}
 				return nil
 			}}
-		return d.DialContext(ctx, network, addr)
+		c, err := d.DialContext(ctx, network, addr)
+		return c, hideAddress(network, err)
 	}
 	return Net{DialContext: dial, CheckRedirect: GuardedRedirect}
 }

@@ -175,8 +175,13 @@ type relayAccount struct {
 	release func()
 }
 
-func (ra relayAccount) owner() relaysync.Owner {
-	return relaysync.Owner{Home: ra.lister.HomeRelay(), Pubkey: ra.lister.OwnerPubkey()}
+// relayOwner is who a scan or sync works for. The home relay is the
+// account's own (its network policy); the targets are relays the owner
+// set (NIP-65, or added here), dialed through the guard for owner-set
+// addresses whoever set the account up.
+func (a *API) relayOwner(ra relayAccount) relaysync.Owner {
+	return relaysync.Owner{Home: ra.lister.HomeRelay(), Pubkey: ra.lister.OwnerPubkey(),
+		HomeClient: ra.lister.RelayClient(), TargetClient: destination.GuardedNet(a.Guard.Allow).Client(0)}
 }
 
 // relayAccountOf leases the request's account when it is one of the
@@ -504,14 +509,14 @@ func (a *API) v1RelaysAction(action string) http.HandlerFunc {
 		defer cancel()
 		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(relaySyncBudget + 30*time.Second))
 		if action == "scan" {
-			out := a.Sync.Scan(ctx, ra.owner(), targets)
+			out := a.Sync.Scan(ctx, a.relayOwner(ra), targets)
 			if out == nil {
 				out = []relaysync.RelayDiff{}
 			}
 			writeV1(w, http.StatusOK, map[string]any{"relays": out})
 			return
 		}
-		out := a.Sync.Apply(ctx, ra.owner(), targets, direction)
+		out := a.Sync.Apply(ctx, a.relayOwner(ra), targets, direction)
 		if out == nil {
 			out = []relaysync.ApplyResult{}
 		}

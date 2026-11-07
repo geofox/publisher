@@ -35,6 +35,13 @@ func TestGuardedNetChecksTheConnectedAddress(t *testing.T) {
 	if hits.Load() != 0 {
 		t.Error("the server was reached")
 	}
+	// The error doesn't say what the name resolved to, for either network.
+	for name, n := range map[string]Net{"guarded": GuardedNet(refuseLoopback), "content": ContentNet(net.IP.IsLoopback)} {
+		_, err := n.Client(0).Get("http://localhost:" + u.Port())
+		if !errors.Is(err, ErrBlockedAddress) || strings.Contains(err.Error(), "127.0.0.1") || strings.Contains(err.Error(), "::1") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 	// The host name dialed reaches allow (for PRIVATE_DESTINATIONS names).
 	var seen []string
 	allow := func(host string, ip net.IP) error { seen = append(seen, host+"="+ip.String()); return nil }

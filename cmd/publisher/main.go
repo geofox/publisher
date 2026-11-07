@@ -155,6 +155,10 @@ func run(ctx context.Context, o runOptions) int {
 	for _, e := range env {
 		regEnv = append(regEnv, accounts.EnvAccount{Type: e.Type, EnvAccount: e.EnvAccount})
 	}
+	// Owner-set addresses (accounts added in the app, relay sync targets)
+	// reach public addresses and those PRIVATE_DESTINATIONS lists, never
+	// the server's own.
+	guard := cfg.PrivateDestinations.WithOwn()
 	reg := accounts.New(accounts.Options{
 		Store: st,
 		Env:   regEnv,
@@ -167,7 +171,7 @@ func run(ctx context.Context, o runOptions) int {
 			PLCDirectoryURL: cfg.PLCDirectoryURL,
 		},
 		Alerter: notifier,
-		Guard:   cfg.PrivateDestinations.WithOwn(),
+		Guard:   guard,
 	})
 	if err := reg.Load(context.Background()); err != nil {
 		slog.Error("loading accounts failed", "err", err)
@@ -246,6 +250,7 @@ func run(ctx context.Context, o runOptions) int {
 	// Relay sync works on the Nostr account a request names (its own
 	// home relay, key and list).
 	a.Sync = relaysync.New(relaysync.NewLiveIO())
+	a.Guard = guard
 	a.Verify = &verify.Service{
 		Nostr:    verify.NewNostrVerifier(cfg.VerifyHTTPTimeout),
 		Bluesky:  verify.NewBlueskyVerifier(cfg.PLCDirectoryURL, cfg.VerifyHTTPTimeout),
