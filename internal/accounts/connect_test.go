@@ -148,7 +148,7 @@ func TestConnectNewAccount(t *testing.T) {
 		t.Fatalf("another user: %v", err)
 	}
 
-	v, err := w.r.CompleteConnect(ctx, connectType, callback(state, "c-tok1"), "")
+	v, err := w.r.CompleteConnect(ctx, connectType, callback(state, "c-tok1"), "user-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,13 +166,13 @@ func TestConnectNewAccount(t *testing.T) {
 		t.Fatal("the flow's data outlived it")
 	}
 	n := len(connectDrv.done)
-	again, err := w.r.CompleteConnect(ctx, connectType, callback(state, "c-tok1"), "")
+	again, err := w.r.CompleteConnect(ctx, connectType, callback(state, "c-tok1"), "user-1")
 	if err != nil || again.Status != store.FlowCompleted || again.AccountID != v.AccountID || len(connectDrv.done) != n {
 		t.Fatalf("second callback: %+v %v (exchanges %d → %d)", again, err, n, len(connectDrv.done))
 	}
 	// The same account again is a duplicate.
 	_, q2 := startConnect(t, w, ConnectStart{Config: map[string]any{"server": "https://net.example"}})
-	dup, err := w.r.CompleteConnect(ctx, connectType, callback(q2.Get("state"), "c-tok1"), "")
+	dup, err := w.r.CompleteConnect(ctx, connectType, callback(q2.Get("state"), "c-tok1"), "user-1")
 	if err != nil || dup.Status != store.FlowFailed || dup.Error != destination.ConnectDuplicateAccount {
 		t.Fatalf("duplicate: %+v %v", dup, err)
 	}
@@ -199,7 +199,7 @@ func TestConnectRefusals(t *testing.T) {
 		}
 		return v.Error
 	}
-	if c := code(w.r.CompleteConnect(ctx, connectType, callback("nope", "c-x"), "")); c != destination.ConnectStateInvalid {
+	if c := code(w.r.CompleteConnect(ctx, connectType, callback("nope", "c-x"), "user-1")); c != destination.ConnectStateInvalid {
 		t.Errorf("unknown state: %s", c)
 	}
 	q := start()
@@ -274,7 +274,7 @@ func TestConnectReconnect(t *testing.T) {
 	w := newConnectEnv(t, false)
 	ctx := context.Background()
 	_, q := startConnect(t, w, ConnectStart{Config: map[string]any{"server": "https://net.example"}})
-	v, err := w.r.CompleteConnect(ctx, connectType, callback(q.Get("state"), "c-same1"), "")
+	v, err := w.r.CompleteConnect(ctx, connectType, callback(q.Get("state"), "c-same1"), "user-1")
 	if err != nil || v.Status != store.FlowCompleted {
 		t.Fatalf("connect: %+v %v", v, err)
 	}
@@ -283,7 +283,7 @@ func TestConnectReconnect(t *testing.T) {
 	if last := connectDrv.begins[len(connectDrv.begins)-1]; last.Config["server"] != "https://net.example" {
 		t.Fatalf("reconnect began with %v", last.Config)
 	}
-	v, err = w.r.CompleteConnect(ctx, connectType, callback(q.Get("state"), "c-same2"), "")
+	v, err = w.r.CompleteConnect(ctx, connectType, callback(q.Get("state"), "c-same2"), "user-1")
 	if err != nil || v.Status != store.FlowCompleted || v.AccountID != id {
 		t.Fatalf("reconnect: %+v %v", v, err)
 	}
@@ -291,7 +291,7 @@ func TestConnectReconnect(t *testing.T) {
 		t.Fatalf("secrets after reconnect: %v", got)
 	}
 	_, q = startConnect(t, w, ConnectStart{Reconnect: id})
-	v, err = w.r.CompleteConnect(ctx, connectType, callback(q.Get("state"), "c-other"), "")
+	v, err = w.r.CompleteConnect(ctx, connectType, callback(q.Get("state"), "c-other"), "user-1")
 	if err != nil || v.Error != destination.ConnectIdentityChanged {
 		t.Fatalf("another account: %+v %v", v, err)
 	}

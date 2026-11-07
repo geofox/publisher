@@ -159,6 +159,6 @@ func (e *engine) Flow(ctx context.Context, owner, user, id string) (accounts.Flo
 func (e *engine) Choose(ctx context.Context, owner, user, id string, n int) (accounts.FlowView, error) {
 	return e.registry().Choose(ctx, owner, user, id, n)
 }
-func (e *engine) ConnectUnavailable(typ string, a destination.AuthMethod) string {
-	return e.registry().ConnectUnavailable(typ, a)
+func (e *engine) ConnectUnavailable(typ string, a destination.AuthMethod, redirectURI string) string {
+	return e.registry().ConnectUnavailable(typ, a, redirectURI)
 }

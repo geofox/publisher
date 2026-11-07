@@ -24,7 +24,13 @@ import (
 // documentation: get started → access tokens and permissions, long-lived
 // tokens (verified 2026-11-07, the plan's E1).
 
-var _ destination.Connector = Driver{}
+var (
+	_ destination.Connector       = Driver{}
+	_ destination.RedirectChecker = Driver{}
+)
+
+// metaRedirectRule is why Meta won't send the owner back to an address.
+const metaRedirectRule = "Meta sends you back only to an https address other than localhost: set PUBLIC_URL to Publisher's https address"
 
 // The sign-in's addresses, as Meta documents them. Tests and the e2e
 // harness point them at fakes before connecting.
@@ -68,8 +74,7 @@ func (Driver) BeginConnect(_ context.Context, req destination.ConnectRequest) (d
 			Detail: "set the server's Threads app first (Settings, Integrations)"}
 	}
 	if !metaRedirect(req.RedirectURI) {
-		return destination.ConnectStart{}, &destination.FieldError{Key: "method", Code: "not_allowed",
-			Detail: "Meta sends you back only to an https address other than localhost: set PUBLIC_URL to Publisher's https address"}
+		return destination.ConnectStart{}, &destination.FieldError{Key: "method", Code: "not_allowed", Detail: metaRedirectRule}
 	}
 	q := url.Values{"client_id": {id}, "redirect_uri": {req.RedirectURI}, "scope": {oauthScopes},
 		"response_type": {"code"}, "state": {req.State}}
@@ -78,6 +83,15 @@ func (Driver) BeginConnect(_ context.Context, req destination.ConnectRequest) (d
 		return destination.ConnectStart{}, err
 	}
 	return destination.ConnectStart{AuthorizeURL: AuthorizeURL + "?" + q.Encode(), Data: data}, nil
+}
+
+// RedirectProblem implements destination.RedirectChecker: signing in at
+// Threads needs a redirect URI Meta takes.
+func (Driver) RedirectProblem(method, redirectURI string) string {
+	if method == MethodOAuth && !metaRedirect(redirectURI) {
+		return metaRedirectRule
+	}
+	return ""
 }
 
 // metaRedirect: Meta takes the redirect URI (an https address, never

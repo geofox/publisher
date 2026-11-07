@@ -108,7 +108,7 @@ type manifester interface {
 // connectReadiness says why a sign-in method can't start now
 // (accounts.Registry).
 type connectReadiness interface {
-	ConnectUnavailable(typ string, a destination.AuthMethod) string
+	ConnectUnavailable(typ string, a destination.AuthMethod, redirectURI string) string
 }
 
 func (a *API) v1Destinations(w http.ResponseWriter, _ *http.Request) {
@@ -144,7 +144,7 @@ func (a *API) withConnect(m destination.Manifest) destination.Manifest {
 		}
 		x.RedirectURI = accounts.RedirectURI(base, m.Type)
 		if ready != nil {
-			x.Unavailable = ready.ConnectUnavailable(m.Type, *x)
+			x.Unavailable = ready.ConnectUnavailable(m.Type, *x, x.RedirectURI)
 		}
 	}
 	m.Auth = auth

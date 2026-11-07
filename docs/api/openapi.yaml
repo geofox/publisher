@@ -564,13 +564,13 @@ paths:
       tags: [accounts]
       summary: Sign an account in again at its network
       description: |
-        A signed-in browser session. For an account added in the app with
-        a method that signs in at the network (`flow: redirect`), when its
-        credentials expired or were revoked: starts a connect flow as
-        `POST /v1/accounts:connect` does, keeping the account's settings
-        unless `config` sets some. The network must sign the same account
-        in again (the flow ends with `identity_changed` otherwise). One
-        from the environment is `409 locked_by_env`.
+        A signed-in browser session. For an account added in the app, when
+        its credentials expired or were revoked, or to have one added with
+        a token sign in instead (its `method` then changes): starts a
+        connect flow as `POST /v1/accounts:connect` does, keeping the
+        account's settings unless `config` sets some. The network must sign
+        the same account in again (the flow ends with `identity_changed`
+        otherwise). One from the environment is `409 locked_by_env`.
       security:
         - session: []
       requestBody:
@@ -681,10 +681,13 @@ paths:
         `completed` (with `account`), `failed` (with `error`, one of
         `denied`, `expired`, `state_invalid`, `session_mismatch`,
         `identity_changed`, `duplicate_account`, `exchange_failed`,
-        `issuer_mismatch`, `master_key_required`, and `error_detail`
-        saying what it means), or `choose` when the network offered
-        several accounts (`candidates`, picked with `:choose`). A flow is
-        kept an hour after it ends.
+        `issuer_mismatch`, `master_key_required`, `interrupted` (this
+        server stopped mid-way: check the accounts), and `error_detail`
+        saying what it means), or `choose` (with `candidates`, picked
+        with `:choose`): the network offered several accounts, or it sent
+        the owner back to a browser that isn't signed in to Publisher, and
+        the one account it signed in waits to be confirmed here. A flow
+        is kept an hour after it ends.
       security:
         - session: []
       responses:
@@ -710,9 +713,11 @@ paths:
       tags: [accounts]
       summary: Pick the account to connect
       description: |
-        For a flow in `choose`: connects the candidate at that index, as
-        the callback would have. A flow in another state answers as it
-        stands.
+        For a flow in `choose`: connects the candidate at that index (the
+        only one, to confirm it), as the callback would have. One choice at
+        a time; a flow in another state answers as it stands. An account
+        that can't be made from the candidate ends the flow `failed`; a
+        flow whose sealed data can't be opened is `502 connect_failed`.
       security:
         - session: []
       requestBody:
@@ -742,6 +747,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/Invalid"
+        "502":
+          $ref: "#/components/responses/ConnectFailed"
         default:
           $ref: "#/components/responses/Problem"
   /v1/account-sets:
@@ -4729,8 +4736,12 @@ components:
           type: array
           items:
             type: string
-            enum: [label, enabled, default_selected, public_feed]
-          description: An account event's changed fields, by name (never their values).
+          description: >-
+            An account event's changed fields, by name (never their values):
+            `label`, `enabled`, `default_selected`, `public_feed`; for new
+            settings or credentials, the names of the config and credential
+            fields changed, `method` (another way of connecting) and
+            `credentials` (signed in again at the network).
         actor:
           type: string
           enum: [session, token, proxy]
@@ -4811,7 +4822,7 @@ components:
           description: "`duplicate_account` only: the account you already have."
         connect_error:
           type: string
-          description: "`connect_failed` only: why, as a fixed code (spec §6.1): `denied`, `expired`, `state_invalid`, `session_mismatch`, `identity_changed`, `duplicate_account`, `exchange_failed`, `issuer_mismatch`, `master_key_required`."
+          description: "`connect_failed` only: why, as a fixed code (spec §6.1): `denied`, `expired`, `state_invalid`, `session_mismatch`, `identity_changed`, `duplicate_account`, `exchange_failed`, `issuer_mismatch`, `master_key_required`, `interrupted`."
     ConnectFlow:
       type: object
       additionalProperties: false
@@ -5169,7 +5180,7 @@ components:
             $ref: "#/components/schemas/FieldSpec"
         needs_instance_config:
           type: array
-          description: The server settings (`<type>.<key>`, in `GET /v1/instance/settings`) the method needs first.
+          description: The keys of the server settings the method needs first (in `GET /v1/instance/settings` as `<type>.<key>`, such as `threads.app_id`).
           items:
             type: string
         needs_public_url:
@@ -5183,7 +5194,7 @@ components:
             app the network asks for, such as a Meta app.
         unavailable:
           type: string
-          description: "Why the method can't start now (`flow: redirect`), such as a server setting it needs; absent when it can."
+          description: "Why the method can't start now (`flow: redirect`): no public address, no usable master key, a server setting it needs, or a public address the network refuses (Threads: https only); absent when it can."
     FieldSpec:
       type: object
       additionalProperties: false

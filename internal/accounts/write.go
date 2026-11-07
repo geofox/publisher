@@ -527,6 +527,11 @@ func (r *Registry) ChangeCredentials(ctx context.Context, u CredentialUpdate) (E
 		method = u.Method
 	}
 	a, ierr := methodOf(m, method)
+	if x, ok := m.AuthMethod(row.AuthMethod); ok && x.Flow == destination.FlowRedirect && u.Method == "" && u.Credentials == nil {
+		// An account that signed in at its network keeps its sign-in
+		// through a change of its settings.
+		a, ierr = x, nil
+	}
 	if ierr != nil {
 		return Entry{}, ierr
 	}
@@ -632,7 +637,11 @@ func (r *Registry) ChangeCredentials(ctx context.Context, u CredentialUpdate) (E
 			if len(keep) > 0 {
 				ptr += "/" + keep[0]
 			}
-			return Entry{}, invalid(ptr, "required", "a new server address needs the credentials again, so they never go to a server they weren't given for")
+			why := "a new server address needs the credentials again, so they never go to a server they weren't given for"
+			if a.Flow == destination.FlowRedirect {
+				why = "a new server address needs signing in again there (POST /v1/accounts/{id}:reconnect with it), so the credentials never go to a server they weren't given for"
+			}
+			return Entry{}, invalid(ptr, "required", why)
 		}
 		saved, _, err := r.openSecrets(ctx, row, oldAudience)
 		if err != nil {

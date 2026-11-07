@@ -52,7 +52,7 @@ type ConnectStart struct {
 	// AuthorizeURL is where the owner signs in.
 	AuthorizeURL string
 	// Data is what the driver needs at the callback (an issuer, a token
-	// endpoint, a client id); the host seals it until then.
+	// endpoint, a client id and secret); the host seals it until then.
 	Data json.RawMessage
 }
 
@@ -92,7 +92,16 @@ type OAuthClient struct {
 type OAuthClients interface {
 	Client(ctx context.Context, issuer string) (OAuthClient, bool, error)
 	SaveClient(ctx context.Context, c OAuthClient) error
-	ForgetClient(ctx context.Context, issuer string) error
+	// ForgetClient forgets the client registered with issuer, if it is
+	// still clientID (a newer one stays).
+	ForgetClient(ctx context.Context, issuer, clientID string) error
+}
+
+// RedirectChecker is a Connector whose network refuses some redirect URIs
+// (Meta: https only, never localhost). RedirectProblem says why method
+// can't send the owner back to redirectURI, in fixed words, or "".
+type RedirectChecker interface {
+	RedirectProblem(method, redirectURI string) string
 }
 
 // Connect error codes (spec §6.1): fixed words the owner sees; a network's
@@ -107,6 +116,9 @@ const (
 	ConnectExchangeFailed   = "exchange_failed"
 	ConnectIssuerMismatch   = "issuer_mismatch"
 	ConnectMasterKey        = "master_key_required"
+	// ConnectInterrupted: the callback came, but this server stopped
+	// before it recorded how the flow ended (a restart, a failed write).
+	ConnectInterrupted = "interrupted"
 )
 
 // ConnectError is a flow that failed with one of the codes; Err, for the

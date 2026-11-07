@@ -49,6 +49,7 @@ var connectText = map[string]string{
 	destination.ConnectExchangeFailed:   "the network didn't complete the sign-in",
 	destination.ConnectIssuerMismatch:   "the server's sign-in isn't on the server's own address",
 	destination.ConnectMasterKey:        "the server's master key (PUBLISHER_MASTER_KEY) is needed and isn't usable",
+	destination.ConnectInterrupted:      "the sign-in stopped on this server before it finished; check Accounts, and start again if the account isn't there",
 }
 
 func connectDetail(code string) string {
@@ -179,7 +180,7 @@ func (a *API) startConnect(w http.ResponseWriter, r *http.Request, q accounts.Co
 	q.RedirectBase = a.connectBase()
 	f, err := conn.BeginConnect(r.Context(), q)
 	if err != nil {
-		a.connectError(w, r, err)
+		a.connectError(w, r, "starting the sign-in", err)
 		return
 	}
 	w.Header().Set("Location", "/v1/connect-flows/"+f.ID)
@@ -188,7 +189,7 @@ func (a *API) startConnect(w http.ResponseWriter, r *http.Request, q accounts.Co
 
 // connectError answers a flow that couldn't start, or a choice that
 // couldn't finish.
-func (a *API) connectError(w http.ResponseWriter, r *http.Request, err error) {
+func (a *API) connectError(w http.ResponseWriter, r *http.Request, what string, err error) {
 	var ce *destination.ConnectError
 	switch {
 	case errors.Is(err, accounts.ErrNoRedirectBase):
@@ -203,7 +204,7 @@ func (a *API) connectError(w http.ResponseWriter, r *http.Request, err error) {
 		writeProblem(w, r, problemBody{Status: http.StatusBadGateway, Code: codeConnectFailed, ConnectError: ce.Code,
 			Detail: connectDetail(ce.Code)})
 	default:
-		a.accountWriteError(w, r, "starting the sign-in", err)
+		a.accountWriteError(w, r, what, err)
 	}
 }
 
@@ -265,7 +266,7 @@ func (a *API) v1ConnectFlowAction(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
 	v, err := conn.Choose(r.Context(), p.OwnerID, p.ID, id, *in.Candidate)
 	if err != nil {
-		a.connectError(w, r, err)
+		a.connectError(w, r, "connecting the account chosen", err)
 		return
 	}
 	writeV1(w, http.StatusOK, flowBody(v))
@@ -299,6 +300,13 @@ type callbackView struct {
 // the flow's capability, and a home-screen app may come back in another
 // browser. A session that came with it must be the flow's user's.
 func (a *API) handleConnectCallback(w http.ResponseWriter, r *http.Request) {
+	// Only the network's redirect: a HEAD (a link preview) must not use
+	// the sign-in.
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	h := w.Header()
 	h.Set("Content-Security-Policy", callbackCSP)
 	h.Set("Cache-Control", "no-store")
@@ -335,7 +343,11 @@ func (a *API) handleConnectCallback(w http.ResponseWriter, r *http.Request) {
 	case store.FlowCompleted:
 		page(http.StatusOK, callbackView{Title: "Connected", Text: "The account is connected. You can close this tab and go back to Publisher."})
 	case store.FlowChoose:
-		page(http.StatusOK, callbackView{Title: "Almost there", Text: "The network offered more than one account: pick one in Publisher, in the tab you started from."})
+		text := "The network offered more than one account: pick one in Publisher, in the tab you started from."
+		if len(v.Candidates) == 1 {
+			text = "This browser isn't signed in to Publisher: confirm the account in Publisher, in the tab you started from."
+		}
+		page(http.StatusOK, callbackView{Title: "Almost there", Text: text})
 	case store.FlowFailed:
 		page(http.StatusBadRequest, callbackView{Title: "Not connected", Text: upperFirst(connectDetail(v.Error)) + ".", Code: v.Error})
 	default:

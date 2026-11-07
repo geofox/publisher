@@ -744,7 +744,12 @@ an API token). A sign-in lasts 10 minutes. An account added this way
 that needs reconnecting shows **Reconnect**, which signs in again; its
 **Settings** have **Sign in again**, also for moving it to another
 server. Signing in as another account than the one being reconnected is
-refused.
+refused. When the network sends you back to a browser that isn't signed
+in to Publisher (a home-screen app opens the sign-in in your browser),
+the first tab asks you to confirm the account it signed in, by its
+handle, before adding it. With a forward-auth proxy in front, let
+`/oauth/callback/` through without its own sign-in, as the network's
+redirect may come from such a browser.
 
 - **Mastodon:** nothing to set up. Publisher registers itself on your
   server the first time (an app named `Publisher (<your host>)`, with
@@ -760,18 +765,20 @@ refused.
      Roles, Add People), and accept the invite in Threads (Account
      settings, Website permissions). Your own accounts need no App
      Review.
-  3. Add Publisher's redirect URI to the app's valid OAuth redirect
-     URIs, exactly as **Settings → Integrations → Threads app** shows it
-     (`https://<your host>/oauth/callback/threads`). Meta takes only
-     `https://` and refuses `localhost`.
+  3. In the Threads use case's **Settings**, add Publisher's redirect
+     URI to **Client OAuth Settings**, the valid OAuth redirect URIs,
+     exactly as **Settings → Integrations → Threads app** shows it
+     (`https://<your host>/oauth/callback/threads`). Meta compares it
+     character by character and may add a trailing slash: remove it.
+     Meta takes only `https://` and refuses `localhost`.
   4. Copy the **Threads App ID** and **Threads App secret** (App
      settings, Basic: the Threads ones, not the Meta app's) into
      **Settings → Integrations → Threads app**.
 
   The long-lived token lasts 60 days and Publisher renews it. Meta's
-  permission itself ends 90 days after you allow it (renewing moves that
-  on only for a public profile): the account's card shows the date, and
-  an alert comes a week ahead, so you sign in again before then.
+  access itself ends 90 days after you allow it (renewing moves that on
+  only for a public profile): the account's card shows the date, and an
+  alert comes a week ahead, so you sign in again before then.
 
 #### Servers on your own network
 

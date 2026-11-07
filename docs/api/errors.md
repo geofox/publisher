@@ -306,8 +306,10 @@ one of the fixed codes a connect flow's `error` uses: `exchange_failed`
 (the network didn't answer as expected), `issuer_mismatch` (the
 server's sign-in metadata names another address than the server's),
 `denied`, `expired`, `state_invalid`, `session_mismatch`,
-`identity_changed`, `duplicate_account`, `master_key_required`. The
-network's own words are only in the server's log. Check the server's
+`identity_changed`, `duplicate_account`, `master_key_required`,
+`interrupted` (this server stopped before it recorded how the flow
+ended: check the accounts). The network's own words are only in the
+server's log. Check the server's
 address, then try again.
 
 ## insufficient_storage

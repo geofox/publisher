@@ -30,14 +30,20 @@ import (
 //
 // The callback needs no session (a home-screen app may come back in
 // another browser): the state is the capability. A session that is there
-// must be the flow's user's. The tab that started the flow reads its
-// outcome.
+// must be the flow's user's. Without one, the account waits for the owner
+// to confirm it in the tab that started the flow (a :choose of one), so a
+// sign-in link that leaked can't add someone else's account unseen. The
+// tab that started the flow reads its outcome.
 
 const (
 	// FlowTTL is how long a flow waits for its callback.
 	FlowTTL = 10 * time.Minute
 	// flowKept is how long an expired flow's outcome stays readable.
 	flowKept = time.Hour
+	// claimTimeout: a flow whose callback came this long ago without an
+	// outcome was interrupted (a restart, a failed write). Its requests
+	// are bounded far below it.
+	claimTimeout = 2 * time.Minute
 )
 
 // FlowStore is the store's side of the connect flows.
@@ -233,21 +239,33 @@ func missingInstance(typ string, a destination.AuthMethod, cfg map[string]any, s
 	return ""
 }
 
-// ConnectUnavailable says why a type's sign-in method can't start now,
-// as starting it would ("" when it can, or it isn't one).
-func (r *Registry) ConnectUnavailable(typ string, a destination.AuthMethod) string {
+// ConnectUnavailable says why a type's sign-in method can't start now
+// with redirectURI, as starting it would ("" when it can, or it isn't
+// one).
+func (r *Registry) ConnectUnavailable(typ string, a destination.AuthMethod, redirectURI string) string {
 	if a.Flow != destination.FlowRedirect {
 		return ""
 	}
 	if r.opt.Flows == nil || r.opt.Writes == nil {
 		return ErrNoFlows.Error()
 	}
+	if err := r.opt.KeyState.WriteError(); err != nil {
+		return err.Error()
+	}
 	var cfg map[string]any
 	var sec map[string]string
 	if r.opt.Instance != nil {
 		cfg, sec = r.opt.Instance(typ)
 	}
-	return missingInstance(typ, a, cfg, sec)
+	if why := missingInstance(typ, a, cfg, sec); why != "" {
+		return why
+	}
+	if d, ok := destination.Lookup(typ); ok {
+		if rc, ok := d.(destination.RedirectChecker); ok {
+			return rc.RedirectProblem(a.ID, redirectURI)
+		}
+	}
+	return ""
 }
 
 // BeginConnect starts a flow: a new account, or a reconnect of an
@@ -340,7 +358,17 @@ func (r *Registry) connectFailure(f store.OAuthFlow, err error) error {
 	// PUBLIC_URL must be https), with its fixed text.
 	var fe *destination.FieldError
 	if errors.As(err, &fe) {
-		return invalid("/"+fe.Key, fe.Code, fe.Detail)
+		ptr := "/" + fe.Key
+		if fe.Key != "method" {
+			ptr = "/config/" + fe.Key // a field the owner typed (a server's address)
+		}
+		return invalid(ptr, fe.Code, fe.Detail)
+	}
+	// Publisher's own store failed (keeping a server's app): not the
+	// network's doing.
+	var le *localError
+	if errors.As(err, &le) {
+		return le.err
 	}
 	var ce *destination.ConnectError
 	if !errors.As(err, &ce) {
@@ -452,29 +480,57 @@ func (r *Registry) CompleteConnect(ctx context.Context, typ string, callback url
 		maps.Copy(out, c)
 		return out
 	}
+	cands := []candidate{{Config: withFields(res.Config), Secrets: res.Secrets, Identity: res.Identity}}
 	if len(res.Candidates) > 0 {
-		cands := make([]candidate, 0, len(res.Candidates))
+		cands = make([]candidate, 0, len(res.Candidates))
 		for _, c := range res.Candidates {
 			cands = append(cands, candidate{Config: withFields(c.Config), Secrets: c.Secrets, Identity: c.Identity})
 		}
-		if len(cands) == 1 {
+	}
+	if len(cands) == 1 {
+		if sessionUser != "" {
 			return r.finishWith(ctx, f, a, cands[0], fail)
 		}
-		put, err := r.sealFlow(f, "candidates", cands)
+		// Back in a browser that isn't signed in (a home-screen app, or
+		// someone else's): the owner confirms the account, by who it is,
+		// in the tab that started the flow.
+		c, err := r.identify(ctx, f, a, cands[0])
 		if err != nil {
 			return fail(destination.ConnectExchangeFailed, err)
 		}
-		if err := r.opt.Flows.FinishOAuthFlow(ctx, f.OwnerID, f.ID, store.FlowOutcome{Status: store.FlowChoose,
-			Put: []store.SealedSecret{put}}); err != nil {
-			return FlowView{}, err
-		}
-		g, err := r.opt.Flows.OAuthFlow(ctx, f.OwnerID, f.ID)
-		if err != nil {
-			return FlowView{}, err
-		}
-		return r.flowView(ctx, g)
+		cands[0] = c
 	}
-	return r.finishWith(ctx, f, a, candidate{Config: withFields(res.Config), Secrets: res.Secrets, Identity: res.Identity}, fail)
+	put, err := r.sealFlow(f, "candidates", cands)
+	if err != nil {
+		return fail(destination.ConnectExchangeFailed, err)
+	}
+	if err := r.opt.Flows.FinishOAuthFlow(ctx, f.OwnerID, f.ID, store.FlowOutcome{Status: store.FlowChoose,
+		Put: []store.SealedSecret{put}}); err != nil {
+		return FlowView{}, err
+	}
+	g, err := r.opt.Flows.OAuthFlow(ctx, f.OwnerID, f.ID)
+	if err != nil {
+		return FlowView{}, err
+	}
+	return r.flowView(ctx, g)
+}
+
+// identify asks the network who a candidate is (its handle, for the owner
+// to confirm), with what the account would be opened with.
+func (r *Registry) identify(ctx context.Context, f store.OAuthFlow, a destination.AuthMethod, c candidate) (candidate, error) {
+	if c.Identity.Handle != "" {
+		return c, nil
+	}
+	d, _ := destination.Lookup(f.Type)
+	row := store.Account{ID: store.NewAccountID(), OwnerID: f.OwnerID, Type: f.Type, Source: store.SourceDB, AuthMethod: a.ID}
+	ident, secrets, config, err := r.trial(ctx, d, row, c.Config, c.Secrets)
+	if err != nil {
+		return candidate{}, err
+	}
+	if ident.Handle == "" {
+		ident.Handle = ident.RemoteID
+	}
+	return candidate{Config: config, Secrets: secrets, Identity: ident}, nil
 }
 
 // redactWord keeps an OAuth error code readable and harmless (it is the
@@ -507,8 +563,9 @@ func (r *Registry) finishWith(ctx context.Context, f store.OAuthFlow, a destinat
 		if label == "" {
 			label = d.Manifest().Name
 		}
+		// The connect routes take only a browser session.
 		en, err = r.createChecked(ctx, NewAccount{Owner: f.OwnerID, Type: f.Type, Method: a.ID, Label: label,
-			Actor: f.UserID}, d, a, config, c.Secrets)
+			Actor: "session"}, d, a, config, c.Secrets)
 	} else {
 		var row store.Account
 		row, err = r.opt.Writes.Account(ctx, f.OwnerID, f.AccountID)
@@ -533,8 +590,12 @@ func (r *Registry) finishWith(ctx context.Context, f store.OAuthFlow, a destinat
 					}
 				}
 				maps.Copy(keep, config)
+				fields := []string{"credentials"}
+				if row.AuthMethod != a.ID { // an account added with a token now signs in
+					fields = append(fields, "method")
+				}
 				en, err = r.replaceChecked(ctx, row, d, a, keep, c.Secrets, store.CredentialChange{
-					Fields: []string{"credentials"}, Actor: f.UserID})
+					Fields: fields, Actor: "session"})
 			}
 		}
 	}
@@ -547,9 +608,17 @@ func (r *Registry) finishWith(ctx context.Context, f store.OAuthFlow, a destinat
 	case err != nil:
 		return fail(destination.ConnectExchangeFailed, err)
 	}
-	if err := r.opt.Flows.FinishOAuthFlow(ctx, f.OwnerID, f.ID, store.FlowOutcome{Status: store.FlowCompleted,
-		AccountID: en.Row.ID}); err != nil {
-		return FlowView{}, err
+	// The account is stored: the flow says so, even if recording that
+	// fails twice (it then reads as interrupted, and the account is in
+	// the list).
+	done := store.FlowOutcome{Status: store.FlowCompleted, AccountID: en.Row.ID}
+	err = r.opt.Flows.FinishOAuthFlow(ctx, f.OwnerID, f.ID, done)
+	if err != nil && !errors.Is(err, store.ErrFlowClaimed) {
+		err = r.opt.Flows.FinishOAuthFlow(ctx, f.OwnerID, f.ID, done)
+	}
+	if err != nil && !errors.Is(err, store.ErrFlowClaimed) {
+		r.log.Error("connecting an account: its flow's outcome wasn't recorded", "connect_flow", f.ID, "account", en.Row.ID, "err", err)
+		return FlowView{ID: f.ID, Status: store.FlowCompleted, AccountID: en.Row.ID, Type: f.Type, ExpiresAt: f.ExpiresAt}, nil
 	}
 	g, err := r.opt.Flows.OAuthFlow(ctx, f.OwnerID, f.ID)
 	if err != nil {
@@ -576,8 +645,11 @@ func (r *Registry) Flow(ctx context.Context, owner, user, id string) (FlowView, 
 
 func (r *Registry) flowView(ctx context.Context, f store.OAuthFlow) (FlowView, error) {
 	v := FlowView{ID: f.ID, Status: f.Status, AccountID: f.ResultAccountID, Error: f.ErrorCode, Type: f.Type, ExpiresAt: f.ExpiresAt}
-	if f.Status == store.FlowPending && f.UsedAt == nil && !r.now().Before(f.ExpiresAt) {
+	switch {
+	case f.Status == store.FlowPending && f.UsedAt == nil && !r.now().Before(f.ExpiresAt):
 		v.Status, v.Error = store.FlowFailed, destination.ConnectExpired
+	case f.Status == store.FlowPending && f.UsedAt != nil && !r.now().Before(f.UsedAt.Add(claimTimeout)):
+		v.Status, v.Error = store.FlowFailed, destination.ConnectInterrupted
 	}
 	if f.Status == store.FlowChoose {
 		var cands []candidate
@@ -601,6 +673,10 @@ func (r *Registry) Choose(ctx context.Context, owner, user, id string, n int) (F
 	if r.opt.Flows == nil {
 		return FlowView{}, ErrNoFlows
 	}
+	// One choice at a time, read again under the lock: two choices racing
+	// would otherwise both store an account.
+	r.chooseMu.Lock()
+	defer r.chooseMu.Unlock()
 	f, err := r.opt.Flows.OAuthFlow(ctx, owner, id)
 	if err != nil {
 		return FlowView{}, err
@@ -668,12 +744,12 @@ func (c *oauthClients) Client(ctx context.Context, issuer string) (destination.O
 		return destination.OAuthClient{}, false, nil
 	}
 	if err != nil {
-		return destination.OAuthClient{}, false, err
+		return destination.OAuthClient{}, false, &localError{err}
 	}
 	out := destination.OAuthClient{Issuer: row.Issuer, ClientID: row.ClientID, Scopes: row.Scopes}
 	ss, err := c.r.opt.Flows.Secrets(ctx, c.owner, secrets.ScopeOAuthClient, row.ID)
 	if err != nil {
-		return destination.OAuthClient{}, false, err
+		return destination.OAuthClient{}, false, &localError{err}
 	}
 	for _, s := range ss {
 		if s.Name != "client_secret" {
@@ -705,16 +781,29 @@ func (c *oauthClients) SaveClient(ctx context.Context, cl destination.OAuthClien
 		}
 		put = append(put, store.SealedSecret{Owner: b.Owner, Scope: b.Scope, Ref: b.Ref, Name: b.Name, Audience: b.Audience, Sealed: sealed, KeyID: kid})
 	}
-	return c.r.opt.Flows.SaveOAuthClient(ctx, row, put)
+	if err := c.r.opt.Flows.SaveOAuthClient(ctx, row, put); err != nil {
+		return &localError{err}
+	}
+	return nil
 }
 
-func (c *oauthClients) ForgetClient(ctx context.Context, issuer string) error {
+func (c *oauthClients) ForgetClient(ctx context.Context, issuer, clientID string) error {
 	row, err := c.r.opt.Flows.OAuthClientFor(ctx, c.owner, c.typ, issuer, c.redirect)
-	if errors.Is(err, store.ErrOAuthClientNotFound) {
-		return nil
+	if errors.Is(err, store.ErrOAuthClientNotFound) || (err == nil && row.ClientID != clientID) {
+		return nil // gone, or a newer app replaced it
 	}
 	if err != nil {
-		return err
+		return &localError{err}
 	}
-	return c.r.opt.Flows.DeleteOAuthClient(ctx, c.owner, row.ID)
+	if err := c.r.opt.Flows.DeleteOAuthClient(ctx, c.owner, row.ID); err != nil {
+		return &localError{err}
+	}
+	return nil
 }
+
+// localError is Publisher's own store failing during a flow, not the
+// network's answer.
+type localError struct{ err error }
+
+func (e *localError) Error() string { return e.err.Error() }
+func (e *localError) Unwrap() error { return e.err }

@@ -189,15 +189,25 @@ func TestV1ConnectAccount(t *testing.T) {
 	}
 
 	// Back without a session (a home-screen app's other browser): the
-	// state is enough; the session gate lets the callback through.
+	// session gate lets the callback through, and the owner confirms the
+	// account in the tab that started the flow.
 	f2, state2 := w.startFlow("https://net.example")
-	wantPage(t, w.back(url.Values{"state": {state2}, "code": {"c-tok-two"}}, nil), http.StatusOK, "Connected")
-	if b := w.flow(f2.Flow); b.Status != store.FlowCompleted {
+	body = wantPage(t, w.back(url.Values{"state": {state2}, "code": {"c-tok-two"}}, nil), http.StatusOK, "Almost there")
+	if !strings.Contains(body, "confirm the account") {
+		t.Fatalf("confirm page: %s", body)
+	}
+	b = w.flow(f2.Flow)
+	if b.Status != store.FlowChoose || len(b.Candidates) != 1 || b.Candidates[0].Handle == "" || b.Account != "" {
 		t.Fatalf("without a session: %+v", b)
+	}
+	r := w.do(req{method: "POST", path: "/v1/connect-flows/" + f2.Flow + ":choose", body: `{"candidate":0}`})
+	wantStatus(t, r, http.StatusOK)
+	if r.json(&b); b.Status != store.FlowCompleted || b.Account == "" {
+		t.Fatalf("confirmed: %+v", b)
 	}
 	// The same network account again: a duplicate.
 	f3, state3 := w.startFlow("https://net.example")
-	body = wantPage(t, w.back(url.Values{"state": {state3}, "code": {"c-tok-two"}}, nil), http.StatusBadRequest, "Not connected")
+	body = wantPage(t, w.back(url.Values{"state": {state3}, "code": {"c-tok-two"}}, w.cookie), http.StatusBadRequest, "Not connected")
 	if !strings.Contains(body, upperFirst(connectText[destination.ConnectDuplicateAccount])+".") {
 		t.Fatalf("duplicate page: %s", body)
 	}
@@ -358,11 +368,17 @@ func TestV1ConnectThreads(t *testing.T) {
 		t.Fatalf("without a public address: %+v", a)
 	}
 	w.api.AppBaseURL = "http://pub.example"
+	if a := method(); !strings.Contains(a.Unavailable, "https") {
+		t.Fatalf("http, listed: %+v", a)
+	}
 	p = wantProblem(t, start(), http.StatusUnprocessableEntity, codeValidation)
 	if len(p.Errors) != 1 || p.Errors[0].Pointer != "/method" || !strings.Contains(p.Errors[0].Detail, "https") {
 		t.Fatalf("http: %+v", p)
 	}
 	w.api.AppBaseURL = "https://pub.example"
+	if a := method(); a.Unavailable != "" {
+		t.Fatalf("ready, listed: %+v", a)
+	}
 	r := start()
 	wantStatus(t, r, http.StatusCreated)
 	var b v1ConnectStartBody
@@ -460,4 +476,21 @@ func connectConformance(t *testing.T) map[string]bool {
 	call("POST /v1/accounts/{id}:reconnect", req{method: "POST", path: "/v1/accounts/" + b.Account + ":reconnect",
 		body: `{"config":{"server":"https://net.example"}}`}, 201)
 	return seen
+}
+
+// The callback is the network's redirect only: a HEAD (a link preview)
+// doesn't use the sign-in.
+func TestV1ConnectCallbackOnlyGET(t *testing.T) {
+	w, _ := newConnectEnv(t)
+	f, state := w.startFlow("https://net.example")
+	r := httptest.NewRequest("HEAD", "/oauth/callback/"+apiConnectType+"?"+url.Values{"state": {state}, "code": {"c-tok-head"}}.Encode(), nil)
+	rec := httptest.NewRecorder()
+	w.h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "GET" {
+		t.Fatalf("HEAD: %d %v", rec.Code, rec.Header())
+	}
+	if b := w.flow(f.Flow); b.Status != store.FlowPending {
+		t.Fatalf("after HEAD: %+v", b)
+	}
+	wantPage(t, w.back(url.Values{"state": {state}, "code": {"c-tok-head"}}, w.cookie), http.StatusOK, "Connected")
 }

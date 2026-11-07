@@ -175,6 +175,16 @@ func TestConnectNeedsAppAndHTTPS(t *testing.T) {
 		if !errors.As(err, &fe) || fe.Key != "method" || fe.Code != "not_allowed" {
 			t.Errorf("%s: %v", name, err)
 		}
+		// The method's readiness says so before it starts.
+		if p := (Driver{}).RedirectProblem(MethodOAuth, req.RedirectURI); (p != "") != strings.Contains(fe.Detail, "https") {
+			t.Errorf("%s: readiness %q", name, p)
+		}
+	}
+	if p := (Driver{}).RedirectProblem(MethodOAuth, testRedirect); p != "" {
+		t.Fatalf("https: %q", p)
+	}
+	if p := (Driver{}).RedirectProblem(MethodToken, "http://localhost/x"); p != "" {
+		t.Fatalf("token: %q", p)
 	}
 }
 

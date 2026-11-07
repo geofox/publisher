@@ -162,6 +162,7 @@ type Registry struct {
 	closed  bool
 
 	reopenMu sync.Mutex // one Reopen at a time
+	chooseMu sync.Mutex // one connect flow's choice at a time
 
 	subMu   sync.Mutex
 	subs    map[int]func(Change)

@@ -105,10 +105,12 @@ func (c *memClients) SaveClient(_ context.Context, cl destination.OAuthClient) e
 	return nil
 }
 
-func (c *memClients) ForgetClient(_ context.Context, issuer string) error {
+func (c *memClients) ForgetClient(_ context.Context, issuer, clientID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.byIss, issuer)
+	if cl, ok := c.byIss[issuer]; ok && cl.ClientID == clientID {
+		delete(c.byIss, issuer)
+	}
 	c.forgot++
 	return nil
 }
@@ -164,8 +166,10 @@ func TestConnectV43(t *testing.T) {
 		q.Get("state") != "the-state" || q.Get("code_challenge") != challenge() || q.Get("code_challenge_method") != "S256" {
 		t.Fatalf("authorize: %s", s.AuthorizeURL)
 	}
-	if strings.Contains(s.AuthorizeURL, "csec") || strings.Contains(string(s.Data), "csec") {
-		t.Fatal("the client secret left the server")
+	// The flow keeps its app (the host seals Data); the sign-in address
+	// never carries the secret.
+	if strings.Contains(s.AuthorizeURL, "csec") || !strings.Contains(string(s.Data), `"client_secret":"csec-1"`) {
+		t.Fatalf("authorize %s, data %s", s.AuthorizeURL, s.Data)
 	}
 	reg := f.register
 	if reg.Get("client_name") != "Publisher (pub.example)" || reg.Get("redirect_uris") != "https://pub.example/oauth/callback/mastodon" ||
@@ -263,18 +267,30 @@ func TestConnectInvalidClient(t *testing.T) {
 		t.Fatalf("the error: %v", err)
 	}
 	f.tokenErr = ""
-	_, q := begin(t, f, clients)
+	s2, q := begin(t, f, clients)
 	if f.apps != 2 || q.Get("client_id") != "cid-2" {
 		t.Fatalf("not registered again: %d apps, %s", f.apps, q.Get("client_id"))
 	}
-	// The first flow's app is gone: its code can't be exchanged.
+	// The first flow still asks with its own app (the server says no);
+	// forgetting it again leaves the newer app alone.
+	f.tokenErr = "invalid_client"
 	if _, err := complete(f, clients, s, url.Values{"code": {"abc"}}); codeOf(err) != destination.ConnectExchangeFailed {
 		t.Fatalf("the old flow: %v", err)
+	}
+	if got := f.forms[len(f.forms)-1].Get("client_id"); got != "cid-1" {
+		t.Fatalf("the old flow asked as %s", got)
+	}
+	if cl, ok, _ := clients.Client(context.Background(), f.srv.URL); !ok || cl.ClientID != "cid-2" {
+		t.Fatalf("the newer app went: %+v %v", cl, ok)
+	}
+	f.tokenErr = ""
+	if _, err := complete(f, clients, s2, url.Values{"code": {"abc"}}); err != nil {
+		t.Fatalf("the newer flow: %v", err)
 	}
 	// Another refusal keeps the app.
 	f.tokenErr = "invalid_grant"
 	s, _ = begin(t, f, clients)
-	if _, err := complete(f, clients, s, url.Values{"code": {"abc"}}); codeOf(err) != destination.ConnectExchangeFailed || clients.forgot != 1 {
+	if _, err := complete(f, clients, s, url.Values{"code": {"abc"}}); codeOf(err) != destination.ConnectExchangeFailed || clients.forgot != 2 {
 		t.Fatalf("invalid grant: %v (forgot %d)", err, clients.forgot)
 	}
 	// No code, no exchange.
@@ -297,5 +313,52 @@ func TestConnectUnreachable(t *testing.T) {
 	req.Net = destination.GuardedNet(func(string, net.IP) error { return errors.New("private") })
 	if _, err := (Driver{}).BeginConnect(context.Background(), req); !errors.Is(err, destination.ErrBlockedAddress) {
 		t.Fatalf("guarded: %v", err)
+	}
+}
+
+// gateClients lets two first sign-ins find no app at once.
+type gateClients struct {
+	*memClients
+	wg sync.WaitGroup
+}
+
+func (g *gateClients) Client(ctx context.Context, issuer string) (destination.OAuthClient, bool, error) {
+	cl, ok, err := g.memClients.Client(ctx, issuer)
+	g.wg.Done()
+	g.wg.Wait()
+	return cl, ok, err
+}
+
+// Two first sign-ins at a server started together (two tabs) each
+// register an app; the second one kept doesn't break the first flow,
+// which has its own.
+func TestConnectConcurrentFirstStarts(t *testing.T) {
+	f := newFakeInstance(t, true)
+	mem := &memClients{}
+	g := &gateClients{memClients: mem}
+	g.wg.Add(2)
+	req := connectReq(f, nil)
+	req.Clients = g
+	var starts [2]destination.ConnectStart
+	var errs [2]error
+	var done sync.WaitGroup
+	for i := range starts {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			starts[i], errs[i] = Driver{}.BeginConnect(context.Background(), req)
+		}()
+	}
+	done.Wait()
+	if errs[0] != nil || errs[1] != nil || f.apps != 2 {
+		t.Fatalf("starts: %v %v (%d apps)", errs[0], errs[1], f.apps)
+	}
+	for i, s := range starts {
+		if _, err := complete(f, mem, s, url.Values{"code": {"c"}, "state": {"the-state"}}); err != nil {
+			t.Errorf("flow %d: %v", i+1, err)
+		}
+	}
+	if a, b := f.forms[0].Get("client_id"), f.forms[1].Get("client_id"); a == b {
+		t.Fatalf("both flows asked as %s", a)
 	}
 }

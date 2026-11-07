@@ -39,7 +39,11 @@ const connectTimeout = 15 * time.Second
 type connectData struct {
 	Issuer        string `json:"issuer"`
 	TokenEndpoint string `json:"token_endpoint"`
-	ClientID      string `json:"client_id"`
+	// ClientID and ClientSecret: the app this flow's sign-in is for,
+	// kept with the flow (sealed by the host), so a flow started meanwhile
+	// that registered another app doesn't break it.
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
 	// PKCE: the server lists S256, so the challenge was sent.
 	PKCE bool `json:"pkce,omitempty"`
 	// ISS: the server says it adds iss to its answer (RFC 9207), so the
@@ -96,7 +100,7 @@ func (Driver) BeginConnect(ctx context.Context, req destination.ConnectRequest) 
 		q.Set("code_challenge_method", "S256")
 	}
 	data, err := json.Marshal(connectData{Issuer: meta.Issuer, TokenEndpoint: meta.TokenEndpoint, ClientID: client.ClientID,
-		PKCE: pkce, ISS: meta.ISS})
+		ClientSecret: client.ClientSecret, PKCE: pkce, ISS: meta.ISS})
 	if err != nil {
 		return destination.ConnectStart{}, err
 	}
@@ -234,7 +238,7 @@ func oauthErrorWord(body io.Reader) string {
 // CompleteConnect implements destination.Connector.
 func (Driver) CompleteConnect(ctx context.Context, req destination.ConnectComplete) (destination.ConnectResult, error) {
 	var d connectData
-	if err := json.Unmarshal(req.Data, &d); err != nil || d.Issuer == "" || d.TokenEndpoint == "" {
+	if err := json.Unmarshal(req.Data, &d); err != nil || d.Issuer == "" || d.TokenEndpoint == "" || d.ClientID == "" || d.ClientSecret == "" {
 		return destination.ConnectResult{}, connectFailed(destination.ConnectExchangeFailed, "the flow's data is unreadable")
 	}
 	// RFC 9207: an answer's issuer is the server's; one the server says
@@ -250,18 +254,8 @@ func (Driver) CompleteConnect(ctx context.Context, req destination.ConnectComple
 	if code == "" {
 		return destination.ConnectResult{}, connectFailed(destination.ConnectExchangeFailed, "the answer has no code")
 	}
-	if req.Clients == nil {
-		return destination.ConnectResult{}, errors.New("mastodon: connect needs the app it registered")
-	}
-	client, ok, err := req.Clients.Client(ctx, d.Issuer)
-	if err != nil {
-		return destination.ConnectResult{}, err
-	}
-	if !ok || client.ClientID != d.ClientID {
-		return destination.ConnectResult{}, connectFailed(destination.ConnectExchangeFailed, "the app registered at the server changed meanwhile")
-	}
-	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {client.ClientID},
-		"client_secret": {client.ClientSecret}, "redirect_uri": {req.RedirectURI}}
+	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {d.ClientID},
+		"client_secret": {d.ClientSecret}, "redirect_uri": {req.RedirectURI}}
 	if d.PKCE {
 		form.Set("code_verifier", req.CodeVerifier)
 	}
@@ -281,8 +275,10 @@ func (Driver) CompleteConnect(ctx context.Context, req destination.ConnectComple
 		if word == ": invalid_client" {
 			// The server forgot the app (or it was revoked there): the
 			// next sign-in registers again.
-			if err := req.Clients.ForgetClient(ctx, d.Issuer); err != nil {
-				return destination.ConnectResult{}, err
+			if req.Clients != nil {
+				if err := req.Clients.ForgetClient(ctx, d.Issuer, d.ClientID); err != nil {
+					return destination.ConnectResult{}, err
+				}
 			}
 		}
 		return destination.ConnectResult{}, connectFailed(destination.ConnectExchangeFailed, "the token exchange answered %d%s", resp.StatusCode, word)
