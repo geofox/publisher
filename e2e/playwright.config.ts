@@ -4,6 +4,9 @@ import { defineConfig, devices } from "@playwright/test";
 // destination accounts and a fake Blossom server; see README.md.
 const PORT = Number(process.env.E2E_PORT || 4173);
 const baseURL = `http://127.0.0.1:${PORT}`;
+// A second harness signs in locally (AUTH_MODE=local) at localhost, which
+// Chromium treats as a secure context (passkeys, Secure cookies).
+const LOCAL_PORT = Number(process.env.E2E_LOCAL_PORT || PORT + 1);
 
 export default defineConfig({
   testDir: "./tests",
@@ -29,7 +32,7 @@ export default defineConfig({
     { name: "desktop-chromium", use: { ...devices["Desktop Chrome"] } },
     { name: "mobile-chromium", use: { ...devices["Pixel 7"] }, grep: /@mobile/ },
   ],
-  webServer: {
+  webServer: [{
     command: "go run ./e2e/harness",
     cwd: "..",
     env: { PORT: String(PORT) },
@@ -38,5 +41,14 @@ export default defineConfig({
     timeout: 180_000,
     stdout: "ignore",
     stderr: "pipe",
-  },
+  }, {
+    command: "go run ./e2e/harness",
+    cwd: "..",
+    env: { PORT: String(LOCAL_PORT), E2E_AUTH: "local" },
+    url: `http://127.0.0.1:${LOCAL_PORT}/readyz`,
+    reuseExistingServer: !process.env.CI,
+    timeout: 180_000,
+    stdout: "ignore",
+    stderr: "pipe",
+  }],
 });

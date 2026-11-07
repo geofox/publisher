@@ -1,1 +1,53 @@
-<!doctype html><title>setup</title>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#eef0f5">
+  <meta name="robots" content="noindex">
+  <meta name="referrer" content="no-referrer">
+  <title>Set up sign-in · publisher</title>
+  <link rel="stylesheet" href="/app.css">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
+</head>
+<body class="auth-page">
+  <main class="auth-card" aria-labelledby="auth-title">
+    <div class="brand auth-brand"><span class="brand-mark"><span class="caret">▍</span>publisher</span></div>
+    <h1 id="auth-title" class="auth-title">Set up sign-in</h1>
+    <p id="auth-warn" class="auth-warn" role="alert" hidden></p>
+    <div id="auth-loading" class="muted">Opening the setup link…</div>
+
+    <div id="setup-https" hidden>
+      <p>Sign-in needs Publisher's https address in <code>PUBLIC_URL</code>: passkeys and the sign-in cookie only work on https (or on <code>http://localhost</code>).</p>
+      <p class="muted">To get https: <code>tailscale serve</code> on a tailnet, or a reverse proxy such as Caddy or Traefik. Then set <code>PUBLIC_URL</code> to that address, restart, and open the new setup link from the log.</p>
+    </div>
+
+    <div id="setup-choose" hidden>
+      <p>You're the owner of this Publisher. Choose how you'll sign in. You can add more ways later, under Access.</p>
+      <label class="auth-label" for="pk-name">Name this passkey</label>
+      <input id="pk-name" type="text" maxlength="60" autocomplete="off">
+      <button id="setup-passkey" class="primary auth-wide" type="button">Create a passkey</button>
+      <p class="auth-or"><span>or</span></p>
+      <form id="setup-pw-form" class="auth-form">
+        <input type="text" name="username" value="owner" autocomplete="username" hidden>
+        <label for="setup-pw">Password (at least 12 characters)</label>
+        <input id="setup-pw" type="password" autocomplete="new-password" minlength="12" required aria-describedby="setup-pw-hint">
+        <label for="setup-pw2">The same password again</label>
+        <input id="setup-pw2" type="password" autocomplete="new-password" minlength="12" required>
+        <p id="setup-pw-hint" class="muted">A passkey is safer: it can't be phished or guessed.</p>
+        <button id="setup-pw-btn" class="ghost auth-wide" type="submit">Use a password</button>
+      </form>
+    </div>
+
+    <div id="setup-expired" hidden>
+      <p id="setup-expired-text">This setup link expired or was already used.</p>
+      <p class="muted">Make a new one in the container, and open it here within the hour:</p>
+      <pre class="auth-cmd">docker exec publisher /publisher setup-url</pre>
+    </div>
+
+    <p id="auth-status" class="auth-status" role="status" aria-live="polite"></p>
+  </main>
+  <script type="module" src="/setup.js"></script>
+</body>
+</html>

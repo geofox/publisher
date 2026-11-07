@@ -12,8 +12,8 @@ const SCOPES = [
   ["drafts:read", "read drafts", false],
   ["drafts:write", "write drafts", false],
   ["accounts:read", "see accounts", false],
-  ["accounts:write", "change account settings (not part of admin)", false],
-  ["admin", "everything else, including tokens and relays", false],
+  ["accounts:write", "change account settings (not part of admin; you'll confirm it's you)", false],
+  ["admin", "everything else, including tokens and relays (you'll confirm it's you)", false],
 ];
 
 // ---------------------------------------------------------------------------
@@ -131,7 +131,9 @@ function installNewTokenForm() {
       showNewTokenSecret(data.secret, data.name);
       await loadTokens();
     } catch (e) {
-      flash("Create failed: " + e.message);
+      flash(e.cancelled ? "Not created: you didn't confirm it's you."
+        : e.code === "sign_in_required" ? "A token with admin or accounts:write needs sign-in set up (AUTH_MODE=local or OIDC)."
+        : "Create failed: " + e.message);
     } finally {
       createBtn.disabled = false;
       createBtn.textContent = prev;

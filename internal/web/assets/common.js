@@ -146,17 +146,36 @@ export async function api(path, opts = {}) {
 // credentials. A failure throws an Error whose message is the problem's
 // detail, or its field errors' details when it lists some; the Error carries
 // .status, .code and .problem (RFC 9457) for callers that branch on them.
+//
+// An operation that needs the owner to confirm it's them (403
+// reauth_required) goes through the re-authentication dialog (see
+// setReauthHandler) and is sent once more with its nonce.
 export async function v1(path, { method = "GET", body, headers = {}, signal } = {}) {
   const opts = { method, credentials: "same-origin", headers: { ...headers }, signal };
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
   }
-  const r = await fetch(path, opts);
-  const data = r.status === 204 ? null : await r.json().catch(() => null);
-  if (!r.ok) throw problemError(r.status, data);
-  return data;
+  for (let attempt = 0; ; attempt++) {
+    const r = await fetch(path, opts);
+    const data = r.status === 204 ? null : await r.json().catch(() => null);
+    if (r.ok) return data;
+    const err = problemError(r.status, data);
+    if (attempt === 0 && err.code === "reauth_required" && reauthHandler && data && data.operation) {
+      const nonce = await reauthHandler(data.operation);
+      if (nonce) { opts.headers["Publisher-Reauth"] = nonce; continue; }
+      err.message = "Cancelled: you didn't confirm it's you.";
+      err.cancelled = true;
+    }
+    throw err;
+  }
 }
+
+// setReauthHandler sets what v1 asks for a re-authentication nonce: a
+// function of the operation answering the nonce, or null when the owner
+// cancelled.
+let reauthHandler = null;
+export function setReauthHandler(fn) { reauthHandler = fn; }
 
 // problemError turns a /v1 problem body into an Error.
 export function problemError(status, p) {

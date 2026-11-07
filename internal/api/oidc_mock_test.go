@@ -27,6 +27,13 @@ import (
 // It returns the issuer base URL (== srv.URL).
 func newMockOIDC(t *testing.T) string {
 	t.Helper()
+	return newMockOIDCWith(t, nil)
+}
+
+// newMockOIDCWith is newMockOIDC whose ID tokens carry extra claims (set
+// over the defaults; a nil value removes one), read at each /token call.
+func newMockOIDCWith(t *testing.T, extra func() map[string]any) string {
+	t.Helper()
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -76,6 +83,15 @@ func newMockOIDC(t *testing.T) string {
 			"name":  "Test User",
 			"exp":   time.Now().Add(time.Hour).Unix(),
 			"iat":   time.Now().Unix(),
+		}
+		if extra != nil {
+			for k, v := range extra() {
+				if v == nil {
+					delete(claims, k)
+				} else {
+					claims[k] = v
+				}
+			}
 		}
 		idToken, err := jwt.Signed(signer).Claims(claims).Serialize()
 		if err != nil {

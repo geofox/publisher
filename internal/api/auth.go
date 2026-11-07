@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -146,13 +147,22 @@ func (a *API) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 		Name: sessionCookie, Path: "/", MaxAge: -1,
 		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
 	})
-	if a.EndSession {
+	target := "/"
+	if a.EndSession && a.Auth != nil {
 		if url := a.Auth.EndSessionURL(a.AppBaseURL + "/"); url != "" {
-			http.Redirect(w, r, url, http.StatusFound)
-			return
+			target = url
 		}
 	}
-	http.Redirect(w, r, "/", http.StatusFound)
+	// The web app signs out with fetch, which sends the page's Origin: a
+	// form post from a page with Referrer-Policy no-referrer sends "Origin:
+	// null", which the cross-site guard refuses. It then goes where this
+	// says.
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		w.Header().Set("Cache-Control", "no-store")
+		writeV1(w, http.StatusOK, map[string]string{"redirect": target})
+		return
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 // Sign-in modes (AUTH_MODE).

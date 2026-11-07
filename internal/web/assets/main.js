@@ -10,6 +10,9 @@ import { interactInit } from "./interact.js";
 import { installRecoveryAutosave } from "./drafts_recovery.js";
 import { installDraftsSidebar, populateTranslateMenu } from "./drafts.js";
 import { tokensInit, tokensShow, loadUserChip } from "./tokens.js";
+import { setReauthHandler } from "./common.js";
+import { reauth, setReauthMode } from "./reauth.js";
+import { accessShow, setAccessMode } from "./access.js";
 
 // loadConfig reads the instance (GET /v1/instance): the operator's languages
 // (the Bluesky/Mastodon language fields default to the first) and the
@@ -27,7 +30,26 @@ async function loadConfig() {
     }
     if (data.features && data.features.media === false) noMediaStore();
     if (data.features && data.features.relay_sync === false) relaySyncOff();
+    setReauthMode(data.auth);
+    setAccessMode(data.auth);
+    if (data.sign_in_recommended) signInBanner();
   } catch (_) { /* keep the "en" defaults; translate button stays hidden */ }
+}
+
+// signInBanner suggests setting up sign-in on a server with none of its
+// own (proxy mode), until "Not now" (for 30 days, in this browser).
+const BANNER_KEY = "publisher.signinBannerSnoozed";
+function signInBanner() {
+  const b = $("#signin-banner");
+  if (!b) return;
+  let until = 0;
+  try { until = Number(localStorage.getItem(BANNER_KEY)) || 0; } catch (_) { /* storage off */ }
+  if (Date.now() < until) return;
+  b.hidden = false;
+  $("#signin-banner-x").addEventListener("click", () => {
+    b.hidden = true;
+    try { localStorage.setItem(BANNER_KEY, String(Date.now() + 30 * 86400e3)); } catch (_) { /* storage off */ }
+  });
 }
 
 // noMediaStore hides the attach controls on a server without a media
@@ -87,7 +109,7 @@ function switchTab(view) {
   document.querySelectorAll(".view").forEach(s => { s.hidden = s.id !== view; });
   if (view === "history") loadHistory(true);
   if (view === "tools")   loadTools();
-  if (view === "tokens")  tokensShow();
+  if (view === "tokens")  { accessShow(); tokensShow(); }
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +117,8 @@ function switchTab(view) {
 // ---------------------------------------------------------------------------
 
 async function init() {
+  // An operation that needs the owner to confirm it's them asks here.
+  setReauthHandler(reauth);
   await loadConfig();
   // Every successful read of the accounts (here, a Post, a draft, a
   // restore) is applied as it arrives.

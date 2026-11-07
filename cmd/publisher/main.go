@@ -28,6 +28,8 @@ import (
 	"github.com/geofox/publisher/internal/drivers"
 	"github.com/geofox/publisher/internal/feed"
 	"github.com/geofox/publisher/internal/health"
+	"github.com/geofox/publisher/internal/httpx"
+	"github.com/geofox/publisher/internal/localauth"
 	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
@@ -53,6 +55,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
 		runHealthcheck()
 		return
+	}
+	if code, ok := runCLI(context.Background(), os.Args[1:], os.Getenv, os.Stdout, os.Stderr); ok {
+		os.Exit(code)
 	}
 	// SIGTERM/SIGINT start a graceful stop: readiness fails, new work stops
 	// being claimed, and what is in flight finishes. A second signal kills
@@ -238,47 +243,8 @@ func run(ctx context.Context, o runOptions) int {
 			return nil
 		}})
 	a.AllowedHosts = cfg.AllowedHosts
-	if !cfg.OIDCEnabled() && len(cfg.AllowedHosts) == 0 {
-		slog.Warn("OIDC is off and ALLOWED_HOSTS is unset: set ALLOWED_HOSTS to the host name you reach publisher by, so a web page can't reach it through DNS rebinding")
-	}
-	if cfg.OIDCEnabled() {
-		authn, err := auth.New(context.Background(), auth.Config{
-			Issuer:       cfg.OIDCIssuer,
-			ClientID:     cfg.OIDCClientID,
-			ClientSecret: cfg.OIDCClientSecret,
-			RedirectURL:  cfg.OIDCRedirectURL,
-			Scopes:       cfg.OIDCScopes,
-		})
-		if err != nil {
-			slog.Error("oidc init failed", "err", err)
-			return 1
-		}
-		a.Auth = authn
-		a.Allowlist = auth.NewAllowlist(cfg.OIDCAllowedSubjects, cfg.OIDCAllowedEmails)
-		a.SessionTTL = cfg.SessionTTL
-		a.EndSession = cfg.OIDCEndSession
-		a.AppBaseURL = appBaseURL(cfg.OIDCRedirectURL)
-		// GC expired sessions hourly (same background-goroutine pattern as the
-		// scheduler/retrier).
-		go func() {
-			t := time.NewTicker(time.Hour)
-			defer t.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-t.C:
-				}
-				if n, err := st.SweepExpiredSessions(); err != nil {
-					slog.Warn("session sweep failed", "err", err)
-				} else if n > 0 {
-					slog.Debug("swept expired sessions", "count", n)
-				}
-			}
-		}()
-		slog.Info("oidc auth enabled", "issuer", cfg.OIDCIssuer,
-			"allowed_subjects", len(cfg.OIDCAllowedSubjects),
-			"allowed_emails", len(cfg.OIDCAllowedEmails))
+	if code := setupSignIn(ctx, cfg, st, a); code != 0 {
+		return code
 	}
 	// Expired Idempotency-Key records, old events and settled fan-out jobs
 	// are dead weight: purge them hourly.
@@ -489,6 +455,101 @@ func setupLogger(level string) {
 }
 
 // appBaseURL extracts scheme://host from the configured redirect URL.
+// setupSignIn picks how the owner signs in (AUTH_MODE, else OIDC when
+// configured, else local for a database this version created and proxy
+// for an older one) and wires it into the API. It returns an exit code,
+// 0 to go on.
+func setupSignIn(ctx context.Context, cfg config.Config, st *store.Store, a *api.API) int {
+	born, err := st.CreatedSchema(ctx)
+	if err != nil {
+		slog.Error("read the database's creation version failed", "err", err)
+		return 1
+	}
+	mode := cfg.ResolveAuthMode(born)
+	if mode == config.AuthLocal {
+		if err := cfg.CheckLocal(); err != nil {
+			fmt.Fprintln(os.Stderr, "config error:", err)
+			return 2
+		}
+	}
+	a.Mode = mode
+	a.Clients = &httpx.ClientAddrs{Trusted: cfg.TrustedProxies}
+	a.PublicURL = cfg.PublicURL
+	a.SessionTTL = cfg.SessionTTL
+	a.AppBaseURL = cfg.PublicURL
+	switch mode {
+	case config.AuthOIDC:
+		authn, err := auth.New(ctx, auth.Config{
+			Issuer:       cfg.OIDCIssuer,
+			ClientID:     cfg.OIDCClientID,
+			ClientSecret: cfg.OIDCClientSecret,
+			RedirectURL:  cfg.OIDCRedirectURL,
+			Scopes:       cfg.OIDCScopes,
+		})
+		if err != nil {
+			slog.Error("oidc init failed", "err", err)
+			return 1
+		}
+		a.Auth = authn
+		a.Allowlist = auth.NewAllowlist(cfg.OIDCAllowedSubjects, cfg.OIDCAllowedEmails)
+		a.EndSession = cfg.OIDCEndSession
+		if a.AppBaseURL == "" {
+			a.AppBaseURL = appBaseURL(cfg.OIDCRedirectURL)
+		}
+		slog.Info("sign-in: OIDC", "issuer", cfg.OIDCIssuer,
+			"allowed_subjects", len(cfg.OIDCAllowedSubjects),
+			"allowed_emails", len(cfg.OIDCAllowedEmails))
+	case config.AuthLocal:
+		svc, err := localauth.New(st, cfg.PublicURL)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "config error:", err)
+			return 2
+		}
+		a.Local = svc
+		a.SetupTokenFile = cfg.SetupTokenFile
+		if cfg.PublicURL == "" {
+			slog.Warn("sign-in: PUBLIC_URL is unset, so nobody can sign in: set it to the https address you use for Publisher (passkeys and secure cookies need it)")
+		}
+		if err := localauth.AnnounceSetup(ctx, st, cfg.PublicURL, cfg.SetupTokenFile); err != nil {
+			slog.Error("setup: creating the setup link failed", "err", err)
+			return 1
+		}
+		slog.Info("sign-in: local (passkeys and password)", "public_url", cfg.PublicURL,
+			"trusted_proxies", len(cfg.TrustedProxies))
+	case config.AuthProxy:
+		if len(cfg.AllowedHosts) == 0 {
+			slog.Warn("ALLOWED_HOSTS is unset: set ALLOWED_HOSTS to the host name you reach publisher by, so a web page can't reach it through DNS rebinding")
+		}
+		slog.Warn("sign-in: none of its own (AUTH_MODE=proxy): the reverse proxy in front is the only gate, and credentials can't be managed in the app; set AUTH_MODE=local and PUBLIC_URL to sign in with a passkey")
+	}
+	if mode == config.AuthProxy {
+		return 0
+	}
+	// Hourly: expired sessions, and failed sign-ins older than a day.
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			if n, err := st.SweepExpiredSessions(); err != nil {
+				slog.Warn("session sweep failed", "err", err)
+			} else if n > 0 {
+				slog.Debug("swept expired sessions", "count", n)
+			}
+			if mode == config.AuthLocal {
+				if err := st.PruneLoginFailures(ctx, time.Now()); err != nil {
+					slog.Warn("pruning failed sign-ins failed", "err", err)
+				}
+			}
+		}
+	}()
+	return 0
+}
+
 func appBaseURL(redirect string) string {
 	if u, err := url.Parse(redirect); err == nil {
 		return u.Scheme + "://" + u.Host
