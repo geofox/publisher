@@ -1,3 +1,6 @@
+-- index idx_account_sets_default
+CREATE UNIQUE INDEX idx_account_sets_default ON account_sets(owner_id) WHERE is_default = 1;
+
 -- index idx_accounts_remote
 CREATE UNIQUE INDEX idx_accounts_remote ON accounts(owner_id, type, remote_id)
   WHERE deleted_at IS NULL AND remote_id IS NOT NULL;
@@ -68,6 +71,18 @@ CREATE INDEX idx_targets_post ON post_targets(post_id);
 -- index idx_webauthn_credentials_user
 CREATE INDEX idx_webauthn_credentials_user ON webauthn_credentials(user_id);
 
+-- table account_sets
+CREATE TABLE account_sets (
+  id         TEXT PRIMARY KEY,
+  owner_id   TEXT NOT NULL REFERENCES owners(id),
+  name       TEXT NOT NULL,
+  accounts   TEXT NOT NULL,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  UNIQUE (owner_id, name)
+);
+
 -- table accounts
 CREATE TABLE accounts (
   id          TEXT PRIMARY KEY,
@@ -80,7 +95,7 @@ CREATE TABLE accounts (
   config_json TEXT NOT NULL DEFAULT '{}',
   enabled     INTEGER NOT NULL DEFAULT 1,
   created_at  TIMESTAMP NOT NULL,
-  updated_at  TIMESTAMP NOT NULL, remote_id TEXT, default_selected INTEGER NOT NULL DEFAULT 1, public_feed INTEGER NOT NULL DEFAULT 1, deleted_at TIMESTAMP, auth_method TEXT NOT NULL DEFAULT '',
+  updated_at  TIMESTAMP NOT NULL, remote_id TEXT, default_selected INTEGER NOT NULL DEFAULT 1, public_feed INTEGER NOT NULL DEFAULT 1, deleted_at TIMESTAMP, auth_method TEXT NOT NULL DEFAULT '', defaults_json TEXT NOT NULL DEFAULT '{}',
   UNIQUE(owner_id, type, env_key)
 );
 
@@ -309,6 +324,16 @@ CREATE TABLE sessions (
   expires_at TIMESTAMP NOT NULL
 , public_id TEXT, last_seen_at TIMESTAMP, method TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '', addr TEXT NOT NULL DEFAULT '');
 
+-- table settings
+CREATE TABLE settings (
+  owner_id   TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  value_json TEXT NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  updated_by TEXT,
+  PRIMARY KEY (owner_id, key)
+);
+
 -- table setup_tokens
 CREATE TABLE setup_tokens (
   token_hash TEXT PRIMARY KEY,
@@ -351,7 +376,7 @@ CREATE TABLE target_items (
   error           TEXT,
   attempt_count   INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TIMESTAMP,
-  published_at    TIMESTAMP, doubt_reset_at TIMESTAMP, committing_at TIMESTAMP,
+  published_at    TIMESTAMP, doubt_reset_at TIMESTAMP, committing_at TIMESTAMP, manual_due INTEGER NOT NULL DEFAULT 0,
   UNIQUE(target_id, ordinal)
 );
 

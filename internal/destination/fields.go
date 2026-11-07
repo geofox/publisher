@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -65,6 +66,9 @@ const (
 	FieldURL FieldType = "url"
 	// FieldURLList is a list of such addresses (relays).
 	FieldURLList FieldType = "url_list"
+	// FieldDuration is a length of time as Go writes it ("90s", "2h",
+	// "1h30m"); Min and Max bound it in seconds.
+	FieldDuration FieldType = "duration"
 )
 
 // URLRule says what a url field takes: the Secure scheme for any host,
@@ -74,6 +78,8 @@ type URLRule struct {
 	Secure string `json:"secure"`
 	Plain  string `json:"plain,omitempty"`
 	Path   bool   `json:"path,omitempty"`
+	// Query keeps the path as given and a query (a webhook's address).
+	Query bool `json:"query,omitempty"`
 }
 
 // The rules the built-in drivers use.
@@ -84,6 +90,9 @@ var (
 	// RelayURL is a WebSocket relay over wss (ws for a listed private
 	// host), with a path when it has one.
 	RelayURL = URLRule{Secure: "wss", Plain: "ws", Path: true}
+	// WebhookURL is an address Publisher posts to over https (http for a
+	// listed private host), path and query kept as given.
+	WebhookURL = URLRule{Secure: "https", Plain: "http", Query: true}
 )
 
 // FieldSpec describes one field of an account's configuration or
@@ -111,7 +120,7 @@ type FieldSpec struct {
 	Enum        []EnumValue `json:"enum,omitempty"`
 	// Default is the value a new account gets when the field is left out.
 	Default any `json:"default,omitempty"`
-	// Min and Max bound an int field.
+	// Min and Max bound an int field (a duration field, in seconds).
 	Min *int `json:"min,omitempty"`
 	Max *int `json:"max,omitempty"`
 	// MaxLength bounds a text value, in characters (default 4096).
@@ -359,6 +368,20 @@ func (s FieldSpec) normalize(v any, o FieldOptions) (out any, code, detail strin
 			return nil, "out_of_range", s.bounds()
 		}
 		return n, "", ""
+	case FieldDuration:
+		str, ok := v.(string)
+		if !ok {
+			return nil, "invalid", "must be a length of time, such as 90s, 30m or 2h"
+		}
+		str = strings.TrimSpace(str)
+		d, err := time.ParseDuration(str)
+		if err != nil || d <= 0 {
+			return nil, "invalid", "must be a length of time, such as 90s, 30m or 2h"
+		}
+		if s.Min != nil && d < time.Duration(*s.Min)*time.Second || s.Max != nil && d > time.Duration(*s.Max)*time.Second {
+			return nil, "out_of_range", s.durationBounds()
+		}
+		return str, "", ""
 	case FieldString, FieldText, FieldEnum, FieldURL:
 		str, ok := v.(string)
 		if !ok {
@@ -430,6 +453,31 @@ func (s FieldSpec) oneString(str string, o FieldOptions) (any, string, string) {
 		}
 	}
 	return str, "", ""
+}
+
+// ShortDuration writes d as Go does, without zero units at the end:
+// "2h" for 2h0m0s, "1h30m", "5m".
+func ShortDuration(d time.Duration) string {
+	str := d.String()
+	if strings.HasSuffix(str, "m0s") {
+		str = strings.TrimSuffix(str, "0s")
+	}
+	if strings.HasSuffix(str, "h0m") {
+		str = strings.TrimSuffix(str, "0m")
+	}
+	return str
+}
+
+func (s FieldSpec) durationBounds() string {
+	sec := func(n int) string { return ShortDuration(time.Duration(n) * time.Second) }
+	switch {
+	case s.Min != nil && s.Max != nil:
+		return "must be from " + sec(*s.Min) + " to " + sec(*s.Max)
+	case s.Min != nil:
+		return "must be at least " + sec(*s.Min)
+	default:
+		return "must be at most " + sec(*s.Max)
+	}
 }
 
 func (s FieldSpec) bounds() string {

@@ -33,6 +33,7 @@ var migrations = []migration{
 	{version: 11, name: "accounts_by_id", up: migrateAccountsByID},
 	{version: 12, name: "local_auth", up: migrateLocalAuth},
 	{version: 13, name: "secrets", up: migrateSecrets},
+	{version: 14, name: "settings", up: migrateSettings},
 }
 
 // migrateItemSendMarks (v10) gives target_items two marks the engine's

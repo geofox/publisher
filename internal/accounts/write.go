@@ -119,7 +119,7 @@ type CredentialUpdate struct {
 // fieldOptions checks addresses the owner typed with the guard's rules.
 func (r *Registry) fieldOptions(partial bool) destination.FieldOptions {
 	return destination.FieldOptions{Partial: partial, URL: func(raw string, rule destination.URLRule) (string, error) {
-		return r.opt.Guard.OwnerURL(raw, netguard.URLOptions{Secure: rule.Secure, Plain: rule.Plain, Path: rule.Path})
+		return r.opt.Guard.OwnerURL(raw, netguard.URLOptions{Secure: rule.Secure, Plain: rule.Plain, Path: rule.Path, Query: rule.Query})
 	}}
 }
 

@@ -35,6 +35,10 @@ type Account struct {
 	// DeletedAt is when the owner deleted the account (zero: not deleted).
 	// A deleted account keeps its row, so History can still name it.
 	DeletedAt time.Time `json:"deleted_at,omitzero"`
+	// Defaults are what a post to the account gets when it says nothing
+	// (visibility, content warning, languages, options), as JSON ("{}":
+	// none).
+	Defaults string `json:"-"`
 }
 
 // Account sources.
@@ -50,6 +54,8 @@ type AccountMeta struct {
 	Enabled         *bool
 	DefaultSelected *bool
 	PublicFeed      *bool
+	// Defaults replaces the account's defaults (JSON, already validated).
+	Defaults *string
 	// IfUpdatedAt, when set, refuses the change (ErrAccountConflict)
 	// unless the account's updated_at is still this: the caller read it.
 	IfUpdatedAt time.Time
@@ -172,14 +178,14 @@ func (s *Store) queryAccounts(ctx context.Context, query string, args ...any) ([
 
 const accountColumns = `id, owner_id, type, label, COALESCE(handle, ''), source, COALESCE(env_key, ''),
 	enabled, created_at, updated_at, COALESCE(remote_id, ''), default_selected, public_feed,
-	auth_method, config_json, deleted_at`
+	auth_method, config_json, deleted_at, defaults_json`
 
 func scanAccount(r interface{ Scan(...any) error }) (Account, error) {
 	var a Account
 	var deleted sql.NullTime
 	err := r.Scan(&a.ID, &a.OwnerID, &a.Type, &a.Label, &a.Handle, &a.Source, &a.EnvKey,
 		&a.Enabled, &a.CreatedAt, &a.UpdatedAt, &a.RemoteID, &a.DefaultSelected, &a.PublicFeed,
-		&a.AuthMethod, &a.Config, &deleted)
+		&a.AuthMethod, &a.Config, &deleted, &a.Defaults)
 	if deleted.Valid {
 		a.DeletedAt = deleted.Time
 	}
@@ -236,6 +242,9 @@ func (s *Store) UpdateAccountMeta(ctx context.Context, owner, id string, m Accou
 	if m.PublicFeed != nil {
 		next.PublicFeed = *m.PublicFeed
 	}
+	if m.Defaults != nil {
+		next.Defaults = *m.Defaults
+	}
 	if next == cur {
 		return cur, nil
 	}
@@ -243,8 +252,9 @@ func (s *Store) UpdateAccountMeta(ctx context.Context, owner, id string, m Accou
 	if !next.UpdatedAt.After(cur.UpdatedAt) {
 		next.UpdatedAt = cur.UpdatedAt.Add(time.Microsecond)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET label = ?, enabled = ?, default_selected = ?, public_feed = ?, updated_at = ?
-		WHERE id = ?`, next.Label, next.Enabled, next.DefaultSelected, next.PublicFeed, next.UpdatedAt, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET label = ?, enabled = ?, default_selected = ?, public_feed = ?,
+		defaults_json = ?, updated_at = ? WHERE id = ?`, next.Label, next.Enabled, next.DefaultSelected, next.PublicFeed,
+		next.Defaults, next.UpdatedAt, id); err != nil {
 		return Account{}, err
 	}
 	var fields []string
@@ -256,6 +266,7 @@ func (s *Store) UpdateAccountMeta(ctx context.Context, owner, id string, m Accou
 		{"enabled", next.Enabled != cur.Enabled},
 		{"default_selected", next.DefaultSelected != cur.DefaultSelected},
 		{"public_feed", next.PublicFeed != cur.PublicFeed},
+		{"defaults", next.Defaults != cur.Defaults},
 	} {
 		if f.changed {
 			fields = append(fields, f.name)

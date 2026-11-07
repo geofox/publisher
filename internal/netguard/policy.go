@@ -230,6 +230,10 @@ type URLOptions struct {
 	// Path keeps a path (a relay at wss://host/path); without it the URL
 	// must be an origin.
 	Path bool
+	// Query keeps the path exactly as given, trailing slash included, and
+	// a query: a webhook's address, which may carry its secret in either.
+	// It implies Path.
+	Query bool
 }
 
 // HTTPS is an origin reached over https (http for a listed private host).
@@ -252,9 +256,9 @@ func (p Policy) OwnerURL(raw string, o URLOptions) (string, error) {
 	switch {
 	case u.User != nil:
 		return "", errors.New("an address can't carry a user name or password")
-	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+	case u.Fragment != "" || !o.Query && (u.RawQuery != "" || u.ForceQuery):
 		return "", errors.New("an address can't have a query (?…) or fragment (#…)")
-	case !o.Path && u.Path != "" && u.Path != "/":
+	case !o.Path && !o.Query && u.Path != "" && u.Path != "/":
 		return "", fmt.Errorf("enter the server's address only, such as %s://%s", o.Secure, u.Host)
 	case scheme == o.Secure:
 	case scheme == o.Plain && o.Plain != "" && p.privateHost(host):
@@ -283,7 +287,13 @@ func (p Policy) OwnerURL(raw string, o URLOptions) (string, error) {
 		}
 	}
 	out := scheme + "://" + hostPort(host, port)
-	if o.Path && u.Path != "" && u.Path != "/" {
+	switch {
+	case o.Query:
+		out += u.EscapedPath()
+		if u.RawQuery != "" {
+			out += "?" + u.RawQuery
+		}
+	case o.Path && u.Path != "" && u.Path != "/":
 		out += strings.TrimRight(u.EscapedPath(), "/")
 	}
 	return out, nil
