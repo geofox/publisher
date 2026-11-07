@@ -212,6 +212,13 @@ type CredentialGenerator interface {
 	GenerateCredentials(method string) (map[string]string, error)
 }
 
+// SecretFormatter is implemented by drivers with Revealable secrets: it
+// gives a stored secret in the form the owner would type it (a Nostr key
+// as nsec1…).
+type SecretFormatter interface {
+	FormatSecret(key, value string) string
+}
+
 // FieldError is one field's problem. Detail never repeats the value: the
 // field may hold a credential.
 type FieldError struct {

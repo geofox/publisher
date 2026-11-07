@@ -79,8 +79,8 @@ func newIdemEnv(t *testing.T) *idemEnv {
 		writeV1(w, http.StatusCreated, map[string]any{"n": n})
 	})
 	mux := http.NewServeMux()
-	mux.Handle("POST /v1/things", v1Recover(a.v1Auth("", false, a.withIdempotency(create))))
-	mux.Handle("POST /v1/others", v1Recover(a.v1Auth("", false, a.withIdempotency(create))))
+	mux.Handle("POST /v1/things", v1Recover(a.v1Auth(v1Gate{}, a.withIdempotency(nil, create))))
+	mux.Handle("POST /v1/others", v1Recover(a.v1Auth(v1Gate{}, a.withIdempotency(nil, create))))
 	e.h = mux
 	return e
 }

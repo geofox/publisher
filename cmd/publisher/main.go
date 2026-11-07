@@ -151,6 +151,7 @@ func run(ctx context.Context, o runOptions) int {
 	if err := drivers.AdoptLegacy(context.Background(), st, envRows, env); err != nil {
 		slog.Error("adopting 2.x account state failed; it is tried again at the next start", "err", err)
 	}
+	warnAdoptedStillSet(context.Background(), st, env, cfg.BlossomURL != "")
 	// The master key: values sealed with the previous key move to the
 	// current one, then the key is checked against what is stored. Saved
 	// account state goes in the secret store once a usable key is set.
@@ -183,6 +184,9 @@ func run(ctx context.Context, o runOptions) int {
 		},
 		Alerter: notifier,
 		Guard:   guard,
+		Writes:  st,
+		Seed:    drivers.NewAccountSeeder(st, getenv),
+		Getenv:  getenv,
 	})
 	if err := reg.Load(context.Background()); err != nil {
 		slog.Error("loading accounts failed", "err", err)
@@ -263,6 +267,7 @@ func run(ctx context.Context, o runOptions) int {
 	a.Sync = relaysync.New(relaysync.NewLiveIO())
 	a.Guard = guard
 	a.MasterKey = keyState
+	a.IdemMAC = keys.MAC
 	a.Verify = &verify.Service{
 		Nostr:    verify.NewNostrVerifier(cfg.VerifyHTTPTimeout),
 		Bluesky:  verify.NewBlueskyVerifier(cfg.PLCDirectoryURL, cfg.VerifyHTTPTimeout),

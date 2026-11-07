@@ -1590,28 +1590,28 @@ tests, tests.
 **Files:** `internal/api/{v1_accounts,v1,v1_idem}.go`,
 `internal/accounts/write.go`, OpenAPI, `errors.md`, tests.
 
-- [ ] Scopes `settings:read`, `settings:write`, `instance:admin` added;
+- [x] Scopes `settings:read`, `settings:write`, `instance:admin` added;
   `admin` implies none of the step-4 scopes; tokens holding a step-4 scope
   need `token.create_privileged`.
-- [ ] `POST /v1/accounts` (spec §5.2) with `Idempotency-Key`. Upstream
+- [x] `POST /v1/accounts` (spec §5.2) with `Idempotency-Key`. Upstream
   error text: the submitted secret values are removed from it, then it is
   scrubbed and cut to 200 characters.
-- [ ] Idempotency store: the request fingerprint replaces secret fields
+- [x] Idempotency store: the request fingerprint replaces secret fields
   with an HMAC (C2's key) before hashing; a route-table test asserts that
   no idempotent route can return a secret or a capability. `:reveal` has
   its own route entry, never idempotent, `no-store`.
-- [ ] `GET`/`PATCH`/`DELETE`, `:check`, `:reveal`, `:adopt` per spec
+- [x] `GET`/`PATCH`/`DELETE`, `:check`, `:reveal`, `:adopt` per spec
   §5.3–5.6 (reveal and delete bound to the account by their nonce). A
   delete also removes the account's `nostr_sync_relays` and
   `nostr_sync_relay_lists` rows (both reference `accounts`).
-- [ ] Proxy mode through `NoProxy` (B2): credential writes, adopt, reveal,
+- [x] Proxy mode through `NoProxy` (B2): credential writes, adopt, reveal,
   and later connect, settings secrets and instance settings. A table test
   over `v1Routes()` checks every flagged route.
-- [ ] Rate limit: 10 creates or credential changes per minute per owner
+- [x] Rate limit: 10 creates or credential changes per minute per owner
   (fake clock in tests); an idempotent replay doesn't use it up or call the
   network.
-- [ ] Events `account.created|updated|deleted|adopted` with field names.
-- [ ] Tests: each route, scope and mode; the duplicate race; audience
+- [x] Events `account.created|updated|deleted|adopted` with field names.
+- [x] Tests: each route, scope and mode; the duplicate race; audience
   change without and with credentials; a leak test greps responses,
   events, logs, `idempotency_keys`, the database and WAL for the
   plaintext.

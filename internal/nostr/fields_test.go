@@ -52,3 +52,25 @@ func TestGenerateCredentials(t *testing.T) {
 		t.Error("generated for the secret_key method")
 	}
 }
+
+// A key is shown as nsec1…, however it was stored.
+func TestFormatSecret(t *testing.T) {
+	hexKey := strings.Repeat("0", 63) + "1"
+	nsec := Driver{}.FormatSecret(SecretKey, hexKey)
+	if !strings.HasPrefix(nsec, "nsec1") {
+		t.Fatalf("hex: %q", nsec)
+	}
+	if got := (Driver{}).FormatSecret(SecretKey, nsec); got != nsec {
+		t.Fatalf("nsec: %q", got)
+	}
+	sk, err := ParseKey(nsec)
+	if err != nil || hex.EncodeToString(sk[:]) != hexKey {
+		t.Fatalf("round trip: %x %v", sk, err)
+	}
+	if got := (Driver{}).FormatSecret("other", hexKey); got != hexKey {
+		t.Fatalf("other key: %q", got)
+	}
+	if got := (Driver{}).FormatSecret(SecretKey, "not a key"); got != "not a key" {
+		t.Fatalf("not a key: %q", got)
+	}
+}

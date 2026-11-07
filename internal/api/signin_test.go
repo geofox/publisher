@@ -409,6 +409,27 @@ func TestReauthNonces(t *testing.T) {
 	wantCode(t, rec, http.StatusOK)
 	// An unknown operation.
 	wantCode(t, e.reauthPassword("everything", testPassword), http.StatusUnprocessableEntity)
+	// An operation on one account names it, and its nonce is good for it
+	// only; any other operation takes no target.
+	withTarget := func(op, target string) *httptest.ResponseRecorder {
+		b, _ := json.Marshal(map[string]any{"operation": op, "target": target, "password": testPassword})
+		return e.send("POST", "/auth/reauth", string(b), nil)
+	}
+	wantCode(t, withTarget(opAccountDelete, ""), http.StatusUnprocessableEntity)
+	wantCode(t, withTarget(opAccountDelete, strings.Repeat("a", 65)), http.StatusUnprocessableEntity)
+	wantCode(t, withTarget(opTokenCreate, "acc_1"), http.StatusUnprocessableEntity)
+	rec = withTarget(opAccountDelete, "acc_1")
+	wantCode(t, rec, http.StatusOK)
+	var n reauthNonceBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &n)
+	sess := store.SessionHash(e.cookie.Value)
+	if n.Target != "acc_1" || e.st.ConsumeReauthNonce(context.Background(), n.Nonce, sess, opAccountDelete, "acc_2", true) == nil {
+		t.Errorf("nonce %+v works for another account", n)
+	}
+	_ = json.Unmarshal(withTarget(opAccountDelete, "acc_1").Body.Bytes(), &n)
+	if err := e.st.ConsumeReauthNonce(context.Background(), n.Nonce, sess, opAccountDelete, "acc_1", true); err != nil {
+		t.Errorf("nonce for acc_1: %v", err)
+	}
 	// No session.
 	e.jar = map[string]*http.Cookie{}
 	wantCode(t, e.reauthPassword(opSignInAdd, testPassword), http.StatusUnauthorized)
@@ -563,6 +584,7 @@ func TestOIDCReauth(t *testing.T) {
 	raw, _ := e.st.CreateSession(u.ID, time.Hour)
 	e.cookie = &http.Cookie{Name: sessionCookie, Value: raw}
 
+	var startFor func(op string) url.Values
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
 		r.AddCookie(e.cookie)
@@ -575,8 +597,9 @@ func TestOIDCReauth(t *testing.T) {
 	}
 	// start answers the identity provider's URL; login completes it with
 	// the given claims.
-	start := func() url.Values {
-		rec := call("GET", "/auth/reauth/oidc?operation="+opTokenCreate, "")
+	start := func() url.Values { return startFor(opTokenCreate) }
+	startFor = func(op string) url.Values {
+		rec := call("GET", "/auth/reauth/oidc?operation="+op, "")
 		if rec.Code != http.StatusFound {
 			t.Fatalf("start = %d %s", rec.Code, rec.Body.String())
 		}
@@ -629,6 +652,17 @@ func TestOIDCReauth(t *testing.T) {
 	}
 	tok := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"t","scopes":["admin"]}`, header: map[string]string{reauthHeader: n.Nonce}})
 	wantStatus(t, tok, 201)
+	// An operation on one account names it when claiming.
+	if rec := login(startFor(opAccountReveal), map[string]any{"auth_time": now + 1}); rec.Code != http.StatusFound {
+		t.Fatalf("fresh login for %s = %d", opAccountReveal, rec.Code)
+	}
+	wantCode(t, call("POST", "/auth/reauth/claim", `{"operation":"`+opAccountReveal+`"}`), http.StatusUnprocessableEntity)
+	rec = call("POST", "/auth/reauth/claim", `{"operation":"`+opAccountReveal+`","target":"acc_1"}`)
+	wantCode(t, rec, http.StatusOK)
+	_ = json.Unmarshal(rec.Body.Bytes(), &n)
+	if n.Target != "acc_1" || e.st.ConsumeReauthNonce(context.Background(), n.Nonce, store.SessionHash(e.cookie.Value), opAccountReveal, "acc_1", true) != nil {
+		t.Errorf("claimed nonce %+v isn't for acc_1", n)
+	}
 	// A state replayed in another session is refused.
 	q := start()
 	other, _ := e.st.CreateSession(u.ID, time.Hour)

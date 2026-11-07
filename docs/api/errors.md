@@ -58,13 +58,15 @@ token holding it.
 ## reauth_required
 
 **403.** The operation needs a fresh sign-in: adding or removing a way to
-sign in, setting the first password, or creating a token from a browser
-session (any token: it outlives the session). Re-authenticate with `POST /auth/reauth`
+sign in, setting the first password, creating a token from a browser
+session (any token: it outlives the session), deleting an account, or
+showing an account's key. Re-authenticate with `POST /auth/reauth`
 (a passkey or the password; with OIDC, a fresh login through
 `/auth/reauth/oidc`), then send the nonce it returns in the
 `Publisher-Reauth` header. The problem's `operation` names what to
-re-authenticate for. A nonce is good once, for five minutes, for that
-operation and that browser session.
+re-authenticate for; `account.delete` and `account.reveal` also take the
+account's id as `target`. A nonce is good once, for five minutes, for
+that operation (and target) and that browser session.
 
 ## session_required
 
@@ -76,8 +78,11 @@ re-authenticating, are browser-only.
 
 **403.** The server runs behind a reverse proxy without its own sign-in
 (`AUTH_MODE=proxy`), and this operation needs to know it is the owner:
-managing sign-in, and creating a token that holds `admin`. Set up sign-in
-(`AUTH_MODE=local` with `PUBLIC_URL`, or OIDC).
+managing sign-in, creating a token that holds `admin`, and managing
+credentials (adding an account, changing its credentials, adopting one
+from the environment, showing a key, deleting one), whoever asks, a
+token included. Set up sign-in (`AUTH_MODE=local` with `PUBLIC_URL`, or
+OIDC).
 
 ## last_sign_in_method
 
@@ -95,9 +100,10 @@ the page at `/setup` answers 410 with a short HTML page saying so).
 
 **429.** Too many requests: wrong passwords from your address (or, from a
 browser that hasn't signed in before, from many places), too many passkey
-requests or failed passkeys, or password checks already running. The
-`Retry-After` header says how many seconds to wait. A passkey is never
-held back by wrong passwords.
+requests or failed passkeys, or password checks already running; more
+than 10 accounts added or changed in a minute; an account checked again
+within 10 seconds. The `Retry-After` header says how many seconds to
+wait. A passkey is never held back by wrong passwords.
 
 ## cross_origin
 
@@ -151,7 +157,16 @@ is `duplicate`. `POST /v1/resolve` with `account` adds, on `/account`,
 `unknown_account` (not one of yours), `not_allowed` (on another network)
 and `account_disabled`. `PATCH /v1/accounts/{id}` uses `required`,
 `too_long` and `invalid` (a control character, or a value of the wrong
-type, `null` included). The tools add `unsupported_language` (translate) and
+type, `null` included). Adding or changing an account (`/type`,
+`/method`, `/config/…`, `/credentials/…`) adds `unknown_field` (not a
+field of the type or method), `not_allowed` (an unknown type or method,
+a method this version can't use, a private or local address the operator
+didn't allow, or a new key on an existing account), `not_found` (a
+Bluesky handle or DID that leads to no account), `too_many` and
+`out_of_range` (a list or a number beyond its field's bounds; `invalid`
+covers a value of the wrong form, an address included), and `required`
+on `/credentials` when a new method or server address needs the
+credentials again. The tools add `unsupported_language` (translate) and
 `unknown_relay` (relay sync: a relay that isn't one of the account's).
 Resolving an unknown item (`:resolve`) adds `unknown_item`, and for its
 `url` `not_found` (no such post), `not_own` (another account's post),
@@ -185,9 +200,11 @@ previous page unchanged; cursors are opaque.
 allows it: rescheduling a post that isn't scheduled, hiding one still to be
 sent, canceling a post with nothing left to cancel, retrying one with
 nothing to retry, or a relay operation on a Nostr account that isn't
-connected now (or while a scan or sync of its relays is running), or a
-passkey request that expired, was used, or is another session's.
-`detail` says which.
+connected now (or while a scan or sync of its relays is running), a
+passkey request that expired, was used, or is another session's,
+checking an account that isn't open, showing a key an account doesn't
+have, or adopting an account already in the app (or one the environment
+no longer configures). `detail` says which.
 
 ## idempotency_key_invalid
 
@@ -230,9 +247,49 @@ configuration.
 ## upstream_failed
 
 **502.** A service the server depends on failed: media storage (Blossom)
-refused or could not take the file, or the network of a post you reply to,
-quote or repost could not be reached (a timeout, a 5xx, a rate limit).
-Retry later; for media, check the media storage configuration.
+refused or could not take the file, the network of a post you reply to,
+quote or repost could not be reached (a timeout, a 5xx, a rate limit),
+or the network of an account being added or changed didn't answer.
+Nothing was stored. Retry later; for media, check the media storage
+configuration.
+
+## credentials_rejected
+
+**422.** The network refused the credentials of an account being added or
+changed: a wrong or revoked app password or token, or one without the
+rights Publisher needs. `errors[]` has one entry on `/credentials` whose
+`detail` is the network's own words (at most 200 characters, without
+anything you sent). Nothing was stored.
+
+## duplicate_account
+
+**409.** You already have this network account (the same type and remote
+id); `account_id` names it. Change that one instead of adding it again.
+
+## locked_by_env
+
+**409.** Environment variables configure this account, so the app can't
+change its configuration or credentials, delete it, or show its key.
+Change the variables (and restart), or adopt the account into the app
+first (`POST /v1/accounts/{id}:adopt`).
+
+## identity_changed
+
+**409.** The new credentials belong to another account on the network
+than the one this account is. Add that one as a new account instead.
+
+## master_key_required
+
+**409.** Saving credentials needs a master key, and none is set. Set
+`PUBLISHER_MASTER_KEY` (or `PUBLISHER_MASTER_KEY_FILE`; `publisher
+keygen` makes one) and restart, then retry.
+
+## master_key_mismatch
+
+**409.** The stored credentials were saved with another master key than
+the one set now, so new ones aren't saved (the database never mixes
+keys). Set the master key they were saved with (or keep it as
+`PUBLISHER_MASTER_KEY_PREVIOUS` while rotating) and restart.
 
 ## insufficient_storage
 

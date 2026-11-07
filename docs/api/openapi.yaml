@@ -137,13 +137,21 @@ paths:
       operationId: listAccounts
       tags: [accounts]
       summary: The owner's accounts, oldest first
-      description: Needs `accounts:read`. Disabled accounts are listed too (they keep their history).
+      description: |
+        Needs `accounts:read`. Disabled accounts are listed too (they keep
+        their history); deleted ones only with `include=deleted`.
       security:
         - bearer: ["accounts:read"]
         - session: []
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - name: include
+          in: query
+          description: "`deleted` lists deleted accounts too (with `deleted_at`)."
+          schema:
+            type: string
+            enum: [deleted]
       responses:
         "200":
           description: A page of accounts.
@@ -166,6 +174,91 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/InsufficientScope"
+        default:
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: createAccount
+      tags: [accounts]
+      summary: Add an account
+      description: |
+        Needs `accounts:write` and a master key (`PUBLISHER_MASTER_KEY`;
+        `409 master_key_required` or `master_key_mismatch` otherwise).
+        Refused behind the reverse proxy alone (`AUTH_MODE=proxy`: `403
+        sign_in_required`), to tokens too.
+
+        `type` and `method` come from `GET /v1/destinations` (`method` may
+        be left out when the type has one). `config` holds the type's
+        fields and `credentials` the method's, as their specs describe;
+        defaults fill what is left out. Addresses must be `https` (or
+        `http` for a host `PRIVATE_DESTINATIONS` allows), never the
+        server itself; they are kept as their origin. What the network can
+        find is looked up when left out: a Bluesky account's PDS from its
+        handle or DID (a not-found answer is `422` with `not_found` on
+        `/credentials/identifier`). `method: generate` makes the
+        credential (a new Nostr key; read it once with `:reveal`).
+
+        The account is then opened with the credentials and its network
+        asked who it is (15 s at most). A refusal is `422
+        credentials_rejected` with the network's words (at most 200
+        characters, without what you sent); an unreachable network is
+        `502 upstream_failed`. The same network account twice is `409
+        duplicate_account` with the existing account's `account_id`.
+        Nothing is stored until all of that passed; then the account and
+        its credentials (sealed with the master key, for its server only)
+        are stored in one step, with an `account.created` event naming the
+        credentials (never their values). The new account is on, and not
+        selected for new posts. The answer never carries a credential.
+
+        Idempotent: send an `Idempotency-Key` so a retry can't add the
+        account twice (the stored fingerprint of the request is keyed with
+        the master key, so it can't be used to test a guess of the
+        credentials). At most 10 accounts added or changed a minute
+        (`429 rate_limited`); a replay doesn't count.
+      security:
+        - bearer: ["accounts:write"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountCreate"
+      responses:
+        "201":
+          description: The account.
+          headers:
+            Location:
+              description: The account's URL.
+              schema:
+                type: string
+            ETag:
+              $ref: "#/components/headers/AccountETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "502":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
         default:
           $ref: "#/components/responses/Problem"
   /v1/accounts/{id}:
@@ -225,6 +318,21 @@ paths:
         `account.updated` event naming the fields that changed. The answer
         is the whole account, as `GET /v1/accounts/{id}` shows it, so a
         token with `accounts:write` also reads the account it changes.
+
+        An account added in the app (`source: db`) can also change its
+        `config` (a merge patch: `null` puts a field back to its default),
+        `credentials` (all of the method's, replacing the stored ones) and
+        `method` (which needs its credentials). The result is opened and
+        its network asked who it is first, as when adding it, and must be
+        the same network account (`409 identity_changed`); a new server
+        address needs the credentials again (`422` with `required` on
+        `/credentials`), so they never go to a server they weren't given
+        for. Errors are as for adding one; nothing changes when one
+        happens. An account from the environment answers `409
+        locked_by_env`. Behind the reverse proxy alone, `credentials` and
+        `method` are refused (`403 sign_in_required`); `config` works.
+        These count towards the limit of 10 accounts added or changed a
+        minute.
       security:
         - bearer: ["accounts:write"]
         - session: []
@@ -258,9 +366,176 @@ paths:
           $ref: "#/components/responses/InsufficientScope"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "502":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+    delete:
+      operationId: deleteAccount
+      tags: [accounts]
+      summary: Delete an account added in the app
+      description: |
+        Needs a signed-in browser session, re-authenticated for
+        `account.delete` with this account as the `target`. The account is
+        turned off and marked deleted, its credentials and relay-sync
+        lists are deleted, and what it still had to send (scheduled posts,
+        retries) is canceled with the reason; its posts stay in the
+        history, and `GET /v1/accounts?include=deleted` still lists it. An
+        account from the environment can't be deleted (`409
+        locked_by_env`: unset its variables). An `account.deleted` event
+        is logged. An unknown account (`404`) or one from the environment
+        is answered before asking for re-authentication.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+        - $ref: "#/components/parameters/Reauth"
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts/{id}:check:
+    parameters:
+      - $ref: "#/components/parameters/AccountID"
+    post:
+      operationId: checkAccount
+      tags: [accounts]
+      summary: Check an account's credentials now
+      description: |
+        Needs `accounts:write`. Asks the account's network, with its
+        credentials, whether they work, and answers the account with the
+        result in `health` (its `status` follows: refused credentials make
+        it `needs_reconnect`). Once every 10 seconds per account (`429
+        rate_limited`). An account that isn't open, or whose network has
+        no check, is `409 invalid_state`.
+      security:
+        - bearer: ["accounts:write"]
+        - session: []
+      responses:
+        "200":
+          description: The account, with the check's result.
+          headers:
+            ETag:
+              $ref: "#/components/headers/AccountETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts/{id}:reveal:
+    parameters:
+      - $ref: "#/components/parameters/AccountID"
+    post:
+      operationId: revealAccount
+      tags: [accounts]
+      summary: Show an account's key
+      description: |
+        A signed-in browser session, re-authenticated for
+        `account.reveal` with this account as the `target`. Answers the
+        credentials its type lets you see again, as you would type them: a
+        Nostr key (`secret_key`, as `nsec1…`), to keep a copy. Never
+        stored or cached (`Cache-Control: no-store`); not idempotent. An
+        account whose credentials can't be shown is `409 invalid_state`;
+        one from the environment is `409 locked_by_env` (read its
+        variables). Both are answered before asking for
+        re-authentication.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Reauth"
+      responses:
+        "200":
+          description: The credentials.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [credentials]
+                properties:
+                  credentials:
+                    type: object
+                    additionalProperties:
+                      type: string
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts/{id}:adopt:
+    parameters:
+      - $ref: "#/components/parameters/AccountID"
+    post:
+      operationId: adoptAccount
+      tags: [accounts]
+      summary: Move an account from the environment into the app
+      description: |
+        A signed-in browser session and a master key. The account's
+        configuration and credentials as the environment sets them (with
+        a token it renewed since) are stored in the app, sealed, and its
+        `source` becomes `db`; its id, history and your settings on it
+        stay. From then on its variables are ignored (a warning at startup
+        names them while they are set), and it can be changed and deleted
+        in the app. Its addresses must pass the checks of an address typed
+        in the app (`422` naming the field otherwise; `PRIVATE_DESTINATIONS`
+        allows a private one). An `account.adopted` event names the fields.
+        An account already in the app, or one the environment no longer
+        configures, is `409 invalid_state`. To undo it, restore the backup
+        made before.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The account, now in the app.
+          headers:
+            ETag:
+              $ref: "#/components/headers/AccountETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
           $ref: "#/components/responses/Problem"
         "422":
           $ref: "#/components/responses/Invalid"
@@ -2176,8 +2451,11 @@ components:
         A re-authentication nonce for this operation: the owner confirmed
         it's them just now (`POST /auth/reauth` with a passkey or the
         password, or a fresh OIDC login). Good once, for five minutes, in
-        the session that asked for it. Without a valid one: `403
-        reauth_required`, naming the `operation` to re-authenticate for.
+        the session that asked for it. An operation on one account
+        (`account.delete`, `account.reveal`) names it as the `target` when
+        re-authenticating, and its nonce is good for that account only.
+        Without a valid one: `403 reauth_required`, naming the `operation`
+        to re-authenticate for.
       schema:
         type: string
         maxLength: 128
@@ -3582,13 +3860,22 @@ components:
             - sign_in_required
             - last_sign_in_method
             - gone
+            - credentials_rejected
+            - duplicate_account
+            - locked_by_env
+            - identity_changed
+            - master_key_required
+            - master_key_mismatch
         errors:
           type: array
           items:
             $ref: "#/components/schemas/FieldError"
         operation:
           type: string
-          description: "`reauth_required` only: the operation to re-authenticate for (`signin.add`, `signin.remove`, `password.set`, `token.create`)."
+          description: "`reauth_required` only: the operation to re-authenticate for (`signin.add`, `signin.remove`, `password.set`, `token.create`, `account.delete`, `account.reveal`)."
+        account_id:
+          type: string
+          description: "`duplicate_account` only: the account you already have."
     FieldError:
       type: object
       additionalProperties: false
@@ -4036,7 +4323,7 @@ components:
     Account:
       type: object
       additionalProperties: false
-      required: [id, type, label, source, enabled, status, order, default_selected, public_feed, created_at, updated_at]
+      required: [id, type, label, source, enabled, status, order, default_selected, public_feed, config, credentials, created_at, updated_at]
       description: |
         One of your accounts. The profile fields (`handle`,
         `display_name`, `avatar`, `profile_url`) are as the network last
@@ -4071,7 +4358,10 @@ components:
             asked.
         source:
           type: string
-          description: Where the account is configured (`env` for now).
+          enum: [env, db]
+          description: |
+            Where the account is configured: `env` (environment variables,
+            changed there) or `db` (added or adopted in the app).
         enabled:
           type: boolean
           description: Your switch; `status` says whether it can be used.
@@ -4104,12 +4394,81 @@ components:
           type: boolean
           description: Its posts appear in the public feed.
         capabilities:
-          description: Absent when this server has no driver for the account's type.
+          description: Absent when this server has no driver for the account's type, and on a deleted account.
           $ref: "#/components/schemas/Capabilities"
+        auth_method:
+          type: string
+          description: How it connects (`GET /v1/destinations` lists the methods).
+        config:
+          type: object
+          description: |
+            Its configuration: the type's fields and the method's fields
+            that aren't secret (state the account keeps for itself, such
+            as a token's expiry, is left out).
+        credentials:
+          type: object
+          description: Which credentials are set, and when; never what they are.
+          additionalProperties:
+            type: object
+            additionalProperties: false
+            required: [set]
+            properties:
+              set:
+                type: boolean
+              updated_at:
+                $ref: "#/components/schemas/Timestamp"
+        locked_fields:
+          type: array
+          description: The fields environment variables set (`source` `env`); change them there, or adopt the account.
+          items:
+            type: string
+        health:
+          type: object
+          additionalProperties: false
+          required: [ok, reachable, checked_at]
+          description: The last authenticated check (absent before one ran).
+          properties:
+            ok:
+              type: boolean
+            reachable:
+              type: boolean
+              description: The network answered at all.
+            auth_ok:
+              type: boolean
+              description: Whether the credentials work, when the network said.
+            message:
+              type: string
+            expires_at:
+              $ref: "#/components/schemas/Timestamp"
+            checked_at:
+              $ref: "#/components/schemas/Timestamp"
         created_at:
           $ref: "#/components/schemas/Timestamp"
         updated_at:
           $ref: "#/components/schemas/Timestamp"
+        deleted_at:
+          $ref: "#/components/schemas/Timestamp"
+    AccountCreate:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          description: The network (`GET /v1/destinations`).
+        label:
+          type: string
+          maxLength: 64
+          description: Your name for it; the network's name when left out.
+        method:
+          type: string
+          description: How it connects; may be left out when the type has one.
+        config:
+          type: object
+          description: The type's fields.
+        credentials:
+          type: object
+          description: The method's fields (a `generate` method has none).
     AccountPatch:
       type: object
       additionalProperties: false
@@ -4125,6 +4484,15 @@ components:
           type: boolean
         public_feed:
           type: boolean
+        method:
+          type: string
+          description: A new way of connecting (an account added in the app); needs `credentials`.
+        config:
+          type: object
+          description: A merge patch of the configuration (an account added in the app); `null` puts a field back to its default.
+        credentials:
+          type: object
+          description: Every credential of the method, replacing the stored ones (an account added in the app).
     Token:
       type: object
       additionalProperties: false

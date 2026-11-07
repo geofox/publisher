@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	gonostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip19"
 
 	"github.com/geofox/publisher/internal/destination"
 )
@@ -70,6 +71,7 @@ func configFields() []destination.FieldSpec {
 var (
 	_ destination.ConfigDefaulter     = Driver{}
 	_ destination.CredentialGenerator = Driver{}
+	_ destination.SecretFormatter     = Driver{}
 )
 
 // ConfigDefaults implements destination.ConfigDefaulter: a new account
@@ -111,4 +113,18 @@ func (Driver) GenerateCredentials(method string) (map[string]string, error) {
 	}
 	sk := gonostr.Generate()
 	return map[string]string{SecretKey: hex.EncodeToString(sk[:])}, nil
+}
+
+// FormatSecret implements destination.SecretFormatter: the secret key as
+// nsec1…, however it was stored (a generated key is hex). A value that
+// isn't a key is given back as it is.
+func (Driver) FormatSecret(key, value string) string {
+	if key != SecretKey {
+		return value
+	}
+	sk, err := ParseKey(value)
+	if err != nil {
+		return value
+	}
+	return nip19.EncodeNsec(sk)
 }

@@ -32,9 +32,20 @@ const (
 	// opTokenCreate: a token outlives the session, so a signed-in browser
 	// creating one confirms it's the owner (any scopes).
 	opTokenCreate = "token.create"
+	// opAccountDelete and opAccountReveal act on one account, named as
+	// the nonce's target.
+	opAccountDelete = "account.delete"
+	opAccountReveal = "account.reveal"
 )
 
-var reauthOps = []string{opSignInAdd, opSignInRemove, opPasswordSet, opTokenCreate}
+var reauthOps = []string{opSignInAdd, opSignInRemove, opPasswordSet, opTokenCreate, opAccountDelete, opAccountReveal}
+
+// targetedOps are the operations whose nonce names what it is for (an
+// account id): it can't be spent on another.
+var targetedOps = []string{opAccountDelete, opAccountReveal}
+
+// maxReauthTarget bounds a target's length (ids are far shorter).
+const maxReauthTarget = 64
 
 const (
 	reauthNonceTTL = 5 * time.Minute
@@ -103,35 +114,53 @@ func (a *API) reauthSession(w http.ResponseWriter, r *http.Request) (store.Sessi
 }
 
 type reauthReq struct {
-	Operation  string          `json:"operation"`
+	Operation string `json:"operation"`
+	// Target names what a targeted operation acts on (an account id).
+	Target     string          `json:"target,omitempty"`
 	Password   *string         `json:"password,omitempty"`
 	Credential json.RawMessage `json:"credential,omitempty"`
+}
+
+// reauthFor is the operation (and target) a re-authentication is for.
+type reauthFor struct {
+	Operation string `json:"operation"`
+	Target    string `json:"target,omitempty"`
 }
 
 type reauthNonceBody struct {
 	Nonce     string `json:"nonce"`
 	Operation string `json:"operation"`
+	Target    string `json:"target,omitempty"`
 	ExpiresAt string `json:"expires_at"`
 }
 
-func knownOp(w http.ResponseWriter, r *http.Request, op string) bool {
-	if !slices.Contains(reauthOps, op) {
+// knownOp checks an operation and its target: a targeted operation needs
+// one, any other takes none.
+func knownOp(w http.ResponseWriter, r *http.Request, f reauthFor) bool {
+	switch {
+	case !slices.Contains(reauthOps, f.Operation):
 		invalid(w, r, []fieldError{{Pointer: "/operation", Code: "unknown_operation", Detail: "one of the operations that need re-authentication"}})
+		return false
+	case slices.Contains(targetedOps, f.Operation) && (f.Target == "" || len(f.Target) > maxReauthTarget):
+		invalid(w, r, []fieldError{{Pointer: "/target", Code: "required", Detail: f.Operation + " needs the id of what it acts on"}})
+		return false
+	case !slices.Contains(targetedOps, f.Operation) && f.Target != "":
+		invalid(w, r, []fieldError{{Pointer: "/target", Code: "not_allowed", Detail: f.Operation + " takes no target"}})
 		return false
 	}
 	return true
 }
 
-// issueNonce answers a fresh nonce for op in session s.
-func (a *API) issueNonce(w http.ResponseWriter, r *http.Request, s store.Session, op string) {
-	raw, exp, err := a.Store.CreateReauthNonce(r.Context(), s.ID, op, "", reauthNonceTTL)
+// issueNonce answers a fresh nonce for f in session s.
+func (a *API) issueNonce(w http.ResponseWriter, r *http.Request, s store.Session, f reauthFor) {
+	raw, exp, err := a.Store.CreateReauthNonce(r.Context(), s.ID, f.Operation, f.Target, reauthNonceTTL)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "reauth: create nonce", "err", err)
 		problem(w, r, http.StatusInternalServerError, codeInternal, "re-authentication failed on the server")
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeV1(w, http.StatusOK, reauthNonceBody{Nonce: raw, Operation: op, ExpiresAt: rfc3339(exp)})
+	writeV1(w, http.StatusOK, reauthNonceBody{Nonce: raw, Operation: f.Operation, Target: f.Target, ExpiresAt: rfc3339(exp)})
 }
 
 // handleReauthBegin (POST /auth/reauth/begin {operation}) starts a passkey
@@ -141,10 +170,8 @@ func (a *API) handleReauthBegin(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var req struct {
-		Operation string `json:"operation"`
-	}
-	if !decodeJSON(w, r, &req) || !knownOp(w, r, req.Operation) {
+	var req reauthFor
+	if !decodeJSON(w, r, &req) || !knownOp(w, r, req) {
 		return
 	}
 	opts, id, err := a.Local.BeginReauth(r.Context(), a.clientAddr(r), u, s.ID, req.Operation)
@@ -177,7 +204,7 @@ func (a *API) handleReauth(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, http.StatusBadRequest, codeInvalidJSON, "the body must be {operation, credential | password}")
 		return
 	}
-	if !knownOp(w, r, req.Operation) {
+	if !knownOp(w, r, reauthFor{req.Operation, req.Target}) {
 		return
 	}
 	switch {
@@ -202,7 +229,7 @@ func (a *API) handleReauth(w http.ResponseWriter, r *http.Request) {
 		invalid(w, r, []fieldError{{Pointer: "", Code: "required", Detail: "send either credential (a passkey) or password"}})
 		return
 	}
-	a.issueNonce(w, r, s, req.Operation)
+	a.issueNonce(w, r, s, reauthFor{req.Operation, req.Target})
 }
 
 // answerReauthErr answers a failed re-authentication. The caller is
@@ -307,7 +334,8 @@ func (a *API) handleOIDCReauthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	op := r.URL.Query().Get("operation")
-	if !knownOp(w, r, op) {
+	if !slices.Contains(reauthOps, op) {
+		invalid(w, r, []fieldError{{Parameter: "operation", Code: "unknown_operation", Detail: "one of the operations that need re-authentication"}})
 		return
 	}
 	state, nonce, verifier := randB64(), randB64(), oauth2.GenerateVerifier()
@@ -361,10 +389,8 @@ func (a *API) handleOIDCReauthClaim(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var req struct {
-		Operation string `json:"operation"`
-	}
-	if !decodeJSON(w, r, &req) || !knownOp(w, r, req.Operation) {
+	var req reauthFor
+	if !decodeJSON(w, r, &req) || !knownOp(w, r, req) {
 		return
 	}
 	if !a.oidcReauth.claim(s.ID, req.Operation) {
@@ -372,5 +398,5 @@ func (a *API) handleOIDCReauthClaim(w http.ResponseWriter, r *http.Request) {
 			Detail: "sign in again with your identity provider first (GET /auth/reauth/oidc?operation=" + req.Operation + ")"})
 		return
 	}
-	a.issueNonce(w, r, s, req.Operation)
+	a.issueNonce(w, r, s, req)
 }

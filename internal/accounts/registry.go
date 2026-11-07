@@ -90,8 +90,17 @@ type Options struct {
 	// found (the zero value: no key).
 	Keys     secrets.Keyring
 	KeyState KeyState
-	Now      func() time.Time // nil: time.Now
-	Logger   *slog.Logger     // nil: slog.Default()
+	// Writes stores the accounts added, changed, adopted and deleted in
+	// the app (nil: they can't be).
+	Writes AccountWriter
+	// Seed gives an account just added in the app its starting state
+	// beside its row (a Nostr account's relay-sync list); nil: none.
+	Seed func(ctx context.Context, row store.Account) error
+	// Getenv reads the operator's defaults for a new account (nil:
+	// os.Getenv).
+	Getenv func(string) string
+	Now    func() time.Time // nil: time.Now
+	Logger *slog.Logger     // nil: slog.Default()
 }
 
 // Entry is an account as the registry sees it.
@@ -607,17 +616,40 @@ func (r *Registry) Caps(ctx context.Context, id, typ string) destination.Capabil
 // last lease is released. A confirmed refusal is forgotten: the new
 // credentials get their own check.
 func (r *Registry) Reopen(ctx context.Context, id string) error {
+	_, err := r.reopen(ctx, id, nil)
+	return err
+}
+
+// ReopenWith reopens an account from a row the store just saved with new
+// configuration or credentials (or adopted into the app): the row's
+// source, method, configuration and identity replace the held ones. The
+// owner's settings (label, flags) of a newer row already held are kept,
+// as Update would.
+func (r *Registry) ReopenWith(ctx context.Context, row store.Account) (Entry, error) {
+	return r.reopen(ctx, row.ID, &row)
+}
+
+func (r *Registry) reopen(ctx context.Context, id string, next *store.Account) (Entry, error) {
 	r.reopenMu.Lock()
 	defer r.reopenMu.Unlock()
-	r.mu.RLock()
+	r.mu.Lock()
 	e, ok := r.entries[id]
 	var row store.Account
 	if ok {
+		if next != nil {
+			n := *next
+			if n.UpdatedAt.Before(e.row.UpdatedAt) {
+				n.Label, n.Enabled, n.DefaultSelected, n.PublicFeed = e.row.Label, e.row.Enabled, e.row.DefaultSelected, e.row.PublicFeed
+				n.UpdatedAt = e.row.UpdatedAt
+			}
+			e.row = n
+			e.duplicateOf = ""
+		}
 		row = e.row
 	}
-	r.mu.RUnlock()
+	r.mu.Unlock()
 	if !ok {
-		return ErrNoAccount
+		return Entry{}, ErrNoAccount
 	}
 	live, base, reason := r.build(ctx, row)
 	r.mu.Lock()
@@ -632,7 +664,7 @@ func (r *Registry) Reopen(ctx context.Context, id string) error {
 		old.retire()
 	}
 	r.emit(Change{ID: id, Kind: ChangeReopened, Entry: snap})
-	return nil
+	return snap, nil
 }
 
 // Update takes the owner's settings (label, enabled, flags) from a row the

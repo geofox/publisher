@@ -123,6 +123,14 @@ type API struct {
 	// MasterKey is the master key's status at startup (accounts.PrepareKeys):
 	// whether credentials can be saved. The zero value: no key.
 	MasterKey accounts.KeyState
+	// IdemMAC is a keyed MAC under the master key (secrets.Keyring.MAC):
+	// the idempotency fingerprint of a request that holds credentials.
+	// nil, or nil answers: a key of this process.
+	IdemMAC     func([]byte) []byte
+	idemKey     []byte
+	idemKeyOnce sync.Once
+	// acctLimits rate-limit account writes and checks.
+	acctLimits accountLimits
 	// Guard is who owner-set addresses may reach (PRIVATE_DESTINATIONS
 	// and the server's own addresses): relay sync's targets go through
 	// it. The zero value allows public addresses only.

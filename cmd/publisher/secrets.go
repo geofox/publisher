@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"strings"
 
 	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/drivers"
@@ -61,4 +62,25 @@ func prepareSecrets(ctx context.Context, st *store.Store, keys secrets.Keyring, 
 		}
 	}
 	return ks, sealed, nil
+}
+
+// warnAdoptedStillSet warns about the variables of accounts adopted into
+// the app that are still set: they are ignored now.
+func warnAdoptedStillSet(ctx context.Context, st *store.Store, env []drivers.EnvAccount, mediaSigned bool) {
+	rows, err := st.AccountsWithDeleted(ctx, store.DefaultOwner)
+	if err != nil {
+		slog.Error("reading accounts failed", "err", err)
+		return
+	}
+	for _, s := range drivers.AdoptedStillSet(rows, env, mediaSigned) {
+		msg := "an account adopted into the app is still configured by environment variables, which are ignored for it now: remove them"
+		if s.Deleted {
+			msg = "an account adopted into the app, then deleted there, is still configured by environment variables, which are ignored: remove them"
+		}
+		args := []any{"account", s.AccountID, "type", s.Type, "variables", strings.Join(s.Vars, ", ")}
+		if s.Keep != "" {
+			args = append(args, "note", s.Keep)
+		}
+		slog.Warn(msg, args...)
+	}
 }

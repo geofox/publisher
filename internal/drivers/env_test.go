@@ -5,9 +5,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/destination/destinationtest"
+	"github.com/geofox/publisher/internal/store"
 )
 
 const (
@@ -82,5 +84,56 @@ func TestEnvAccountsJoinsErrors(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q doesn't name %s", err, want)
 		}
+	}
+}
+
+// An account adopted into the app (or adopted, then deleted) whose
+// variables are still set is named with the variables that configure it;
+// accounts from the environment, and those added in the app, aren't.
+func TestAdoptedStillSet(t *testing.T) {
+	env, err := EnvAccounts(envOf(fullEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := []store.Account{
+		{ID: "acc_b", Type: "bluesky", Source: store.SourceDB, EnvKey: "default"},
+		{ID: "acc_n", Type: "nostr", Source: store.SourceDB, EnvKey: "default", DeletedAt: time.Now()},
+		{ID: "acc_m", Type: "mastodon", Source: store.SourceEnv, EnvKey: "default"},
+		{ID: "acc_t", Type: "threads", Source: store.SourceDB},
+		{ID: "acc_x", Type: "mastodon", Source: store.SourceDB, EnvKey: "work"},
+	}
+	got := AdoptedStillSet(rows, env, true)
+	want := []StillSet{
+		{AccountID: "acc_b", Type: "bluesky", Vars: []string{"BLUESKY_APP_PASSWORD", "BLUESKY_IDENTIFIER", "BLUESKY_PDS_URL"}},
+		{AccountID: "acc_n", Type: "nostr", Deleted: true, Vars: []string{"NSEC_HEX"},
+			Keep: "keep NSEC_HEX while BLOSSOM_URL is set: it signs media uploads"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v\nwant %+v", got, want)
+	}
+	if got := AdoptedStillSet(rows, env, false); got[1].Keep != "" {
+		t.Fatalf("without media: %+v", got[1])
+	}
+}
+
+type seedRecorder map[string][]string
+
+func (s seedRecorder) SeedAccountSyncRelaysOnce(_ context.Context, id string, urls []string) error {
+	s[id] = urls
+	return nil
+}
+
+// A Nostr account added in the app starts relay sync with SYNC_RELAYS;
+// other types start with nothing.
+func TestNewAccountSeeder(t *testing.T) {
+	rec := seedRecorder{}
+	seed := NewAccountSeeder(rec, envOf(map[string]string{"SYNC_RELAYS": "wss://a.example, wss://b.example"}))
+	for _, row := range []store.Account{{ID: "acc_n", Type: "nostr"}, {ID: "acc_b", Type: "bluesky"}} {
+		if err := seed(context.Background(), row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !reflect.DeepEqual(rec, seedRecorder{"acc_n": {"wss://a.example", "wss://b.example"}}) {
+		t.Fatalf("seeded %v", rec)
 	}
 }

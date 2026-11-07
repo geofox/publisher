@@ -1,12 +1,14 @@
 package drivers
 
 import (
+	"context"
 	"errors"
 
 	gonostr "fiatjaf.com/nostr"
 
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/nostr"
+	"github.com/geofox/publisher/internal/store"
 )
 
 // EnvAccount is an account the environment configures, with its type.
@@ -73,4 +75,71 @@ func EnvMediaSigner(accts []EnvAccount) (gonostr.SecretKey, gonostr.PubKey, bool
 		return sk, gonostr.GetPublicKey(sk), true
 	}
 	return gonostr.SecretKey{}, gonostr.PubKey{}, false
+}
+
+// StillSet is an account the environment still configures although its
+// variables no longer apply: it was adopted into the app (or adopted,
+// then deleted there).
+type StillSet struct {
+	AccountID, Type string
+	Deleted         bool
+	// Vars are the type's variables that configure an account.
+	Vars []string
+	// Keep names a variable still in use for something else.
+	Keep string
+}
+
+// AdoptedStillSet lists the accounts adopted into the app whose
+// variables are still set (rows: the owner's accounts, deleted ones
+// included). Their variables are ignored: seeding never makes a second
+// account for them. mediaSigned: the environment's Nostr key signs media
+// uploads (BLOSSOM_URL), so it stays.
+func AdoptedStillSet(rows []store.Account, env []EnvAccount, mediaSigned bool) []StillSet {
+	var out []StillSet
+	for _, row := range rows {
+		if row.Source != store.SourceDB || row.EnvKey == "" {
+			continue
+		}
+		for _, e := range env {
+			key := e.Key
+			if key == "" {
+				key = destination.EnvKeyDefault
+			}
+			if e.Type != row.Type || key != row.EnvKey {
+				continue
+			}
+			s := StillSet{AccountID: row.ID, Type: row.Type, Deleted: !row.DeletedAt.IsZero()}
+			if row.Type == nostr.Type && mediaSigned {
+				s.Keep = "keep NSEC_HEX while BLOSSOM_URL is set: it signs media uploads"
+			}
+			if d, ok := destination.Lookup(row.Type); ok {
+				if src, ok := d.(destination.EnvSource); ok {
+					for _, v := range src.EnvVars() {
+						if v.Required {
+							s.Vars = append(s.Vars, v.Name)
+						}
+					}
+				}
+			}
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// SyncRelaySeeder keeps an account's starting relay-sync list.
+type SyncRelaySeeder interface {
+	SeedAccountSyncRelaysOnce(ctx context.Context, accountID string, urls []string) error
+}
+
+// NewAccountSeeder gives an account added in the app its starting state
+// beside its row: a Nostr account starts relay sync with SYNC_RELAYS (or
+// the built-in list of public relays).
+func NewAccountSeeder(st SyncRelaySeeder, getenv func(string) string) func(context.Context, store.Account) error {
+	return func(ctx context.Context, row store.Account) error {
+		if row.Type != nostr.Type {
+			return nil
+		}
+		return st.SeedAccountSyncRelaysOnce(ctx, row.ID, nostr.NewAccountSyncRelays(getenv))
+	}
 }

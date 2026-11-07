@@ -95,11 +95,40 @@ type v1Route struct {
 	// SessionOnly: only a signed-in browser session may call it (a token
 	// gets 403 session_required; the proxy, 403 sign_in_required).
 	SessionOnly bool
+	// NoProxy: behind the reverse proxy alone (proxy mode) it answers 403
+	// sign_in_required: it writes or shows credentials, which needs the
+	// owner signed in.
+	NoProxy bool
+	// ReturnsSecret: its answer carries a secret or a capability (a new
+	// token, a revealed key), so it is never Idempotent (a stored answer
+	// would keep the secret).
+	ReturnsSecret bool
 	// Actions are the custom methods (AIP-136) a POST route serves as
 	// Path:action, documented one by one; the handler splits them off,
 	// since a ServeMux wildcard must be a whole segment.
 	Actions []string
-	Handler http.HandlerFunc
+	// ActionRules tighten the route's own rules for some of its actions.
+	ActionRules map[string]v1ActionRule
+	// IdemPrint, on an Idempotent route, is what the request fingerprint
+	// covers instead of the body as sent: a body holding credentials has
+	// them replaced by a keyed MAC, so the stored fingerprint can't be
+	// used to test guesses.
+	IdemPrint func(body []byte) []byte
+	Handler   http.HandlerFunc
+}
+
+// v1ActionRule is one action's rules, on top of its route's.
+type v1ActionRule struct {
+	Scope         string
+	SessionOnly   bool
+	NoProxy       bool
+	ReturnsSecret bool
+}
+
+// v1Gate is who may call a route (or one of its actions).
+type v1Gate struct {
+	Scope                string
+	SessionOnly, NoProxy bool
 }
 
 // v1Routes lists every /v1 operation. Handlers are added here and nowhere
@@ -110,8 +139,21 @@ func (a *API) v1Routes() []v1Route {
 		{Method: "GET", Path: "/v1/instance", Handler: a.v1Instance},
 		{Method: "GET", Path: "/v1/destinations", Scope: scopeAccountsRead, Handler: a.v1Destinations},
 		{Method: "GET", Path: "/v1/accounts", Scope: scopeAccountsRead, Handler: a.v1Accounts},
+		// Adding an account stores its credentials; a replay answers the
+		// account, which never carries them.
+		{Method: "POST", Path: "/v1/accounts", Scope: scopeAccountsWrite, Idempotent: true, NoProxy: true,
+			IdemPrint: a.accountCreatePrint, Handler: a.v1CreateAccount},
 		{Method: "GET", Path: "/v1/accounts/{id}", Scope: scopeAccountsRead, Handler: a.v1Account},
+		// Changing credentials behind the proxy alone is refused by the
+		// handler; labels and flags work there.
 		{Method: "PATCH", Path: "/v1/accounts/{id}", Scope: scopeAccountsWrite, Handler: a.v1PatchAccount},
+		// Deleting needs re-authentication, so a signed-in owner.
+		{Method: "DELETE", Path: "/v1/accounts/{id}", Scope: scopeAccountsWrite, SessionOnly: true, Handler: a.v1DeleteAccount},
+		{Method: "POST", Path: "/v1/accounts/{id}", Scope: scopeAccountsWrite, Actions: []string{"check", "reveal", "adopt"},
+			ActionRules: map[string]v1ActionRule{
+				"reveal": {SessionOnly: true, NoProxy: true, ReturnsSecret: true},
+				"adopt":  {SessionOnly: true, NoProxy: true},
+			}, Handler: a.v1AccountAction},
 		{Method: "GET", Path: "/v1/me", Handler: a.v1Me},
 		// The signed-in owner's ways of signing in and sessions.
 		{Method: "GET", Path: "/v1/me/sign-in", SessionOnly: true, Handler: a.v1SignIn},
@@ -126,7 +168,7 @@ func (a *API) v1Routes() []v1Route {
 		{Method: "GET", Path: "/v1/me/sign-in-events", SessionOnly: true, Handler: a.v1SignInEvents},
 		{Method: "GET", Path: "/v1/tokens", Scope: scopeAdmin, Handler: a.v1ListTokens},
 		// Not idempotent: the response carries a secret we never store.
-		{Method: "POST", Path: "/v1/tokens", Scope: scopeAdmin, Handler: a.v1CreateToken},
+		{Method: "POST", Path: "/v1/tokens", Scope: scopeAdmin, ReturnsSecret: true, Handler: a.v1CreateToken},
 		{Method: "GET", Path: "/v1/tokens/{id}", Scope: scopeAdmin, Handler: a.v1GetToken},
 		{Method: "DELETE", Path: "/v1/tokens/{id}", Scope: scopeAdmin, Handler: a.v1RevokeToken},
 		{Method: "GET", Path: "/v1/posts", Scope: scopePostsRead, Handler: a.v1ListPosts},
@@ -171,11 +213,14 @@ func (a *API) mountV1(mux *http.ServeMux) {
 	var paths []string
 	for _, rt := range a.v1Routes() {
 		h := http.Handler(rt.Handler)
+		if len(rt.ActionRules) > 0 {
+			h = a.v1ActionGate(rt.ActionRules, h)
+		}
 		if rt.Idempotent {
-			h = a.withIdempotency(h)
+			h = a.withIdempotency(rt.IdemPrint, h)
 		}
 		if !rt.Public {
-			h = a.v1Auth(rt.Scope, rt.SessionOnly, h)
+			h = a.v1Auth(v1Gate{Scope: rt.Scope, SessionOnly: rt.SessionOnly, NoProxy: rt.NoProxy}, h)
 		}
 		mux.Handle(rt.Method+" "+rt.Path, v1Headers(v1Recover(h)))
 		if _, seen := allow[rt.Path]; !seen {
@@ -209,28 +254,56 @@ func v1Headers(next http.Handler) http.Handler {
 	})
 }
 
-// v1Auth authenticates the request and checks scope. A bearer token wins
-// over a session cookie: a script that sends one means it.
-func (a *API) v1Auth(scope string, sessionOnly bool, next http.Handler) http.Handler {
+// v1Auth authenticates the request and checks it against g. A bearer
+// token wins over a session cookie: a script that sends one means it.
+func (a *API) v1Auth(g v1Gate, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, ok := a.v1Principal(w, r)
 		if !ok {
 			return
 		}
-		if sessionOnly && p.Kind != "session" {
-			if p.Kind == "proxy" {
-				problem(w, r, http.StatusForbidden, codeSignInRequired, "set up sign-in (AUTH_MODE=local, or OIDC) to do this; the reverse proxy alone can't")
-				return
-			}
-			problem(w, r, http.StatusForbidden, codeSessionRequired, "only the owner, signed in in a browser, can do this; a token can't")
-			return
-		}
-		if scope != "" && !p.can(scope) {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="publisher", error="insufficient_scope", scope="`+scope+`"`)
-			problem(w, r, http.StatusForbidden, codeInsufficientScope, "this token lacks the "+scope+" scope")
+		if !a.pass(w, r, p, g) {
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, p)))
+	})
+}
+
+// signInRequired is the answer behind the reverse proxy alone to what
+// needs the owner signed in.
+const signInRequired = "set up sign-in (AUTH_MODE=local, or OIDC) to do this; the reverse proxy alone can't"
+
+// pass checks the principal against g; on false it has answered. In
+// proxy mode a NoProxy route is refused to tokens too: credentials are
+// managed only where the owner signs in.
+func (a *API) pass(w http.ResponseWriter, r *http.Request, p principal, g v1Gate) bool {
+	switch {
+	case p.Kind == "proxy" && g.SessionOnly, g.NoProxy && (p.Kind == "proxy" || a.mode() == ModeProxy):
+		problem(w, r, http.StatusForbidden, codeSignInRequired, signInRequired)
+		return false
+	case g.SessionOnly && p.Kind != "session":
+		problem(w, r, http.StatusForbidden, codeSessionRequired, "only the owner, signed in in a browser, can do this; a token can't")
+		return false
+	case g.Scope != "" && !p.can(g.Scope):
+		w.Header().Set("WWW-Authenticate", `Bearer realm="publisher", error="insufficient_scope", scope="`+g.Scope+`"`)
+		problem(w, r, http.StatusForbidden, codeInsufficientScope, "this token lacks the "+g.Scope+" scope")
+		return false
+	}
+	return true
+}
+
+// v1ActionGate applies an action's own rules (inside v1Auth, which
+// checked the route's).
+func (a *API) v1ActionGate(rules map[string]v1ActionRule, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, action, _ := strings.Cut(r.PathValue("id"), ":")
+		if rule, ok := rules[action]; ok {
+			p, _ := principalFrom(r.Context())
+			if !a.pass(w, r, p, v1Gate{Scope: rule.Scope, SessionOnly: rule.SessionOnly, NoProxy: rule.NoProxy}) {
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

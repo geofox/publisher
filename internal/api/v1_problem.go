@@ -44,6 +44,12 @@ const (
 	codeSignInRequired       = "sign_in_required"
 	codeLastSignInMethod     = "last_sign_in_method"
 	codeGone                 = "gone"
+	codeCredentialsRejected  = "credentials_rejected"
+	codeDuplicateAccount     = "duplicate_account"
+	codeLockedByEnv          = "locked_by_env"
+	codeIdentityChanged      = "identity_changed"
+	codeMasterKeyRequired    = "master_key_required"
+	codeMasterKeyMismatch    = "master_key_mismatch"
 )
 
 // v1Codes maps each code to its problem title, the same for every
@@ -77,6 +83,12 @@ var v1Codes = map[string]string{
 	codeSignInRequired:       "Sign-in required",
 	codeLastSignInMethod:     "Last sign-in method",
 	codeGone:                 "Gone",
+	codeCredentialsRejected:  "Credentials rejected",
+	codeDuplicateAccount:     "Duplicate account",
+	codeLockedByEnv:          "Set by environment variables",
+	codeIdentityChanged:      "Another account",
+	codeMasterKeyRequired:    "Master key required",
+	codeMasterKeyMismatch:    "Master key mismatch",
 }
 
 // fieldError is one problem with one part of a request: a JSON Pointer
@@ -99,6 +111,8 @@ type problemBody struct {
 	Errors   []fieldError `json:"errors,omitempty"`
 	// Operation names what to re-authenticate for (reauth_required).
 	Operation string `json:"operation,omitempty"`
+	// AccountID names the account a duplicate_account is the same as.
+	AccountID string `json:"account_id,omitempty"`
 }
 
 // problem answers an error as application/problem+json.

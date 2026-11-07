@@ -186,6 +186,23 @@ the `edge` image.
   account that new posts select (`default_selected`), and posts from that
   account. The Tools tab says relay sync needs a Nostr account instead of
   showing an error.
+- **Accounts added in the app** (`POST /v1/accounts`, with a master key):
+  a Bluesky app password (the PDS is found from the handle or DID when
+  left out), a Mastodon or Threads token, or a Nostr key (typed, or made
+  for you and shown once with `:reveal`). Each is opened and asked who it
+  is before anything is stored: refused credentials come back on the
+  field with the network's own words, and the same network account can't
+  be added twice. Accounts added in the app can change their settings
+  and credentials (`PATCH`; a new server address needs the credentials
+  again), be checked now (`:check`) and be deleted (re-authenticated;
+  their scheduled posts are canceled, their history stays). An account
+  from the environment can be moved into the app (`:adopt`); its
+  variables are then ignored, and a startup warning names them while
+  they are set. `GET /v1/accounts` adds `auth_method`, `config`, which
+  `credentials` are set (never their values), `locked_fields`, `health`,
+  and `?include=deleted`. At most 10 accounts added or changed a minute.
+  Behind the reverse proxy alone (`AUTH_MODE=proxy`) none of this is
+  allowed; labels and flags still are.
 
 ### Security
 
