@@ -1002,22 +1002,29 @@ next request or claim; nothing in flight is interrupted.
 - `GET /v1/settings` (`settings:read`) and `PATCH /v1/settings`
   (`settings:write`): the owner's settings, as nested JSON
   (`{"composing": {"languages": ["en", "fr"]}}`). Each leaf in `GET` is
-  `{"value", "source", "env", "locked"}`; a secret's value is
-  `{"set": bool, "updated_at"}` (a webhook URL shows its origin). `PATCH`
+  `{"value", "source", "env", "locked", "field"}`, with `updated_at` once
+  saved, `problem` when a saved secret can't be opened and `generate`
+  when the server can make a value; a secret's value is
+  `{"set": bool, "updated_at"}` (a webhook URL shows its `origin`, the
+  Blossom key its `public_key`). `PATCH`
   is a JSON Merge Patch: `null` reverts a key to its default or clears a
   secret. `If-Match` optional (missing: latest; `*` allowed); stale →
   `412 precondition_failed`. A locked key → `409 locked_by_env`.
-- `POST /v1/settings/{key}:copy-from-env` saves the env value.
+- `POST /v1/settings/{key}:copy-from-env` saves the env value;
+  `:generate` makes one (`feed.token`, shown once; `media.blossom_key`,
+  answering only its npub).
 - `GET`/`PATCH /v1/instance/settings` (`instance:admin`; secret writes
   re-authenticated): same shape, instance scope.
 - `POST /v1/settings/{group}:test` for `alerts` and `feed`, `POST
   /v1/instance/settings/media:test`: `{"ok": bool, "error": "<class>"}`
   where the class is `unreachable | refused | timeout | http_error |
-  blocked_destination`; never a status code or body. One per 10 s.
+  blocked_destination`; never a status code or body. One per 10 s (the
+  `media.public` self-test has a window of its own).
 - `/v1/account-sets[/{id}]` (`accounts:read`; writes `accounts:write`),
   with ETags.
-- `PATCH /v1/accounts/{id}` accepts `defaults`: visibility, content
-  warning, languages and the type's options, validated against the
+- `PATCH /v1/accounts/{id}` accepts `defaults`: content warning,
+  languages and `options` (the type's options, and `visibility` where
+  the account has it), validated against the
   account's capabilities and `OptionSpec`s. **Precedence:** a target's own
   value, then the request's shared `content`, then the account default; an
   explicit `""` or `[]` clears a default. `POST /v1/posts:preview` lists the
@@ -1025,6 +1032,9 @@ next request or claim; nothing in flight is interrupted.
   warnings say "default applied: visibility=unlisted".
 - `GET /v1/instance` keeps `user_languages` and `features.translate`
   (the owner's, while there is one owner).
+- `GET /v1/instance/system` (`instance:admin`, not behind the proxy
+  alone): the version, the sign-in mode and System's allowlist of
+  variables, secrets only as set, addresses without user or password.
 
 ### 7.5 The Settings tab
 
@@ -1044,17 +1054,19 @@ by `USER_LANGUAGES`" and offers "copy into the app".
 Added in this spec: without it a Bluesky-only self-hoster needs a Blossom
 server to attach a photo.
 
-- `media.Store`: `Put(ctx, body, mime)`, `PutFile`, `Fetch(ctx, url)`,
-  `Owns(url) bool`, `Public() bool`. Every `Put` path strips metadata as
+- `media.Store`: `Upload(ctx, body, size, sha, mime)` and `Public()
+  bool`; the disk store adds `Owns`, `Has` and `Fetch`. Every `Put` path strips metadata as
   today (EXIF/GPS/XMP), video posters included.
 - **Blossom** signs uploads with `media.blossom_key`, adding the BUD-11
-  server tag so a captured authorization can't be replayed elsewhere.
+  server tag so a captured authorization can't be replayed elsewhere
+  (encoded in standard base64, which servers from before BUD-11 read).
   Existing deployments keep signing with the Nostr env key until another
   key is set. The page shows the key's npub so the owner can allow it on
   their Blossom server.
 - **Local disk:**
-  - Objects at `MEDIA_DIR` (default `<data dir>/media`) as `<sha256>`
-    files (0600, directory 0700), served at `GET /media/<sha256>.<ext>`.
+  - Objects at `MEDIA_DIR` (default `<data dir>/media`) as
+    `<sha256>.<ext>` files, the extension from the sniffed type (0600,
+    directory 0700), served at `GET /media/<sha256>.<ext>`.
     The name must match `^[0-9a-f]{64}\.[a-z0-9]{2,5}$` and the extension
     the stored type, else 404. No path is ever built from a URL.
   - Served types are an allowlist of sniffed image and video types;
@@ -1073,7 +1085,9 @@ server to attach a photo.
     forward-auth proxy in front of `/media/`. The README documents the
     proxy rule that exposes only `/media/`. Only a public store can carry
     media for URL-transport accounts (Threads, Nostr); a post with media
-    to such an account without one is refused (`media_unsupported`). The
+    to such an account without one is refused (`media_unsupported`); a
+    quote's link-quote copies there go without the original's images,
+    with a warning. The
     page warns that Nostr images served from home reveal the home IP.
 - Switching stores applies to new uploads; existing media keep their URLs
   and are fetched where they live (drafts keep Blossom attachments).

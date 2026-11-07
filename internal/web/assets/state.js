@@ -1,10 +1,12 @@
 "use strict";
-import { typeOf, inOrder } from "./accounts.js";
+import { typeOf, inOrder, byId } from "./accounts.js";
 import { VERSION } from "./snapshot.js";
 import { u16ToCp, cleanBreaks } from "./textpos.js";
 
-// defaultOv is a new target's settings for an account of network type p.
-export function defaultOv(p) {
+// defaultOv is a new target's settings for an account of network type p:
+// the network's, then the account's own defaults (Settings, Composing)
+// when acct is given.
+export function defaultOv(p, acct = null) {
   // Read state.userLanguages at call time so callers (initial module load,
   // post-/v1/instance init, startInteraction reset) all pick up the operator's
   // first configured language as the default. Falls back to "en" pre-fetch.
@@ -18,7 +20,36 @@ export function defaultOv(p) {
   if (p === "mastodon") { o.spoiler_text = ""; o.sensitive = false; o.visibility = ""; o.language = lang; }
   if (p === "threads")  { o.topic_tag = ""; o.reply_control = ""; }
   if (p === "nostr")    { o.pow = 20; o.content_warning = ""; }
+  if (acct && acct.defaults) withAccountDefaults(o, p, acct.defaults);
   return o;
+}
+
+// withAccountDefaults puts an account's defaults (content warning,
+// languages, options) into its settings, as its card shows them. The
+// composer sends what its cards hold, so a default applies by being there.
+function withAccountDefaults(o, p, d) {
+  const opt = d.options || {};
+  const has = k => Object.prototype.hasOwnProperty.call(opt, k);
+  const langs = Array.isArray(d.languages) ? d.languages.filter(Boolean) : [];
+  const cw = typeof d.content_warning === "string" ? d.content_warning : "";
+  if (p === "bluesky") {
+    if (langs.length) o.langs = langs.join(",");
+    if (has("reply_gate")) o.reply = String(opt.reply_gate || "");
+    if (has("disable_quotes")) o.disable_quotes = !!opt.disable_quotes;
+  }
+  if (p === "mastodon") {
+    if (cw) o.spoiler_text = cw;
+    if (langs.length) o.language = langs[0];
+    if (has("visibility")) o.visibility = String(opt.visibility || "");
+  }
+  if (p === "threads") {
+    if (has("topic_tag")) o.topic_tag = String(opt.topic_tag || "");
+    if (has("reply_control")) o.reply_control = String(opt.reply_control || "");
+  }
+  if (p === "nostr") {
+    if (cw) o.content_warning = cw;
+    if (has("pow") && Number.isFinite(Number(opt.pow))) o.pow = Number(opt.pow);
+  }
 }
 
 export const state = {
@@ -70,10 +101,10 @@ export function ovOf(id) {
   const type = typeOf(id);
   let ov = state.ov[id];
   if (!ov) {
-    ov = state.ov[id] = defaultOv(type);
+    ov = state.ov[id] = defaultOv(type, byId(id));
     if (!type) untyped.add(ov);
   } else if (type && untyped.has(ov)) {
-    for (const [k, v] of Object.entries(defaultOv(type))) if (!(k in ov)) ov[k] = v;
+    for (const [k, v] of Object.entries(defaultOv(type, byId(id)))) if (!(k in ov)) ov[k] = v;
     untyped.delete(ov);
   }
   return ov;

@@ -17,6 +17,11 @@ import { waitText } from "./webauthn.js";
 // master key's status, the features.
 let inst = { auth: "", secrets: { status: "none", detail: "" }, features: {} };
 export function setAccountsInstance(i) { if (i) inst = { ...inst, ...i }; }
+// A media store chosen in Settings, Media counts at once.
+document.addEventListener("settings-saved", e => {
+  const b = e.detail && e.detail.scope === "instance" && e.detail.body;
+  if (b && b.media && b.media.store) inst = { ...inst, features: { ...(inst.features || {}), media: b.media.store.value !== "none" } };
+});
 
 const proxy = () => inst.auth === "proxy";
 const keyStatus = () => (inst.secrets && inst.secrets.status) || "none";
@@ -187,9 +192,17 @@ function firstRun() {
     el("p", { class: "set-step-title", text: "Add your first account" }),
     el("p", { class: "set-step-note", text: blocked || "Bluesky, Mastodon, Threads or Nostr: one network at a time, as many accounts as you like." }),
     add);
+  // Where photos and videos go: the server's choice, in Settings, Media.
+  const hasMedia = !!(inst.features && inst.features.media);
+  const mediaStep = el("li", { class: "set-step" + (hasMedia ? " done" : "") },
+    el("p", { class: "set-step-title", text: hasMedia ? "Media store set" : "Choose where photos and videos go" }),
+    el("p", { class: "set-step-note", text: hasMedia ? "Posts can carry photos and videos."
+      : "A Blossom server, or this server's disk. Without one, posts are text only." }),
+    hasMedia ? null : el("button", { class: "ghost sm", type: "button", text: "Open Media", "data-focus-key": "media-first",
+      onclick: () => document.dispatchEvent(new CustomEvent("open-settings", { detail: "media" })) }));
   return el("section", { class: "set-first", "aria-labelledby": "set-first-title" },
     el("h2", { id: "set-first-title", class: "set-first-title", text: "Get started", tabindex: "-1", "data-focus-key": FIRST_TITLE }),
-    el("ol", { class: "set-steps" }, keyStep, addStep));
+    el("ol", { class: "set-steps" }, keyStep, addStep, mediaStep));
 }
 
 // The panel is drawn again on every read of the accounts: the key shown

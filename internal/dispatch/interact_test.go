@@ -2,10 +2,11 @@ package dispatch
 
 import (
 	"context"
-	"github.com/geofox/publisher/internal/thread"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/geofox/publisher/internal/thread"
 
 	gonostr "fiatjaf.com/nostr"
 	pubnostr "github.com/geofox/publisher/internal/nostr"

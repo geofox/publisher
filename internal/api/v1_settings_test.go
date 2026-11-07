@@ -84,11 +84,12 @@ func (e *settingsEnv) answer(status int, err error) {
 
 // v1SettingsRead is a read of the settings, by group then name.
 type v1SettingsRead map[string]map[string]struct {
-	Value  any    `json:"value"`
-	Source string `json:"source"`
-	Env    string `json:"env"`
-	Locked bool   `json:"locked"`
-	Field  struct {
+	Value    any    `json:"value"`
+	Source   string `json:"source"`
+	Env      string `json:"env"`
+	Locked   bool   `json:"locked"`
+	Generate bool   `json:"generate"`
+	Field    struct {
 		Label string `json:"label"`
 		Type  string `json:"type"`
 	} `json:"field"`
@@ -311,6 +312,9 @@ func TestV1SettingsGenerate(t *testing.T) {
 	got, _ := e.read("/v1/settings")
 	if strings.Contains(fmt.Sprint(got), g.Value) {
 		t.Error("a read shows the generated token")
+	}
+	if !got["feed"]["token"].Generate || got["feed"]["webhook_token"].Generate || got["translate"]["deepl_key"].Generate {
+		t.Errorf("generate = %v %v %v", got["feed"]["token"].Generate, got["feed"]["webhook_token"].Generate, got["translate"]["deepl_key"].Generate)
 	}
 	// Each call makes a new one.
 	var g2 v1GeneratedSetting

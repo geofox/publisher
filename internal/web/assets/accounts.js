@@ -29,7 +29,12 @@ function sortAccounts(list) {
 // fires an "accounts" event on document (before the callers continue).
 export function loadAccounts() {
   if (!loading) {
-    loading = v1All("/v1/accounts?limit=100").then(list => {
+    // The account sets come with them (a failure leaves none: the
+    // composer then starts from the accounts' own flags).
+    const setsRead = v1All("/v1/account-sets").catch(() => null);
+    loading = v1All("/v1/accounts?limit=100").then(async list => {
+      const s = await setsRead;
+      if (s) sets = s;
       all = sortAccounts(list || []);
       loaded = true;
       document.dispatchEvent(new CustomEvent("accounts"));
@@ -71,10 +76,22 @@ export function connected() { return all.filter(isConnected); }
 // one new posts select, else the first.
 export function primaryOf(type) { return primaryIn(all, type); }
 
-// defaultTargets is what a new post selects: the connected accounts that
+// defaultTargets is what a new post selects: the default account set's
+// connected accounts when there is one, else the connected accounts that
 // new posts select, in order. Empty until the accounts load.
 export function defaultTargets() {
+  const d = sets.find(x => x.is_default);
+  if (d) return inOrder(setTargetsOf(d));
   return all.filter(a => isConnected(a) && a.default_selected).map(a => a.id);
+}
+
+// The owner's account sets (GET /v1/account-sets), read with the accounts.
+let sets = [];
+export function accountSets() { return sets; }
+
+// setTargetsOf is a set's accounts that can be posted to now.
+export function setTargetsOf(set) {
+  return (set.accounts || []).filter(id => isConnected(byId(id)));
 }
 
 // inOrder sorts account ids in the app's order; ids it doesn't know go last.

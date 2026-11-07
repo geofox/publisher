@@ -35,10 +35,15 @@ every route, request and response against it. It has:
 | `GET /v1/destinations` | `accounts:read` | destination types and their manifests |
 | `GET /v1/accounts`, `GET /v1/accounts/{id}` | `accounts:read` | accounts with status, profile and capabilities |
 | `POST /v1/accounts` | `accounts:write` | add an account with its credentials (needs a master key; checked with the network first; `Idempotency-Key`) |
-| `PATCH /v1/accounts/{id}` | `accounts:write` | rename an account, turn it off or on, choose whether new posts select it and whether its posts go to the public feed; for one added in the app, change its settings and credentials (`If-Match`) |
+| `PATCH /v1/accounts/{id}` | `accounts:write` | rename an account, turn it off or on, choose whether new posts select it and whether its posts go to the public feed, set what its posts start with (`defaults`: content warning, languages, options); for one added in the app, change its settings and credentials (`If-Match`) |
 | `POST /v1/accounts/{id}:check` | `accounts:write` | check now that the account works (once every 10 s per account) |
 | `DELETE /v1/accounts/{id}` | `accounts:write`, browser only | delete an account added in the app, after confirming it's you (its scheduled posts are canceled, its history stays) |
 | `POST /v1/accounts/{id}:reveal`, `:adopt` | `accounts:write`, browser only | show a Nostr key (after confirming it's you); move an account from the environment into the app |
+| `GET/POST /v1/account-sets`, `GET/PATCH/DELETE /v1/account-sets/{id}` | `accounts:read`, `accounts:write` | account sets: named selections of accounts the composer offers; the default one starts new posts |
+| `GET/PATCH /v1/settings` | `settings:read`, `settings:write` | your settings (languages, DeepL, publishing, the public feed, alerts), each with its value, where it comes from (saved, the environment or the default) and its field; `PATCH` saves only what it names, `null` puts one back to its default (`If-Match`) |
+| `POST /v1/settings/{group.name}:copy-from-env`, `:generate`, `POST /v1/settings/{group}:test` | `settings:write` | save in the app a value the environment sets; make a new secret (shown once); test the feed or alert webhook |
+| `GET/PATCH /v1/instance/settings`, `POST /v1/instance/settings/…` | `instance:admin`, signed in | the server's settings (where media go), the same way; turning `media.public` on checks first that `PUBLIC_URL/media/` serves them |
+| `GET /v1/instance/system` | `instance:admin`, signed in | the version, the sign-in mode and the variables the server started with, secrets only as set |
 | `GET /v1/me` | any | who is calling, with which scopes |
 | `GET/POST /v1/tokens`, `GET/DELETE /v1/tokens/{id}` | `admin` | API tokens with scopes and expiry |
 | `POST /v1/posts` | `posts:write` | publish or schedule a post to one or more accounts (`Idempotency-Key`, `Prefer: wait`) |
@@ -314,7 +319,7 @@ other client. It asks you to sign in with a passkey or password, or with
 your identity provider (OIDC); behind a reverse proxy alone it has no
 sign-in of its own. See [Sign-in](#sign-in).
 
-The **Settings** tab has two sections:
+The **Settings** tab has these sections:
 
 - **Accounts** lists your accounts by network, each with its status, its
   last check, and why one can't be used. Add an account there (Bluesky
@@ -325,10 +330,34 @@ The **Settings** tab has two sections:
   accounts needs a master key; see
   [Accounts and the master key](#accounts-and-the-master-key). On a new
   server with no accounts, Settings opens by itself and walks you
-  through both.
+  through both, then to where photos and videos go.
+- **Composing**: the languages you write in (the first starts a new
+  post), the DeepL key for translating, **account sets** (named
+  selections of accounts, such as "Work"; the composer shows them over
+  the accounts, and one can start every new post) and **each account's
+  defaults** (a content warning, languages, the network's options such as
+  Mastodon's visibility or Bluesky's reply gate). A new post starts with
+  them, and you can still change them on the post.
+- **Media**: where photos and videos go: nowhere, a Blossom server, or
+  this server's disk. See [Media](#media).
+- **Publishing**: retrying failed posts, how many tries, and how late a
+  missed scheduled post may still go out.
+- **Integrations**: the public feed's token and webhook, and the alert
+  webhook, each with a test.
 - **Access** lists your passkeys and password, the browsers you are
   signed in on (sign any of them out), recent sign-ins and failed
   attempts, and your API tokens.
+- **System**: the version, how you sign in, the master key, the health
+  checks, and the variables the server started with (secrets only as
+  set).
+
+Each setting says where its value comes from: saved in the app, the
+server's environment, or the default. One the environment sets is
+locked: change the variable, or **Copy into the app** and then remove
+the variable. A secret (a token, a key) is never shown again once saved;
+one Publisher makes for you is shown once. Behind the reverse proxy
+alone, Media and System aren't shown, and secret settings can't be
+changed in the app: [set up sign-in](#sign-in) first.
 
 Adding or removing a way to sign in, setting the first password, creating
 an API token, deleting an account and showing a Nostr key ask you to
@@ -339,8 +368,9 @@ The composer picks **accounts**, not networks. They are grouped by
 network, each with its avatar and handle; a network with several
 accounts has **Select all**. An account that can't be posted to says why
 under its name (not configured, turned off, …) and can't be ticked. A new
-post selects the connected accounts marked **Picked for new posts** in
-Settings → Accounts (`default_selected` in the API). A network can have
+post selects the connected accounts of the default account set, else
+those marked **Picked for new posts** in Settings → Accounts
+(`default_selected` in the API). A network can have
 several accounts (two Mastodon accounts, say): each gets its own tab,
 limit, wording and post.
 
@@ -444,9 +474,9 @@ signs events on request, so treat it like a credential store and read
 
 - A writable directory for the SQLite archive (mounted at `DB_PATH`).
 - For media (images and videos): a
-  [Blossom](https://github.com/hzrd149/blossom) server URL
-  (`BLOSSOM_URL`). Uploads to it are signed with the Nostr key, so it
-  needs `NSEC_HEX` too. Without it, posts are text only.
+  [Blossom](https://github.com/hzrd149/blossom) server, or this server's
+  own disk; choose in **Settings → Media** (or set `BLOSSOM_URL`). See
+  [Media](#media). Without one, posts are text only.
 - To add accounts in the web app: a master key (`publisher keygen` makes
   one; see [Accounts and the master key](#accounts-and-the-master-key)).
   Accounts set in the environment need none.
@@ -473,20 +503,26 @@ signs events on request, so treat it like a credential store and read
 ### Configuration
 
 The server is configured by environment variables, and none is required:
-a server with no account starts, and says so in its log. The
+a server with no account starts, and says so in its log. Many settings
+can be set in the web app instead (the ones below marked *app*): it keeps
+them in the database. A variable that is set wins over the app, which
+shows the setting locked with the variable's name; **Copy into the app**
+saves its value there, so you can remove the variable. Settings → System
+lists what the server started with. The
 relay defaults point at the author's own infrastructure and should be
 overridden. An account from the environment is turned on by its credential (`NSEC_HEX`,
 `MASTODON_TOKEN`, `BLUESKY_APP_PASSWORD`, `THREADS_ACCESS_TOKEN`); a
 credential set without the variables that go with it stops startup with an
-error naming them, and so does `BLOSSOM_URL` without `NSEC_HEX`. Every invalid variable is
+error naming them. Every invalid variable is
 reported at once. Boolean variables take `true/false`, `1/0`, `yes/no` or
 `on/off` in any case; any other value is an error, not the default.
 
 | Var | Required | Default | Purpose |
 |---|---|---|---|
-| `NSEC_HEX` | for Nostr and media | — | Secret key as exactly 64 hex characters (**secret**). Convert `nsec1…` via `nak key decode`; if a tool printed it without its leading zeros, add them back |
+| `NSEC_HEX` | for Nostr | — | Secret key as exactly 64 hex characters (**secret**). Convert `nsec1…` via `nak key decode`; if a tool printed it without its leading zeros, add them back |
 | `OWNER_PUBKEY` | no | (derived) | 64-char hex pubkey. Optional: it is derived from `NSEC_HEX`. If set, it must match, or the process refuses to start |
-| `BLOSSOM_URL` | for media | — | Blossom media server base URL, e.g. `https://blossom.example.com`. Unset: posts carry no media, and the composer hides the attach button. Posts made while it was set still fetch their media for a retry |
+| `BLOSSOM_URL` | no (*app*) | — | Blossom media server base URL, e.g. `https://blossom.example.com`; setting it chooses Blossom for media. Uploads are signed with the key made in Settings → Media, else with `NSEC_HEX`. Unset, and no store chosen in the app: posts carry no media, and the composer hides the attach button. Posts made while it was set still fetch their media for a retry |
+| `MEDIA_DIR` | no | `media` beside `DB_PATH` | Where media are kept when Settings → Media says this server's disk |
 | `NIP65_BOOTSTRAP_RELAY` | no | `wss://relay.geoffrey.one` | Where to fetch the author's `kind:10002` relay list |
 | `FALLBACK_RELAYS` | no | `wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io` | Used when NIP-65 returns no write-relays. Set it to a single space for none |
 | `SYNC_RELAYS` | no | `wss://nos.lol,wss://relay.damus.io,wss://nostr.wine,wss://nostr.land,wss://relay.nostr.band,wss://purplepag.es,wss://relay.snort.social,wss://nostr.mom` | Default relay set for the relay-sync tool |
@@ -495,9 +531,9 @@ reported at once. Boolean variables take `true/false`, `1/0`, `yes/no` or
 | `POW_DIFFICULTY_DEFAULT` | no | `16` | Default leading-zero-bit PoW target; `0` turns proof of work off (a negative value stops startup) |
 | `POW_DIFFICULTY_MAX` | no | `28` | Hard cap on per-request PoW override (not negative) |
 | `POW_TIMEOUT` | no | `30s` | Per-publish mining timeout |
-| `SCHEDULE_GRACE` | no | `2h` | Grace window for firing overdue scheduled posts (must be positive) |
-| `AUTO_RETRY_ENABLED` | no | `true` | Master switch for automatic retries (failed parts and relay deliveries) |
-| `AUTO_RETRY_MAX_ATTEMPTS` | no | `6` | Attempts per part (and per relay) before giving up (at least 1; turn retries off with `AUTO_RETRY_ENABLED=false`) |
+| `SCHEDULE_GRACE` | no (*app*) | `2h` | Grace window for firing overdue scheduled posts (must be positive) |
+| `AUTO_RETRY_ENABLED` | no (*app*) | `true` | Master switch for automatic retries (failed parts and relay deliveries) |
+| `AUTO_RETRY_MAX_ATTEMPTS` | no (*app*) | `6` | Attempts per part (and per relay) before giving up (at least 1; turn retries off with `AUTO_RETRY_ENABLED=false`) |
 | `AUTO_RETRY_BASE_DELAY` | no | `2m` | First backoff interval |
 | `AUTO_RETRY_MAX_DELAY` | no | `1h` | Backoff ceiling |
 | `RETRIER_TICK` | no | `60s` | Relay-retry loop cadence |
@@ -513,12 +549,14 @@ reported at once. Boolean variables take `true/false`, `1/0`, `yes/no` or
 | `BLUESKY_PDS_URL` | with the password | — | Bluesky PDS URL, e.g. `https://bsky.social` |
 | `THREADS_ACCESS_TOKEN` | no | — | Threads long-lived token (**secret**, enables Threads cross-post) |
 | `THREADS_USER_ID` | no | `me` | Threads user id |
-| `ALERT_WEBHOOK_URL` | no | — | Webhook posted to on scheduled-post failure |
-| `ALERT_WEBHOOK_USER` | no | `alertmanager` | Basic-auth user for the alert webhook |
-| `ALERT_WEBHOOK_PASS` | no | — | Basic-auth password for the alert webhook (**secret**) |
-| `PUBLIC_FEED_TOKEN` | no | — | Bearer token gating `GET /v1/public/feed`; unset disables the endpoint (**secret**) |
-| `FEED_WEBHOOK_URL` | no | — | Signal-only webhook POSTed when a feed-eligible post is published |
-| `FEED_WEBHOOK_TOKEN` | no | — | Bearer token sent on the feed webhook so the receiver can verify it (**secret**) |
+| `ALERT_WEBHOOK_URL` | no (*app*) | — | Webhook posted to on scheduled-post failure |
+| `ALERT_WEBHOOK_USER` | no (*app*) | `alertmanager` | Basic-auth user for the alert webhook |
+| `ALERT_WEBHOOK_PASS` | no (*app*) | — | Basic-auth password for the alert webhook (**secret**) |
+| `PUBLIC_FEED_TOKEN` | no (*app*) | — | Bearer token gating `GET /v1/public/feed`; unset disables the endpoint (**secret**) |
+| `FEED_WEBHOOK_URL` | no (*app*) | — | Signal-only webhook POSTed when a feed-eligible post is published |
+| `FEED_WEBHOOK_TOKEN` | no (*app*) | — | Bearer token sent on the feed webhook so the receiver can verify it (**secret**) |
+| `USER_LANGUAGES` | no (*app*) | — | CSV of the two-letter codes of the languages you write in (`en,fr`); the first is a new post's language |
+| `DEEPL_API_KEY` | no (*app*) | — | DeepL API key, for translating a post into your other languages (**secret**) |
 | `PORT` | no | `8080` | Listen port |
 | `LOG_LEVEL` | no | `info` | `debug` / `info` / `warn` / `error` |
 | `PLC_DIRECTORY_URL` | no | `https://plc.directory` | did:plc resolver for Bluesky identity lookups |
@@ -708,6 +746,63 @@ environment (`MASTODON_BASE_URL`, the relay variables) are yours and
 aren't checked, except the relays relay sync compares with your home
 relay.
 
+### Media
+
+**Settings → Media** chooses where photos and videos go when you attach
+them. It is the server's setting, so it applies to every post; changing
+it applies to new uploads, and media already posted stay where they are.
+
+- **A Blossom server** (set there, or by `BLOSSOM_URL`). Uploads are
+  signed with a Nostr key: **Make one** there and allow its public key
+  (shown there, `npub1…`) on your Blossom server, or paste one you
+  have. Without one, uploads are signed with `NSEC_HEX`, as before. A
+  server set in the app is reached as other addresses set in the app
+  are (see [Servers on your own network](#servers-on-your-own-network)).
+- **This server's disk.** Files are kept in `MEDIA_DIR` (by default
+  `media` beside the database, on the same volume) and served at
+  `/media/` without sign-in, as a Blossom server serves them: anyone
+  with a file's address can see it. Each file is named by the SHA-256
+  of its bytes and served under `Content-Security-Policy: default-src
+  'none'; sandbox`; a file that isn't an image or a video is served as a
+  download. An upload is refused (`507`) past the quota set there (in
+  MiB), or when it would leave less than 1 GiB or 5 % of the volume
+  free, whichever is more.
+
+  Bluesky and Mastodon get the files from Publisher, but **Threads and
+  Nostr fetch them by address**: they need **Serve media publicly**,
+  with `PUBLIC_URL/media/` reachable from the internet. A sign-in in
+  front of Publisher (Authelia, oauth2-proxy, forward auth) must let
+  `/media/` through; with
+  [Authelia](https://www.authelia.com/configuration/security/access-control/),
+  a rule placed before the others (the first rule that matches wins):
+
+  ```yaml
+  access_control:
+    rules:
+      - domain: 'post.example.com'
+        resources: ['^/media/']
+        methods: ['GET', 'HEAD']
+        policy: 'bypass'
+  ```
+
+  Turning it on checks first: Publisher writes a probe and fetches it at
+  `PUBLIC_URL/media/`, as a network would. A redirect, a `401` or other
+  bytes keep it off, and Settings says what answered. Until it is on, a
+  post with media on this disk is refused for Threads and Nostr with a
+  message saying so, and a quote's link-quote copies there go without
+  the original's images.
+
+  > **Your IP address.** Nostr clients load images straight from where
+  > they are kept: anyone who sees such a post learns this server's
+  > address, your home's if it runs there. A Blossom server (or a CDN in
+  > front of `/media/`) avoids that.
+- **Nowhere:** posts are text only, and the composer hides the attach
+  button.
+
+The test in Settings → Media asks the Blossom server whether it answers
+(BUD-06), or writes a probe to the disk and reads it back (and fetches it
+at `PUBLIC_URL/media/` when served publicly).
+
 ### Database upgrades and backups
 
 The SQLite schema is versioned. On start, publisher applies any pending
@@ -778,9 +873,8 @@ that need action:
    instead of `nostr_relay`, `bluesky`, `mastodon` and `threads`. Alerts
    name the account ("Mastodon (@me@example.social)").
 4. **Startup is stricter:** a boolean variable that isn't `1/true/yes/on`
-   or `0/false/no/off`, a `NSEC_HEX` that isn't 64 hex characters, a
-   negative `POW_*`, or `BLOSSOM_URL` without `NSEC_HEX` now stops startup
-   with an error naming the variable.
+   or `0/false/no/off`, a `NSEC_HEX` that isn't 64 hex characters, or a
+   negative `POW_*` now stops startup with an error naming the variable.
 5. **A master key** is optional: your accounts from the environment work
    without one. Set one to add accounts in the web app (see
    [Accounts and the master key](#accounts-and-the-master-key)); with it,
@@ -794,6 +888,14 @@ that need action:
    the home relay is reached as before.
 7. **The Tokens tab is now Settings → Access**, next to Settings →
    Accounts.
+8. **Settings in the app.** Your variables keep working and win over
+   the app: Settings shows each of them locked, with **Copy into the app**
+   to move it there (then remove the variable). `BLOSSOM_URL` keeps
+   working as before, signed with `NSEC_HEX`. A script that changes
+   settings through the API needs a token made with `settings:read` and
+   `settings:write` (or `instance:admin` for the server's) by name:
+   `admin` doesn't include them, and only a signed-in owner can grant
+   them.
 
 Your accounts keep their ids (`acc_…` in `GET /v1/accounts`), so posts,
 drafts and API callers that name them keep working; the relay-sync list

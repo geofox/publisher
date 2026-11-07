@@ -73,14 +73,13 @@ the `edge` image.
   rotated JPEG is stored upright.
 - Schedule times in the web app use the device's time zone.
 - Nothing is required to start. `NSEC_HEX` is needed only for a Nostr
-  account and `BLOSSOM_URL` only for media; a server with only Bluesky,
-  say, starts and posts text. Without `BLOSSOM_URL`, uploads answer `503`
-  ("no media store is configured"), `GET /v1/instance` says
+  account; a server with only Bluesky, say, starts and posts text.
+  Without a media store (Settings → Media, or `BLOSSOM_URL`), uploads
+  answer `503` ("no media store is set"), `GET /v1/instance` says
   `features.media: false`, and the composer hides the attach button.
-  Posts made while it was set still fetch their media for a retry.
-  `BLOSSOM_URL` without `NSEC_HEX` stops startup (uploads are signed with
-  the Nostr key). The startup log lists each account with its status, and
-  warns about each one that isn't connected.
+  Posts made while one was set still fetch their media for a retry. The
+  startup log lists each account with its status, and warns about each
+  one that isn't connected.
 - Boolean environment variables (`AUTO_RETRY_ENABLED`, `NOSTR_PRIMARY_FANOUT`,
   `OIDC_END_SESSION`) accept `1/true/yes/on` and `0/false/no/off` in any
   case. Any other value now stops startup with an error naming the variable,
@@ -230,6 +229,44 @@ the `edge` image.
   added in the app (and relay sync) may reach; without it they reach
   public addresses only, and loopback, link-local and the server's own
   addresses never.
+- **Settings in the app:** Settings → Composing (languages, the DeepL
+  key), Publishing (retries, the scheduled-post grace), Integrations
+  (the public feed's token and webhook, the alert webhook, each with a
+  test) and Media, saved in the database and applied at once, without a
+  restart (`GET/PATCH /v1/settings` and `/v1/instance/settings`, with
+  `If-Match`; `:copy-from-env`, `:generate`, `:test`). A variable that is
+  set still wins: the setting shows locked with its name, and **Copy
+  into the app** saves its value so the variable can go. Secrets are
+  encrypted with the master key, never shown again, and refused behind
+  the reverse proxy alone; one Publisher makes (a feed token) is shown
+  once. The new scopes `settings:read`, `settings:write` and
+  `instance:admin` are granted by name, not by `admin`.
+- **Account sets** (`/v1/account-sets`, Settings → Composing): named
+  selections of accounts, shown in the composer over the accounts; the
+  default set starts every new post (else each account's **Picked for
+  new posts**).
+- **Each account's defaults** (`defaults` on `PATCH /v1/accounts/{id}`:
+  a content warning, languages, the network's options such as
+  Mastodon's visibility): a new post on the account starts with them in
+  the composer, and a post sent through the API takes them unless it
+  sets its own (a preview lists them, `defaults_applied`).
+- **Media on this server's disk** (Settings → Media; `MEDIA_DIR`,
+  default `media` beside the database): files named by their SHA-256,
+  served at `/media/` without sign-in under `default-src 'none';
+  sandbox`, with a quota and a free-space floor (`507`). Threads and
+  Nostr fetch media by address, so they need **Serve media publicly**,
+  which turns on only once a probe fetched at `PUBLIC_URL/media/` comes
+  back (no redirect, no `401`); a sign-in in front must let `/media/`
+  through. Until then, media there are refused for those networks.
+- **A Blossom server set in the app**, with its own signing key (made or
+  pasted in Settings → Media; allow its `npub` on the server). Uploads
+  signed with it name the server (BUD-11). `BLOSSOM_URL` no longer needs
+  `NSEC_HEX` to start: an upload says to make a key. Settings → Media's
+  test asks the server (BUD-06) or writes and reads back the disk.
+- **Settings → System** (`GET /v1/instance/system`): the version, how you
+  sign in, the master key, the health checks, and the variables the
+  server started with; secrets only as set, and no user name or password
+  from an address.
 
 ### Security
 

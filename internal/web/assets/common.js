@@ -219,8 +219,9 @@ export async function api(path, opts = {}) {
 // An operation that needs the owner to confirm it's them (403
 // reauth_required) goes through the re-authentication dialog (see
 // setReauthHandler) and is sent once more with its nonce, unless reauth is
-// false (the caller passes a nonce it got itself).
-export async function v1(path, { method = "GET", body, headers = {}, signal, reauth = true } = {}) {
+// false (the caller passes a nonce it got itself). onResponse, when given,
+// sees a successful response's headers (an ETag).
+export async function v1(path, { method = "GET", body, headers = {}, signal, reauth = true, onResponse = null } = {}) {
   const opts = { method, credentials: "same-origin", headers: { ...headers }, signal };
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
@@ -229,7 +230,7 @@ export async function v1(path, { method = "GET", body, headers = {}, signal, rea
   for (let attempt = 0; ; attempt++) {
     const r = await fetch(path, opts);
     const data = r.status === 204 ? null : await r.json().catch(() => null);
-    if (r.ok) return data;
+    if (r.ok) { if (onResponse) onResponse(r); return data; }
     const err = problemError(r.status, data);
     const ra = Number(r.headers.get("Retry-After"));
     if (ra > 0) err.retryAfter = ra;

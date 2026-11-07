@@ -3,7 +3,7 @@ import { el, $, wcount, flash, confirmModal, v1, problemError, TZ, whenText, loc
 import { state, byKey, postedText, v1PostBody, ovOf, selected, setTargets, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen } from "./state.js";
 import { renderPreview } from "./preview.js";
 import { openDetail } from "./history.js";
-import { accounts, byId, typeOf, isConnected, defaultTargets, accountsLoaded, networkName, nameOf, accessibleName,
+import { accounts, accountSets, setTargetsOf, byId, typeOf, isConnected, defaultTargets, accountsLoaded, networkName, nameOf, accessibleName,
   handleOf, customLabel, isOpaque, shortId, fitHandle } from "./accounts.js";
 import { followPost } from "./follow.js";
 import { icon, accountTile } from "./brands.js";
@@ -250,6 +250,9 @@ function renderChips() {
     return;
   }
   c.dataset.state = "ready";
+  // The account sets that hold an account that can be posted to.
+  const sets = accountSets().filter(s => setTargetsOf(s).length);
+  if (sets.length) c.append(setsRow(sets));
   // One group per network, in the accounts' order.
   const groups = [];
   for (const a of list) {
@@ -288,6 +291,33 @@ function renderChips() {
   if (hadFocus && !c.contains(document.activeElement)) c.querySelector(".target-row")?.focus({ preventScroll: true });
   renderTargetsMeta();
   renderThreadNotice();
+}
+
+// setsRow picks an account set: exactly its accounts that can be posted
+// to now (in a reply or a quote, the account acting stays, and those it
+// keeps out stay out). The set the selection is shows as pressed.
+function setsRow(sets) {
+  const it = state.interaction;
+  const row = el("div", { class: "target-sets", role: "group", "aria-label": "Account sets" },
+    el("span", { class: "ts-lbl", text: "Sets" }));
+  for (const s of sets) {
+    let ids = setTargetsOf(s).filter(id => !barredWhy(byId(id)));
+    if (it && it.account) ids = [...new Set([it.account, ...ids])];
+    const on = ids.length === state.targets.size && ids.every(id => state.targets.has(id));
+    row.append(el("button", {
+      class: "ts-set" + (on ? " on" : ""), type: "button", "aria-pressed": on ? "true" : "false",
+      "data-account-set": s.id, text: s.name,
+      title: ids.map(nameOf).join(", "),
+      onclick: () => {
+        state.targets = new Set(ids);
+        state.chosen = true;
+        if (!state.targets.has(state.focus)) state.focus = selected()[0] || "";
+        toggled(null);
+        document.querySelector(`#chips [data-account-set="${CSS.escape(s.id)}"]`)?.focus({ preventScroll: true });
+      },
+    }));
+  }
+  return row;
 }
 
 // refreshTargets updates each row's count + thread badge in place on every

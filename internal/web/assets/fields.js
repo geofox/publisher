@@ -26,7 +26,7 @@ function shown(spec, v) {
 // (set by the environment: shown, not editable), keep (a saved secret:
 // left empty, it stays), warn(value) (a hint, not a refusal, shown as the
 // owner types).
-export function field(spec, value, { locked = false, keep = false, warn = null } = {}) {
+export function field(spec, value, { locked = false, keep = false, warn = null, optional: opt = null } = {}) {
   const id = uid("fld-" + spec.key);
   const helpId = id + "-help", errId = id + "-err", warnId = id + "-warn";
   const start = value !== undefined ? value : spec.default;
@@ -68,7 +68,9 @@ export function field(spec, value, { locked = false, keep = false, warn = null }
   if (locked) input.disabled = true;
   const needed = spec.required && !locked && !keep;
   if (needed) input.setAttribute("aria-required", "true");
-  const optional = !spec.required && !locked && spec.type !== "bool";
+  // opt: whether to say "(optional)" (a setting with a default is never
+  // empty: it falls back to the default).
+  const optional = (opt != null ? opt : !spec.required) && !locked && spec.type !== "bool";
   const label = el("label", { for: id, class: "fld-label", text: spec.label + (optional ? " (optional)" : "") });
   const help = el("p", { id: helpId, class: "fld-help" });
   if (locked) help.append(el("span", { class: "fld-locked", text: "Set by the server's environment. " }));

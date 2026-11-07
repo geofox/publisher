@@ -183,13 +183,24 @@
       <div id="srccard"></div>
     </section><!-- /#interact -->
 
-    <!-- ── Settings: accounts; access (sign-in, sessions, API tokens) ─────── -->
+    <!-- ── Settings: accounts, composing, media, publishing, integrations,
+         access (sign-in, sessions, API tokens), system ─────────────────── -->
     <section id="settings" class="view" hidden>
       <nav class="set-nav" aria-label="Settings sections">
         <button type="button" data-set="accounts">Accounts</button>
+        <button type="button" data-set="composing">Composing</button>
+        <button type="button" data-set="media">Media</button>
+        <button type="button" data-set="publishing">Publishing</button>
+        <button type="button" data-set="integrations">Integrations</button>
         <button type="button" data-set="access">Access</button>
+        <button type="button" data-set="system">System</button>
       </nav>
       <div id="set-accounts" class="set-panel"></div>
+      <div id="set-composing" class="set-panel" hidden></div>
+      <div id="set-media" class="set-panel" hidden></div>
+      <div id="set-publishing" class="set-panel" hidden></div>
+      <div id="set-integrations" class="set-panel" hidden></div>
+      <div id="set-system" class="set-panel" hidden></div>
       <div id="set-access" class="set-panel" hidden>
         <div id="access"></div>
         <div class="sec-head"><span class="lbl">API tokens</span><span class="muted">keys for scripts and integrations</span></div>

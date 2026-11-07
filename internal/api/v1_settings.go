@@ -47,8 +47,10 @@ type v1SettingLeaf struct {
 	// UpdatedAt: when it was saved in the app.
 	UpdatedAt string `json:"updated_at,omitempty"`
 	// Problem says why a saved secret can't be used (typed again, it can).
-	Problem string                `json:"problem,omitempty"`
-	Field   destination.FieldSpec `json:"field"`
+	Problem string `json:"problem,omitempty"`
+	// Generate: the server can make a value for it (:generate).
+	Generate bool                  `json:"generate,omitempty"`
+	Field    destination.FieldSpec `json:"field"`
 }
 
 // v1SecretValue is a secret setting as a read shows it: whether it is
@@ -81,7 +83,8 @@ func settingsBody(svc *settings.Service, snap *settings.Snapshot, scope settings
 	out := map[string]map[string]v1SettingLeaf{}
 	for _, d := range svc.Defs(scope) {
 		v, _ := snap.Get(d.Key)
-		leaf := v1SettingLeaf{Value: v.Value, Source: string(v.Source), Env: d.Env, Locked: v.Locked, Problem: v.Broken, Field: d.Field}
+		leaf := v1SettingLeaf{Value: v.Value, Source: string(v.Source), Env: d.Env, Locked: v.Locked, Problem: v.Broken,
+			Generate: d.Generate, Field: d.Field}
 		if d.EnvFunc != nil && d.Env == "" {
 			leaf.Env = "BLOSSOM_URL" // media.store follows it
 		}
@@ -453,8 +456,10 @@ func (a *API) checkMediaPublic(w http.ResponseWriter, r *http.Request) bool {
 		invalid(w, r, []fieldError{{Pointer: ptr, Code: "not_reachable", Detail: "this server keeps no media on its disk"}})
 		return false
 	}
+	// Its own window, apart from Test the media store's: testing the
+	// store, then turning this on, is one owner's ordinary order.
 	p, _ := principalFrom(r.Context())
-	if wait := a.limits().tests.Take(p.OwnerID + ":" + string(settings.Instance) + ":media"); wait > 0 {
+	if wait := a.limits().tests.Take(p.OwnerID + ":" + string(settings.Instance) + ":media.public"); wait > 0 {
 		rateLimited(w, r, wait, "the self-test runs once every 10 seconds")
 		return false
 	}

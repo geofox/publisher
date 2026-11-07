@@ -32,7 +32,7 @@ async function loadConfig() {
     if (Array.isArray(data.translate_targets)) {
       state.translateTargets = data.translate_targets;
     }
-    if (data.features && data.features.media === false) noMediaStore();
+    if (data.features && data.features.media === false) mediaStore(false);
     if (data.features && data.features.relay_sync === false) relaySyncOff();
     state.proxyAuth = data.auth === "proxy";
     setReauthMode(data.auth);
@@ -59,13 +59,33 @@ function signInBanner() {
   });
 }
 
-// noMediaStore hides the attach controls on a server without a media
-// store, saying why (an upload would be refused).
-function noMediaStore() {
-  state.mediaOff = true; // the composer keeps #vidpreset hidden too
-  for (const id of ["#addimg", "#vidpreset"]) { const e = $(id); if (e) e.hidden = true; }
+// mediaStore shows the attach controls, or hides them on a server without
+// a media store, saying why (an upload would be refused). Settings, Media
+// changes it without a reload.
+let mediaNote = null;
+function mediaStore(on) {
+  state.mediaOff = !on; // the composer keeps #vidpreset hidden too
+  const add = $("#addimg"); if (add) add.hidden = !on;
+  const vp = $("#vidpreset"); if (vp) vp.hidden = !on || state.images.some(i => i.video);
   const meta = $("#media-meta");
-  if (meta) meta.textContent = "no media store on this server (set BLOSSOM_URL)";
+  if (!meta) return;
+  if (mediaNote === null) mediaNote = meta.textContent;
+  meta.textContent = on ? mediaNote : "no media store on this server: choose one in Settings, Media";
+}
+
+// settingsSaved follows what Settings saves that the composer shows: the
+// media store, the languages and translation.
+function settingsSaved(e) {
+  const { scope, body } = e.detail || {};
+  const leaf = (g, n) => body && body[g] && body[g][n];
+  if (scope === "instance" && leaf("media", "store")) mediaStore(leaf("media", "store").value !== "none");
+  if (scope === "owner") {
+    loadInstance().then(data => {
+      if (Array.isArray(data.user_languages) && data.user_languages.length) state.userLanguages = data.user_languages;
+      if (Array.isArray(data.translate_targets)) state.translateTargets = data.translate_targets;
+      populateTranslateMenu();
+    }, () => { /* the next reload has them */ });
+  }
 }
 
 // applyAccounts runs after each successful read of the accounts (the
@@ -169,6 +189,7 @@ async function init() {
     b.addEventListener("click", () => switchTab(b.dataset.view)));
   // The composer's "no accounts" and the master key banner lead to them.
   document.addEventListener("open-settings", e => switchTab("settings", e.detail));
+  document.addEventListener("settings-saved", settingsSaved);
   const go = $("#key-banner-go");
   if (go) go.addEventListener("click", () => switchTab("settings", "accounts"));
 }

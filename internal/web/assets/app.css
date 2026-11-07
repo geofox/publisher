@@ -1083,3 +1083,64 @@ a.auth-link{color:#fff}
 }
 .set-step .tok-secret-row,.set-note .tok-secret-row{flex-wrap:wrap}
 .set-step .tok-secret-row input,.set-note .tok-secret-row input{flex:1 1 240px;min-width:0}
+
+/* ── Settings: forms over the settings API, sets, defaults, system ──────── */
+.set-nav{max-width:100%;overflow-x:auto;scrollbar-width:none}
+.set-nav::-webkit-scrollbar{display:none}
+.set-nav button{flex:none;white-space:nowrap}
+.set-sect{margin:14px 0;padding:16px 18px 12px;background:var(--card);border:.5px solid var(--hair);border-radius:16px;box-shadow:var(--shadow-card)}
+.set-sect-title{margin:0 0 4px;font-size:15.5px;font-weight:650;letter-spacing:-.01em}
+.set-sect-intro{margin:0 0 12px;font-size:13px;line-height:1.5;color:var(--ink-2)}
+.set-sub{margin:16px 0 4px;font-size:13.5px;font-weight:600}
+.set-form{display:flex;flex-direction:column}
+.set-form .fld[hidden]{display:none}
+.fld-src{margin:0;font-size:12px;line-height:1.45;color:var(--ink-2)}
+.fld-src code,.set-sect code,.set-note code{font-family:var(--mono);font-size:11.5px;padding:0 3px;border-radius:4px;background:var(--surface-2)}
+.fld-src button{margin-left:4px;vertical-align:baseline}
+.fld-state{margin:0;font-size:12.5px;line-height:1.45;color:var(--ink-2)}
+.fld-set{color:var(--green);font-weight:600}
+.fld-unset{font-weight:500}
+.fld-tools{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 0}
+.fld-pub{margin:2px 0 4px}
+.fld-pub .tok-secret-row{flex-wrap:wrap}
+.fld-pub .tok-secret-row input{flex:1 1 240px;min-width:0;font-family:var(--mono);font-size:12px}
+.set-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0 0}
+.set-status{min-height:1.4em;margin:8px 0 0;font-size:13px;line-height:1.45;color:var(--ink-2)}
+.set-status:empty{min-height:0;margin:0}
+.set-status.bad{color:var(--red)}
+.set-list{list-style:none;margin:0 0 6px;padding:0;display:flex;flex-direction:column;gap:2px}
+.set-item{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;padding:9px 0;border-top:.5px solid var(--line)}
+.set-item:first-child{border-top:0}
+.set-item-main{min-width:0;flex:1}
+.set-item-name{margin:0;font-weight:600;font-size:14px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;overflow-wrap:anywhere}
+.set-badge{font-size:11px;font-weight:600;padding:1px 8px;border-radius:999px;color:var(--indigo);background:var(--indigo-soft)}
+.set-item-sub{margin:2px 0 0;font-size:12.5px;line-height:1.45;color:var(--ink-2);overflow-wrap:anywhere}
+.set-item-actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+.set-pick{margin:4px 0 6px;padding:8px 12px 4px;border:.5px solid var(--line-2);border-radius:12px;display:flex;flex-direction:column;gap:6px}
+.set-pick legend{padding:0 4px;font-size:12.5px;font-weight:500}
+.set-dlg-form .fld-check label{font-size:13.5px}
+.sys-facts{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:6px 0 4px;font-size:13.5px}
+.sys-facts dt{color:var(--ink-2)}
+.sys-facts dd{margin:0;overflow-wrap:anywhere}
+.sys-checks{margin:4px 0 0;padding-left:18px;font-size:12.5px;color:var(--ink-2)}
+.sys-checks .bad{color:var(--red)}
+.sys-env{width:100%;border-collapse:collapse;font-size:12.5px;table-layout:fixed}
+.sys-env th{text-align:left;font-weight:600;color:var(--ink-2);padding:4px 8px 4px 0;border-bottom:.5px solid var(--line-2)}
+.sys-env td{padding:5px 8px 5px 0;border-bottom:.5px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
+.sys-env td:first-child{width:42%}
+.sys-unset{font-size:12px;line-height:1.7;color:var(--ink-2)}
+@media(max-width:520px){
+  .set-sect{padding:14px 14px 10px}
+  .set-item{flex-direction:column;gap:6px}
+  .set-item-actions{justify-content:flex-start}
+  .sys-facts{grid-template-columns:1fr;gap:2px}
+  .sys-facts dd{margin-bottom:6px}
+}
+
+/* the composer's account sets */
+.target-sets{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:10px 14px;border-bottom:.5px solid var(--line)}
+.ts-lbl{font-size:12px;font-weight:600;color:var(--ink-2);margin-right:2px}
+.ts-set{font:inherit;font-size:12.5px;cursor:pointer;padding:4px 11px;border-radius:999px;border:.5px solid var(--line-2);background:var(--surface);color:var(--ink)}
+.ts-set:hover{border-color:var(--indigo)}
+.ts-set.on{background:var(--indigo-soft);border-color:var(--indigo);color:var(--indigo);font-weight:600}
+.ts-set:focus-visible{outline:2px solid var(--indigo);outline-offset:2px}

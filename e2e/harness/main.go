@@ -12,7 +12,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -35,8 +37,10 @@ import (
 	"github.com/geofox/publisher/internal/localauth"
 	"github.com/geofox/publisher/internal/mastodon"
 	"github.com/geofox/publisher/internal/media"
+	"github.com/geofox/publisher/internal/netguard"
 	"github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/secrets"
+	"github.com/geofox/publisher/internal/settings"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/threads"
 )
@@ -75,7 +79,25 @@ func run() error {
 	// https Blossom server.
 	blossom := newFakeBlossom(base + "/__blossom")
 	sk := gonostr.Generate()
-	mp := media.New(media.Static(&media.Blossom{URL: base + "/__blossom", Key: sk, HTTP: media.NewStreamClient()}))
+	fakeStore := &media.Blossom{URL: base + "/__blossom", Key: sk, HTTP: media.NewStreamClient()}
+	// The store follows Settings, Media as the server's does: this
+	// server's disk when chosen there, else the fake Blossom server (also
+	// for "none", so the other specs keep their media).
+	var svc *settings.Service
+	disk := &media.Local{Dir: filepath.Join(dir, "media"), BaseURL: base,
+		IsPublic: func() bool { return svc != nil && svc.Current().Bool(settings.MediaPublic) },
+		Quota: func() int64 {
+			if svc == nil {
+				return 0
+			}
+			return int64(svc.Current().Int(settings.MediaLocalQuota)) << 20
+		}}
+	mp := media.New(func() (media.Store, error) {
+		if svc != nil && svc.Current().String(settings.MediaStore) == settings.StoreLocal {
+			return disk, nil
+		}
+		return fakeStore, nil
+	})
 	mp.Lookup = st.LookupMediaURL
 
 	rec := newRecorder()
@@ -99,6 +121,28 @@ func run() error {
 	keyState, err := accounts.PrepareKeys(context.Background(), st, keys)
 	if err != nil {
 		return err
+	}
+	// The settings, with the environment E2E_SETTINGS_ENV gives them (a
+	// JSON object: the specs' locked values).
+	settingsEnv := map[string]string{}
+	if raw := os.Getenv("E2E_SETTINGS_ENV"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &settingsEnv); err != nil {
+			return fmt.Errorf("E2E_SETTINGS_ENV: %w", err)
+		}
+	}
+	svc, err = settings.New(context.Background(), settings.Options{Store: st, Keys: keys, CanSeal: keyState.WriteError, Env: settingsEnv,
+		URL: func(raw string, rule destination.URLRule) (string, error) {
+			return netguard.Policy{}.OwnerURL(raw, netguard.URLOptions{Secure: rule.Secure, Plain: rule.Plain, Path: rule.Path, Query: rule.Query})
+		}})
+	if err != nil {
+		return err
+	}
+	// The owner writes in English and French, as saved in the app.
+	if _, ok := settingsEnv["USER_LANGUAGES"]; !ok {
+		if _, err := svc.Apply(context.Background(), settings.Change{Scope: settings.Owner,
+			Values: map[string]any{settings.ComposingLanguages: []any{"en", "fr"}}}); err != nil {
+			return err
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -129,6 +173,37 @@ func run() error {
 	a.Accounts = eng
 	a.Sync = fakeSyncer{}
 	a.UserLanguages = []string{"en", "fr"}
+	a.Settings, a.DiskMedia = svc, disk
+	// Tests reach nothing: a webhook set passes; this server's disk is
+	// checked for real (written and read back, fetched at its public
+	// address when public).
+	a.TestSettings = func(ctx context.Context, group string) (int, bool, error) {
+		cur := svc.Current()
+		switch group {
+		case "alerts":
+			return http.StatusNoContent, cur.Secret(settings.AlertsWebhookURL) != "", nil
+		case "feed":
+			return http.StatusNoContent, cur.Secret(settings.FeedWebhookURL) != "", nil
+		case "media":
+			if cur.String(settings.MediaStore) != settings.StoreLocal {
+				return http.StatusNoContent, cur.String(settings.MediaStore) != settings.StoreNone, nil
+			}
+			if disk.Public() {
+				var pe *media.ProbeError
+				if err := disk.CheckPublic(ctx, media.NoRedirects()); errors.As(err, &pe) {
+					return pe.Status, true, nil
+				} else if err != nil {
+					return 0, true, err
+				}
+				return http.StatusOK, true, nil
+			}
+			return http.StatusNoContent, true, disk.CheckWritable(ctx)
+		}
+		return 0, false, nil
+	}
+	a.System = func() []api.SystemValue {
+		return api.SystemValues(os.Getenv, []api.SystemVar{{Env: "PORT"}, {Env: "E2E_AUTH"}, {Env: "E2E_SECRET", Secret: true}, {Env: "PUBLISHER_MASTER_KEY", Secret: true}})
+	}
 	a.Ready = &health.Checker{Local: []health.Check{health.Database(st, store.LatestSchemaVersion())}}
 	a.MasterKey, a.IdemMAC = keyState, keys.MAC
 	// The account specs add many accounts in a row; the limit has its own Go test.
@@ -140,11 +215,12 @@ func run() error {
 	mux := http.NewServeMux()
 	if local {
 		publicURL := "http://localhost:" + port
-		svc, err := localauth.New(st, publicURL)
+		lsvc, err := localauth.New(st, publicURL)
 		if err != nil {
 			return err
 		}
-		a.Mode, a.Local, a.PublicURL, a.AppBaseURL = api.ModeLocal, svc, publicURL, publicURL
+		a.Mode, a.Local, a.PublicURL, a.AppBaseURL = api.ModeLocal, lsvc, publicURL, publicURL
+		disk.BaseURL = publicURL
 		a.Clients, a.SessionTTL = &httpx.ClientAddrs{}, time.Hour
 		// The setup link a start would log, minted on demand.
 		mux.HandleFunc("POST /__e2e/setup-url", func(w http.ResponseWriter, r *http.Request) {

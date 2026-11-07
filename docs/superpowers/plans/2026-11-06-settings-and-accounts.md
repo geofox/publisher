@@ -1837,7 +1837,7 @@ Spec §1 (precedence), §7, §8.5 step 4, §12 (D).
 
 ### Task D1: migration v14
 
-- [ ] `settings`, `accounts.defaults_json`, `account_sets` (spec §7.1),
+- [x] `settings`, `accounts.defaults_json`, `account_sets` (spec §7.1),
   and `target_items.manual_due INTEGER NOT NULL DEFAULT 0` (set by a
   manual retry, cleared on claim) so "automatic retries off" can still let
   manual retries through. Migration test; golden schema.
@@ -1846,25 +1846,25 @@ Spec §1 (precedence), §7, §8.5 step 4, §12 (D).
 
 **Files:** new `internal/settings/{defs,service,patch}.go`, tests.
 
-- [ ] Definitions (spec §7.2), including driver `InstanceConfig` fields
+- [x] Definitions (spec §7.2), including driver `InstanceConfig` fields
   as `<type>.<key>` read from manifests.
-- [ ] Precedence env → saved → default with `source` and locks; env values
+- [x] Precedence env → saved → default with `source` and locks; env values
   parsed as config does today.
-- [ ] `Current()` immutable snapshot; `OnChange`; writes serialized.
-- [ ] Merge patch; validation; secret settings through the secrets store
+- [x] `Current()` immutable snapshot; `OnChange`; writes serialized.
+- [x] Merge patch; validation; secret settings through the secrets store
   with audience binding (a webhook URL is itself a secret; its token is
   bound to its origin).
-- [ ] Tests: precedence, locks, merge-patch edge cases, secrets absent
+- [x] Tests: precedence, locks, merge-patch edge cases, secrets absent
   from snapshot JSON, audience change without the token.
 
 ### Task D3: consumers apply settings live
 
-- [ ] Translator, feed webhook, alert webhook, retry policy, schedule
+- [x] Translator, feed webhook, alert webhook, retry policy, schedule
   grace, user languages, public feed token read `Current()` or rebuild on
   change. Saved webhook addresses use the guarded client (C4).
-- [ ] Automatic retries off: items waiting for an automatic retry aren't
+- [x] Automatic retries off: items waiting for an automatic retry aren't
   claimed; manual retries (`manual_due`) and locked items (A2.3) still are.
-- [ ] Tests: a change applies to the next claim or request; retries off
+- [x] Tests: a change applies to the next claim or request; retries off
   and on with a waiting item and a manual retry.
 
 ### Task D4: settings and account-set API; per-account defaults
@@ -1872,68 +1872,147 @@ Spec §1 (precedence), §7, §8.5 step 4, §12 (D).
 **Files:** `internal/api/{v1_settings,v1_account_sets,v1_accounts,v1_create}.go`,
 OpenAPI, `errors.md`, tests.
 
-- [ ] `/v1/settings` and `/v1/instance/settings` (spec §7.4). Proxy mode
+- [x] `/v1/settings` and `/v1/instance/settings` (spec §7.4). Proxy mode
   refuses every instance setting and every owner secret setting (route
   flag plus a field check in the owner PATCH and `:copy-from-env`).
   Instance secret writes need `instance.secrets`.
-- [ ] `:test` (alerts, feed, media) uses saved values only, one per 10 s,
+- [x] `:test` (alerts, feed, media) uses saved values only, one per 10 s,
   answers a class.
-- [ ] Feed token "Generate": its own non-idempotent, `no-store` route.
-- [ ] `/v1/account-sets` with ETags; per-account `defaults` with the
+- [x] Feed token "Generate": its own non-idempotent, `no-store` route.
+- [x] `/v1/account-sets` with ETags; per-account `defaults` with the
   spec's precedence; preview lists applied defaults.
-- [ ] Tests for each, including the proxy refusals table.
+- [x] Tests for each, including the proxy refusals table.
 
 ### Task D5: media stores and Blossom's own key
 
 **Files:** `internal/media/{store,blossom}.go`, `internal/api/v1_media.go`,
 tests.
 
-- [ ] `media.Store` (spec §7.6); metadata stripping in front of every
+- [x] `media.Store` (spec §7.6); metadata stripping in front of every
   store.
-- [ ] Blossom signs with `media.blossom_key` once set (shown as an npub)
+- [x] Blossom signs with `media.blossom_key` once set (shown as an npub)
   and only then adds the BUD-11 server tag; until a key is set, env
   deployments sign as today with the env Nostr key and no server tag (so
   Geoffrey's uploads don't change). Descriptor URLs returned by the server
   must be on the Blossom origin.
-- [ ] Switching stores affects new uploads only.
+- [x] Switching stores affects new uploads only.
 
 ### Task D6: the local disk store
 
 **Files:** `internal/media/local.go`, `internal/api/media_serve.go`,
 `internal/config` (`MEDIA_DIR`), tests.
 
-- [ ] Storage, names and serving per spec §7.6. The type is sniffed at
+- [x] Storage, names and serving per spec §7.6. The type is sniffed at
   `Put` and stored; served responses replace the global CSP header with
   `default-src 'none'; sandbox`; non-allowlisted types are attachments;
   `Owns`/`Fetch` read from disk by the validated name, never over HTTP.
-- [ ] Free-space floor and optional quota (`insufficient_storage`).
-- [ ] `media.public` self-test: fetch a probe from the operator-set
+- [x] Free-space floor and optional quota (`insufficient_storage`).
+- [x] `media.public` self-test: fetch a probe from the operator-set
   `PUBLIC_URL` with a client that follows no redirects (the operator's
   address is trusted, so Tailscale users needn't allowlist 100.64/10);
   require 200 and the exact bytes.
-- [ ] `media_unsupported` for URL-transport accounts without a public
+- [x] `media_unsupported` for URL-transport accounts without a public
   store.
-- [ ] Tests: traversal, wrong extension, HTML/SVG served as attachment,
+- [x] Tests: traversal, wrong extension, HTML/SVG served as attachment,
   floor and quota, self-test success and each failure.
 
 ### Task D7: the Settings tab, all sections; account sets in the composer
 
-- [ ] Composing, Media, Publishing, Integrations, System (spec §7.5) with
+- [x] Composing, Media, Publishing, Integrations, System (spec §7.5) with
   sources and "copy into the app".
-- [ ] Composer: account-set picker; the default set is the starting
+- [x] Composer: account-set picker; the default set is the starting
   selection.
-- [ ] First-run step 4 (media store).
+- [x] First-run step 4 (media store).
 
 ### Task D8: e2e, docs, PR
 
-- [ ] The harness accepts extra env for the settings specs (locked
+- [x] The harness accepts extra env for the settings specs (locked
   values). `settings.spec.ts`: a locked setting and copy-from-env;
   languages in the composer; account sets; account defaults in the
   preview; local media served with its headers; the public self-test
   passing (harness `PUBLIC_URL` = its own address) and failing.
-- [ ] README: settings tiers, local media and the proxy rule for
+- [x] README: settings tiers, local media and the proxy rule for
   `/media/`, the Nostr home-IP warning; upgrade notes for D.
 - [ ] Open PR D; 2 QA + 1 security reviews; fix; hand over.
+
+### As built (D)
+
+Commits: D1–D2 migration v14 and the settings service (`9930cb1`), D3
+settings applied live (`946d7d3`), D4 settings and account-set API and
+per-account defaults (`97fad7a`), D5–D6 media stores and this server's
+disk (`d0cc4d6`), D7–D8 in the commit after. Hashes before the rebase
+onto `main`.
+
+- **Service (D1–D2):** an immutable snapshot per change: the variable
+  wins and locks the setting, then the value saved in the app, then the
+  default. Secret settings are sealed with the master key; a webhook's
+  token is bound to the webhook's origin (`AudienceOf`), so a new origin
+  needs it again and clearing the address clears it. Field specs gain a
+  duration type and a webhook address rule (path and query kept,
+  `netguard.URLOptions.Query`). `target_items.manual_due` marks a retry
+  asked for by hand.
+- **Live (D3):** the engine, the relay retrier and the Nostr fan-out
+  read retries, tries and the grace at each use (`Dispatcher.Live`).
+  With automatic retries off, a failure waiting for one isn't claimed;
+  first attempts, locked items and `manual_due` still are. Webhooks are
+  looked up at each send (one saved in the app through the guard); a
+  translator is kept per DeepL key until it changes.
+- **API (D4):** a leaf also carries `updated_at`, `problem` (a saved
+  secret that can't be opened), `generate` and `field` (the web form is
+  built from it); a secret's value adds `origin` (webhooks) and
+  `public_key` (the Blossom key, as an npub). `:generate` serves
+  `feed.token` (shown once) and `media.blossom_key` (answers only the
+  npub). A webhook's error never quotes its address. Account set names
+  are unique whatever their case. Defaults: `content_warning`,
+  `languages` and `options` (Mastodon's visibility among them); the
+  create answer's warnings say `default applied: visibility=unlisted`,
+  the preview lists `defaults_applied`.
+- **Media stores (D5):** `media.Store` is `Upload` and `Public`; the
+  pipeline's `Lookup` (`reuseStored`) reuses a stored address unless it
+  is on this server's disk and the store is another now, its file is
+  gone, or it was made before `PUBLIC_URL`. Blossom with its own key
+  adds the BUD-11 server tag and `X-SHA-256`, and encodes the
+  authorization in standard base64 (BUD-11 asks for base64url; servers
+  from before it read standard). A server set in the app is reached
+  through the guard, and an address it answers on another origin is
+  replaced by its own for the hash. `BLOSSOM_URL` without `NSEC_HEX`
+  no longer stops startup: an upload says to make a key (`503`,
+  `UnusableError`).
+- **This server's disk (D6):** `<sha256>.<ext>` by the sniffed type
+  (0600 in 0700), served at `/media/` (the session gate lets `/media`
+  and `/media/…` through) with `default-src 'none'; sandbox`, `nosniff`,
+  immutable caching and `Access-Control-Allow-Origin: *`; other types as
+  attachments. Floor `max(1 GiB, 5 %)`, quota in MiB, `507
+  insufficient_storage` naming Settings, Media. The public self-test
+  (`ProbeError`: a redirect, a status, other bytes, or the store
+  failing) uses a client that follows no redirects, in a 10 s window of
+  its own (testing the store first doesn't hold it up). A quote's
+  link-quote copies on a disk that isn't reachable go without the
+  original's images (`TargetSpec.NoSourceMedia`), with a warning.
+  `GET /v1/instance/system` (`instance:admin`, not behind the proxy
+  alone) answers the version, the sign-in mode and an allowlist of
+  bootstrap and tuning variables, secrets only as set and addresses
+  without their user and password.
+- **Web (D7):** `settings-config.js` (forms over the settings API, with
+  sources, **Copy into the app**, secrets set/clear/make, values shown
+  once, `If-Match`, field-level problems), `settings-sets.js` (account
+  sets, each account's defaults), `settings-sections.js` (Composing,
+  Media, Publishing, Integrations, System). A `settings-saved` event
+  updates the composer at once (attach controls, languages, the
+  translate menu). Account sets load with the accounts, so the default
+  set is the first selection; the composer shows the sets over the
+  accounts. "(optional)" marks only a setting without a default. The
+  first run's last step opens Settings, Media.
+- **Tests (D8):** the harness takes `E2E_SETTINGS_ENV` (locked values),
+  keeps media on its disk when Settings says so (else the fake Blossom
+  server), tests the disk for real and fakes the webhooks, and lists
+  `E2E_SECRET` in System. `settings.spec.ts`: a locked setting copied
+  into the app, a refused value, languages, account sets in the composer,
+  defaults in the preview, the disk store (test, the public self-test,
+  an upload served without sign-in with its headers, a refused
+  self-test's message on its field), a feed token shown once, System
+  never showing a secret, and proxy mode. The self-test's real failures
+  are Go tests (`TestV1MediaPublicSelfTest`).
 
 ---
 
@@ -2096,6 +2175,15 @@ Made by this plan; the spec is updated to match.
 | §5.4: `422 credentials_required` when a new server address needs the credentials | `422 validation_failed` with `required` on `/credentials` (or the secret left out): one code for every field problem. |
 | §5.4: `credentials` replace all of them | A secret left out with the same method is kept while the server address stays the same (As built C, review fixes). |
 | §5.5: an environment account can't be deleted | One whose variables are gone (`not_configured`) can; its env key is let go. |
+| §7.4: a leaf is `{value, source, env, locked}`; a secret's value `{set, updated_at}` | Also `updated_at`, `problem`, `generate` and `field`; a secret's value adds `origin` and, for the Blossom key, `public_key` (As built D). |
+| Plan D4: the feed token's "Generate" as its own route | A `:generate` action on the setting (`feed.token`, `media.blossom_key`), never idempotent; every `/v1` answer is `no-store`. |
+| §7.4: `defaults` holds `visibility` | Under `defaults.options.visibility`, checked against the account's visibility capability. |
+| §7.5: System shows an allowlist of values (no route) | `GET /v1/instance/system` (`instance:admin`, not behind the proxy alone). |
+| §7.6: `media.Store` with `Put`, `PutFile`, `Fetch`, `Owns`, `Public` | `Upload` and `Public`; `Owns`, `Has` and `Fetch` belong to the disk store. |
+| §7.6: disk objects stored as `<sha256>` | `<sha256>.<ext>`, the extension from the sniffed type. |
+| §7.6: disk media for a URL-transport account refused | A post is; a quote's link-quote copies go without the original's images, with a warning. |
+| §7.6: BUD-11 authorization | Its server tag, in standard base64 rather than base64url. |
+| §7.4: a test once per 10 s | The `media.public` self-test has its own 10 s window. |
 
 ## Risks and how the plan handles them
 

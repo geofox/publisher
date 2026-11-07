@@ -197,7 +197,8 @@ func TestV1DiskMediaNeedsPublicForURLNetworks(t *testing.T) {
 
 // Turning media.public on runs the self-test, through PUBLIC_URL as a
 // network would: it passes, or the setting stays off and the answer says
-// what PUBLIC_URL answered. The test counts against the tests' limit.
+// what PUBLIC_URL answered. The self-test is limited as a test is, in a
+// window of its own.
 func TestV1MediaPublicSelfTest(t *testing.T) {
 	e := newSettingsEnv(t, true, nil)
 	app := httptest.NewServer(e.h)
@@ -247,9 +248,11 @@ func TestV1MediaPublicSelfTest(t *testing.T) {
 		t.Errorf("probes left: %d", len(entries))
 	}
 
-	// Through the app itself: it passes and the setting is on.
+	// Through the app itself, just after testing the store (each has its
+	// own window): it passes and the setting is on.
 	l.BaseURL = app.URL
 	e.answer(204, nil)
+	wantStatus(t, e.do(req{method: "POST", path: "/v1/instance/settings/media:test"}), 200)
 	wantStatus(t, e.do(on), 200)
 	if !public() || !l.Public() {
 		t.Fatal("not on")
