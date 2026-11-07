@@ -6,7 +6,7 @@ var _ destination.EnvSource = Driver{}
 
 // EnvVars implements destination.EnvSource.
 func (Driver) EnvVars() []destination.EnvVar {
-	return []destination.EnvVar{{Name: "THREADS_ACCESS_TOKEN", Required: true}, {Name: "THREADS_USER_ID"}}
+	return []destination.EnvVar{{Name: "THREADS_ACCESS_TOKEN", Required: true, Secret: true}, {Name: "THREADS_USER_ID"}}
 }
 
 // FromEnv implements destination.EnvSource: THREADS_ACCESS_TOKEN configures

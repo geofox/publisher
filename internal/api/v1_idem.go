@@ -76,8 +76,9 @@ func parseIdempotencyKey(v string) (string, bool) {
 }
 
 // withIdempotency applies Idempotency-Key to a create. It runs inside
-// v1Auth, so the principal is known.
-func (a *API) withIdempotency(next http.Handler) http.Handler {
+// v1Auth, so the principal is known. print, when set, gives what of the
+// body the fingerprint covers (nil: the body as sent).
+func (a *API) withIdempotency(print func([]byte) []byte, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, sent := r.Header["Idempotency-Key"]
 		if !sent {
@@ -117,7 +118,11 @@ func (a *API) withIdempotency(next http.Handler) http.Handler {
 		sum.Write([]byte{0})
 		sum.Write([]byte(r.URL.RawQuery))
 		sum.Write([]byte{0})
-		sum.Write(body)
+		if print != nil {
+			sum.Write(print(body))
+		} else {
+			sum.Write(body)
+		}
 		fp := hex.EncodeToString(sum.Sum(nil))
 
 		ctx := context.WithoutCancel(r.Context())

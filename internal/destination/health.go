@@ -48,6 +48,10 @@ type Health struct {
 	Message string `json:"message,omitempty"`
 	// ExpiresAt is when the credentials stop working, when known.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// ReconnectBy is when the network's grant to Publisher ends, when
+	// known (a Meta grant lasts 90 days): renewing the credentials doesn't
+	// move it, so the owner connects the account again before then.
+	ReconnectBy *time.Time `json:"reconnect_by,omitempty"`
 }
 
 // Refresher is implemented by accounts whose credentials must be renewed

@@ -249,3 +249,22 @@ func TestLoadFromNothingSet(t *testing.T) {
 		t.Fatalf("config = %+v, %v", c, err)
 	}
 }
+
+func TestPrivateDestinations(t *testing.T) {
+	c, err := LoadFrom(func(k string) string {
+		return map[string]string{"PRIVATE_DESTINATIONS": "mastodon.lan, 10.0.0.0/8"}[k]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.PrivateDestinations.Hosts) != 1 || len(c.PrivateDestinations.Prefixes) != 1 {
+		t.Errorf("policy %+v", c.PrivateDestinations)
+	}
+	for _, bad := range []string{"127.0.0.0/8", "0.0.0.0/0", "169.254.169.254"} {
+		if _, err := LoadFrom(func(k string) string {
+			return map[string]string{"PRIVATE_DESTINATIONS": bad}[k]
+		}); err == nil || !strings.Contains(err.Error(), "PRIVATE_DESTINATIONS") {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+}

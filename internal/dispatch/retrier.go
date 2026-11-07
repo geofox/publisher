@@ -49,6 +49,19 @@ type Retrier struct {
 	now         func() time.Time
 	running     atomic.Bool
 	noAccount   lastingWarn // relay retries that wait for an account
+	// Live, when set, is read at each tick: whether retries are on and
+	// how many (the owner's settings), in place of enabled and maxAttempts.
+	Live func() (enabled bool, maxAttempts int)
+}
+
+func (r *Retrier) maxTries() int { _, n := r.settings(); return n }
+
+// settings are the retrier's switch and tries now.
+func (r *Retrier) settings() (bool, int) {
+	if r.Live != nil {
+		return r.Live()
+	}
+	return r.enabled, r.maxAttempts
 }
 
 func NewRetrier(d *Dispatcher, n Notifier, enabled bool, maxAttempts int, base, max, tick time.Duration) *Retrier {
@@ -56,9 +69,10 @@ func NewRetrier(d *Dispatcher, n Notifier, enabled bool, maxAttempts int, base, 
 		base: base, max: max, tick: tick, now: time.Now}
 }
 
-// Start ticks until ctx is done. No-op (returns immediately) when disabled.
+// Start ticks until ctx is done. Without Live, it returns at once when
+// retries are off; with it, a tick while they are off does nothing.
 func (r *Retrier) Start(ctx context.Context) {
-	if !r.enabled {
+	if r.Live == nil && !r.enabled {
 		slog.Info("retrier disabled (AUTO_RETRY_ENABLED=false)")
 		return
 	}
@@ -69,7 +83,9 @@ func (r *Retrier) Start(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			r.runDue(ctx)
+			if on, _ := r.settings(); on {
+				r.runDue(ctx)
+			}
 		}
 	}
 }
@@ -125,7 +141,7 @@ func (r *Retrier) processPost(ctx context.Context, id string) (waiting int) {
 				continue
 			}
 			// retry_count counts retries only (the original publish is attempt 0), so a relay gets up to maxAttempts rebroadcasts before giving up.
-			if rl.RetryCount >= r.maxAttempts {
+			if _, most := r.settings(); rl.RetryCount >= most {
 				if set, err := r.disp.Store.MarkRelayGaveUp(t.ID, rl.URL, now); err != nil {
 					slog.ErrorContext(ctx, "retrier: mark relay gave-up failed", "relay", rl.URL, "err", err)
 				} else if set {
@@ -173,7 +189,7 @@ func (r *Retrier) alertGaveUp(ctx context.Context, postID string, relays []strin
 		return
 	}
 	body := "post " + postID + " gave up on " + strings.Join(relays, ", ") + " relays after " +
-		strconv.Itoa(r.maxAttempts) + " attempts; manual retry still available"
+		strconv.Itoa(r.maxTries()) + " attempts; manual retry still available"
 	if err := r.notifier.Alert(ctx, "Publisher: auto-retry exhausted", body); err != nil {
 		slog.ErrorContext(ctx, "retrier: give-up alert failed", "err", err)
 	}

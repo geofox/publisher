@@ -26,6 +26,9 @@ type Fanout struct {
 	now         func() time.Time
 	running     atomic.Bool
 	noAccount   lastingWarn // jobs that wait for an account
+	// MaxAttempts, when set, is read at each delivery in place of
+	// maxAttempts (the owner's setting).
+	MaxAttempts func() int
 }
 
 // fanoutWait is how long a job that no account can deliver waits before it
@@ -117,7 +120,11 @@ func (f *Fanout) runDue(ctx context.Context) {
 			}
 			continue
 		}
-		if j.RetryCount+1 >= f.maxAttempts {
+		most := f.maxAttempts
+		if f.MaxAttempts != nil {
+			most = f.MaxAttempts()
+		}
+		if j.RetryCount+1 >= most {
 			if err := f.disp.Store.MarkFanoutGaveUp(j.ID); err != nil {
 				slog.ErrorContext(ctx, "fan-out: mark gave-up failed", "id", j.ID, "err", err)
 			}

@@ -11,7 +11,7 @@ var _ destination.EnvSource = Driver{}
 
 // EnvVars implements destination.EnvSource.
 func (Driver) EnvVars() []destination.EnvVar {
-	return []destination.EnvVar{{Name: "BLUESKY_APP_PASSWORD", Required: true},
+	return []destination.EnvVar{{Name: "BLUESKY_APP_PASSWORD", Required: true, Secret: true},
 		{Name: "BLUESKY_IDENTIFIER", Required: true}, {Name: "BLUESKY_PDS_URL", Required: true}}
 }
 

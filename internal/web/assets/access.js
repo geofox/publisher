@@ -1,5 +1,5 @@
 "use strict";
-import { el, v1, flash, relTime, confirmModal, asDialog, restoreFocus } from "./common.js";
+import { el, v1, flash, relTime, confirmModal, inputDialog, restoreFocus } from "./common.js";
 import { passkeysSupported, createPasskey, passkeyError } from "./webauthn.js";
 import { reauth } from "./reauth.js";
 
@@ -115,35 +115,6 @@ function passkeyRow(p, si, last) {
     el("div", { class: "acc-actions" },
       btn("Rename", "pk-rename-" + p.id, () => renamePasskey(p), { "aria-label": "Rename " + p.name }),
       btn("Remove", "pk-remove-" + p.id, () => removePasskey(p), lastAttrs(last, "Remove " + p.name, "pk-add"))));
-}
-
-// inputDialog asks for one value; onSubmit answers true to close.
-function inputDialog({ title, label, value = "", type = "text", maxlength, fields, submitText, onSubmit }) {
-  const bk = el("div", { class: "modal-bk" });
-  let close = () => bk.remove();
-  const err = el("p", { class: "reauth-status", role: "status", "aria-live": "polite" });
-  const inputs = (fields || [{ label, value, type, maxlength }]).map((f, i) => {
-    const id = "dlg-in-" + i;
-    return { label: el("label", { for: id, text: f.label }), input: el("input", { id, type: f.type || "text", value: f.value || "", autocomplete: f.autocomplete || "off", maxlength: f.maxlength || false }) };
-  });
-  const ok = el("button", { class: "primary sm", type: "submit", text: submitText || "Save" });
-  const form = el("form", { class: "reauth" },
-    ...inputs.flatMap(x => [x.label, x.input]), err,
-    el("div", { class: "confirm-actions" }, el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: () => close() }), ok));
-  form.addEventListener("submit", async ev => {
-    ev.preventDefault();
-    if (ok.disabled) return; // one at a time
-    ok.disabled = true;
-    try {
-      if (await onSubmit(inputs.map(x => x.input.value), m => { err.textContent = m; })) close();
-    } finally {
-      ok.disabled = false;
-    }
-  });
-  const card = el("div", { class: "modal reauth" }, el("p", { class: "modal-title", text: title }), form);
-  bk.append(card);
-  document.body.append(bk);
-  close = asDialog(bk, card, close, inputs[0].input);
 }
 
 // deviceName suggests a name for a new passkey, unlike the ones taken.

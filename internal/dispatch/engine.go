@@ -34,6 +34,40 @@ type RetryPolicy struct {
 	Base, Max   time.Duration
 }
 
+// Live are the engine's settings the owner changes in the app.
+type Live struct {
+	AutoRetry     bool
+	MaxAttempts   int
+	ScheduleGrace time.Duration
+}
+
+// policy is the retry policy now: Policy, with what the owner set in the
+// app (Live) in place of its switch and its tries.
+func (d *Dispatcher) policy() RetryPolicy {
+	p := d.Policy
+	if d.Live != nil {
+		l := d.Live()
+		p.Enabled, p.MaxAttempts = l.AutoRetry, l.MaxAttempts
+	}
+	// Retries turned on in the app when the environment had them off: the
+	// delays weren't checked at startup.
+	if p.Enabled && p.Base <= 0 {
+		p.Base = 2 * time.Minute
+	}
+	if p.Enabled && p.Max < p.Base {
+		p.Max = max(p.Base, time.Hour)
+	}
+	return p
+}
+
+// grace is how late a scheduled post may still go out (0: any).
+func (d *Dispatcher) grace() time.Duration {
+	if d.Live != nil {
+		return d.Live().ScheduleGrace
+	}
+	return d.ScheduleGrace
+}
+
 // span is how long the policy keeps retrying one item at most (twice the
 // sum of its waits, at least a day): a failure older than that was not
 // left for automatic retries.
@@ -178,7 +212,8 @@ func (d *Dispatcher) worker(ctx context.Context) {
 			return
 		}
 		now := d.now()
-		c, err := d.Store.ClaimItem(ctx, now, store.ClaimFilter{Exclude: d.inlinePosts(), MissedBefore: d.missedBefore(now)})
+		c, err := d.Store.ClaimItem(ctx, now, store.ClaimFilter{Exclude: d.inlinePosts(), MissedBefore: d.missedBefore(now),
+			HoldAutoRetries: !d.policy().Enabled})
 		if err != nil && ctx.Err() == nil {
 			slog.ErrorContext(ctx, "engine: claim failed", "err", err)
 		}
@@ -200,10 +235,11 @@ func (d *Dispatcher) worker(ctx context.Context) {
 }
 
 func (d *Dispatcher) missedBefore(now time.Time) time.Time {
-	if d.ScheduleGrace <= 0 {
+	grace := d.grace()
+	if grace <= 0 {
 		return time.Time{}
 	}
-	return now.Add(-d.ScheduleGrace)
+	return now.Add(-grace)
 }
 
 // passes are the periodic jobs around the claim loop: scheduled posts missed
@@ -211,8 +247,8 @@ func (d *Dispatcher) missedBefore(now time.Time) time.Time {
 // the attention gauge.
 func (d *Dispatcher) passes(ctx context.Context) {
 	now := d.now()
-	if d.ScheduleGrace > 0 {
-		missed, err := d.Store.MarkOverdueMissed(ctx, now.Add(-d.ScheduleGrace))
+	if grace := d.grace(); grace > 0 {
+		missed, err := d.Store.MarkOverdueMissed(ctx, now.Add(-grace))
 		if err != nil {
 			slog.ErrorContext(ctx, "engine: missed pass failed", "err", err)
 		}
@@ -231,7 +267,8 @@ func (d *Dispatcher) passes(ctx context.Context) {
 // scheduleUnscheduled applies the retry policy to failures recorded before
 // the engine decided retries (the v4 migration's rows).
 func (d *Dispatcher) scheduleUnscheduled(ctx context.Context, now time.Time) {
-	if !d.Policy.Enabled {
+	pol := d.policy()
+	if !pol.Enabled {
 		return
 	}
 	us, err := d.Store.UnscheduledFailures(ctx)
@@ -239,7 +276,7 @@ func (d *Dispatcher) scheduleUnscheduled(ctx context.Context, now time.Time) {
 		slog.ErrorContext(ctx, "engine: unscheduled failures query failed", "err", err)
 		return
 	}
-	stale := d.Policy.span()
+	stale := pol.span()
 	for _, u := range us {
 		// A failure older than the policy's whole retry span was recorded
 		// while auto-retry was off, and the owner has had it in front of
@@ -264,7 +301,7 @@ func (d *Dispatcher) scheduleUnscheduled(ctx context.Context, now time.Time) {
 			}
 			continue
 		}
-		next := u.LastAttempt.Add(backoff(u.Attempts, d.Policy.Base, d.Policy.Max))
+		next := u.LastAttempt.Add(backoff(u.Attempts, pol.Base, pol.Max))
 		if next.Before(now) {
 			next = now
 		}
@@ -779,7 +816,8 @@ type decision struct {
 // decide applies the retry policy to an item's failure. attempts counts
 // this one. Without auto-retry nothing is scheduled and nothing given up.
 func (d *Dispatcher) decide(ctx context.Context, c store.Claim, cls destination.ErrorClass, retryAfter time.Duration, attempts int, now time.Time) decision {
-	if !d.Policy.Enabled {
+	pol := d.policy()
+	if !pol.Enabled {
 		return decision{}
 	}
 	caps := d.Caps(ctx, c.AccountID, c.Platform)
@@ -789,10 +827,10 @@ func (d *Dispatcher) decide(ctx context.Context, c store.Claim, cls destination.
 	if d.keyForgotten(ctx, c, cls, caps, now) {
 		return decision{giveUp: "idempotency key expired"}
 	}
-	if d.Policy.MaxAttempts > 0 && attempts >= d.Policy.MaxAttempts {
+	if pol.MaxAttempts > 0 && attempts >= pol.MaxAttempts {
 		return decision{giveUp: "attempts exhausted"}
 	}
-	wait := backoff(attempts, d.Policy.Base, d.Policy.Max)
+	wait := backoff(attempts, pol.Base, pol.Max)
 	if cls == destination.ClassRateLimited && retryAfter > wait {
 		// A server's wait is honored up to a day: past that it is more
 		// likely a bug than a plan, and the owner can still retry.

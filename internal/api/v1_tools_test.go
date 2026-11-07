@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -260,6 +261,17 @@ func TestV1RelaysPerAccount(t *testing.T) {
 	}
 	if bytes.Equal(fs.who.Pubkey[:], make([]byte, 32)) {
 		t.Error("sync was given no public key")
+	}
+	// The home relay is dialed with the account's client; the targets,
+	// which the owner set, through the guard (no loopback, whoever set the
+	// account up).
+	if fs.who.HomeClient == nil || fs.who.TargetClient == nil || fs.who.HomeClient == fs.who.TargetClient {
+		t.Errorf("clients: home %p, target %p", fs.who.HomeClient, fs.who.TargetClient)
+	}
+	loop := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer loop.Close()
+	if _, err := fs.who.TargetClient.Get(loop.URL); !errors.Is(err, destination.ErrBlockedAddress) {
+		t.Errorf("the target client reached a loopback relay: %v", err)
 	}
 
 	e.api.Accounts = withForeign{e.reg, t}

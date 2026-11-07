@@ -20,7 +20,7 @@ const (
 	// ConfigSyncRelaysSeed is the relay-sync list a new account starts
 	// with.
 	ConfigSyncRelaysSeed = "sync_relays_seed"
-	SecretKey            = "secret_key" // hex
+	SecretKey            = "secret_key" // hex, or nsec1… when typed in the app
 )
 
 // Default proof-of-work difficulties.
@@ -31,17 +31,15 @@ const (
 
 // Open implements destination.Driver.
 //
-// The relay pool dials with the Nostr library's own client: its Pool always
-// connects with the default HTTP client, so the host's network policy can't
-// reach it yet (part C gives the account its own relay map for that).
-// Relays named by content (pasted links) are dialed through the host's
-// NetContent network.
+// The account's own relays (in its config, and the NIP-65 ones its profile
+// lists) are dialed through the host's NetAccount network; relays named by
+// content (pasted links) through its NetContent one.
 func (Driver) Open(_ context.Context, req destination.OpenRequest) (destination.Account, error) {
-	keyHex := req.Secrets[SecretKey]
-	if keyHex == "" {
+	key := req.Secrets[SecretKey]
+	if key == "" {
 		return nil, destination.InvalidField(SecretKey, "required")
 	}
-	sk, err := ParseSecretKey(keyHex)
+	sk, err := ParseKey(key)
 	if err != nil {
 		return nil, destination.InvalidField(SecretKey, err.Error())
 	}
@@ -100,5 +98,6 @@ func (Driver) Open(_ context.Context, req destination.OpenRequest) (destination.
 		PrimaryFanout:        fanout,
 		PrimaryRelays:        primary,
 		ContentClient:        req.Host.Net(destination.NetContent).Client(0),
+		RelayClient:          req.Host.Net(destination.NetAccount).Client(0),
 	})}, nil
 }

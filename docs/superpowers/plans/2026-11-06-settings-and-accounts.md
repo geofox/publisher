@@ -1426,26 +1426,55 @@ Spec §3, §4.1, §4.4 (Threads token move), §5, §10.2, §12 (C).
 
 ### Task C1: verify PDS discovery
 
-- [ ] For a custom-domain handle, a `bsky.social` handle and a `did:web`
+- [x] For a custom-domain handle, a `bsky.social` handle and a `did:web`
   account: handle → DID → document → `#atproto_pds`, and `createSession`
   on the discovered PDS with a handle, a DID and an email. Record here.
+
+  Recorded 2026-11-07. The build sandbox can't reach the live network
+  (its proxy refuses bsky.social, plc.directory and DNS-over-HTTPS), so
+  this was checked against the specs and the reference PDS, not live
+  accounts; C7's tests reproduce each rule with fakes.
+  - Handle → DID (atproto.com/specs/handle): DNS TXT at
+    `_atproto.<handle>` with `did=<DID>`; other TXT values are ignored;
+    several valid records with different DIDs fail. Else
+    `https://<handle>/.well-known/atproto-did`, a 2xx with the DID as the
+    body (content type not checked strictly; strip surrounding
+    whitespace; redirects allowed). When both answer and disagree, DNS
+    wins. Handles are case-insensitive and stored lowercase; a leading `@`
+    is display only.
+  - Bidirectional: the DID document must claim the handle (the first
+    syntactically valid `at://` entry in `alsoKnownAs`) and the handle
+    must resolve to the DID; the document's `id` must be the DID.
+  - DID → document (atproto.com/specs/did): `did:plc` from the PLC
+    directory (`<PLC_DIRECTORY_URL>/<did>`, as indigo's `BaseDirectory`
+    builds it) and `did:web` from `https://<host>/.well-known/did.json`,
+    host-level only (no path; ports only for localhost in development).
+  - PDS: the first `service` whose `id` is `#atproto_pds` (or
+    `<did>#atproto_pds`) and whose `type` is `AtprotoPersonalDataServer`;
+    `serviceEndpoint` is a URL of scheme, host and optional port only.
+  - `createSession` `identifier` is "Handle or other identifier supported
+    by the server" (lexicon). The reference PDS lowercases it, then looks
+    up by email when it contains `@` anywhere, else by handle or DID
+    (`account-manager.ts` `login`, `helpers/account.ts` `getAccount`): so
+    `@alice.example.com` is read as an email and fails. C7 sends the
+    handle without the `@`.
 
 ### Task C2: the keyring
 
 **Files:** new `internal/secrets/{keyring,seal}.go`, `cmd/publisher/cli.go`
 (`keygen`), `internal/config`, tests.
 
-- [ ] Master key variables (spec §3.1): 32 bytes in any base64 alphabet,
+- [x] Master key variables (spec §3.1): 32 bytes in any base64 alphabet,
   padded or not; both forms of one set, or malformed, is a startup error;
   `_FILE` read once and trimmed (a warning when it is world-readable;
   Docker secrets are 0444 by default, so not an error).
-- [ ] After reading, `os.Unsetenv` the master key variables, `NSEC_HEX`,
+- [x] After reading, `os.Unsetenv` the master key variables, `NSEC_HEX`,
   `OIDC_CLIENT_SECRET` and the other credential variables, and
   subprocesses (ffmpeg, ffprobe) run with a minimal environment.
-- [ ] HKDF derivation (encryption key, key id, and an `idempotency v1`
+- [x] HKDF derivation (encryption key, key id, and an `idempotency v1`
   HMAC key for C9); `Seal`/`Open` with the spec's AAD and format.
-- [ ] `publisher keygen` prints a key and a compose snippet.
-- [ ] Tests: round trip; each AAD field; unknown key id; tampering;
+- [x] `publisher keygen` prints a key and a compose snippet.
+- [x] Tests: round trip; each AAD field; unknown key id; tampering;
   previous key opens; base64 variants; known-answer derivation; subprocess
   environment has no secret.
 
@@ -1454,17 +1483,17 @@ Spec §3, §4.1, §4.4 (Threads token move), §5, §10.2, §12 (C).
 **Files:** `internal/store/{migrations,secrets,scrub}.go`, `store.go`
 (pragma), tests, golden schema.
 
-- [ ] v13: `secrets` with `idx_secrets_key`; `accounts.deleted_at`,
+- [x] v13: `secrets` with `idx_secrets_key`; `accounts.deleted_at`,
   `accounts.auth_method`; partial unique index `(owner_id, type,
   remote_id) WHERE deleted_at IS NULL AND remote_id IS NOT NULL`.
-- [ ] `PRAGMA secure_delete = ON` on every connection.
-- [ ] Store methods take sealed values and run their own transactions:
+- [x] `PRAGMA secure_delete = ON` on every connection.
+- [x] Store methods take sealed values and run their own transactions:
   `CreateAccountWithSecrets`, `ReplaceAccountSecrets`,
   `DeleteAccount` (soft delete, secrets gone, scheduled targets canceled),
   `Secrets(owner, scope, ref)`, `SecretKeyIDs`, `Reseal(fn)`.
-- [ ] Scrubber (spec §3.2) plus bare `nsec1…` strings and URLs inside
+- [x] Scrubber (spec §3.2) plus bare `nsec1…` strings and URLs inside
   `url.Error` messages.
-- [ ] Migration test from a v12 fixture.
+- [x] Migration test from a v12 fixture.
 
 ### Task C4: the network guard everywhere owner-set addresses are reached
 
@@ -1472,27 +1501,27 @@ Spec §3, §4.1, §4.4 (Threads token move), §5, §10.2, §12 (C).
 (`PRIVATE_DESTINATIONS`), `internal/accounts/state.go`, each driver's
 tests, tests.
 
-- [ ] `netguard.Policy` from `PRIVATE_DESTINATIONS` (hostnames and CIDRs);
+- [x] `netguard.Policy` from `PRIVATE_DESTINATIONS` (hostnames and CIDRs);
   entries overlapping loopback, link-local or unspecified ranges, or a /0,
   are startup errors.
-- [ ] Dialer: a `DialContext` wrapper checks the hostname (allowlisted
+- [x] Dialer: a `DialContext` wrapper checks the hostname (allowlisted
   private hosts) and a `Control` function checks the connected address with
   `netguard.IsBlockedIP` (which already covers 0/8, 198.18/15, 240/4,
   NAT64, 6to4, SIIT, loopback, link-local and metadata addresses), after
   `Unmap()`, with a carve-out only for allowed private ranges and never for
   the server's own listen addresses. No proxy from the environment.
-- [ ] Redirects: at most 5, each dialed through the guard; a request that
+- [x] Redirects: at most 5, each dialed through the guard; a request that
   carries a credential (Authorization, a password or secret in the body)
   refuses cross-origin redirects, https→http, and any redirect of a POST.
-- [ ] `netguard.OwnerURL(raw, schemes)`: https (and `wss` for relay
+- [x] `netguard.OwnerURL(raw, schemes)`: https (and `wss` for relay
   fields), http/ws only for allowed private hosts; no userinfo, query or
   fragment; normalized origin.
-- [ ] The host decides the policy: every transport of a `source = 'db'`
+- [x] The host decides the policy: every transport of a `source = 'db'`
   account, and every saved setting's address, is guarded whatever the
   driver asks; env-configured addresses stay trusted. Adopted accounts and
   copy-from-env values become owner-set and are validated with `OwnerURL`
   when copied.
-- [ ] Tests: each blocked range and IPv4-mapped forms; DNS rebinding;
+- [x] Tests: each blocked range and IPv4-mapped forms; DNS rebinding;
   redirects (to a blocked address, cross-origin with Authorization, POST);
   per driver, a database account pointed at `127.0.0.1` or
   `169.254.169.254` never dials (HTTP and WebSocket).
@@ -1501,14 +1530,14 @@ tests, tests.
 
 **Files:** `internal/destination/fields.go`, driver manifests, tests.
 
-- [ ] `AuthMethod`, `FieldSpec` (+ `Revealable`), `EnumValue`,
+- [x] `AuthMethod`, `FieldSpec` (+ `Revealable`), `EnumValue`,
   `Manifest.Auth/Config/InstanceConfig`; `ValidateFields` (types,
   required, pattern, enum, bounds, `MaxLength` default 4096, unknown keys,
   URLs through `OwnerURL`).
-- [ ] Manifests per spec §5.7; the Nostr key accepts `nsec1…` or hex; the
+- [x] Manifests per spec §5.7; the Nostr key accepts `nsec1…` or hex; the
   relay defaults offered for a new Nostr account are the env values when
   set, else a neutral list (never this instance's relay).
-- [ ] Contract test: no `Secret` in `Config`; `Audience` fields are URLs;
+- [x] Contract test: no `Secret` in `Config`; `Audience` fields are URLs;
   defaults validate.
 
 ### Task C6: database accounts, key status, rotation, the Threads token move
@@ -1516,21 +1545,21 @@ tests, tests.
 **Files:** `internal/accounts/{registry,state,keys}.go`, `main.go`,
 `internal/health`, `internal/api/v1_resources.go`, tests.
 
-- [ ] Startup: store → keyring → rotation (reseal everything under the
+- [x] Startup: store → keyring → rotation (reseal everything under the
   previous key in one transaction; any failure changes nothing) → registry.
-- [ ] Key status `none | ok | missing | mismatch`; affected accounts
+- [x] Key status `none | ok | missing | mismatch`; affected accounts
   `locked` (their items wait, A2.3); secret writes refused
   (`master_key_required` / `master_key_mismatch`); non-critical `secrets`
   readiness check; `/v1/instance.secrets`; an error at startup.
-- [ ] Database accounts open with decrypted secrets; `Host.Save` reseals
+- [x] Database accounts open with decrypted secrets; `Host.Save` reseals
   and writes secrets and config in one store call.
-- [ ] Env accounts with a key: state moves to `secrets`. The Threads
+- [x] Env accounts with a key: state moves to `secrets`. The Threads
   token moves from `threads_token` at startup (overwrite, delete, then
   `wal_checkpoint(TRUNCATE)`, checking the result and retrying while busy);
   the seed hash goes to the account's config. A warning names the
   `.pre-vN.bak` files that still hold the plaintext token; the README says
   to delete them once the upgrade is confirmed.
-- [ ] Tests: each status; rotation success and rollback; a locked
+- [x] Tests: each status; rotation success and rollback; a locked
   account's item goes out after the key is fixed; the move (then grep the
   database, WAL and backups made afterwards for the token).
 
@@ -1538,11 +1567,11 @@ tests, tests.
 
 **Files:** `internal/bluesky/discover.go`, tests.
 
-- [ ] DNS TXT `_atproto`, else `/.well-known/atproto-did` (guarded); DID
+- [x] DNS TXT `_atproto`, else `/.well-known/atproto-did` (guarded); DID
   document from `PLC_DIRECTORY_URL` or `did:web` (guarded); `#atproto_pds`
   validated with `OwnerURL`. A DID skips the first step; an email needs
   `pds_url`.
-- [ ] Tests with fake DNS and `httptest`, including a PDS on a private
+- [x] Tests with fake DNS and `httptest`, including a PDS on a private
   address (refused).
 
 ### Task C8: log scrubbing at the handler
@@ -1550,10 +1579,10 @@ tests, tests.
 **Files:** `cmd/publisher/main.go` (`setupLogger`), `internal/logging`,
 `internal/notify`, tests.
 
-- [ ] The slog handler scrubs every string and error attribute
+- [x] The slog handler scrubs every string and error attribute
   (`ReplaceAttr`); alert bodies are scrubbed; Blossom and other upstream
   error bodies are no longer echoed verbatim.
-- [ ] Test: logging a URL error with `access_token=` and an `nsec1`
+- [x] Test: logging a URL error with `access_token=` and an `nsec1`
   string prints neither.
 
 ### Task C9: the account write API
@@ -1561,28 +1590,28 @@ tests, tests.
 **Files:** `internal/api/{v1_accounts,v1,v1_idem}.go`,
 `internal/accounts/write.go`, OpenAPI, `errors.md`, tests.
 
-- [ ] Scopes `settings:read`, `settings:write`, `instance:admin` added;
+- [x] Scopes `settings:read`, `settings:write`, `instance:admin` added;
   `admin` implies none of the step-4 scopes; tokens holding a step-4 scope
   need `token.create_privileged`.
-- [ ] `POST /v1/accounts` (spec §5.2) with `Idempotency-Key`. Upstream
+- [x] `POST /v1/accounts` (spec §5.2) with `Idempotency-Key`. Upstream
   error text: the submitted secret values are removed from it, then it is
   scrubbed and cut to 200 characters.
-- [ ] Idempotency store: the request fingerprint replaces secret fields
+- [x] Idempotency store: the request fingerprint replaces secret fields
   with an HMAC (C2's key) before hashing; a route-table test asserts that
   no idempotent route can return a secret or a capability. `:reveal` has
   its own route entry, never idempotent, `no-store`.
-- [ ] `GET`/`PATCH`/`DELETE`, `:check`, `:reveal`, `:adopt` per spec
+- [x] `GET`/`PATCH`/`DELETE`, `:check`, `:reveal`, `:adopt` per spec
   §5.3–5.6 (reveal and delete bound to the account by their nonce). A
   delete also removes the account's `nostr_sync_relays` and
   `nostr_sync_relay_lists` rows (both reference `accounts`).
-- [ ] Proxy mode through `NoProxy` (B2): credential writes, adopt, reveal,
+- [x] Proxy mode through `NoProxy` (B2): credential writes, adopt, reveal,
   and later connect, settings secrets and instance settings. A table test
   over `v1Routes()` checks every flagged route.
-- [ ] Rate limit: 10 creates or credential changes per minute per owner
+- [x] Rate limit: 10 creates or credential changes per minute per owner
   (fake clock in tests); an idempotent replay doesn't use it up or call the
   network.
-- [ ] Events `account.created|updated|deleted|adopted` with field names.
-- [ ] Tests: each route, scope and mode; the duplicate race; audience
+- [x] Events `account.created|updated|deleted|adopted` with field names.
+- [x] Tests: each route, scope and mode; the duplicate race; audience
   change without and with credentials; a leak test greps responses,
   events, logs, `idempotency_keys`, the database and WAL for the
   plaintext.
@@ -1592,31 +1621,213 @@ tests, tests.
 **Files:** new `settings.js`, `fields.js`; `accounts.js`, `access.js`,
 `tokens.js`, `index.html`, `main.js`, `app.css`.
 
-- [ ] Settings tab with Accounts and Access (passkeys, password, sessions,
+- [x] Settings tab with Accounts and Access (passkeys, password, sessions,
   API tokens moved here, sign-in events). D adds the rest.
-- [ ] Accounts: grouped list with status and health; add (network → method
+- [x] Accounts: grouped list with status and health; add (network → method
   → form from the manifest); Nostr generate then reveal once; import a key
   (`nsec1…`); check; adopt; enable/disable; default selection; public feed;
   rename; delete (re-authentication); change credentials. Remote profile
   fields rendered with `textContent`; only http(s) profile links.
-- [ ] Banners: master key missing or mismatched (with the fix), proxy mode.
-- [ ] First-run steps 2 (master key: generated in the browser, shown with
+- [x] Banners: master key missing or mismatched (with the fix), proxy mode.
+- [x] First-run steps 2 (master key: generated in the browser, shown with
   the compose snippet; skippable) and 3 (first account).
 
 ### Task C11: e2e, docs, PR
 
-- [ ] The account specs run in the local-auth project (B11's fixtures).
+- [x] The account specs run in the local-auth project (B11's fixtures).
   The harness has a master key; its fakes declare the real auth methods
   and accept credentials by a simple rule (`bad` is rejected).
-- [ ] `account-settings.spec.ts`: add Bluesky (app password), Mastodon
+- [x] `account-settings.spec.ts`: add Bluesky (app password), Mastodon
   (token), Threads (token), Nostr (generate and reveal; import `nsec1`);
   duplicate refused; rejected credentials on the field; rename, disable,
   delete with re-authentication; the new account in the composer, not
   selected by default.
-- [ ] README: the master key (Docker secret file), adding accounts,
+- [x] README: the master key (Docker secret file), adding accounts,
   `PRIVATE_DESTINATIONS`, what encryption protects, backups after the token
   move; upgrade notes for C.
 - [ ] Open PR C; 2 QA + 1 security reviews; fix; hand over.
+
+### As built (C)
+
+Commits: C2 keyring (`c3a69c8`), C3 migration v13 and secret store
+(`66e5c1a`), C4 network guard (`96b648e`), C4b Nostr relays through the
+guard (`b9aebe5`), C5 field specs (`d097224`), C6 sealed state, key
+status, Threads token move (`02be864`), C7 PDS discovery (`dde1169`), C8
+log scrubbing (`8527621`), C9 account write API (`e797e98`), C10 and C11
+in the commits after. Hashes before the rebase onto `main`. C1's
+research was recorded from the specs and the reference PDS source (the
+sandbox can't reach live hosts).
+
+- **Keyring (C2):** the standard library's `crypto/hkdf` (same RFC 5869)
+  instead of `x/crypto/hkdf`. `Keyring.Open` with no key at all answers
+  `ErrNoKey`, so a locked account's reason names
+  `PUBLISHER_MASTER_KEY`. Credential variables are unset once read
+  (`runOptions.Unsetenv`).
+- **Guard (C4, C4b):** Nostr relays (publishing, the NIP-65 lookup) dial
+  through Publisher's own relay pool (`internal/nostr/pool.go`), since
+  the library's pool can't take an `http.Client`; every relay goes
+  through `Host.Net(NetAccount)`. Relay sync dials the home relay with
+  the account's client and its targets (NIP-65 and secondary relays)
+  through the guard for every account, the environment's too: a private
+  sync relay needs `PRIVATE_DESTINATIONS` (CHANGELOG, Breaking). A
+  refused dial no longer names the resolved address, for content
+  addresses too (a leak since step 2's `ContentNet`).
+- **Field specs (C5):** `FieldType` adds `url_list`; `FieldSpec` adds
+  `revealable`, `max_items` (default 64) and `url` (`URLRule{secure,
+  plain, path}`); `Manifest.auth` is always present. Optional driver
+  interfaces `ConfigDefaulter` (Nostr: the environment's relays and proof
+  of work when set, never the built-in defaults), `CredentialGenerator`
+  (Nostr generate) and `SecretFormatter` (Nostr: `nsec1`). `FieldError`
+  codes `unknown_field`, `required`, `invalid`, `too_long`, `too_many`,
+  `out_of_range`, `not_allowed`, and C7's `not_found`. `ValidateFields`
+  trims, refuses control characters (text allows `\n\t\r`), dedupes
+  lists, and has a partial mode for `PATCH` (null or empty: back to the
+  default; a required field without a default can't be cleared). Nostr's
+  `ParseKey` takes `nsec1` or hex for keys typed in the app (`NSEC_HEX`
+  stays hex only); generated keys are stored hex. A new Nostr account's
+  fallback relays default to `wss://nos.lol` and `wss://relay.damus.io`;
+  the home relay has no default. The Mastodon token help lists the scopes
+  the driver's calls need (`read:accounts read:search read:statuses
+  write:media write:statuses`).
+- **Key status and state (C6):** `accounts.PrepareKeys` (rotation all or
+  nothing; status `none|ok|missing|mismatch`) runs in
+  `cmd/publisher/secrets.go` before the registry. Environment accounts
+  keep their state in `LegacyState` without a key, else `SealedState`
+  (except while a 2.x `threads_token` row is still there under a key
+  that isn't `ok`, so the token keeps being used). `SealedState` keeps a
+  `_state_seed` (length-prefixed SHA-256 over the environment's secrets
+  and audience): saved state applies only while it matches, and stale or
+  damaged state is forgotten (never under a key that isn't `ok`). A
+  database account's `Host.Save` seals for its audience; a `Save` that
+  changes the audience key is refused. `store.Checkpoint` uses its own
+  connection with a 100 ms busy timeout (a `TRUNCATE` waits in the busy
+  handler, which a context can't interrupt). A duplicate identity found
+  at open saves the handle, not the remote id, and is warned once per
+  duplicate. Threads' `Open` records a provisional expiry (11 days)
+  through `Host.Save` when the expiry is unknown. `/readyz` has a
+  non-critical `secrets` check and `/v1/instance` `secrets{status,
+  detail}`.
+- **PDS discovery (C7):** `destination.ConfigDiscoverer`; Bluesky always
+  returns the identifier normalized (lowercase, a leading `@` dropped)
+  and finds `pds_url` only when it is empty; an email without `pds_url`
+  is `required` on `pds_url`; failures are `not_found` on the
+  identifier. Its own resolver (injectable TXT lookup, 2 KiB and 64 KiB
+  body limits, the spec's service rule: first `#atproto_pds` *and*
+  `AtprotoPersonalDataServer`, where indigo takes the last by id).
+  `BLUESKY_PDS_URL` stays required for the environment's account (`Open`
+  does no I/O).
+- **Scrubbing (C8):** new package `internal/redact` (`store.Scrub`
+  delegates); adds `secret_key=` in queries, `"master_key"` in JSON and
+  the Bluesky app-password shape anywhere. `redact.Upstream`: one line,
+  scrubbed, at most 300 bytes, "(an HTML page)" for HTML.
+  `logging.ScrubAttr` is the JSON handler's `ReplaceAttr`.
+- **Write API (C9):** `accounts/write.go` (`Create`, `ChangeCredentials`,
+  `Adopt`, `Delete`, `Reveal`, `Details`); a trial open (15 s) on a host
+  that collects `Save`s, so Threads' provisional expiry is stored with
+  the new account; upstream detail cleaned (the network's own error
+  field, submitted secrets removed, scrubbed, 200 bytes). The method may
+  be left out when the type has one. Route flags `NoProxy`,
+  `ReturnsSecret`, `ActionRules`, `IdemPrint` (a keyed MAC of the body);
+  in proxy mode `NoProxy` refuses tokens too. Re-authentication nonces
+  for `account.delete` and `account.reveal` carry the account
+  (`target`), and so does their `reauth_required` problem. Problem codes
+  `credentials_rejected`, `duplicate_account` (with `account_id`),
+  `locked_by_env`, `identity_changed`, `master_key_required`,
+  `master_key_mismatch`. 10 writes a minute per owner
+  (`API.AccountWritesPerMinute` overrides it for the e2e harness); the
+  limiters are set up once (`sync.Once`), not lazily per request.
+- **C9 deviations:** scopes `settings:read`, `settings:write` and
+  `instance:admin` move to D, where they are used. A `PATCH` with a label
+  and credentials applies the credentials, then the label (not one
+  transaction). A reveal is logged at Info (no event type for it). New
+  Nostr accounts get their sync relays from `SYNC_RELAYS`
+  (`drivers.NewAccountSeeder`); a startup warning names an adopted
+  account's variables while they are set (keep `NSEC_HEX` while
+  `BLOSSOM_URL` is set: it signs uploads).
+- **Settings tab (C10):** `data-view="settings"`, sections Accounts and
+  Access (the last one shown is remembered in the browser). Files
+  `settings.js` (the shell and the key banner), `settings-accounts.js`
+  (the panel and its dialogs) and `fields.js` (forms from field specs:
+  one control per type, advanced ones folded, errors placed by JSON
+  pointer, Show/Hide on secrets, hints that warn without refusing).
+  `inputDialog` moved to `common.js`, `accountTile` to `brands.js`,
+  `loadDestinations` to `accounts.js`. Deviation: the panel lives in
+  `settings-accounts.js`, not `accounts.js` (which stays the data
+  layer). A Bluesky password that doesn't look like an app password is
+  warned about in the form, not refused. The first-run steps open once
+  per browser when there are no accounts (not in proxy mode); the master
+  key step is made in the browser (`crypto.getRandomValues`, 32 bytes)
+  and can be skipped (remembered).
+- **e2e (C11):** the local-auth harness has a fixed test master key and
+  the registry's write side; its fakes identify accounts added in the
+  app from their credentials (`bad…` refused, `down…` unreachable, a
+  token `<user>:…` belongs to `<user>`). `openSettings` replaces the old
+  `tokens` tab in the fixtures; `signin-proxy.spec.ts` checks the
+  Accounts panel behind the proxy alone.
+
+### As built (C): review fixes
+
+Two QA reviews (server, web app) and a security review of part C. No
+finding lost data or leaked a credential; all were fixed except the two
+noted.
+
+- **Security:** (S1) the redirect rules drop `Referer` (Go sends the
+  previous address, query and all), and `GuardedRedirect` treats a token
+  in the address (a query parameter named like `token`, `key`, `secret`,
+  `pass`, `auth`, `sig`, `code`, `session`, or a user name) as a
+  credential that never leaves its origin. (S2) A listed private range
+  never opens `100.100.100.200` (Alibaba Cloud's metadata, in 100.64/10)
+  or `fd00:ec2::254` (AWS's IPv6 metadata, in fc00::/7);
+  `IsBlockedIP` adds `::/96` (IPv4-compatible), `192.0.0.0/24` (IETF
+  protocol assignments, not globally reachable) and `168.63.129.16`
+  (Azure's platform address). (S3) New credentials whose identifier
+  differs (a new Bluesky handle) don't keep the old server address: it
+  is found again unless the patch gives it, so a password never goes to
+  the previous identity's PDS.
+- **Server:** (Q1) a stored credential that doesn't open is `409`
+  (`master_key_required`, `master_key_mismatch`, or `invalid_state` with
+  `ErrCredentialsUnreadable`), not `500`; `:reveal` checks the key before
+  asking for re-authentication. (Q2) Two adopts at once: the second is
+  `409` (`store.ErrAlreadyAdopted`). (Q3) `GET /v1/destinations` shows
+  the operator's defaults for a new account (`Registry.Manifest`), and a
+  field put back to its default (`null`) gets the operator's default.
+  (Q4) A Threads account from the environment whose renewed token was
+  sealed with another key says to set that key (README too). (Q5) A
+  `PATCH` that changes nothing doesn't open the account. (Q6) Once
+  stored, the registry's reopen runs even if the caller has gone
+  (`context.WithoutCancel`). (Q7) An account from the environment whose
+  variables are gone (`not_configured`) can be deleted
+  (`store.ForgetEnvAccount`: soft delete, `env_key` cleared so setting
+  the variables again makes a new account); `SeedEnvAccounts` leaves
+  deleted rows out. (W3) New credentials with the same method may leave
+  a saved secret out (a new handle, the same app password): it is kept
+  while the server address stays the same, else `required` on it.
+  (Q9) Not changed: the idempotency fingerprint of a body holding
+  credentials stays a keyed MAC, since a plain hash would be guessable.
+- **Web app:** a failed read of the accounts shows the error with Try
+  again, not the first steps; toasts are announced (a persistent live
+  region); the master key shown in the panel and its open sections stay
+  across redraws; a flag that saved but whose reload failed says so
+  instead of undoing it; a number field holding text is refused in the
+  browser (it reads as empty); button names start with their visible
+  text (`Check now: …`, `Show key: …`, `Reconnect …`); checkbox focus
+  rings; 44 px touch targets on coarse pointers; the duplicate key
+  banner is hidden on Settings → Accounts (except behind the proxy
+  alone); readable contrast for faint text in Settings and for
+  `.tok-warning`; long npubs wrap; the fresh-key dialog has no ✕ (Done
+  only, after "I've saved it"); `not_configured` environment accounts
+  say so, offer Delete and no Move into the app; focus goes to "Get
+  started" when Settings opens by itself and after the last account is
+  deleted, to Add an account after another is deleted, and back to the
+  network or method picked when going back; errors from the last try
+  are cleared; the setup page says Settings → Access; the composer's
+  empty state behind the proxy says to use the environment; the compose
+  snippets use the README's list form and warn that `printf` keeps the
+  key in the shell history.
+- **Not done:** (W17) whether Chrome offers to save an app password
+  typed in the form (the fields are `autocomplete="off"`, with the
+  password managers' ignore attributes) wasn't verified in a real
+  Chrome profile; (Q8) see the deviation table.
 
 ---
 
@@ -1626,7 +1837,7 @@ Spec §1 (precedence), §7, §8.5 step 4, §12 (D).
 
 ### Task D1: migration v14
 
-- [ ] `settings`, `accounts.defaults_json`, `account_sets` (spec §7.1),
+- [x] `settings`, `accounts.defaults_json`, `account_sets` (spec §7.1),
   and `target_items.manual_due INTEGER NOT NULL DEFAULT 0` (set by a
   manual retry, cleared on claim) so "automatic retries off" can still let
   manual retries through. Migration test; golden schema.
@@ -1635,25 +1846,26 @@ Spec §1 (precedence), §7, §8.5 step 4, §12 (D).
 
 **Files:** new `internal/settings/{defs,service,patch}.go`, tests.
 
-- [ ] Definitions (spec §7.2), including driver `InstanceConfig` fields
-  as `<type>.<key>` read from manifests.
-- [ ] Precedence env → saved → default with `source` and locks; env values
+- [x] Definitions (spec §7.2). Driver `InstanceConfig` fields
+  (`<type>.<key>` read from manifests) moved to E5: Threads' app is the
+  first type that has any.
+- [x] Precedence env → saved → default with `source` and locks; env values
   parsed as config does today.
-- [ ] `Current()` immutable snapshot; `OnChange`; writes serialized.
-- [ ] Merge patch; validation; secret settings through the secrets store
+- [x] `Current()` immutable snapshot; `OnChange`; writes serialized.
+- [x] Merge patch; validation; secret settings through the secrets store
   with audience binding (a webhook URL is itself a secret; its token is
   bound to its origin).
-- [ ] Tests: precedence, locks, merge-patch edge cases, secrets absent
+- [x] Tests: precedence, locks, merge-patch edge cases, secrets absent
   from snapshot JSON, audience change without the token.
 
 ### Task D3: consumers apply settings live
 
-- [ ] Translator, feed webhook, alert webhook, retry policy, schedule
+- [x] Translator, feed webhook, alert webhook, retry policy, schedule
   grace, user languages, public feed token read `Current()` or rebuild on
   change. Saved webhook addresses use the guarded client (C4).
-- [ ] Automatic retries off: items waiting for an automatic retry aren't
+- [x] Automatic retries off: items waiting for an automatic retry aren't
   claimed; manual retries (`manual_due`) and locked items (A2.3) still are.
-- [ ] Tests: a change applies to the next claim or request; retries off
+- [x] Tests: a change applies to the next claim or request; retries off
   and on with a waiting item and a manual retry.
 
 ### Task D4: settings and account-set API; per-account defaults
@@ -1661,68 +1873,213 @@ Spec §1 (precedence), §7, §8.5 step 4, §12 (D).
 **Files:** `internal/api/{v1_settings,v1_account_sets,v1_accounts,v1_create}.go`,
 OpenAPI, `errors.md`, tests.
 
-- [ ] `/v1/settings` and `/v1/instance/settings` (spec §7.4). Proxy mode
+- [x] `/v1/settings` and `/v1/instance/settings` (spec §7.4). Proxy mode
   refuses every instance setting and every owner secret setting (route
   flag plus a field check in the owner PATCH and `:copy-from-env`).
   Instance secret writes need `instance.secrets`.
-- [ ] `:test` (alerts, feed, media) uses saved values only, one per 10 s,
+- [x] `:test` (alerts, feed, media) uses saved values only, one per 10 s,
   answers a class.
-- [ ] Feed token "Generate": its own non-idempotent, `no-store` route.
-- [ ] `/v1/account-sets` with ETags; per-account `defaults` with the
+- [x] Feed token "Generate": its own non-idempotent, `no-store` route.
+- [x] `/v1/account-sets` with ETags; per-account `defaults` with the
   spec's precedence; preview lists applied defaults.
-- [ ] Tests for each, including the proxy refusals table.
+- [x] Tests for each, including the proxy refusals table.
 
 ### Task D5: media stores and Blossom's own key
 
 **Files:** `internal/media/{store,blossom}.go`, `internal/api/v1_media.go`,
 tests.
 
-- [ ] `media.Store` (spec §7.6); metadata stripping in front of every
+- [x] `media.Store` (spec §7.6); metadata stripping in front of every
   store.
-- [ ] Blossom signs with `media.blossom_key` once set (shown as an npub)
+- [x] Blossom signs with `media.blossom_key` once set (shown as an npub)
   and only then adds the BUD-11 server tag; until a key is set, env
   deployments sign as today with the env Nostr key and no server tag (so
   Geoffrey's uploads don't change). Descriptor URLs returned by the server
   must be on the Blossom origin.
-- [ ] Switching stores affects new uploads only.
+- [x] Switching stores affects new uploads only.
 
 ### Task D6: the local disk store
 
 **Files:** `internal/media/local.go`, `internal/api/media_serve.go`,
 `internal/config` (`MEDIA_DIR`), tests.
 
-- [ ] Storage, names and serving per spec §7.6. The type is sniffed at
+- [x] Storage, names and serving per spec §7.6. The type is sniffed at
   `Put` and stored; served responses replace the global CSP header with
   `default-src 'none'; sandbox`; non-allowlisted types are attachments;
   `Owns`/`Fetch` read from disk by the validated name, never over HTTP.
-- [ ] Free-space floor and optional quota (`insufficient_storage`).
-- [ ] `media.public` self-test: fetch a probe from the operator-set
+- [x] Free-space floor and optional quota (`insufficient_storage`).
+- [x] `media.public` self-test: fetch a probe from the operator-set
   `PUBLIC_URL` with a client that follows no redirects (the operator's
   address is trusted, so Tailscale users needn't allowlist 100.64/10);
   require 200 and the exact bytes.
-- [ ] `media_unsupported` for URL-transport accounts without a public
+- [x] `media_unsupported` for URL-transport accounts without a public
   store.
-- [ ] Tests: traversal, wrong extension, HTML/SVG served as attachment,
+- [x] Tests: traversal, wrong extension, HTML/SVG served as attachment,
   floor and quota, self-test success and each failure.
 
 ### Task D7: the Settings tab, all sections; account sets in the composer
 
-- [ ] Composing, Media, Publishing, Integrations, System (spec §7.5) with
+- [x] Composing, Media, Publishing, Integrations, System (spec §7.5) with
   sources and "copy into the app".
-- [ ] Composer: account-set picker; the default set is the starting
+- [x] Composer: account-set picker; the default set is the starting
   selection.
-- [ ] First-run step 4 (media store).
+- [x] First-run step 4 (media store).
 
 ### Task D8: e2e, docs, PR
 
-- [ ] The harness accepts extra env for the settings specs (locked
+- [x] The harness accepts extra env for the settings specs (locked
   values). `settings.spec.ts`: a locked setting and copy-from-env;
   languages in the composer; account sets; account defaults in the
   preview; local media served with its headers; the public self-test
   passing (harness `PUBLIC_URL` = its own address) and failing.
-- [ ] README: settings tiers, local media and the proxy rule for
+- [x] README: settings tiers, local media and the proxy rule for
   `/media/`, the Nostr home-IP warning; upgrade notes for D.
 - [ ] Open PR D; 2 QA + 1 security reviews; fix; hand over.
+
+### As built (D)
+
+Commits: D1–D2 migration v14 and the settings service (`9930cb1`), D3
+settings applied live (`946d7d3`), D4 settings and account-set API and
+per-account defaults (`97fad7a`), D5–D6 media stores and this server's
+disk (`d0cc4d6`), D7–D8 in the commit after. Hashes before the rebase
+onto `main`.
+
+- **Service (D1–D2):** an immutable snapshot per change: the variable
+  wins and locks the setting, then the value saved in the app, then the
+  default. Secret settings are sealed with the master key; a webhook's
+  token is bound to the webhook's origin (`AudienceOf`), so a new origin
+  needs it again and clearing the address clears it. Field specs gain a
+  duration type and a webhook address rule (path and query kept,
+  `netguard.URLOptions.Query`). `target_items.manual_due` marks a retry
+  asked for by hand.
+- **Live (D3):** the engine, the relay retrier and the Nostr fan-out
+  read retries, tries and the grace at each use (`Dispatcher.Live`).
+  With automatic retries off, a failure waiting for one isn't claimed;
+  first attempts, locked items and `manual_due` still are. Webhooks are
+  looked up at each send (one saved in the app through the guard); a
+  translator is kept per DeepL key until it changes.
+- **API (D4):** a leaf also carries `updated_at`, `problem` (a saved
+  secret that can't be opened), `generate` and `field` (the web form is
+  built from it); a secret's value adds `origin` (webhooks) and
+  `public_key` (the Blossom key, as an npub). `:generate` serves
+  `feed.token` (shown once) and `media.blossom_key` (answers only the
+  npub). A webhook's error never quotes its address. Account set names
+  are unique whatever their case. Defaults: `content_warning`,
+  `languages` and `options` (Mastodon's visibility among them); the
+  create answer's warnings say `default applied: visibility=unlisted`,
+  the preview lists `defaults_applied`.
+- **Media stores (D5):** `media.Store` is `Upload` and `Public`; the
+  pipeline's `Lookup` (`reuseStored`) reuses a stored address unless it
+  is on this server's disk and the store is another now, its file is
+  gone, or it was made before `PUBLIC_URL`. Blossom with its own key
+  adds the BUD-11 server tag; every upload, with the env key too, sends
+  `X-SHA-256` (the body's hash, which the authorization names already),
+  and encodes the authorization in standard base64 (BUD-11 asks for base64url; servers
+  from before it read standard). A server set in the app is reached
+  through the guard, and an address it answers on another origin is
+  replaced by its own for the hash. `BLOSSOM_URL` without `NSEC_HEX`
+  no longer stops startup: an upload says to make a key (`503`,
+  `UnusableError`).
+- **This server's disk (D6):** `<sha256>.<ext>` by the sniffed type
+  (0600 in 0700), served at `/media/` (the session gate lets `/media`
+  and `/media/…` through) with `default-src 'none'; sandbox`, `nosniff`,
+  immutable caching and `Access-Control-Allow-Origin: *`; other types as
+  attachments. Floor `max(1 GiB, 5 %)`, quota in MiB, `507
+  insufficient_storage` naming Settings, Media. The public self-test
+  (`ProbeError`: a redirect, a status, other bytes, or the store
+  failing) uses a client that follows no redirects, in a 10 s window of
+  its own (testing the store first doesn't hold it up). A quote's
+  link-quote copies on a disk that isn't reachable go without the
+  original's images (`TargetSpec.NoSourceMedia`), with a warning.
+  `GET /v1/instance/system` (`instance:admin`, not behind the proxy
+  alone) answers the version, the sign-in mode and an allowlist of
+  bootstrap and tuning variables, secrets only as set and addresses
+  without their user and password.
+- **Web (D7):** `settings-config.js` (forms over the settings API, with
+  sources, **Copy into the app**, secrets set/clear/make, values shown
+  once, `If-Match`, field-level problems), `settings-sets.js` (account
+  sets, each account's defaults), `settings-sections.js` (Composing,
+  Media, Publishing, Integrations, System). A `settings-saved` event
+  updates the composer at once (attach controls, languages, the
+  translate menu). Account sets load with the accounts, so the default
+  set is the first selection; the composer shows the sets over the
+  accounts. "(optional)" marks only a setting without a default. The
+  first run's last step opens Settings, Media.
+- **Tests (D8):** the harness takes `E2E_SETTINGS_ENV` (locked values),
+  keeps media on its disk when Settings says so (else the fake Blossom
+  server), tests the disk for real and fakes the webhooks, and lists
+  `E2E_SECRET` in System. `settings.spec.ts`: a locked setting copied
+  into the app, a refused value, languages, account sets in the composer,
+  defaults in the preview, the disk store (test, the public self-test,
+  an upload served without sign-in with its headers, a refused
+  self-test's message on its field), a feed token shown once, System
+  never showing a secret, and proxy mode. The self-test's real failures
+  are Go tests (`TestV1MediaPublicSelfTest`).
+
+### As built (D): review fixes
+
+Two QA reviews (backend, web) and a security review; every finding
+fixed except the decisions at the end.
+
+- **Security:** a Blossom server set in the app is confined even when it
+  signs with the env key (the address it answers must be on its own
+  origin), and the dispatcher fetches media from any origin but the env
+  Blossom server's through the guarded stream client
+  (`Fetcher.TrustedOrigin`). A secret from the environment
+  (`ALERT_WEBHOOK_PASS`, `FEED_WEBHOOK_TOKEN`) goes only with an address
+  from the environment (`pairedSecret`), and saving an address in the
+  app while its secret is env-set is refused (`locked`). System reads
+  its values before the environment's secrets are unset, and drops an
+  address's query and fragment as well as its user. The session gate
+  checks the escaped path too (`%2F`). `MEDIA_DIR`: files open with
+  `O_NOFOLLOW`, `Has` and `Upload` take regular files only (`Lstat`),
+  and leftover `.upload-*` files go at start. Account set names
+  (unique whatever their case) and the cap of 50 are checked inside the
+  write's transaction.
+- **API and services:** `:copy-from-env` validates the value (`422`
+  with the field's problem), copies what goes with it (a webhook's
+  secret; `media.store` with `media.blossom_url` and back), and answers
+  `409` when the setting isn't from the environment; a leaf says
+  `also_saved` when a value saved in the app is behind the
+  environment's (part of the version). Blossom chosen needs its address
+  (`required`). `PATCH {}` checks `If-Match`; an empty unknown group is
+  refused; a reload that fails after a commit is `ErrSavedNotRead`. The
+  media test answers `store_refused` and `wrong_answer`. The preview
+  warns when a link-quote copy goes without the original's images.
+  `/readyz` follows the media setting (`media_disk` free space, the
+  app's Blossom server). The old default set's `updated_at` moves when
+  another becomes the default. Old drafts convert with the Blossom
+  address as set. Go tests for D3's wiring (`Dispatcher.Live`, the
+  policy fallback, `Retrier.Live`, `Fanout.MaxAttempts`, a translator
+  per key).
+- **Web:** a default cleared on a post stays cleared (each card value is
+  sent, an empty one too, so the server's default doesn't fill it in).
+  What was typed and not saved survives a redraw (another form saved, a
+  key made, a `412`, a section shown again) where the saved value under
+  it didn't change. A value made is shown until "Done, I copied it". A
+  card shows a default outside the owner's languages or a select's
+  options as it is. A new post nobody has touched follows Settings at
+  once (the languages, an account's defaults, a new default set). A
+  default set with no usable account falls back to each account's
+  "Picked for new posts". Behind the proxy alone, secret fields show
+  locked, saying why. "Copy into the app" leaves a lasting "also saved
+  in the app" line. Focus keys on the new buttons; `aria-describedby`
+  for the source and state lines and the dialogs' errors; button names
+  that say which setting or account; one live status line per form;
+  "Clear all" on an account's defaults asks first. Found on the way: the
+  tabs ignored a click until the app had read the instance and the
+  accounts (an e2e test that clicked right after signing in failed now
+  and then); a tab picked meanwhile now opens once the app has started.
+- **e2e:** `settings.spec.ts` adds the lasting "also saved" line, the
+  languages, defaults and default set reaching the open composer, a
+  cleared default sent empty with no `defaults_applied`, Blossom needing
+  its address, its key made and cleared (each asking who you are)
+  keeping what was typed, the feed token surviving another form's save
+  and a section switch, and proxy mode's locked secrets.
+- **Not changed:** no hash check of media fetched for a post (they are
+  the owner's own uploads, and servers may re-encode them); a Blossom
+  server set in the app may still sign with `NSEC_HEX` until a key is
+  made, now confined to its origin.
 
 ---
 
@@ -1732,65 +2089,287 @@ Spec §4.3 (`Connector`), §6.1–6.3, §12 (E).
 
 ### Task E1: verify Threads OAuth
 
-- [ ] From Meta's documentation: authorize host and parameters, code
+- [x] From Meta's documentation: authorize host and parameters, code
   exchange, long-lived exchange, redirect URI rules, and whether replies to
   the account's own threads need `threads_manage_replies`. Record here;
   update spec §6.3 where it differs.
 
+Found (2026-11-07, Meta's Threads API pages under
+`developers.facebook.com/documentation/threads/`: get started → access
+tokens and permissions, long-lived tokens, create replies; and the
+`fbsamples/threads_api` sample's README):
+
+- Authorize at `https://threads.com/oauth/authorize` with `client_id`,
+  `redirect_uri`, `scope` (comma-separated), `response_type=code`,
+  `state` (optional there; Publisher always sends it).
+- The code is good for an hour, once; the redirect may end in `#_`,
+  stripped before use.
+- Exchange: `POST https://graph.threads.com/oauth/access_token`
+  (`client_id`, `client_secret`, `code`, `grant_type=authorization_code`,
+  `redirect_uri`) → a short-lived token (an hour) and the user id.
+- Long-lived: `GET https://graph.threads.com/access_token?
+  grant_type=th_exchange_token&client_secret=…&access_token=…` → 60 days,
+  refreshable once 24 hours old (A2.2's refresher). The secret is in the
+  query: every log and error scrubs it.
+- The redirect URI must match exactly what the app lists, https only;
+  Meta refuses `localhost` (the sample's README).
+- Replying (`reply_to_id`) needs `threads_manage_replies`, which spec
+  §6.3 left out: the scopes are `threads_basic,threads_content_publish,
+  threads_manage_replies`.
+- Only the app's Threads testers can grant it until App Review, which a
+  self-hoster's own app doesn't need.
+
 ### Task E2: migration v15 and the flow manager
 
-- [ ] `oauth_flows` (+ `redirect_uri`) and `oauth_clients`; rotation (C6)
+- [x] `oauth_flows` (+ `redirect_uri`) and `oauth_clients`; rotation (C6)
   includes `oauth_flows.data_sealed`, sealed with AAD naming the flow id,
   owner, user and type.
-- [ ] State: 32 random bytes, hashed, single use, 10 minutes; PKCE S256;
+- [x] State: 32 random bytes, hashed, single use, 10 minutes; PKCE S256;
   binding to owner and user; hourly purge; fixed error codes; 10 starts
   per minute per owner.
 
 ### Task E3: connect routes
 
-- [ ] Routes per spec §6.1. **Redirect URI:** `PUBLIC_URL`, else the app
+- [x] Routes per spec §6.1. **Redirect URI:** `PUBLIC_URL`, else the app
   base URL from `OIDC_REDIRECT_URL`, else connect is refused ("set
   PUBLIC_URL"); never from a request header. Stored with the flow and used
   verbatim at the exchange.
-- [ ] The callback completes by state; a present session must be the
+- [x] The callback completes by state; a present session must be the
   flow's user; a second callback (refresh) shows the first outcome without
   redoing the exchange; strict-CSP result page, no upstream text.
-- [ ] Every OAuth request (discovery, registration, token exchange,
+- [x] Every OAuth request (discovery, registration, token exchange,
   identity) goes through the guarded client.
-- [ ] Tests: replayed and expired state, wrong session, no session (the
+- [x] Tests: replayed and expired state, wrong session, no session (the
   home-screen app case), denied consent, double callback, master key lost
   mid-flow, `duplicate_account` and `identity_changed` at completion,
   choosing among candidates.
 
+### As built (E2–E3)
+
+- **Flows (E2):** `oauth_flows` and `oauth_clients` (migration v15); a
+  flow's data (the driver's, the PKCE verifier, the owner's fields) and
+  its candidates are sealed as secrets of scope `oauth_flow`, bound to
+  the flow's id, owner, user and type, and go when the flow ends; a
+  client's secret is sealed for its server. `destination.Connector`
+  (`BeginConnect`, `CompleteConnect`) is what a driver adds; the host
+  owns the state (only its hash stored), PKCE, the redirect URI and
+  storing the account (`createChecked`/`replaceChecked`, the checks of a
+  typed one). A claim is one `UPDATE … WHERE used_at IS NULL AND status =
+  'pending' AND expires_at > now`, so two racing callbacks get one.
+- **Routes (E3):** `POST /v1/accounts:connect`, `POST
+  /v1/accounts/{id}:reconnect`, `GET /v1/connect-flows/{id}`, `POST
+  /v1/connect-flows/{id}:choose`: a signed-in browser session, never
+  behind the proxy alone, `ReturnsSecret` for the starts (the sign-in
+  address holds the state). The redirect base is `AppBaseURL`
+  (`PUBLIC_URL`, else the OIDC app's address), else `409 invalid_state`
+  naming `PUBLIC_URL`. A start the network can't prepare is `502
+  connect_failed` with `connect_error`; a private server is `422` on
+  its field. `GET /oauth/callback/{type}` is open in the session gate
+  (the state is the capability); its page is fixed words, no script, a
+  CSP of its own (`default-src 'none'`, its style by hash), `no-store`,
+  `no-referrer`. The flow answer's `error_detail` and the page say
+  what a code means in the same fixed words. Hourly purge with the
+  others.
+- **Deviation:** the callback page doesn't redirect to the app (spec
+  §6.1 said it would): the tab that started the flow already shows the
+  outcome, and a redirect would open a second copy of the app (or a
+  sign-in page, in a home-screen app's other browser). It links to
+  Publisher instead.
+
 ### Task E4: Mastodon connect
 
-- [ ] Spec §6.2, with `iss` required whenever the metadata advertises
+- [x] Spec §6.2, with `iss` required whenever the metadata advertises
   `authorization_response_iss_parameter_supported` (and checked when
   present otherwise).
-- [ ] Tests against a fake instance: 4.3+ with PKCE; pre-4.3; issuer and
+- [x] Tests against a fake instance: 4.3+ with PKCE; pre-4.3; issuer and
   endpoint mismatches; `iss` missing when advertised; `invalid_client`
   then re-registration.
 
+### As built (E4)
+
+- Mastodon's manifest lists `oauth` ("Sign in at your server",
+  `FlowRedirect`, `NeedsPublicURL`) before `token`; an add without a
+  method picks the one typed method, so existing API calls keep working.
+- The metadata's issuer must be the server's origin and both endpoints
+  on it (no userinfo), else `issuer_mismatch` before anything is
+  registered; a 404 means before 4.3: the standard paths, no PKCE.
+  PKCE is sent only when `S256` is listed.
+- The app is registered once per server and redirect URI (`POST
+  /api/v1/apps`, scopes `read:accounts read:search read:statuses
+  write:media write:statuses`, named `Publisher (<host>)`), again when
+  the kept one's scopes don't cover these. `invalid_client` at the
+  exchange forgets it, so the next sign-in registers again. An OAuth
+  error shows only its code word (`a-z_`), never its description.
+
 ### Task E5: Threads connect with the owner's Meta app
 
-- [ ] Per E1; `InstanceConfig` `app_id`/`app_secret`; long-lived token;
+- [x] Per E1; `InstanceConfig` `app_id`/`app_secret`; long-lived token;
   expiry state set so A2.2's refresher takes over; the grant's end date
   shown.
-- [ ] Tests against a fake Graph API, including tokens in query strings
+- [x] Tests against a fake Graph API, including tokens in query strings
   never logged.
+
+### As built (E5)
+
+- **The Meta app:** Threads' manifest declares `InstanceConfig`
+  `app_id` (digits) and `app_secret` (secret); `settings.DriverDefs()`
+  makes every driver's `InstanceConfig` an instance setting
+  `<type>.<key>` (no variable sets it), and `Service.Instance(type)`
+  answers them under the driver's keys for `accounts.Options.Instance`.
+- **Sign-in:** method `oauth` ("Sign in at Threads", before `token`):
+  `https://threads.com/oauth/authorize` with the three scopes
+  comma-separated and the state; no PKCE (Meta documents none; the app
+  is a confidential client). A redirect URI that isn't https, or is
+  localhost or loopback, is refused before the flow starts (`422` at
+  `/method`: a driver's `*destination.FieldError` now reaches the owner
+  as a field problem instead of `connect_failed`). The callback refuses
+  an app that changed meanwhile, exchanges the code (`POST
+  graph.threads.com/oauth/access_token`, the secret in the body), then
+  the short-lived token (`GET graph.threads.com/access_token`,
+  `th_exchange_token`, secret and token in the query), and stores
+  `expires_at`/`refreshed_at` so the refresher takes over a day later
+  at the soonest. Errors name the step, the status and the Graph
+  error's type and code; transport errors lose their address and are
+  scrubbed of the secret, the code and the tokens (a mutation test
+  shows the leak without it).
+- **The grant's end:** `destination.Health.ReconnectBy` (API
+  `health.reconnect_by`). Each authenticated Threads check that passes
+  asks `debug_token` (`data_access_expires_at`, the owner being a tester
+  of their own app) and keeps the last answer when Meta stops saying;
+  within 7 days of it the owner is alerted once a day to connect again.
+  The hosts used by posting and refreshing (`graph.threads.net`) are
+  unchanged: Meta's pages now name `graph.threads.com`, and moving the
+  working ones is not this part's change.
 
 ### Task E6: the web app
 
-- [ ] Connect buttons (new tab; the starting tab polls the flow);
+- [x] Connect buttons (new tab; the starting tab polls the flow);
   candidates; reconnect for `needs_reconnect`; Settings → Integrations →
   Threads app with the redirect URI and Meta's guide.
 
 ### Task E7: e2e, docs, PR
 
-- [ ] The harness serves a fake Mastodon instance (4.3+ and pre-4.3) and
+- [x] The harness serves a fake Mastodon instance (4.3+ and pre-4.3) and
   a fake Graph API; `connect.spec.ts` (local-auth project) connects both
   and reconnects one.
-- [ ] README: connecting Mastodon; the Meta app for Threads.
+- [x] README: connecting Mastodon; the Meta app for Threads.
+
+### As built (E6–E7)
+
+- **Readiness in the list:** `GET /v1/destinations` fills, for each
+  `flow: redirect` method, `redirect_uri` (when the server knows its
+  public address) and `unavailable` (no public address, or the server
+  setting it needs, as starting would say). The web reads the types
+  afresh each time Accounts shows.
+- **Web:** the method picker offers the sign-in methods (saying "Not
+  yet: …" with a way to Settings → Integrations when the app is
+  missing); the form asks only the type's settings and a label; the tab
+  opens in the click (a browser blocks one opened after the answer),
+  cut off from the app (`opener = null`), then goes to the sign-in
+  address; when the browser refused it, a link stands in. The dialog
+  reads the flow every 2 s and at once when the window gets focus back,
+  stops when closed, and ends connected (the keyboard on the account's
+  Settings), failed (the fixed words, Start again) or with candidates
+  to pick. An account connected by signing in shows Reconnect when it
+  needs it, and Sign in again in its settings (with a changed server
+  address sent as the reconnect's config). The card shows Meta's grant
+  end, as a warning within a week. Settings → Integrations → Threads
+  app: the two settings, Meta's steps (tester, redirect URI, the
+  Threads App ID and secret, wording checked against Meta's pages),
+  and the redirect URI with Copy, or what to set when there's none.
+- **Harness:** `oauth.go` serves fake Mastodon servers (any
+  `*.e2e.invalid`; `old-…` without metadata or PKCE) and a fake Graph
+  API over TLS with a certificate it makes and trusts, reached through
+  the registry's `ConnectNet` (test-only, like `Net.TLSClientConfig`
+  and the API's `ConnectBaseURL`, an https name the spec's routes send
+  the browser back from). `GET /__e2e/sign-ins` lists what they were
+  sent. The spec answers the sign-in pages with Playwright routes.
+- `connect.spec.ts`: Mastodon 4.3+ (PKCE verified end to end:
+  the token request's verifier hashes to the sign-in's challenge),
+  pre-4.3, declined then started again (one app per server), signing in
+  again as the same account and as another (refused), and Threads from
+  a missing app through Settings to a connected account.
+
+### As built (E): review fixes
+
+Two QA reviews (server, web) and a security review (nothing high or
+medium); every finding fixed except the decisions at the end.
+
+- **A callback without a session** no longer adds the account: the flow
+  is identified (`r.trial`) and parked as `choose` with its one
+  candidate, for the owner to confirm in the tab that started it (the
+  callback page says so). A leaked sign-in link can't add a stranger's
+  account unseen. With a session (the owner's), it completes at once.
+- **Stuck flows:** a claimed flow with no outcome after `claimTimeout`
+  (2 minutes: a restart mid-exchange) reads as failed, `interrupted`
+  ("check Accounts, and start again if the account isn't there"). The
+  outcome's write is tried again once; when that fails too, the callback
+  still answers with the account that was stored.
+- **One account per flow:** `Choose` holds `chooseMu`; a second choice
+  answers the flow as the first left it.
+- **Mastodon:** a flow seals its own `client_id` and `client_secret`, so
+  two first sign-ins at one server can't undo each other's app; an
+  `invalid_client` forgets the saved app only when it is still that one
+  (`ForgetClient(issuer, clientID)`).
+- **Readiness** (`unavailable`) says what starting would: no master key
+  (`KeyState.WriteError`), the server's app missing, or a redirect
+  address the network won't take (`RedirectChecker`; Threads: Meta takes
+  only https, not localhost).
+- **Save on a signed-in account** kept failing (`/method` not allowed):
+  a config-only change keeps the row's redirect method; a new server
+  address answers `/credentials` required, "needs signing in again
+  there".
+- **API:** connect events name `session` as their actor; Publisher's own
+  store errors aren't reported as the network's (`localError`); the
+  callback answers only GET (405 otherwise: a link preview's HEAD can't
+  use the sign-in); `:choose` failures are `connect_failed` like the
+  start's; the e2e write-limit override lifts the sign-in start limit
+  too. `cmd/publisher/hooks_test.go` checks the server never sets the
+  test hooks (`ConnectNet`, `ConnectBaseURL`, `TLSClientConfig`, the
+  Threads URL variables).
+- **Web:** the fields a sign-in needs are checked before the tab opens
+  (required, a full address); the submit is off while the method is
+  unavailable, with Settings, Integrations focused on the app's section;
+  Back is off while a start runs; Start again keeps what was typed;
+  Sign in again starts inside the account's Settings, so a refused start
+  leaves them as they were (an address that isn't the network's server
+  is marked on the field). The blank tab says what it waits for. While
+  following: status lines are filled after they are drawn and rewritten
+  only when they change; a 401, 403 or 404 ends it with what to do; the
+  fallback link sits with the actions and is described by the lead.
+  `sheet()` runs its closers however it closes (Escape bypassed
+  `onClose` before). Closing the dialog doesn't stop the sign-in in its
+  tab (once at the network, the tab is cut off from the page and can't be
+  closed from it; the button says Close), so the page reads the flow
+  again on each return until it ends, and shows the account. One
+  candidate asks to confirm it, by who it is. The health line says
+  "access", and "sign in again" only for signed-in accounts. Types: the
+  latest read wins; `loadDestinations`' failure clears only its own
+  read. `copyText` (common.js) everywhere a Copy button was: over plain
+  http there's no clipboard, so it selects the text and says so, aloud
+  too.
+- **Tests:** Go: no-session confirm, interrupted and the retried write,
+  the choice race, the actor, readiness without a master key and with an
+  http address, Save on signed-in accounts, concurrent first Mastodon
+  starts, callback GET only. e2e (`connect.spec.ts`, 10 steps): the tab
+  opens before the start is asked for (a page-side log), checks before
+  the tab, a blocked pop-up, the dialog closed mid-sign-in, the confirm
+  from another browser context, several candidates (the flow's answers
+  are the test's), Save and a new server address on a signed-in
+  account, Threads' user id saved without signing in again.
+- **Decided, not changed:** the tab isn't closed after a success (the
+  owner may be reading it; it says to go back). A Threads app token
+  (`app_id|app_secret`) for the grant-end check isn't needed: the owner
+  is the app's developer. A registry-level Threads expiry test is left
+  to the driver's. Recorded for the security notes (F's README):
+  Mastodon servers share one redirect URI per type and send no `iss`
+  (RFC 9207), so a mix-up stays possible for a sign-in the owner starts
+  at a hostile server: it can send them on to another server's sign-in
+  under its own app there and receive that code at its token endpoint.
+  The other server's consent screen names that app; sign in only at
+  servers you trust. The callback has no rate limit of its own (each
+  needs a live state, 256 bits, claimed once).
+
 - [ ] Open PR E; 2 QA + 1 security reviews; fix; hand over.
 
 ---
@@ -1801,41 +2380,144 @@ Spec §9, §12 (F).
 
 ### Task F1: export
 
-- [ ] Passphrase from a 2048-word list with a compatible licence (the
+- [x] Passphrase from a 2048-word list with a compatible licence (the
   BIP-39 English list; licence recorded), shown once; file format per spec
   §9; session + `export` re-authentication; `no-store`; never idempotent.
-- [ ] Tests: round trip; tampered header; pinned parameters.
+- [x] Tests: round trip; tampered header; pinned parameters.
 
 ### Task F2: import
 
-- [ ] `POST /v1/import` → summary (every endpoint it would set, accounts
+- [x] `POST /v1/import` → summary (every endpoint it would set, accounts
   skipped because they match an env account's `remote_id`) and a
   confirmation id; `POST /v1/import:confirm` (with the `import` nonce)
   applies it. The decrypted contents stay in memory, bound to the session,
   for at most 10 minutes. KDF under the hashing semaphore; URLs through
   `OwnerURL`; each account re-identified before it is marked connected.
-- [ ] Tests for each refusal and a round trip between two databases.
+- [x] Tests for each refusal and a round trip between two databases.
 
 ### Task F3: the web app
 
-- [ ] Settings → System: export (passphrase shown once) and import (file,
+- [x] Settings → System: export (passphrase shown once) and import (file,
   passphrase, summary, confirm).
-- [ ] `export.spec.ts`: export, wipe accounts in a second harness
+- [x] `export.spec.ts`: export, wipe accounts in a second harness
   database, import, confirm.
 
 ### Task F4: documentation and release
 
-- [ ] README rewritten around the minimal compose file; adding accounts per
+- [x] README rewritten around the minimal compose file; adding accounts per
   network; configuration by tier; backups (database and key separately,
   keys across rotations); upgrading from env-only; the security model;
   `PRIVATE_DESTINATIONS`, `TRUSTED_PROXIES`, local media and proxy rules;
   the readiness table; feed `links[]`; keyboard shortcuts.
-- [ ] The env defaults that point at this instance's own relay
+- [x] The env defaults that point at this instance's own relay
   (`NIP65_BOOTSTRAP_RELAY`, `FALLBACK_RELAYS`, `PRIMARY_RELAYS`) become
   neutral for new installs, with an upgrade note. **Confirm with Geoffrey
   first** (it changes his relays if he relies on the defaults).
-- [ ] CHANGELOG release section and release notes for a `vX.Y.Z` tag.
+- [x] CHANGELOG release section and release notes for a `vX.Y.Z` tag.
 - [ ] Open PR F; 2 QA + 1 security reviews; fix; hand over.
+
+### As built (F)
+
+- **The file** (`internal/export`): two lines, the header's JSON (its
+  exact bytes are the AAD, so a changed space fails to open) and the
+  AES-256-GCM ciphertext in unpadded base64url. The key is argon2id
+  (t 3, 64 MiB, 4 lanes); any other parameters, an unknown header field
+  or a newer version are refused before the KDF runs. At most 768 KiB
+  (`ErrTooLarge`, both ways). The word list is BIP-39's English list,
+  unchanged (MIT; its SHA-256 is pinned by a test); a passphrase is read
+  in any case and spacing. No error quotes the contents.
+- **The KDF** runs in `localauth.Hasher.Do`: in local mode the password
+  hasher's two slots, with OIDC the export's own; exports and files read
+  share a limit of 5 a minute. Both slots taken answers `429` with
+  `Retry-After: 2`.
+- **Export** (`POST /v1/export`, re-authenticated `export`): accounts
+  added in the app (config, secrets, flags, defaults, sync relays), the
+  owner's choices for environment accounts (matched on import by
+  `remote_id`), account sets by account id, and both settings scopes
+  with their secrets (`Settings.Saved`; a secret another key sealed is
+  left out). `ReturnsSecret`, so never stored for idempotency.
+- **Import** (`POST /v1/import`, a session; then `:confirm` with the
+  `import` nonce): the summary is computed by the same static checks the
+  import runs (`CheckImport`: source, type, method, an account already
+  here by `remote_id`, the owner's config through `ValidateFields` with
+  `OwnerURL`, the required secrets), so it says what will happen except
+  for the network's answer. The read file waits in memory, bound to the
+  session, one per session, 10 minutes. Confirming applies the instance
+  settings, then the owner's (`Settings.Import`: what the environment
+  sets is skipped, and a secret whose address is skipped goes with it),
+  then the accounts (8 at once, each through the trial identify; one the
+  network refuses or that doesn't answer is stored and shows why), then
+  the sets (members remapped, checked as `POST /v1/account-sets`). The
+  answer's write deadline is extended by the 4-minute budget.
+- **Labels** in the file are checked as typed ones; one that isn't
+  valid becomes empty (the network's name shows).
+- **Relay defaults** (Geoffrey, 2026-11-07): home `wss://relay.damus.io`,
+  fallback `wss://nos.lol,wss://relay.damus.io,wss://relay.primal.net`,
+  for every server that leaves them unset (with the upgrade note), not
+  only new ones. purplepag.es was proposed and dropped: the home relay
+  gets every post, and purplepag.es is an index that keeps only
+  profiles, follow lists and relay lists from keys it doesn't know.
+- **Also:** the alerts' `generatorURL` is `PUBLIC_URL` (was a fixed
+  address); the composer's placeholder author is "You" and Tools shows
+  the account's home relay (both named the author). The CHANGELOG's
+  section is `3.0.0 (unreleased)`, and the items that shipped in 2.1.0
+  moved to a section of their own.
+
+### As built (F): review fixes
+
+Two QA reviews (server; web and docs) and a security review (nothing
+critical or high; one medium, which a QA review found too). Fixed:
+
+- **A webhook's secret** comes only with its address from the file: a
+  secret whose address isn't imported (the environment sets it here, or
+  the file doesn't have it) is skipped, so it is never sealed for this
+  server's address. An address the file replaces clears the secret saved
+  for the old one (it used to fail the whole scope).
+- **The summary is the outcome** but for the networks' answers:
+  `PlanImport` is the import run as a dry run (`Change.DryRun`), and the
+  account sets are checked with `checkAccountSet` (names, duplicates in
+  the file, the 50 limit). A refused value never fails the scope.
+- **One import at a time** (`porting.running`, held across the recheck
+  of app accounts and the import); reading while one runs is `409`.
+- **A refused account** is marked needing reconnecting at once
+  (`markRefused`), not at its first check.
+- **What a file brings** is checked as typed: credentials only under the
+  type's secret field names, each validated, and only the chosen
+  method's required ones required (another method's rules don't
+  apply); state keys only plain values, never a field name (a credential
+  in the clear), anything else left out without refusing the account
+  (an environment account's seed list), and more than 32 of them
+  refused; relay-sync lists
+  through the PUT's checks (`checkSyncRelays`), Nostr accounts only, the
+  home relay left out; `media.public` isn't turned on (its probe runs in
+  Settings → Media). An account already here takes its place in the
+  file's sets.
+- **Export**: refused over 100 accounts (what an import takes); an
+  emptied relay-sync list is exported as `[]`; the re-authentication is
+  spent, and a try counted, only when the key derivation runs (a busy
+  answer costs neither).
+- **Memory**: a read file is dropped when its 10 minutes are up
+  (`time.AfterFunc`), not at the next read. Workers recover from a panic.
+- **File format**: the version is read before the strict header check
+  (a newer file with a new field is "newer"); a contents version 0 isn't
+  "newer"; no error quotes a source; a passphrase copied with its list
+  numbers is read.
+- **Web**: a confirm whose answer didn't arrive (a proxy timeout) says
+  the import may have run and reads the accounts again; a 404 or 409
+  shows the server's words; `settings-saved` is sent for both scopes, so
+  the media store and languages follow; focus returns to the Export
+  button, and to the file field after Cancel or Done; behind the proxy
+  alone, or without a usable master key, the section says so first;
+  429s say how long to wait.
+- **Docs**: the startup log names the built-in home relay while it is
+  used; the upgrade notes list `enabled` → `status` and the 2.1 backup
+  name; the release notes are ready to paste (absolute links).
+- **Decided, not changed**: the import's outcome isn't kept after the
+  answer (a proxy that drops a long answer loses it; Accounts and
+  Settings show what was done). A read file isn't dropped at sign-out
+  (it goes within 10 minutes). Driver state keys aren't declared per
+  driver yet: every driver dials through the guarded network, so a
+  state address can't reach what the guard refuses.
 
 ---
 
@@ -1877,7 +2559,25 @@ Made by this plan; the spec is updated to match.
 | §8.2: per-owner delay after 20 failures | Skipped by a browser the owner signed in with before (`publisher_device`). |
 | §8.3: setup closes for good once a credential exists | Once a *usable* one exists: a `PUBLIC_URL` host change with no password opens it again. |
 | Plan B9: sign-in events "from events and failures" | From `events` only (each failure is an event, capped); not in the `/v1/events` stream. |
-| Plan B10: Access panel in Tools | In the Access tab (was Tokens), above the API tokens. |
+| Plan B10: Access panel in Tools | In Settings → Access (was the Tokens tab), above the API tokens. |
+| Plan C9: scopes `settings:read`, `settings:write`, `instance:admin` | Added in D, where they are used (As built C). |
+| Plan C10: the accounts panel in `accounts.js` | In `settings-accounts.js`; `accounts.js` stays the data layer. |
+| §5.7: Bluesky `pds_url` optional everywhere | Optional for accounts added in the app (discovered); `BLUESKY_PDS_URL` stays required in the environment. |
+| Plan C4: environment addresses trusted | Relay sync's targets go through the guard for every account, the environment's too. |
+| §5.4: `422 credentials_required` when a new server address needs the credentials | `422 validation_failed` with `required` on `/credentials` (or the secret left out): one code for every field problem. |
+| §5.4: `credentials` replace all of them | A secret left out with the same method is kept while the server address stays the same (As built C, review fixes). |
+| §5.5: an environment account can't be deleted | One whose variables are gone (`not_configured`) can; its env key is let go. |
+| §7.4: a leaf is `{value, source, env, locked}`; a secret's value `{set, updated_at}` | Also `updated_at`, `problem`, `generate` and `field`; a secret's value adds `origin` and, for the Blossom key, `public_key` (As built D). |
+| Plan D4: the feed token's "Generate" as its own route | A `:generate` action on the setting (`feed.token`, `media.blossom_key`), never idempotent; every `/v1` answer is `no-store`. |
+| §7.4: `defaults` holds `visibility` | Under `defaults.options.visibility`, checked against the account's visibility capability. |
+| §7.5: System shows an allowlist of values (no route) | `GET /v1/instance/system` (`instance:admin`, not behind the proxy alone). |
+| §7.6: `media.Store` with `Put`, `PutFile`, `Fetch`, `Owns`, `Public` | `Upload` and `Public`; `Owns`, `Has` and `Fetch` belong to the disk store. |
+| §7.6: disk objects stored as `<sha256>` | `<sha256>.<ext>`, the extension from the sniffed type. |
+| §7.6: disk media for a URL-transport account refused | A post is; a quote's link-quote copies go without the original's images, with a warning. |
+| §7.6: BUD-11 authorization | Its server tag, in standard base64 rather than base64url. |
+| §7.4: a test once per 10 s | The `media.public` self-test has its own 10 s window. |
+| §9: `POST /v1/import` re-authenticated | The read needs a session (and the export limit); `:confirm` takes the `import` nonce, so the summary is free to look at. |
+| §9: relays reset "for new installs" (plan F4) | For every server that leaves the variables unset, with an upgrade note naming them (As built F). |
 
 ## Risks and how the plan handles them
 

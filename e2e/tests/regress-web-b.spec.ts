@@ -1,4 +1,4 @@
-import { test, expect, openApp, switchTab, marker, mastodonSource } from "./fixtures";
+import { test, expect, openApp, switchTab, openSettings, marker, mastodonSource } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 
@@ -49,7 +49,7 @@ test("a dropped preview request is retried (thread notice shows once the network
 
 test("a new token's one-time secret survives a stray tap on the backdrop", async ({ page }) => {
   await openApp(page);
-  await switchTab(page, "tokens");
+  await openSettings(page, "access");
   await page.locator("#tok-name-input").fill(marker("tok"));
   await page.locator("#tok-create-btn").click();
   await expect(page.locator(".tok-secret-input")).toBeVisible();
@@ -60,7 +60,7 @@ test("a new token's one-time secret survives a stray tap on the backdrop", async
 
 test("a11y: Escape closes a confirm dialog and focus moves into it", async ({ page }) => {
   await openApp(page);
-  await switchTab(page, "tokens");
+  await openSettings(page, "access");
   await page.locator("#tok-name-input").fill(marker("tok2"));
   await page.locator("#tok-create-btn").click();
   await page.locator(".modal .primary", { hasText: "Done" }).click();

@@ -148,7 +148,14 @@ export async function tabOf(page: Page, label: string) {
   return page.locator(`#editor .ed-tab[data-tab="${a.id}"]`);
 }
 
-export async function switchTab(page: Page, view: "compose" | "history" | "tools" | "verify" | "interact" | "tokens") {
+export async function switchTab(page: Page, view: "compose" | "history" | "tools" | "verify" | "interact" | "settings") {
   await page.locator(`.tab[data-view="${view}"]`).click();
   await expect(page.locator(`section#${view}`)).toBeVisible();
+}
+
+/** Opens Settings at one of its sections (Accounts, or Access: sign-in and API tokens). */
+export async function openSettings(page: Page, section: "accounts" | "access") {
+  await switchTab(page, "settings");
+  await page.locator(`.set-nav [data-set="${section}"]`).click();
+  await expect(page.locator(`#set-${section}`)).toBeVisible();
 }

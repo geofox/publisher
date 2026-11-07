@@ -12,7 +12,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -35,7 +37,10 @@ import (
 	"github.com/geofox/publisher/internal/localauth"
 	"github.com/geofox/publisher/internal/mastodon"
 	"github.com/geofox/publisher/internal/media"
+	"github.com/geofox/publisher/internal/netguard"
 	"github.com/geofox/publisher/internal/nostr"
+	"github.com/geofox/publisher/internal/secrets"
+	"github.com/geofox/publisher/internal/settings"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/threads"
 )
@@ -74,22 +79,90 @@ func run() error {
 	// https Blossom server.
 	blossom := newFakeBlossom(base + "/__blossom")
 	sk := gonostr.Generate()
-	mp := media.New(base+"/__blossom", sk, gonostr.GetPublicKey(sk))
+	fakeStore := &media.Blossom{URL: base + "/__blossom", Key: sk, HTTP: media.NewStreamClient()}
+	// The store follows Settings, Media as the server's does: this
+	// server's disk when chosen there, else the fake Blossom server (also
+	// for "none", so the other specs keep their media).
+	var svc *settings.Service
+	disk := &media.Local{Dir: filepath.Join(dir, "media"), BaseURL: base,
+		IsPublic: func() bool { return svc != nil && svc.Current().Bool(settings.MediaPublic) },
+		Quota: func() int64 {
+			if svc == nil {
+				return 0
+			}
+			return int64(svc.Current().Int(settings.MediaLocalQuota)) << 20
+		}}
+	mp := media.New(func() (media.Store, error) {
+		if svc != nil && svc.Current().String(settings.MediaStore) == settings.StoreLocal {
+			return disk, nil
+		}
+		return fakeStore, nil
+	})
 	mp.Lookup = st.LookupMediaURL
 
 	rec := newRecorder()
 	drivers.Register()
+	// Signing in at a network reaches the harness's fakes (oauth.go); the
+	// Threads sign-in's addresses are theirs too.
+	signIn, err := newFakeSignIn()
+	if err != nil {
+		return err
+	}
+	defer signIn.srv.Close()
+	threads.AuthorizeURL = "https://threads.e2e.invalid/oauth/authorize"
+	threads.TokenURL = "https://graph.e2e.invalid/oauth/access_token"
+	threads.ExchangeURL = "https://graph.e2e.invalid/access_token"
 	env, err := seedAccounts(context.Background(), st, harnessAccounts)
 	if err != nil {
 		return err
 	}
 
+	// The local-auth harness has a master key, so accounts can be added in
+	// the app (the proxy one can't: credentials need sign-in).
+	local := os.Getenv("E2E_AUTH") == "local"
+	var keys secrets.Keyring
+	if local {
+		k, err := secrets.NewKey([]byte("e2e-harness-master-key-32-bytes!"))
+		if err != nil {
+			return err
+		}
+		keys = secrets.Keyring{Current: k}
+	}
+	keyState, err := accounts.PrepareKeys(context.Background(), st, keys)
+	if err != nil {
+		return err
+	}
+	// The settings, with the environment E2E_SETTINGS_ENV gives them (a
+	// JSON object: the specs' locked values).
+	settingsEnv := map[string]string{}
+	if raw := os.Getenv("E2E_SETTINGS_ENV"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &settingsEnv); err != nil {
+			return fmt.Errorf("E2E_SETTINGS_ENV: %w", err)
+		}
+	}
+	svc, err = settings.New(context.Background(), settings.Options{Store: st, Keys: keys, CanSeal: keyState.WriteError, Env: settingsEnv,
+		Defs: append(settings.Defs(), settings.DriverDefs()...),
+		URL: func(raw string, rule destination.URLRule) (string, error) {
+			return netguard.Policy{}.OwnerURL(raw, netguard.URLOptions{Secure: rule.Secure, Plain: rule.Plain, Path: rule.Path, Query: rule.Query})
+		}})
+	if err != nil {
+		return err
+	}
+	// The owner writes in English and French, as saved in the app.
+	if _, ok := settingsEnv["USER_LANGUAGES"]; !ok {
+		if _, err := svc.Apply(context.Background(), settings.Change{Scope: settings.Owner,
+			Values: map[string]any{settings.ComposingLanguages: []any{"en", "fr"}}}); err != nil {
+			return err
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	eng, err := newEngine(ctx, func(ctx context.Context) (*accounts.Registry, *dispatch.Dispatcher, error) {
-		reg := accounts.New(accounts.Options{Store: st, Env: env,
+		reg := accounts.New(accounts.Options{Store: st, Env: env, Secrets: st, Writes: st, Flows: st, Keys: keys, KeyState: keyState,
+			Instance: svc.Instance, ConnectNet: signIn.connectNet,
 			Open: func(_ context.Context, typ string, req destination.OpenRequest) (destination.Account, error) {
-				return newFake(rec, typ, req.AccountID, req.Config)
+				return newFake(rec, typ, req)
 			}})
 		if err := reg.Load(ctx); err != nil {
 			return nil, nil, err
@@ -112,19 +185,58 @@ func run() error {
 	a.Accounts = eng
 	a.Sync = fakeSyncer{}
 	a.UserLanguages = []string{"en", "fr"}
+	a.Settings, a.DiskMedia = svc, disk
+	// Tests reach nothing: a webhook set passes; this server's disk is
+	// checked for real (written and read back, fetched at its public
+	// address when public).
+	a.TestSettings = func(ctx context.Context, group string) (int, bool, error) {
+		cur := svc.Current()
+		switch group {
+		case "alerts":
+			return http.StatusNoContent, cur.Secret(settings.AlertsWebhookURL) != "", nil
+		case "feed":
+			return http.StatusNoContent, cur.Secret(settings.FeedWebhookURL) != "", nil
+		case "media":
+			if cur.String(settings.MediaStore) != settings.StoreLocal {
+				return http.StatusNoContent, cur.String(settings.MediaStore) != settings.StoreNone, nil
+			}
+			if disk.Public() {
+				var pe *media.ProbeError
+				if err := disk.CheckPublic(ctx, media.NoRedirects()); errors.As(err, &pe) {
+					return pe.Status, true, nil
+				} else if err != nil {
+					return 0, true, err
+				}
+				return http.StatusOK, true, nil
+			}
+			return http.StatusNoContent, true, disk.CheckWritable(ctx)
+		}
+		return 0, false, nil
+	}
+	a.System = func() []api.SystemValue {
+		return api.SystemValues(os.Getenv, []api.SystemVar{{Env: "PORT"}, {Env: "E2E_AUTH"}, {Env: "E2E_SECRET", Secret: true}, {Env: "PUBLISHER_MASTER_KEY", Secret: true}})
+	}
 	a.Ready = &health.Checker{Local: []health.Check{health.Database(st, store.LatestSchemaVersion())}}
+	a.MasterKey, a.IdemMAC = keyState, keys.MAC
+	// The account specs add many accounts, and start many sign-ins, in a
+	// row; the limits have their own Go tests.
+	a.AccountWritesPerMinute = 1000
 	// E2E_AUTH=local: the owner signs in with passkeys or a password at
 	// http://localhost:<port> (a secure context for Chromium); otherwise
 	// no sign-in, as behind a reverse proxy.
 	a.Mode = api.ModeProxy
 	mux := http.NewServeMux()
-	if os.Getenv("E2E_AUTH") == "local" {
+	if local {
 		publicURL := "http://localhost:" + port
-		svc, err := localauth.New(st, publicURL)
+		lsvc, err := localauth.New(st, publicURL)
 		if err != nil {
 			return err
 		}
-		a.Mode, a.Local, a.PublicURL, a.AppBaseURL = api.ModeLocal, svc, publicURL, publicURL
+		a.Mode, a.Local, a.PublicURL, a.AppBaseURL = api.ModeLocal, lsvc, publicURL, publicURL
+		// Networks send the owner back to an https name (Meta takes no
+		// other); the spec routes the browser from there to this server.
+		a.ConnectBaseURL = "https://pub.e2e.invalid"
+		disk.BaseURL = publicURL
 		a.Clients, a.SessionTTL = &httpx.ClientAddrs{}, time.Hour
 		// The setup link a start would log, minted on demand.
 		mux.HandleFunc("POST /__e2e/setup-url", func(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +258,24 @@ func run() error {
 		})
 	}
 
+	// Deletes every account added in the app, as the owner would one by
+	// one, so the export spec imports into a server without any.
+	mux.HandleFunc("POST /__e2e/forget-app-accounts", func(w http.ResponseWriter, r *http.Request) {
+		for _, e := range eng.List(store.DefaultOwner) {
+			if e.Row.Source != store.SourceDB {
+				continue
+			}
+			if err := eng.Delete(r.Context(), e.Row.OwnerID, e.Row.ID, "e2e", ""); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	// What the fake sign-in servers were sent, oldest first.
+	mux.HandleFunc("GET /__e2e/sign-ins", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, signIn.calls())
+	})
 	mux.Handle("/__e2e/", rec.handler())
 	mux.Handle("/__blossom/", http.StripPrefix("/__blossom", blossom))
 	mux.Handle("/", a.Routes())

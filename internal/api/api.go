@@ -16,7 +16,9 @@ import (
 	"github.com/geofox/publisher/internal/localauth"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
+	"github.com/geofox/publisher/internal/netguard"
 	"github.com/geofox/publisher/internal/relaysync"
+	"github.com/geofox/publisher/internal/settings"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/unfurl"
 	"github.com/geofox/publisher/internal/verify"
@@ -118,7 +120,28 @@ type API struct {
 	Store    *store.Store // set by cmd/publisher
 	// Sync scans and syncs a Nostr account's relays (relaysync.Sync); the
 	// account comes from Accounts. nil: relay sync is off.
-	Sync   Syncer
+	Sync Syncer
+	// MasterKey is the master key's status at startup (accounts.PrepareKeys):
+	// whether credentials can be saved. The zero value: no key.
+	MasterKey accounts.KeyState
+	// IdemMAC is a keyed MAC under the master key (secrets.Keyring.MAC):
+	// the idempotency fingerprint of a request that holds credentials.
+	// nil, or nil answers: a key of this process.
+	IdemMAC     func([]byte) []byte
+	idemKey     []byte
+	idemKeyOnce sync.Once
+	// acctLimits rate-limit account writes and checks.
+	acctLimits accountLimits
+	// porting holds export and import's shared state (v1_export.go).
+	porting porting
+	// AccountWritesPerMinute overrides the owner's limit on account
+	// creates and credential changes, and on sign-ins started (0: 10 a
+	// minute each). For tests that add many accounts in a row.
+	AccountWritesPerMinute int
+	// Guard is who owner-set addresses may reach (PRIVATE_DESTINATIONS
+	// and the server's own addresses): relay sync's targets go through
+	// it. The zero value allows public addresses only.
+	Guard  netguard.Policy
 	Verify Verifier // set by cmd/publisher; verifies pasted events / post URLs
 	// relaySyncMu lets one /v1 relay scan or sync run at a time.
 	relaySyncMu sync.Mutex
@@ -138,6 +161,24 @@ type API struct {
 	// PublicFeedToken gates GET /v1/public/feed. Empty → the endpoint is
 	// disabled (404). Set → callers must send Authorization: Bearer <it>.
 	PublicFeedToken string
+
+	// Settings, when set, holds the owner's and the instance's settings;
+	// the languages, the translation key and the feed token are read from
+	// it at each request (in place of the three fields above).
+	Settings *settings.Service
+	// DiskMedia is this server's disk media store: its media are served
+	// at /media/ and checked for URL-transport accounts, whatever store is
+	// set now. nil: none.
+	DiskMedia *media.Local
+	// TestSettings sends a settings group's test (POST
+	// /v1/settings/{group}:test); nil: no tests.
+	TestSettings SettingsTester
+	// System is the bootstrap and tuning variables Settings, System
+	// shows (GET /v1/instance/system), secrets only as set; nil: none.
+	System func() []SystemValue
+	// NewTranslator makes a translator for a key (nil: DeepL).
+	NewTranslator func(key string) Translator
+	deepl         atomic.Pointer[deeplFor]
 
 	// Caps returns an account's effective capabilities (the dispatcher's
 	// Caps). nil → the registered drivers' defaults.
@@ -180,6 +221,10 @@ type API struct {
 	EndSession bool
 	// AppBaseURL is the public origin (scheme://host) used to build post-logout redirects.
 	AppBaseURL string
+	// ConnectBaseURL, when set, is where networks send the owner back
+	// after signing in instead of AppBaseURL. Only the e2e harness sets
+	// one: an https name (Meta's rule) its browser is routed back from.
+	ConnectBaseURL string
 	// AllowedHosts, when set, are the only Host names served (plus
 	// loopback names and AppBaseURL's host): a DNS-rebinding page whose name
 	// now points at this server sends its own name as Host and is refused.
@@ -246,6 +291,9 @@ func (a *API) Routes() http.Handler {
 		a.mountLocal(mux)
 	}
 	a.mountV1(mux)
+	// Where a network sends the owner back after signing in (spec §6.1).
+	mux.HandleFunc("GET /oauth/callback/{type}", a.handleConnectCallback)
+	mux.HandleFunc("/media/", a.serveMedia)
 	mux.Handle("/", web.Handler())
 	return withSecurityHeaders(a.withHostGuard(a.withCSRFGuard(a.withGates(mux))))
 }

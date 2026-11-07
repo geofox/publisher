@@ -131,6 +131,9 @@ type TargetSpec struct {
 	// Text; without any, the text is split automatically with every media
 	// on its first post.
 	Layout thread.Layout
+	// NoSourceMedia: a link-quote copy goes without the original's
+	// re-hosted media (this network can't reach where they were copied).
+	NoSourceMedia bool
 }
 
 // PostSpec is a post to plan: its shared content and the accounts it goes
@@ -197,6 +200,11 @@ type Dispatcher struct {
 
 	// Policy decides automatic retries of failed items.
 	Policy RetryPolicy
+	// Live, when set, is read at each use for what the owner changes in
+	// the app (settings): whether failures are retried, how many tries,
+	// and how late a scheduled post may go out. It overrides Policy's
+	// Enabled and MaxAttempts and ScheduleGrace.
+	Live func() Live
 	// Workers is how many items the background engine sends at once
 	// (default 4); ScheduleGrace is how late a scheduled post may still go
 	// out (0: any lateness); PollInterval is how often an idle worker looks
@@ -245,7 +253,7 @@ func (d *Dispatcher) alertFailure(ctx context.Context, p *store.Post) bool {
 		"or the post may already be live (unknown_outcome). Check the target, fix the cause, then retry manually."
 	body := "post " + p.ID + " finished with status " + p.Status + "; "
 	switch {
-	case !d.anyAutoRetryable(ctx, p):
+	case !d.anyAutoRetryable(ctx, p) || !d.policy().Enabled:
 		body += "it will not be retried automatically" + why
 	case len(gaveUp) > 0:
 		body += "auto-retry will attempt recovery, but not on " + strings.Join(gaveUp, ", ") + why

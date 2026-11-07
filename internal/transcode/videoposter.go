@@ -3,6 +3,7 @@ package transcode
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 )
@@ -35,6 +36,7 @@ func posterArgs(in, out string, atSecs float64) []string {
 // strictly better than a failed upload.
 func ExtractPoster(ctx context.Context, ffmpegPath, in, out string, atSecs float64) error {
 	cmd := exec.CommandContext(ctx, ffmpegPath, posterArgs(in, out, atSecs)...)
+	cmd.Env = subprocessEnv(os.Environ())
 	if b, err := cmd.CombinedOutput(); err != nil {
 		tail := string(b)
 		if len(tail) > 300 {

@@ -1,5 +1,5 @@
 "use strict";
-import { el, v1, v1All, flash, relTime, confirmModal, asDialog } from "./common.js";
+import { el, v1, v1All, flash, relTime, confirmModal, asDialog, copyText } from "./common.js";
 
 // API tokens on /v1/tokens: each with scopes and an optional expiry.
 
@@ -13,10 +13,13 @@ const SCOPES = [
   ["drafts:read", "read drafts", false],
   ["drafts:write", "write drafts", false],
   ["accounts:read", "see accounts", false],
-  ["accounts:write", "change account settings (not part of admin)", false],
-  ["admin", "everything else, including tokens and relays", false],
+  ["accounts:write", "add accounts and change their settings and credentials (not part of admin)", false],
+  ["settings:read", "read your settings (never a secret's value)", false],
+  ["settings:write", "change your settings, webhooks and keys included (not part of admin)", false],
+  ["instance:admin", "change the server's settings, such as where media go (not part of admin)", false],
+  ["admin", "tokens and relays, and every scope above but the last four", false],
 ];
-const PRIVILEGED = ["admin", "accounts:write"];
+const PRIVILEGED = ["admin", "accounts:write", "settings:write", "instance:admin"];
 
 let mode = "";
 // setTokensMode tells the form how the owner signs in (GET /v1/instance's
@@ -144,7 +147,7 @@ function installNewTokenForm() {
       await loadTokens();
     } catch (e) {
       flash(e.cancelled ? "Not created: you didn't confirm it's you."
-        : e.code === "sign_in_required" ? "A token with admin or accounts:write needs sign-in set up (AUTH_MODE=local or OIDC)."
+        : e.code === "sign_in_required" ? "A token with admin, accounts:write, settings:write or instance:admin needs sign-in set up (AUTH_MODE=local or OIDC)."
         : "Create failed: " + e.message);
     } finally {
       createBtn.disabled = false;
@@ -177,12 +180,7 @@ function showNewTokenSecret(token, name) {
     type: "button",
     text: "Copy",
   });
-  copyBtn.addEventListener("click", () => {
-    navigator.clipboard.writeText(token).then(
-      () => { copyBtn.textContent = "Copied!"; setTimeout(() => { copyBtn.textContent = "Copy"; }, 1800); },
-      () => { secretInput.select(); flash("Select and copy manually"); },
-    );
-  });
+  copyBtn.addEventListener("click", () => copyText(token, secretInput));
 
   const card = el("div", { class: "modal" });
   card.append(

@@ -244,7 +244,7 @@ func (d *Dispatcher) planInteract(ctx context.Context, id string, spec InteractS
 		for _, t := range others {
 			t.Text, t.Layout = ReproductionText(spec, t), thread.Layout{}
 			rec.Targets = append(rec.Targets, d.planTarget(ctx, id, t,
-				reproductionMedia(nUser, spec, d.mediaMax(ctx, t)), spec.Number, &now, "sending"))
+				reproductionMedia(nUser, spec, t, d.mediaMax(ctx, t)), spec.Number, &now, "sending"))
 		}
 		all := append([]TargetSpec{src}, others...)
 		rec.Platforms = targetTypes(all)
@@ -268,10 +268,13 @@ func InteractText(spec InteractSpec, t TargetSpec) string {
 }
 
 // reproductionMedia is a quote reproduction's media: the user's, then the
-// source's re-hosted media, capped at limit (0 = no cap). User media comes
-// first.
-func reproductionMedia(nUser int, spec InteractSpec, limit int) []planMedia {
+// source's re-hosted media (unless t goes without them), capped at limit
+// (0 = no cap). User media comes first.
+func reproductionMedia(nUser int, spec InteractSpec, t TargetSpec, limit int) []planMedia {
 	out := postMedia(nUser)
+	if t.NoSourceMedia {
+		return out
+	}
 	nSource := max(len(spec.SourceImages), len(spec.SourceMediaRecords))
 	for j := 0; j < nSource; j++ {
 		if limit > 0 && len(out) >= limit {

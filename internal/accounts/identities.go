@@ -2,9 +2,11 @@ package accounts
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/store"
 )
 
 const (
@@ -127,7 +129,32 @@ func (r *Registry) fetchProfile(ctx context.Context, id string) {
 		r.log.Warn("the environment now configures a different account on the network",
 			"account", id, "type", row.Type, "was", row.RemoteID, "now", remote)
 	}
-	if err := r.opt.Store.SetAccountIdentity(ctx, id, handle, remote); err != nil {
+	err = r.opt.Store.SetAccountIdentity(ctx, id, handle, remote)
+	var dup *store.DuplicateAccountError
+	switch {
+	case errors.As(err, &dup):
+		// Two of the owner's accounts are one network account: the second
+		// keeps no remote id (the store allows one live account per remote
+		// id). Said once, not at every profile refresh.
+		r.mu.Lock()
+		first := false
+		if e, ok := r.entries[id]; ok {
+			e.row.RemoteID = row.RemoteID // as stored
+			first = e.duplicateOf != dup.ID
+			e.duplicateOf = dup.ID
+		}
+		r.mu.Unlock()
+		if first {
+			r.log.Warn("two accounts are the same network account; posts to both go to it twice",
+				"account", id, "type", row.Type, "same_as", dup.ID)
+		}
+	case err != nil:
 		r.log.Error("account identity not saved", "account", id, "err", err)
+	default:
+		r.mu.Lock()
+		if e, ok := r.entries[id]; ok {
+			e.duplicateOf = ""
+		}
+		r.mu.Unlock()
 	}
 }

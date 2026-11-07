@@ -15,6 +15,9 @@ type Store struct {
 	ev  eventSignal
 }
 
+// busyTimeoutMS is how long a statement waits for a lock (see Open).
+const busyTimeoutMS = 15000
+
 func Open(path string) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -26,8 +29,11 @@ func Open(path string) (*Store, error) {
 	// can lose the lock for seconds while others get through. 15 s keeps a
 	// result write from failing after its post went out.
 	dsn := "file:" + path +
-		"?_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)" +
+		fmt.Sprintf("?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)", busyTimeoutMS) +
 		"&_pragma=temp_store(MEMORY)&_pragma=foreign_keys(ON)" +
+		// Deleted rows (an account's secrets, a moved token) are zeroed
+		// in the file, not left in free pages.
+		"&_pragma=secure_delete(ON)" +
 		// A transaction that reads and then writes must hold the write lock
 		// from the start: under WAL a deferred one that upgrades fails with
 		// SQLITE_BUSY at once instead of waiting out busy_timeout.

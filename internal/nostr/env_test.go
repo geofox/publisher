@@ -28,8 +28,9 @@ func TestFromEnvUnset(t *testing.T) {
 	}
 }
 
-// NSEC_HEX alone configures the account with today's defaults; the public
-// key is derived, and the result opens.
+// NSEC_HEX alone configures the account with the defaults (public relays,
+// none of them this project's own); the public key is derived, and the
+// result opens.
 func TestFromEnvDefaults(t *testing.T) {
 	got, err := Driver{}.FromEnv(envOf(map[string]string{"NSEC_HEX": envNSEC}))
 	if err != nil || len(got) != 1 {
@@ -40,9 +41,9 @@ func TestFromEnvDefaults(t *testing.T) {
 		t.Errorf("key %q, secrets %v", a.Key, a.Secrets)
 	}
 	want := map[string]any{
-		ConfigBootstrapRelay: "wss://relay.geoffrey.one",
-		ConfigFallbackRelays: []string{"wss://relay.geoffrey.one", "wss://nos.lol", "wss://relay.damus.io"},
-		ConfigPrimaryRelays:  []string{"wss://relay.geoffrey.one"},
+		ConfigBootstrapRelay: "wss://relay.damus.io",
+		ConfigFallbackRelays: []string{"wss://nos.lol", "wss://relay.damus.io", "wss://relay.primal.net"},
+		ConfigPrimaryRelays:  []string{"wss://relay.damus.io"},
 		ConfigPrimaryFanout:  false,
 		ConfigPOWDefault:     16,
 		ConfigPOWMax:         28,
@@ -58,7 +59,7 @@ func TestFromEnvDefaults(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	p := acct.(*Account).P
-	if p.OwnerPubkey().Hex() != envPUB || p.HomeRelay() != "wss://relay.geoffrey.one" || p.PrimaryFanout() {
+	if p.OwnerPubkey().Hex() != envPUB || p.HomeRelay() != "wss://relay.damus.io" || p.PrimaryFanout() {
 		t.Errorf("opened publisher: pubkey %s, home %s, fanout %v", p.OwnerPubkey().Hex(), p.HomeRelay(), p.PrimaryFanout())
 	}
 }
@@ -94,7 +95,7 @@ func TestFromEnvEmptyPrimaryRelays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"wss://relay.geoffrey.one"}; !reflect.DeepEqual(got[0].Config[ConfigPrimaryRelays], want) {
+	if want := []string{"wss://relay.damus.io"}; !reflect.DeepEqual(got[0].Config[ConfigPrimaryRelays], want) {
 		t.Errorf("primary relays = %v, want %v", got[0].Config[ConfigPrimaryRelays], want)
 	}
 }
@@ -178,5 +179,20 @@ func TestOpenRefusesShortKey(t *testing.T) {
 	var de *destination.Error
 	if !errors.As(err, &de) || de.Class != destination.ClassInvalid || !strings.Contains(err.Error(), SecretKey) {
 		t.Fatalf("err = %v, want an invalid error naming %s", err, SecretKey)
+	}
+}
+
+// The startup log names the built-in home relay when an account from
+// the environment uses it.
+func TestEnvNotice(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	key := strings.Repeat("1", 64)
+	if n := EnvNotice(env(map[string]string{"NSEC_HEX": key})); !strings.Contains(n, defaultBootstrapRelay) {
+		t.Fatalf("notice %q", n)
+	}
+	for _, m := range []map[string]string{{}, {"NSEC_HEX": key, "NIP65_BOOTSTRAP_RELAY": "wss://relay.example"}} {
+		if n := EnvNotice(env(m)); n != "" {
+			t.Fatalf("notice %q for %v", n, m)
+		}
 	}
 }

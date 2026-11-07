@@ -67,6 +67,9 @@ func (Driver) Manifest() destination.Manifest {
 			Idempotent:   destination.IdempotentNone,
 			CommitMarks:  true,
 		},
+		Auth:           authMethods(),
+		Config:         configFields(),
+		InstanceConfig: instanceConfig(),
 	}
 }
 
@@ -78,6 +81,8 @@ type Account struct {
 	now    func() time.Time        // nil: time.Now
 	mu     sync.Mutex
 	tokens tokenState
+	// grantEnd is when Meta's grant ends, as the last check learned it.
+	grantEnd time.Time
 }
 
 var (

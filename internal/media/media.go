@@ -4,9 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/jpeg"
@@ -14,8 +13,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -41,27 +40,96 @@ type Result struct {
 	Bytes        []byte    `json:"-"`
 }
 
+// Pipeline turns an upload into stored media: HEIC converted, metadata
+// stripped, hashed and described, then kept in the media store set now.
 type Pipeline struct {
-	BlossomURL string
-	NSEC       nostr.SecretKey
-	OwnerPub   nostr.PubKey
-	HTTP       *http.Client
-	// StreamHTTP carries large streaming PUTs (video canonicals): no overall
+	// Store is the media store now (the settings: changing it applies to
+	// the next upload). ErrNoStore: none is set; another error: one is
+	// set but can't be used (it says why).
+	Store func() (Store, error)
+	HTTP  *http.Client
+	// StreamHTTP carries large streaming fetches: no overall
 	// Client.Timeout (a 1 GB body cannot fit a fixed budget) — cancellation
 	// comes from the caller's ctx, and the transport bounds the hang-prone
 	// phases (dial, TLS, response-header wait) individually.
 	StreamHTTP *http.Client
-	Lookup     func(sha256 string) (string, bool, error) // optional; if set, returning ok=true short-circuits the Blossom upload
+	Lookup     func(sha256 string) (string, bool, error) // optional; if set, returning ok=true short-circuits the upload
 }
 
-func New(blossomURL string, nsec nostr.SecretKey, pub nostr.PubKey) *Pipeline {
+// New returns a pipeline over the media store store returns.
+func New(store func() (Store, error)) *Pipeline {
 	return &Pipeline{
-		BlossomURL: strings.TrimRight(blossomURL, "/"),
-		NSEC:       nsec, OwnerPub: pub,
+		Store:      store,
 		HTTP:       &http.Client{Timeout: 30 * time.Second},
 		StreamHTTP: newStreamClient(),
 	}
 }
+
+// Static is a store function that always answers s (nil: none).
+func Static(s Store) func() (Store, error) {
+	return func() (Store, error) {
+		if s == nil {
+			return nil, ErrNoStore
+		}
+		return s, nil
+	}
+}
+
+// store is the media store now.
+func (p *Pipeline) store() (Store, error) {
+	if p == nil || p.Store == nil {
+		return nil, ErrNoStore
+	}
+	s, err := p.Store()
+	if err == nil && s == nil {
+		err = ErrNoStore
+	}
+	return s, err
+}
+
+// Check says whether the store set now can be used: nil, ErrNoStore, or
+// why not.
+func (p *Pipeline) Check() error {
+	_, err := p.store()
+	return err
+}
+
+// Describe says what the store set now is, for the log.
+func (p *Pipeline) Describe() string {
+	s, err := p.store()
+	if err != nil {
+		return err.Error()
+	}
+	if d, ok := s.(interface{ Describe() string }); ok {
+		return d.Describe()
+	}
+	return fmt.Sprintf("%T", s)
+}
+
+// Enabled: a media store is set (it may still fail, saying why).
+func (p *Pipeline) Enabled() bool {
+	_, err := p.store()
+	return !errors.Is(err, ErrNoStore)
+}
+
+// Public: the store set now serves what services that fetch by address
+// (Threads, Nostr) can reach.
+func (p *Pipeline) Public() bool {
+	s, err := p.store()
+	return err == nil && s.Public()
+}
+
+// BlossomBase is the Blossom server set now ("" when the store is another).
+func (p *Pipeline) BlossomBase() string {
+	s, err := p.store()
+	if b, ok := s.(interface{ Base() string }); err == nil && ok {
+		return b.Base()
+	}
+	return ""
+}
+
+// NewStreamClient is a client for large bodies, as the pipeline uses.
+func NewStreamClient() *http.Client { return newStreamClient() }
 
 // newStreamClient carries large bodies: no overall timeout, but the
 // phases that hang (dial, TLS, waiting for the response) are bounded.
@@ -76,13 +144,40 @@ func newStreamClient() *http.Client {
 // Fetcher fetches stored media by URL: a retry re-reads what a post's
 // media were uploaded as. It needs no media store, so posts made while
 // one was configured still send after it is removed.
-type Fetcher struct{ HTTP *http.Client }
+type Fetcher struct {
+	HTTP *http.Client
+	// TrustedOrigin and TrustedHTTP: an address on this origin
+	// (scheme://host, the environment's Blossom server, the operator's)
+	// is fetched with TrustedHTTP, as before settings existed; any other
+	// with HTTP. "" trusts none.
+	TrustedOrigin string
+	TrustedHTTP   *http.Client
+}
+
+// client is the client that fetches raw.
+func (f *Fetcher) client(raw string) *http.Client {
+	if f.TrustedOrigin != "" && f.TrustedHTTP != nil {
+		if u, err := url.Parse(raw); err == nil && u.Host != "" && strings.EqualFold(u.Scheme+"://"+u.Host, f.TrustedOrigin) {
+			return f.TrustedHTTP
+		}
+	}
+	return f.HTTP
+}
+
+// Origin is raw's scheme://host ("" when it has none).
+func Origin(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host)
+}
 
 // NewFetcher returns a Fetcher on a streaming client.
 func NewFetcher() *Fetcher { return &Fetcher{HTTP: newStreamClient()} }
 
-// Process hashes the bytes, extracts image metadata, uploads to Blossom (always),
-// and returns the full Result. mime falls back to application/octet-stream.
+// Process hashes the bytes, extracts image metadata, stores them in the
+// media store (unless Lookup knows them already) and returns the full Result. mime falls back to application/octet-stream.
 func (p *Pipeline) Process(ctx context.Context, body []byte, mime string) (Result, error) {
 	// HEIC never becomes a canonical object: convert before hashing so the
 	// stored sha256/dim/blurhash/imeta describe the JPEG that platforms and
@@ -122,9 +217,13 @@ func (p *Pipeline) Process(ctx context.Context, body []byte, mime string) (Resul
 		}
 	}
 
-	url, err := p.blossomUpload(ctx, body, sha, mime)
+	st, err := p.store()
 	if err != nil {
-		return Result{}, fmt.Errorf("blossom upload: %w", err)
+		return Result{}, err
+	}
+	url, err := st.Upload(ctx, bytes.NewReader(body), int64(len(body)), sha, mime)
+	if err != nil {
+		return Result{}, fmt.Errorf("media upload: %w", err)
 	}
 	return Result{URL: url, SHA256: sha, Size: int64(len(body)), Mime: mime,
 		Dim: dim, Blurhash: bh, Imeta: ImetaTag(url, mime, sha, dim, bh, ""), Bytes: body}, nil
@@ -147,73 +246,6 @@ func ImetaTag(url, mime, sha, dim, blurhash, image string) nostr.Tag {
 		t = append(t, "image "+image)
 	}
 	return t
-}
-
-func (p *Pipeline) blossomUpload(ctx context.Context, body []byte, sha, mime string) (string, error) {
-	return p.blossomUploadStream(ctx, bytes.NewReader(body), int64(len(body)), sha, mime)
-}
-
-// blossomUploadStream is blossomUpload with a streaming body (the auth event
-// signs the sha, not the bytes, so streaming changes nothing semantically).
-func (p *Pipeline) blossomUploadStream(ctx context.Context, body io.Reader, size int64, sha, mime string) (string, error) {
-	auth := nostr.Event{
-		PubKey: p.OwnerPub, CreatedAt: nostr.Timestamp(time.Now().Unix()), Kind: 24242,
-		Tags: nostr.Tags{
-			{"t", "upload"}, {"x", sha},
-			{"expiration", strconv.FormatInt(time.Now().Add(5*time.Minute).Unix(), 10)},
-		},
-		Content: "Upload",
-	}
-	if err := auth.Sign(p.NSEC); err != nil {
-		return "", fmt.Errorf("sign auth: %w", err)
-	}
-	authJSON, err := json.Marshal(auth)
-	if err != nil {
-		return "", fmt.Errorf("marshal auth: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, p.BlossomURL+"/upload", body)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Nostr "+base64.StdEncoding.EncodeToString(authJSON))
-	req.Header.Set("Content-Type", mime)
-	req.ContentLength = size
-	// net/http auto-sets GetBody for bytes/strings readers but not files; a
-	// seekable body restores stale-keep-alive retries and 307/308 redirects
-	// for the streaming path (parity with the old bytes path).
-	if req.GetBody == nil {
-		if s, ok := body.(io.Seeker); ok {
-			req.GetBody = func() (io.ReadCloser, error) {
-				if _, err := s.Seek(0, io.SeekStart); err != nil {
-					return nil, err
-				}
-				return io.NopCloser(body), nil
-			}
-		}
-	}
-	cl := p.StreamHTTP
-	if cl == nil {
-		cl = p.HTTP
-	}
-	resp, err := cl.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
-		return "", fmt.Errorf("blossom %d: %s", resp.StatusCode, string(rb))
-	}
-	var bd struct {
-		URL string `json:"url"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&bd); err != nil {
-		return "", fmt.Errorf("decode blossom: %w", err)
-	}
-	if bd.URL == "" {
-		return p.BlossomURL + "/" + sha, nil
-	}
-	return bd.URL, nil
 }
 
 // FetchCap bounds re-pulled media in RAM. Raised from 64 MB for video: the
@@ -250,7 +282,7 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) ([]byte, string, error)
 	if err != nil {
 		return nil, "", err
 	}
-	resp, err := f.HTTP.Do(req)
+	resp, err := f.client(url).Do(req)
 	if err != nil {
 		return nil, "", err
 	}
@@ -275,7 +307,7 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) ([]byte, string, error)
 }
 
 // ProcessFile is the streaming sibling of Process for large media (video):
-// sha256 and the Blossom PUT both stream from disk so a 1 GB canonical never
+// sha256 and the store's upload both stream from disk so a 1 GB canonical never
 // occupies RAM. No blurhash for video; dim and duration come from the caller's
 // probe. progress (nil ok) receives upload fractions. Result.Bytes stays nil —
 // consumers fetch by URL under the dispatch fetch policy.
@@ -308,6 +340,10 @@ func (p *Pipeline) ProcessFile(ctx context.Context, path, mime, dim string, dura
 			return mk(existing), nil
 		}
 	}
+	store, err := p.store()
+	if err != nil {
+		return Result{}, err
+	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return Result{}, err
 	}
@@ -315,9 +351,9 @@ func (p *Pipeline) ProcessFile(ctx context.Context, path, mime, dim string, dura
 	if progress != nil {
 		body = &countingReader{r: f, total: st.Size(), cb: progress}
 	}
-	url, err := p.blossomUploadStream(ctx, body, st.Size(), sha, mime)
+	url, err := store.Upload(ctx, body, st.Size(), sha, mime)
 	if err != nil {
-		return Result{}, fmt.Errorf("blossom upload: %w", err)
+		return Result{}, fmt.Errorf("media upload: %w", err)
 	}
 	return mk(url), nil
 }

@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/geofox/publisher/internal/redact"
 )
 
 // deepLTargets maps ISO 639-1 (lowercase, what we exchange with the rest of the
@@ -110,7 +112,7 @@ func (c *DeepLClient) Translate(ctx context.Context, text, target string) (strin
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return "", "", fmt.Errorf("deepl %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return "", "", fmt.Errorf("deepl %s: %s", resp.Status, redact.Upstream(string(body)))
 	}
 	var out struct {
 		Translations []struct {

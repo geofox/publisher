@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	gonostr "fiatjaf.com/nostr"
@@ -44,11 +45,12 @@ var (
 )
 
 // relayIO abstracts per-relay reads/writes so Scan/Apply are testable.
+// Each call dials the relay with client (see Owner).
 type relayIO interface {
-	Fetch(ctx context.Context, relayURL string, pubkey gonostr.PubKey) (map[gonostr.ID]gonostr.Event, error)
+	Fetch(ctx context.Context, client *http.Client, relayURL string, pubkey gonostr.PubKey) (map[gonostr.ID]gonostr.Event, error)
 	// detail summarizes per-event failure reasons (e.g. "restricted: … ×3") for
 	// the caller to surface; empty when nothing failed.
-	Publish(ctx context.Context, relayURL string, events []gonostr.Event) (published, failed int, detail string, err error)
+	Publish(ctx context.Context, client *http.Client, relayURL string, events []gonostr.Event) (published, failed int, detail string, err error)
 }
 
 // Sync scans and syncs any account's events; the account is named on each
@@ -58,10 +60,18 @@ type Sync struct {
 }
 
 // Owner is the account a scan or sync works for: its home relay (the one
-// the others are compared with) and its public key (whose events).
+// the others are compared with) and its public key (whose events), and
+// the clients each relay is dialed with.
 type Owner struct {
 	Home   string
 	Pubkey gonostr.PubKey
+	// HomeClient dials the home relay: the account's own network (the
+	// host's policy for the account).
+	HomeClient *http.Client
+	// TargetClient dials the other relays: NIP-65 ones and those added in
+	// the app, which the owner set (the host's guard for owner-set
+	// addresses, whoever set the account up).
+	TargetClient *http.Client
 }
 
 func New(io relayIO) *Sync {
@@ -159,7 +169,7 @@ func classify(err error) (status, msg string) {
 
 func (s *Sync) Scan(ctx context.Context, who Owner, targets []Target) []RelayDiff {
 	out := make([]RelayDiff, 0, len(targets))
-	home, homeErr := s.io.Fetch(ctx, who.Home, who.Pubkey)
+	home, homeErr := s.io.Fetch(ctx, who.HomeClient, who.Home, who.Pubkey)
 	for _, t := range targets {
 		d := RelayDiff{URL: t.URL, Group: t.Group}
 		if homeErr != nil {
@@ -167,7 +177,7 @@ func (s *Sync) Scan(ctx context.Context, who Owner, targets []Target) []RelayDif
 			out = append(out, d)
 			continue
 		}
-		tev, err := s.io.Fetch(ctx, t.URL, who.Pubkey)
+		tev, err := s.io.Fetch(ctx, who.TargetClient, t.URL, who.Pubkey)
 		if err != nil {
 			d.Status, d.Message = classify(err)
 			out = append(out, d)
@@ -190,7 +200,7 @@ func (s *Sync) Apply(ctx context.Context, who Owner, targets []Target, direction
 		}
 		return out
 	}
-	home, homeErr := s.io.Fetch(ctx, who.Home, who.Pubkey)
+	home, homeErr := s.io.Fetch(ctx, who.HomeClient, who.Home, who.Pubkey)
 	for _, t := range targets {
 		r := ApplyResult{URL: t.URL, Direction: direction}
 		if homeErr != nil {
@@ -198,23 +208,23 @@ func (s *Sync) Apply(ctx context.Context, who Owner, targets []Target, direction
 			out = append(out, r)
 			continue
 		}
-		tev, err := s.io.Fetch(ctx, t.URL, who.Pubkey)
+		tev, err := s.io.Fetch(ctx, who.TargetClient, t.URL, who.Pubkey)
 		if err != nil {
 			r.Status, r.Message = classify(err)
 			out = append(out, r)
 			continue
 		}
 		mh, mr := diff(home, tev)
-		toPublish, dest := mr, t.URL
+		toPublish, dest, client := mr, t.URL, who.TargetClient
 		if direction == "pull" {
-			toPublish, dest = mh, who.Home
+			toPublish, dest, client = mh, who.Home, who.HomeClient
 		}
 		if len(toPublish) == 0 { // already in sync — no connection needed
 			r.Status = "ok"
 			out = append(out, r)
 			continue
 		}
-		pub, fail, detail, perr := s.io.Publish(ctx, dest, toPublish)
+		pub, fail, detail, perr := s.io.Publish(ctx, client, dest, toPublish)
 		r.Published, r.Failed = pub, fail
 		if detail == "" {
 			detail = "some events failed to publish"

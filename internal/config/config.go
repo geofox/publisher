@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/netguard"
 )
 
 const DefaultPort = "8080"
@@ -72,6 +73,9 @@ type Config struct {
 	FFmpegPath   string
 	FFprobePath  string
 	VideoWorkdir string
+	// MediaDir is where media on this server's disk are kept (MEDIA_DIR;
+	// default: media beside the database).
+	MediaDir string
 
 	// OIDC Relying-Party auth. When OIDCIssuer is empty, auth is dormant and all
 	// gates are off (behaves exactly as before — relies on the reverse proxy).
@@ -102,7 +106,17 @@ type Config struct {
 	// SetupTokenFile, when set, receives the first-run setup URL instead
 	// of the log (SETUP_TOKEN_FILE).
 	SetupTokenFile string
+	// PrivateDestinations are the private hosts and ranges that addresses
+	// the owner sets in the app may reach (PRIVATE_DESTINATIONS).
+	PrivateDestinations netguard.Policy
 }
+
+// SecretVars are the configuration's credential variables (a webhook URL
+// can carry its secret in the path). The server removes them, and every
+// other credential variable, from its environment once read, so no
+// subprocess inherits them.
+var SecretVars = []string{"OIDC_CLIENT_SECRET", "DEEPL_API_KEY", "PUBLIC_FEED_TOKEN",
+	"FEED_WEBHOOK_URL", "FEED_WEBHOOK_TOKEN", "ALERT_WEBHOOK_URL", "ALERT_WEBHOOK_PASS"}
 
 // Auth modes (AUTH_MODE).
 const (
@@ -208,6 +222,7 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	c.FFmpegPath = getEnv("FFMPEG_PATH", "/usr/local/bin/ffmpeg")
 	c.FFprobePath = getEnv("FFPROBE_PATH", "/usr/local/bin/ffprobe")
 	c.VideoWorkdir = getEnv("VIDEO_WORKDIR", "")
+	c.MediaDir = getEnv("MEDIA_DIR", filepath.Join(filepath.Dir(c.DBPath), "media"))
 
 	// Kept as given: the issuer must match the provider's exactly, and
 	// some end in "/" (auth.New also tries the other form).
@@ -243,6 +258,11 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		l.fail("OIDC_ISSUER is set but AUTH_MODE=%s: unset OIDC_ISSUER, or set AUTH_MODE=oidc", c.AuthMode)
 	}
 	c.TrustedProxies = l.prefixes("TRUSTED_PROXIES")
+	if pd, err := netguard.ParsePrivateDestinations(getEnv("PRIVATE_DESTINATIONS", "")); err != nil {
+		l.errs = append(l.errs, err)
+	} else {
+		c.PrivateDestinations = pd
+	}
 	c.SetupTokenFile = strings.TrimSpace(getEnv("SETUP_TOKEN_FILE", ""))
 	if c.SetupTokenFile != "" {
 		if fi, err := os.Stat(filepath.Dir(c.SetupTokenFile)); err != nil || !fi.IsDir() {

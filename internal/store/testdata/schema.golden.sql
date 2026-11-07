@@ -1,3 +1,10 @@
+-- index idx_account_sets_default
+CREATE UNIQUE INDEX idx_account_sets_default ON account_sets(owner_id) WHERE is_default = 1;
+
+-- index idx_accounts_remote
+CREATE UNIQUE INDEX idx_accounts_remote ON accounts(owner_id, type, remote_id)
+  WHERE deleted_at IS NULL AND remote_id IS NOT NULL;
+
 -- index idx_draft_media_draft_id
 CREATE INDEX idx_draft_media_draft_id ON draft_media(draft_id);
 
@@ -37,11 +44,17 @@ CREATE INDEX idx_media_objects_sha ON media_objects(owner_id, sha256);
 -- index idx_nostr_fanout_due
 CREATE INDEX idx_nostr_fanout_due ON nostr_fanout(status, next_attempt_at);
 
+-- index idx_oauth_flows_expires
+CREATE INDEX idx_oauth_flows_expires ON oauth_flows(expires_at);
+
 -- index idx_posts_created
 CREATE INDEX idx_posts_created ON posts(created_at DESC);
 
 -- index idx_reauth_nonces_session
 CREATE INDEX idx_reauth_nonces_session ON reauth_nonces(session_id);
+
+-- index idx_secrets_key
+CREATE INDEX idx_secrets_key ON secrets(key_id);
 
 -- index idx_sessions_public_id
 CREATE UNIQUE INDEX idx_sessions_public_id ON sessions(public_id);
@@ -61,6 +74,18 @@ CREATE INDEX idx_targets_post ON post_targets(post_id);
 -- index idx_webauthn_credentials_user
 CREATE INDEX idx_webauthn_credentials_user ON webauthn_credentials(user_id);
 
+-- table account_sets
+CREATE TABLE account_sets (
+  id         TEXT PRIMARY KEY,
+  owner_id   TEXT NOT NULL REFERENCES owners(id),
+  name       TEXT NOT NULL,
+  accounts   TEXT NOT NULL,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  UNIQUE (owner_id, name)
+);
+
 -- table accounts
 CREATE TABLE accounts (
   id          TEXT PRIMARY KEY,
@@ -73,7 +98,7 @@ CREATE TABLE accounts (
   config_json TEXT NOT NULL DEFAULT '{}',
   enabled     INTEGER NOT NULL DEFAULT 1,
   created_at  TIMESTAMP NOT NULL,
-  updated_at  TIMESTAMP NOT NULL, remote_id TEXT, default_selected INTEGER NOT NULL DEFAULT 1, public_feed INTEGER NOT NULL DEFAULT 1,
+  updated_at  TIMESTAMP NOT NULL, remote_id TEXT, default_selected INTEGER NOT NULL DEFAULT 1, public_feed INTEGER NOT NULL DEFAULT 1, deleted_at TIMESTAMP, auth_method TEXT NOT NULL DEFAULT '', defaults_json TEXT NOT NULL DEFAULT '{}',
   UNIQUE(owner_id, type, env_key)
 );
 
@@ -223,6 +248,38 @@ CREATE TABLE nostr_sync_relays (
   PRIMARY KEY (account_id, url)
 );
 
+-- table oauth_clients
+CREATE TABLE oauth_clients (
+  id           TEXT PRIMARY KEY,
+  owner_id     TEXT NOT NULL REFERENCES owners(id),
+  type         TEXT NOT NULL,
+  issuer       TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  client_id    TEXT NOT NULL,
+  scopes       TEXT NOT NULL,
+  created_at   TIMESTAMP NOT NULL,
+  UNIQUE (owner_id, type, issuer, redirect_uri)
+);
+
+-- table oauth_flows
+CREATE TABLE oauth_flows (
+  id                TEXT PRIMARY KEY,
+  owner_id          TEXT NOT NULL REFERENCES owners(id),
+  user_id           TEXT NOT NULL,
+  type              TEXT NOT NULL,
+  method            TEXT NOT NULL,
+  account_id        TEXT,
+  label             TEXT NOT NULL DEFAULT '',
+  redirect_uri      TEXT NOT NULL,
+  state_hash        TEXT NOT NULL UNIQUE,
+  status            TEXT NOT NULL DEFAULT 'pending',
+  result_account_id TEXT,
+  error_code        TEXT NOT NULL DEFAULT '',
+  created_at        TIMESTAMP NOT NULL,
+  expires_at        TIMESTAMP NOT NULL,
+  used_at           TIMESTAMP
+);
+
 -- table owners
 CREATE TABLE owners (
   id         TEXT PRIMARY KEY,
@@ -280,6 +337,20 @@ CREATE TABLE schema_migrations (
   applied_at TIMESTAMP NOT NULL
 );
 
+-- table secrets
+CREATE TABLE secrets (
+  owner_id   TEXT NOT NULL,
+  scope      TEXT NOT NULL,
+  ref        TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  audience   TEXT NOT NULL DEFAULT '',
+  sealed     TEXT NOT NULL,
+  key_id     TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (owner_id, scope, ref, name)
+);
+
 -- table sessions
 CREATE TABLE sessions (
   id         TEXT PRIMARY KEY,
@@ -287,6 +358,16 @@ CREATE TABLE sessions (
   created_at TIMESTAMP NOT NULL,
   expires_at TIMESTAMP NOT NULL
 , public_id TEXT, last_seen_at TIMESTAMP, method TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '', addr TEXT NOT NULL DEFAULT '');
+
+-- table settings
+CREATE TABLE settings (
+  owner_id   TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  value_json TEXT NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  updated_by TEXT,
+  PRIMARY KEY (owner_id, key)
+);
 
 -- table setup_tokens
 CREATE TABLE setup_tokens (
@@ -330,7 +411,7 @@ CREATE TABLE target_items (
   error           TEXT,
   attempt_count   INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TIMESTAMP,
-  published_at    TIMESTAMP, doubt_reset_at TIMESTAMP, committing_at TIMESTAMP,
+  published_at    TIMESTAMP, doubt_reset_at TIMESTAMP, committing_at TIMESTAMP, manual_due INTEGER NOT NULL DEFAULT 0,
   UNIQUE(target_id, ordinal)
 );
 

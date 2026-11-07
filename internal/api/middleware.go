@@ -157,15 +157,29 @@ func (a *API) withGates(next http.Handler) http.Handler {
 		// Clean the path before gate selection: net/http does not normalize
 		// r.URL.Path before the handler runs, so a raw "/auth/../v1/tokens"
 		// would otherwise satisfy the "/auth/" prefix and dodge a gate.
-		p := path.Clean(r.URL.Path)
+		// The mux matches the escaped path ("/media%2Fx" is one segment, so
+		// the web app's), so a path opens only when both readings agree.
+		p, ep := path.Clean(r.URL.Path), path.Clean(r.URL.EscapedPath())
+		open := func(p string) bool {
+			return p == "/healthz" || p == "/readyz" || p == "/metrics" ||
+				strings.HasPrefix(p, "/auth/") ||
+				p == "/v1" || strings.HasPrefix(p, "/v1/") || isOldAPIPath(p) ||
+				publicAssets[p] ||
+				// Media on this server's disk, like a Blossom server's (the mux
+				// sends all of /media/ to serveMedia, never the web app).
+				p == "/media" || strings.HasPrefix(p, "/media/") ||
+				// A network sending the owner back from signing in: the
+				// flow's state is the capability (a session, when there is
+				// one, must be the flow's user's).
+				strings.HasPrefix(p, "/oauth/callback/")
+		}
+		signIn := func(p string) bool {
+			return p == "/setup" || strings.HasPrefix(p, "/setup/") || signInAssets[p] || strings.HasPrefix(p, "/fonts/")
+		}
 		switch {
-		case p == "/healthz" || p == "/readyz" || p == "/metrics" ||
-			strings.HasPrefix(p, "/auth/") ||
-			p == "/v1" || strings.HasPrefix(p, "/v1/") || isOldAPIPath(p) ||
-			publicAssets[p]:
+		case open(p) && open(ep):
 			next.ServeHTTP(w, r) // always-open / separately-gated (/v1 authenticates per route; old paths answer 410)
-		case local && (p == "/setup" || strings.HasPrefix(p, "/setup/") ||
-			signInAssets[p] || strings.HasPrefix(p, "/fonts/")):
+		case local && signIn(p) && signIn(ep):
 			next.ServeHTTP(w, r) // the sign-in and setup pages and what they load
 		default:
 			session.ServeHTTP(w, r) // the web app

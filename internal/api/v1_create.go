@@ -154,8 +154,11 @@ type plannedTarget struct {
 	ov      dispatch.Overrides
 	// layout is the target's breaks and media positions in text.
 	layout thread.Layout
-	// warnings are notes about request fields the account ignores.
+	// warnings are notes about request fields the account ignores, and
+	// the account's defaults applied.
 	warnings []string
+	// defaults are the account's defaults the target took.
+	defaults v1AccountDefaults
 }
 
 // optionFields maps a destination option key onto the override field the
@@ -370,6 +373,10 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 				langs = c.Languages
 			}
 		}
+		opts := t.Options
+		if action, _, _ := req.interaction(); action != "repost" { // a repost carries nothing of its own
+			opts, pt.defaults = a.applyDefaults(drv.Manifest(), caps, accountDefaults(ac), &cw, &langs, t.Options, &pt)
+		}
 		if cw != nil && *cw != "" {
 			ov.ContentWarning = *cw
 			if !caps.ContentWarning {
@@ -391,11 +398,21 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 				pt.warnings = append(pt.warnings, name+" takes "+strconv.Itoa(caps.Languages)+" language(s); the rest are left out")
 			}
 		}
-		a.planOptions(drv.Manifest(), caps, t.Options, ptr+"/options", &ov, add)
+		a.planOptions(drv.Manifest(), caps, opts, ptr+"/options", &ov, add)
 		if action, _, _ := req.interaction(); strings.TrimSpace(pt.text) == "" && len(req.Content.Media) == 0 &&
 			!own && !sharedEmpty && action != "quote" && action != "repost" {
 			sharedEmpty = true
 			add("/content/text", "required", "a post needs text or media")
+		}
+		// A network that fetches media by address (Threads, Nostr) can't
+		// reach this server's disk unless it is served publicly.
+		if caps.Media.Transport == destination.TransportURL && a.DiskMedia != nil {
+			for j, m := range plan.media {
+				if _, local := a.DiskMedia.Owns(m.URL); local && !a.DiskMedia.Reachable(m.URL) {
+					add("/content/media/"+strconv.Itoa(plan.mediaReq[j]), "media_unsupported", "for "+ac.ID+": "+name+
+						" fetches media by address, and this server's disk doesn't serve them publicly (Settings, Media)")
+				}
+			}
 		}
 		for j, m := range plan.media {
 			mptr := "/content/media/" + strconv.Itoa(plan.mediaReq[j])
@@ -644,7 +661,17 @@ func (a *API) v1CreatePost(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.WarnContext(r.Context(), "v1: reload created post", "post_id", p.ID, "err", err)
 	}
-	writeV1(w, status, v1Post(*p, true))
+	body := v1Post(*p, true)
+	// What each account ignores of the request, and the defaults it
+	// took: said once, in this answer.
+	for i := range body.Targets {
+		for _, pt := range plan.targets {
+			if pt.account.ID == body.Targets[i].Account && len(pt.warnings) > 0 {
+				body.Targets[i].Warnings = pt.warnings
+			}
+		}
+	}
+	writeV1(w, status, body)
 }
 
 // preferWait reads a wait preference (RFC 7240 §4.3) from Prefer headers,
@@ -713,6 +740,9 @@ type v1PreviewTarget struct {
 	LinkCard *v1PreviewCard  `json:"link_card"`
 	Warnings []string        `json:"warnings"`
 	Media    []v1PreviewNote `json:"media_notes"`
+	// DefaultsApplied are the account's defaults the post takes (those
+	// it didn't set itself).
+	DefaultsApplied v1AccountDefaults `json:"defaults_applied"`
 }
 
 type v1PreviewItem struct {
@@ -795,16 +825,23 @@ func (a *API) v1PreviewPost(w http.ResponseWriter, r *http.Request) {
 			Number: plan.spec.Number, ContentWarning: pt.ov.ContentWarning})
 		vt := v1PreviewTarget{Account: pt.account.ID, Type: pt.account.Type, Role: "post", Items: []v1PreviewItem{},
 			Text: cp.Text, Limit: dispatch.Rules(pt.caps, plan.spec.Number, pt.ov.ContentWarning).Limit,
-			Warnings: append(append([]string{}, pt.warnings...), cp.Warnings...), Media: []v1PreviewNote{}}
+			Warnings: append(append([]string{}, pt.warnings...), cp.Warnings...), Media: []v1PreviewNote{},
+			DefaultsApplied: pt.defaults}
 		if ix := plan.ix; ix != nil {
 			vt.Role = ix.Action
 			if pt.account.Type != ix.SourcePlatform {
 				vt.Role = "link_quote"
-				if n := sourceImagesWanted(plan); n > 0 && a.media != nil && pt.caps.Media.Images.Supported {
+				if n := sourceImagesWanted(plan); n > 0 && a.media.Enabled() && pt.caps.Media.Images.Supported {
 					if c := pt.caps.Media.Images.MaxCount; c > 0 {
 						n = max(0, min(n, c-len(plan.media)))
 					}
-					if n > 0 {
+					switch {
+					case n > 0 && pt.caps.Media.Transport == destination.TransportURL && !a.media.Public():
+						// As the post will (withoutUnreachableCopies): the
+						// copies land on a disk the network can't fetch from.
+						vt.Warnings = append(vt.Warnings, "the original's images aren't attached: "+displayName(pt.account.Type)+
+							" fetches media by address, and this server's disk doesn't serve them publicly (Settings, Media)")
+					case n > 0:
 						vt.Warnings = append(vt.Warnings, "up to "+strconv.Itoa(n)+" of the original's images are copied to media storage and attached after yours when posting")
 					}
 				}

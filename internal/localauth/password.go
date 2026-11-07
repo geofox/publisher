@@ -65,6 +65,17 @@ func (h *Hasher) acquire() bool {
 
 func (h *Hasher) release() { <-h.sem }
 
+// Do runs fn, a job that costs as much as a hash (an export file's key),
+// in one of the same two places: ErrBusy when both are taken.
+func (h *Hasher) Do(fn func()) error {
+	if !h.acquire() {
+		return ErrBusy
+	}
+	defer h.release()
+	fn()
+	return nil
+}
+
 // Hash returns the password's PHC string
 // ($argon2id$v=19$m=65536,t=3,p=4$salt$key).
 func (h *Hasher) Hash(pw string) (string, error) {

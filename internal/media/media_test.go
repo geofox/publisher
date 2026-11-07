@@ -31,7 +31,7 @@ func TestProcessUploadsAndBuildsImeta(t *testing.T) {
 	defer srv.Close()
 
 	sk := nostr.Generate()
-	p := New(srv.URL, sk, nostr.GetPublicKey(sk))
+	p := blossomPipeline(srv.URL, sk)
 	res, err := p.Process(context.Background(), []byte("hello"), "text/plain")
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +82,7 @@ func TestFetch(t *testing.T) {
 	}))
 	defer srv.Close()
 	sk := nostr.Generate()
-	p := New("http://unused", sk, nostr.GetPublicKey(sk))
+	p := blossomPipeline("http://unused", sk)
 	data, mime, err := p.Fetch(context.Background(), srv.URL+"/x.png")
 	if err != nil || string(data) != "imgbytes" || mime != "image/png" {
 		t.Errorf("fetch: data=%q mime=%q err=%v", data, mime, err)
@@ -102,7 +102,7 @@ func TestFetchCapEnforced(t *testing.T) {
 	t.Cleanup(func() { fetchCapBytes = orig })
 
 	sk := nostr.Generate()
-	p := New("http://unused", sk, nostr.GetPublicKey(sk))
+	p := blossomPipeline("http://unused", sk)
 	_, _, err := p.Fetch(context.Background(), srv.URL+"/big")
 	if err == nil {
 		t.Fatal("expected error when response exceeds fetchCapBytes, got nil")
@@ -126,7 +126,7 @@ func TestProcessConvertsHEIC(t *testing.T) {
 	}))
 	defer srv.Close()
 	sk := nostr.Generate()
-	p := New(srv.URL, sk, nostr.GetPublicKey(sk))
+	p := blossomPipeline(srv.URL, sk)
 	res, err := p.Process(context.Background(), b, "image/heic")
 	if err != nil {
 		t.Fatal(err)
@@ -161,7 +161,7 @@ func TestProcessJPEGUntouched(t *testing.T) {
 	}))
 	defer srv.Close()
 	sk := nostr.Generate()
-	p := New(srv.URL, sk, nostr.GetPublicKey(sk))
+	p := blossomPipeline(srv.URL, sk)
 	res, err := p.Process(context.Background(), src, "image/jpeg")
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestProcessRejectsCorruptHEIC(t *testing.T) {
 	}))
 	defer srv.Close()
 	sk := nostr.Generate()
-	p := New(srv.URL, sk, nostr.GetPublicKey(sk))
+	p := blossomPipeline(srv.URL, sk)
 	if _, err := p.Process(context.Background(), corrupt, "image/heic"); err == nil {
 		t.Fatal("corrupt HEIC must be rejected, not stored as canonical")
 	}
@@ -195,7 +195,7 @@ func TestProcessFileStreamsWithProgress(t *testing.T) {
 	defer srv.Close()
 
 	sk := nostr.Generate()
-	p := New(srv.URL, sk, nostr.GetPublicKey(sk))
+	p := blossomPipeline(srv.URL, sk)
 
 	f := filepath.Join(t.TempDir(), "v.mp4")
 	payload := bytes.Repeat([]byte("x"), 1<<20) // 1 MiB
@@ -241,7 +241,7 @@ func TestProcessFileLookupShortCircuits(t *testing.T) {
 	defer srv.Close()
 
 	sk := nostr.Generate()
-	p := New(srv.URL, sk, nostr.GetPublicKey(sk))
+	p := blossomPipeline(srv.URL, sk)
 	p.Lookup = func(sha string) (string, bool, error) { return "https://b/cached", true, nil }
 
 	f := filepath.Join(t.TempDir(), "v.mp4")
@@ -255,4 +255,10 @@ func TestProcessFileLookupShortCircuits(t *testing.T) {
 	if res.URL != "https://b/cached" {
 		t.Fatalf("url = %s", res.URL)
 	}
+}
+
+// blossomPipeline is a pipeline over a Blossom server, signed with the
+// environment's key (no server tag), as before stores.
+func blossomPipeline(u string, sk nostr.SecretKey) *Pipeline {
+	return New(Static(&Blossom{URL: u, Key: sk, HTTP: newStreamClient()}))
 }

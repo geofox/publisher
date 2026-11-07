@@ -9,10 +9,12 @@ import (
 	"github.com/geofox/publisher/internal/destination"
 )
 
-// Defaults of the Nostr environment variables (unchanged since 1.x).
+// Defaults of the Nostr environment variables: large public relays. The
+// home relay gets every post and holds the relay list (NIP-65), so it is
+// a general relay, not an index of profiles and relay lists only.
 const (
-	defaultBootstrapRelay = "wss://relay.geoffrey.one"
-	defaultFallbackRelays = "wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io"
+	defaultBootstrapRelay = "wss://relay.damus.io"
+	defaultFallbackRelays = "wss://nos.lol,wss://relay.damus.io,wss://relay.primal.net"
 	defaultSyncRelays     = "wss://nos.lol,wss://relay.damus.io,wss://nostr.wine,wss://nostr.land,wss://relay.nostr.band,wss://purplepag.es,wss://relay.snort.social,wss://nostr.mom"
 )
 
@@ -20,12 +22,23 @@ var _ destination.EnvSource = Driver{}
 
 // EnvVars implements destination.EnvSource.
 func (Driver) EnvVars() []destination.EnvVar {
-	vars := []destination.EnvVar{{Name: "NSEC_HEX", Required: true}}
+	vars := []destination.EnvVar{{Name: "NSEC_HEX", Required: true, Secret: true}}
 	for _, n := range []string{"OWNER_PUBKEY", "NIP65_BOOTSTRAP_RELAY", "FALLBACK_RELAYS", "PRIMARY_RELAYS",
 		"NOSTR_PRIMARY_FANOUT", "POW_DIFFICULTY_DEFAULT", "POW_DIFFICULTY_MAX", "SYNC_RELAYS"} {
 		vars = append(vars, destination.EnvVar{Name: n})
 	}
 	return vars
+}
+
+// EnvNotice is what the log says at startup of an account from the
+// environment that uses the built-in home relay ("" when there is none):
+// the default changed in 3.0, and every post goes to it.
+func EnvNotice(getenv func(string) string) string {
+	if destination.EnvString(getenv, "NSEC_HEX", "") == "" || destination.EnvString(getenv, "NIP65_BOOTSTRAP_RELAY", "") != "" {
+		return ""
+	}
+	return "nostr: the home relay is the built-in " + defaultBootstrapRelay +
+		": the relay list is read there and every post goes there too (NIP65_BOOTSTRAP_RELAY chooses it)"
 }
 
 // FromEnv implements destination.EnvSource: NSEC_HEX configures one

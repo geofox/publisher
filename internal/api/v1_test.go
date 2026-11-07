@@ -68,6 +68,7 @@ type v1Env struct {
 	api    *API
 	h      http.Handler
 	st     *store.Store
+	path   string       // the database file
 	cookie *http.Cookie // a signed-in session (OIDC on only)
 	reg    *accounts.Registry
 	// lookups are the accounts that looked posts up, in order.
@@ -79,7 +80,8 @@ type v1Env struct {
 // is the gate.
 func newV1Env(t *testing.T, oidc bool) *v1Env {
 	t.Helper()
-	st, err := storeOpen(t)
+	path := t.TempDir() + "/t.db"
+	st, err := store.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +91,7 @@ func newV1Env(t *testing.T, oidc bool) *v1Env {
 		t.Fatal(err)
 	}
 	a := &API{Store: st, Version: "v9.9.9-test", UserLanguages: []string{"en", "fr"}}
-	e := &v1Env{t: t, api: a, st: st}
+	e := &v1Env{t: t, api: a, st: st, path: path}
 	if oidc {
 		au, err := auth.New(context.Background(), auth.Config{
 			Issuer: newMockOIDC(t), ClientID: "client-1", ClientSecret: "s", RedirectURL: "https://app/auth/callback",
@@ -445,6 +447,21 @@ func TestV1Conformance(t *testing.T) {
 	for p := range localConformance(t) {
 		seen[p] = true
 	}
+	for p := range accountConformance(t) {
+		seen[p] = true
+	}
+	for p := range settingsConformance(t) {
+		seen[p] = true
+	}
+	for p := range accountSetConformance(t) {
+		seen[p] = true
+	}
+	for p := range connectConformance(t) {
+		seen[p] = true
+	}
+	for p := range exportConformance(t) {
+		seen[p] = true
+	}
 	for _, rt := range e.api.v1Routes() {
 		patterns := []string{rt.Method + " " + rt.Path}
 		if len(rt.Actions) > 0 {
@@ -543,7 +560,7 @@ func TestV1AuthProxyMode(t *testing.T) {
 	wantStatus(t, r, 200)
 	var me v1MeBody
 	r.json(&me)
-	if me.Kind != "proxy" || !slices.Equal(me.Scopes, v1Scopes) {
+	if me.Kind != "proxy" || !slices.Equal(me.Scopes, proxyScopes) || slices.Contains(me.Scopes, scopeInstanceAdmin) {
 		t.Errorf("me = %+v", me)
 	}
 	// A token sent with OIDC off is still checked.

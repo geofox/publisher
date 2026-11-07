@@ -1,10 +1,12 @@
 "use strict";
-import { typeOf, inOrder } from "./accounts.js";
+import { typeOf, inOrder, byId } from "./accounts.js";
 import { VERSION } from "./snapshot.js";
 import { u16ToCp, cleanBreaks } from "./textpos.js";
 
-// defaultOv is a new target's settings for an account of network type p.
-export function defaultOv(p) {
+// defaultOv is a new target's settings for an account of network type p:
+// the network's, then the account's own defaults (Settings, Composing)
+// when acct is given.
+export function defaultOv(p, acct = null) {
   // Read state.userLanguages at call time so callers (initial module load,
   // post-/v1/instance init, startInteraction reset) all pick up the operator's
   // first configured language as the default. Falls back to "en" pre-fetch.
@@ -18,7 +20,36 @@ export function defaultOv(p) {
   if (p === "mastodon") { o.spoiler_text = ""; o.sensitive = false; o.visibility = ""; o.language = lang; }
   if (p === "threads")  { o.topic_tag = ""; o.reply_control = ""; }
   if (p === "nostr")    { o.pow = 20; o.content_warning = ""; }
+  if (acct && acct.defaults) withAccountDefaults(o, p, acct.defaults);
   return o;
+}
+
+// withAccountDefaults puts an account's defaults (content warning,
+// languages, options) into its settings, as its card shows them. The
+// composer sends what its cards hold, so a default applies by being there.
+function withAccountDefaults(o, p, d) {
+  const opt = d.options || {};
+  const has = k => Object.prototype.hasOwnProperty.call(opt, k);
+  const langs = Array.isArray(d.languages) ? d.languages.filter(Boolean) : [];
+  const cw = typeof d.content_warning === "string" ? d.content_warning : "";
+  if (p === "bluesky") {
+    if (langs.length) o.langs = langs.join(",");
+    if (has("reply_gate")) o.reply = String(opt.reply_gate || "");
+    if (has("disable_quotes")) o.disable_quotes = !!opt.disable_quotes;
+  }
+  if (p === "mastodon") {
+    if (cw) o.spoiler_text = cw;
+    if (langs.length) o.language = langs[0];
+    if (has("visibility")) o.visibility = String(opt.visibility || "");
+  }
+  if (p === "threads") {
+    if (has("topic_tag")) o.topic_tag = String(opt.topic_tag || "");
+    if (has("reply_control")) o.reply_control = String(opt.reply_control || "");
+  }
+  if (p === "nostr") {
+    if (cw) o.content_warning = cw;
+    if (has("pow") && Number.isFinite(Number(opt.pow))) o.pow = Number(opt.pow);
+  }
 }
 
 export const state = {
@@ -46,6 +77,9 @@ export const state = {
   translateTargets: [],
   // The server has no media store (features.media false): no attaching.
   mediaOff: false,
+  // The reverse proxy is the only gate (auth "proxy"): accounts come from
+  // the server's environment only.
+  proxyAuth: false,
   // Drafts integration
   activeDraftId: null, // id of the draft currently loaded into Compose, or null
   draftETag: "",       // its version as last read or saved, for If-Match
@@ -67,10 +101,10 @@ export function ovOf(id) {
   const type = typeOf(id);
   let ov = state.ov[id];
   if (!ov) {
-    ov = state.ov[id] = defaultOv(type);
+    ov = state.ov[id] = defaultOv(type, byId(id));
     if (!type) untyped.add(ov);
   } else if (type && untyped.has(ov)) {
-    for (const [k, v] of Object.entries(defaultOv(type))) if (!(k in ov)) ov[k] = v;
+    for (const [k, v] of Object.entries(defaultOv(type, byId(id)))) if (!(k in ov)) ov[k] = v;
     untyped.delete(ov);
   }
   return ov;
@@ -289,26 +323,28 @@ export function v1Target(id, { repost = false } = {}) {
     // Absent breaks already mean the shared ones (or none with own text).
     if (th.media_at || (th.breaks && (th.breaks.length || !own))) t.thread = th;
   }
+  // Each value the card holds is sent, an empty one too: the card already
+  // holds the account's defaults, and one the owner cleared must not come
+  // back from the server's (which fills in only what a target leaves out).
   if (p === "bluesky") {
     options.reply_gate = ov.reply || "";
     options.disable_quotes = !!ov.disable_quotes;
-    const langs = langList(ov.langs);
-    if (langs.length) content.languages = langs;
+    content.languages = langList(ov.langs);
   }
   if (p === "mastodon") {
-    if (ov.visibility) options.visibility = ov.visibility;
-    if (ov.spoiler_text) content.content_warning = ov.spoiler_text;
+    options.visibility = ov.visibility || "";
+    content.content_warning = ov.spoiler_text || "";
     if (ov.sensitive) content.sensitive = true;
-    if (ov.language) content.languages = [ov.language];
+    content.languages = ov.language ? [ov.language] : [];
   }
   if (p === "threads") {
-    if (ov.topic_tag) options.topic_tag = ov.topic_tag;
-    if (ov.reply_control) options.reply_control = ov.reply_control;
+    options.topic_tag = ov.topic_tag || "";
+    options.reply_control = ov.reply_control || "";
   }
   if (p === "nostr") {
     const pow = parseInt(ov.pow, 10);
     options.pow = Number.isFinite(pow) && pow > 0 ? pow : 0;
-    if (ov.content_warning) content.content_warning = ov.content_warning;
+    content.content_warning = ov.content_warning || "";
   }
   if (Object.keys(options).length) t.options = options;
   if (Object.keys(content).length) t.content = content;

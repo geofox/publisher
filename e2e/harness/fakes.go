@@ -17,6 +17,7 @@ import (
 	"time"
 
 	gonostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip19"
 
 	"github.com/geofox/publisher/internal/bluesky"
 	"github.com/geofox/publisher/internal/destination"
@@ -189,6 +190,11 @@ type fakeAccount struct {
 	url       func(seq string) string
 	data      func(seq string) json.RawMessage // the driver's Ref.Data; nil = none
 	images    func(media []destination.MediaItem) []imageRef
+	// An account added in the app: its type, credentials and settings
+	// (Identity and Check read them).
+	typ     string
+	secrets map[string]string
+	config  map[string]any
 }
 
 // fakeReposter is a fakeAccount that can repost (Bluesky, Mastodon).
@@ -214,6 +220,7 @@ var e2eNostrKey = gonostr.GetPublicKey(gonostr.Generate())
 func (f fakeRelayAccount) HomeRelay() string                                    { return "wss://relay.e2e.invalid" }
 func (f fakeRelayAccount) OwnerPubkey() gonostr.PubKey                          { return e2eNostrKey }
 func (f fakeRelayAccount) ResolveWriteRelays(context.Context) ([]string, error) { return nil, nil }
+func (f fakeRelayAccount) RelayClient() *http.Client                            { return nil }
 
 func (f *fakeAccount) Manifest() destination.Manifest { return f.drv.Manifest() }
 
@@ -314,7 +321,8 @@ func imetaField(t gonostr.Tag, key string) string {
 const configMaxLength = "e2e_max_length"
 
 // newFake returns the recording account for one stored account of typ.
-func newFake(rec *recorder, typ, accountID string, config map[string]any) (destination.Account, error) {
+func newFake(rec *recorder, typ string, req destination.OpenRequest) (destination.Account, error) {
+	accountID, config := req.AccountID, req.Config
 	same := func(prefix string) func(string) string { return func(s string) string { return prefix + s } }
 	// Ref.Data as the real drivers fill it: the record CID that Bluesky
 	// replies need, and the signed event Nostr relay retries re-send.
@@ -327,7 +335,7 @@ func newFake(rec *recorder, typ, accountID string, config map[string]any) (desti
 	if err != nil {
 		return nil, destination.Invalidf("%s: %v", configMaxLength, err)
 	}
-	base := fakeAccount{rec: rec, account: accountID, maxLength: maxLength}
+	base := fakeAccount{rec: rec, account: accountID, maxLength: maxLength, typ: typ, secrets: req.Secrets, config: config}
 	with := func(drv destination.Driver, id, url func(string) string, data func(string) json.RawMessage,
 		images func([]destination.MediaItem) []imageRef) *fakeAccount {
 		f := base
@@ -346,6 +354,82 @@ func newFake(rec *recorder, typ, accountID string, config map[string]any) (desti
 		return with(threads.Driver{}, same(""), same("https://threads.e2e.invalid/t/"), nil, attachments), nil
 	}
 	return nil, destination.Invalidf("no fake for %s", typ)
+}
+
+// Identity says who an account added in the app is, from its credentials
+// and settings, as its network would: a credential starting with "bad" is
+// refused, one starting with "down" finds the network unreachable. A
+// token "<user>:<anything>" belongs to <user> ("me" without a colon), so a
+// new token for the same user is the same account. An account from the
+// environment reports nothing (its stored handle stays).
+func (f *fakeAccount) Identity(context.Context) (destination.Identity, error) {
+	if len(f.secrets) == 0 {
+		return destination.Identity{}, nil
+	}
+	if err := f.credentialProblem(); err != nil {
+		return destination.Identity{}, err
+	}
+	sum := func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+	str := func(k string) string { v, _ := f.config[k].(string); return v }
+	switch f.typ {
+	case bluesky.Type:
+		id := str("identifier")
+		return destination.Identity{RemoteID: "did:plc:e2e" + sum(id)[:16], Handle: id}, nil
+	case mastodon.Type:
+		u, _ := url.Parse(str("instance_url"))
+		host := ""
+		if u != nil {
+			host = u.Host
+		}
+		user := tokenUser(f.secrets["access_token"])
+		return destination.Identity{RemoteID: str("instance_url") + "/@" + user, Handle: "@" + user + "@" + host}, nil
+	case threads.Type:
+		user := tokenUser(f.secrets["access_token"])
+		return destination.Identity{RemoteID: "e2e" + sum(user)[:12], Handle: user}, nil
+	case nostr.Type:
+		sk, err := nostr.ParseKey(f.secrets[nostr.SecretKey])
+		if err != nil {
+			return destination.Identity{}, destination.Invalidf("e2e: %v", err)
+		}
+		pk := gonostr.GetPublicKey(sk)
+		return destination.Identity{RemoteID: pk.Hex(), Handle: nip19.EncodeNpub(pk)}, nil
+	}
+	return destination.Identity{}, fmt.Errorf("no fake identity for %s", f.typ)
+}
+
+// tokenUser is whose a fake token is: "<user>:…", else "me".
+func tokenUser(token string) string {
+	if user, _, ok := strings.Cut(token, ":"); ok && user != "" {
+		return user
+	}
+	return "me"
+}
+
+// credentialProblem is how the fake network answers an app-added
+// account's credentials: "bad…" is refused, "down…" doesn't answer.
+func (f *fakeAccount) credentialProblem() error {
+	for _, v := range f.secrets {
+		switch {
+		case strings.HasPrefix(v, "bad"):
+			return &destination.Error{Class: destination.ClassAuth, Err: errors.New("Invalid identifier or password")}
+		case strings.HasPrefix(v, "down"):
+			return &destination.Error{Class: destination.ClassTransient, Err: errors.New("e2e: the network is down")}
+		}
+	}
+	return nil
+}
+
+// Check is an authenticated check as the network would answer it.
+func (f *fakeAccount) Check(context.Context, destination.CheckRequest) destination.Health {
+	yes, no := true, false
+	switch err := f.credentialProblem(); {
+	case err == nil:
+		return destination.Health{OK: true, Reachable: true, AuthOK: &yes}
+	case destination.ClassOf(err) == destination.ClassAuth:
+		return destination.Health{Reachable: true, AuthOK: &no, Message: err.Error()}
+	default:
+		return destination.Health{Message: err.Error()}
+	}
 }
 
 // ResolveSource looks up an external post, as the real account does

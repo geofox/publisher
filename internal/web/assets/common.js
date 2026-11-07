@@ -186,10 +186,36 @@ export function localInput(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// flash shows a short message, and has screen readers say it: a toast
+// added with its text isn't announced, so the words also go to a live
+// region that stays on the page.
+let flashLive = null;
 export function flash(msg, ms = 2600) {
-  const t = el("div", { class: "toast", text: msg });
+  const t = el("div", { class: "toast", text: msg, "aria-hidden": "true" });
   document.body.append(t);
+  if (!flashLive || !flashLive.isConnected) {
+    flashLive = el("div", { class: "sr-only", role: "status", "aria-live": "polite", "data-flash-live": "" });
+    document.body.append(flashLive);
+  }
+  const live = flashLive;
+  live.textContent = "";
+  setTimeout(() => { live.textContent = msg; }, 60);
   setTimeout(() => t.remove(), ms);
+}
+
+// copyText puts text on the clipboard and says so (aloud too, which a
+// button's changed text under an aria-label isn't). Where the browser
+// won't (a page served over plain http has no clipboard), it selects the
+// text in from, an input or any element, for the owner to copy.
+export function copyText(text, from, said = "Copied") {
+  const fail = () => {
+    if (from && typeof from.select === "function") from.select();
+    else if (from) { const r = document.createRange(); r.selectNodeContents(from); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+    flash("Select it and copy it");
+  };
+  let p;
+  try { p = navigator.clipboard.writeText(text); } catch (_) { fail(); return; }
+  p.then(() => flash(said), fail);
 }
 
 // api wraps fetch with same-origin creds + JSON parse; throws Error(data.error||HTTP n) on !ok.
@@ -208,8 +234,9 @@ export async function api(path, opts = {}) {
 // An operation that needs the owner to confirm it's them (403
 // reauth_required) goes through the re-authentication dialog (see
 // setReauthHandler) and is sent once more with its nonce, unless reauth is
-// false (the caller passes a nonce it got itself).
-export async function v1(path, { method = "GET", body, headers = {}, signal, reauth = true } = {}) {
+// false (the caller passes a nonce it got itself). onResponse, when given,
+// sees a successful response's headers (an ETag).
+export async function v1(path, { method = "GET", body, headers = {}, signal, reauth = true, onResponse = null } = {}) {
   const opts = { method, credentials: "same-origin", headers: { ...headers }, signal };
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
@@ -218,12 +245,12 @@ export async function v1(path, { method = "GET", body, headers = {}, signal, rea
   for (let attempt = 0; ; attempt++) {
     const r = await fetch(path, opts);
     const data = r.status === 204 ? null : await r.json().catch(() => null);
-    if (r.ok) return data;
+    if (r.ok) { if (onResponse) onResponse(r); return data; }
     const err = problemError(r.status, data);
     const ra = Number(r.headers.get("Retry-After"));
     if (ra > 0) err.retryAfter = ra;
     if (reauth && attempt === 0 && err.code === "reauth_required" && reauthHandler && data && data.operation) {
-      const nonce = await reauthHandler(data.operation);
+      const nonce = await reauthHandler(data.operation, data.target || "");
       if (nonce) { opts.headers["Publisher-Reauth"] = nonce; continue; }
       err.message = "Cancelled: you didn't confirm it's you.";
       err.cancelled = true;
@@ -233,8 +260,8 @@ export async function v1(path, { method = "GET", body, headers = {}, signal, rea
 }
 
 // setReauthHandler sets what v1 asks for a re-authentication nonce: a
-// function of the operation answering the nonce, or null when the owner
-// cancelled.
+// function of the operation (and, for an operation on one account, its
+// id) answering the nonce, or null when the owner cancelled.
 let reauthHandler = null;
 export function setReauthHandler(fn) { reauthHandler = fn; }
 
@@ -291,4 +318,35 @@ export function confirmModal({ title, body, confirmText, onConfirm }) {
   bk.append(card);
   document.body.append(bk);
   close = asDialog(bk, card, close, cancel); // Cancel first: Enter must not confirm by accident
+}
+
+// inputDialog asks for one value (or a few: fields); onSubmit gets the
+// values and a function that says something under them, and answers true
+// to close.
+export function inputDialog({ title, label, value = "", type = "text", maxlength, fields, submitText, onSubmit }) {
+  const bk = el("div", { class: "modal-bk" });
+  let close = () => bk.remove();
+  const err = el("p", { class: "reauth-status", role: "status", "aria-live": "polite" });
+  const inputs = (fields || [{ label, value, type, maxlength }]).map((f, i) => {
+    const id = "dlg-in-" + i;
+    return { label: el("label", { for: id, text: f.label }), input: el("input", { id, type: f.type || "text", value: f.value || "", autocomplete: f.autocomplete || "off", maxlength: f.maxlength || false }) };
+  });
+  const ok = el("button", { class: "primary sm", type: "submit", text: submitText || "Save" });
+  const form = el("form", { class: "reauth" },
+    ...inputs.flatMap(x => [x.label, x.input]), err,
+    el("div", { class: "confirm-actions" }, el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: () => close() }), ok));
+  form.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    if (ok.disabled) return; // one at a time
+    ok.disabled = true;
+    try {
+      if (await onSubmit(inputs.map(x => x.input.value), m => { err.textContent = m; })) close();
+    } finally {
+      ok.disabled = false;
+    }
+  });
+  const card = el("div", { class: "modal reauth" }, el("p", { class: "modal-title", text: title }), form);
+  bk.append(card);
+  document.body.append(bk);
+  close = asDialog(bk, card, close, inputs[0].input);
 }

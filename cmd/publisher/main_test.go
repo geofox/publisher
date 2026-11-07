@@ -1,14 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"image"
+	"image/png"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/geofox/publisher/internal/secrets"
+	"github.com/geofox/publisher/internal/store"
 )
 
 // startRun runs the server with env (plus a temporary database, any free
@@ -112,7 +121,7 @@ func TestRunWithOnlyBluesky(t *testing.T) {
 	}
 	b, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != 503 || !strings.Contains(string(b), "no media store is configured") {
+	if resp.StatusCode != 503 || !strings.Contains(string(b), "no media store is set") {
 		t.Fatalf("upload = %d %s", resp.StatusCode, b)
 	}
 	if code := stop(); code != 0 {
@@ -128,12 +137,115 @@ func TestRunWithNothingConfigured(t *testing.T) {
 	}
 }
 
-// A media store needs the key that signs uploads to it.
+// A Blossom server set without a key to sign uploads with: the server
+// starts, says it has media, and an upload says to make a key.
 func TestRunBlossomWithoutNostrKey(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	env := map[string]string{"BLOSSOM_URL": "https://blossom.example", "DB_PATH": filepath.Join(t.TempDir(), "p.db")}
-	if code := run(ctx, runOptions{Getenv: func(k string) string { return env[k] }}); code != 2 {
-		t.Fatalf("exit code %d, want 2 (configuration error)", code)
+	url, stop := startRun(t, map[string]string{"AUTH_MODE": "proxy", "BLOSSOM_URL": "https://blossom.example"})
+	var inst struct {
+		Features struct {
+			Media bool `json:"media"`
+		} `json:"features"`
 	}
+	if code := get(t, url+"/v1/instance", &inst); code != 200 || !inst.Features.Media {
+		t.Fatalf("/v1/instance = %d %+v", code, inst)
+	}
+	resp, err := http.Post(url+"/v1/media", "image/png", strings.NewReader(string(tinyPNG(t))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 503 || !strings.Contains(string(b), "make a signing key in Settings, Media") {
+		t.Fatalf("upload = %d %s", resp.StatusCode, b)
+	}
+	if code := stop(); code != 0 {
+		t.Fatalf("exit code %d after a graceful stop", code)
+	}
+}
+
+// The master key's status is reported at /v1/instance and in /readyz (not
+// critical: accounts from the environment work): an account saved under
+// one key is locked under another key or none, and opens under its own.
+func TestRunMasterKeyStatus(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "p.db")
+	keyA, keyB := secrets.Generate(), secrets.Generate()
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := secrets.ParseMasterKey(keyA)
+	k, _ := secrets.NewKey(raw)
+	id := store.NewAccountID()
+	b := secrets.Binding{Owner: store.DefaultOwner, Scope: store.SecretScopeAccount, Ref: id, Name: "access_token", Audience: "https://m.example"}
+	sealed, err := secrets.Keyring{Current: k}.Seal(b, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateAccountWithSecrets(context.Background(), store.NewAccount{ID: id, OwnerID: store.DefaultOwner, Type: "mastodon",
+		Label: "Work", AuthMethod: "token", Config: map[string]any{"instance_url": "https://m.example"}, Actor: "test",
+		Secrets: []store.SealedSecret{{Owner: b.Owner, Scope: b.Scope, Ref: id, Name: b.Name, Audience: b.Audience, Sealed: sealed, KeyID: k.ID()}}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	for _, c := range []struct {
+		key, status, check, account string
+	}{
+		{keyB, "mismatch", "master key mismatch", "locked"},
+		{"", "missing", "master key missing", "locked"},
+		{keyA, "ok", "", "connected"},
+	} {
+		url, stop := startRun(t, map[string]string{"AUTH_MODE": "proxy", "DB_PATH": dbPath, "PUBLISHER_MASTER_KEY": c.key})
+		var ready struct {
+			Status string
+			Checks map[string]struct{ Status, Error string }
+		}
+		if code := get(t, url+"/readyz", &ready); code != 200 || ready.Checks["secrets"].Error != c.check {
+			t.Errorf("%s: /readyz = %d %+v", c.status, code, ready)
+		}
+		var inst struct {
+			Secrets struct{ Status, Detail string }
+		}
+		if code := get(t, url+"/v1/instance", &inst); code != 200 || inst.Secrets.Status != c.status || (c.status != "ok") != (inst.Secrets.Detail != "") {
+			t.Errorf("%s: /v1/instance = %d %+v", c.status, code, inst.Secrets)
+		}
+		for _, v := range []string{keyA, keyB, "tok"} {
+			if strings.Contains(inst.Secrets.Detail, v) {
+				t.Errorf("%s: the detail holds a secret", c.status)
+			}
+		}
+		var accts struct {
+			Data []struct{ ID, Status string }
+		}
+		if code := get(t, url+"/v1/accounts", &accts); code != 200 || len(accts.Data) != 1 || accts.Data[0].Status != c.account {
+			t.Errorf("%s: /v1/accounts = %d %+v", c.status, code, accts)
+		}
+		if code := stop(); code != 0 {
+			t.Fatalf("exit code %d", code)
+		}
+	}
+}
+
+// The server's log scrubs credentials from what it prints: a transport
+// error carrying a token in its URL, an nsec1 key in the message.
+func TestLoggerScrubs(t *testing.T) {
+	old := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(old) })
+	var buf bytes.Buffer
+	setupLogger("info", &buf)
+	err := &url.Error{Op: "Post", URL: "https://graph.example.com/x?access_token=THAATOKEN123", Err: errors.New("timeout")}
+	slog.Error("refresh failed for nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5", "err", err)
+	if out := buf.String(); strings.Contains(out, "THAATOKEN123") || strings.Contains(out, "vl029mgpspedva04") || !strings.Contains(out, "timeout") {
+		t.Errorf("log: %s", out)
+	}
+}
+
+// tinyPNG is a 2×2 PNG.
+func tinyPNG(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }

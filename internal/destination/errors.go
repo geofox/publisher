@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/geofox/publisher/internal/redact"
 )
 
 // ErrorClass says what a failure means for retrying.
@@ -87,9 +89,12 @@ type HTTPError struct {
 	Body       string // truncated response body
 }
 
+// Error names the operation and status, with the start of the answer
+// (one line, credentials redacted, no HTML page): Body stays whole for the
+// driver to read.
 func (e *HTTPError) Error() string {
 	msg := fmt.Sprintf("%s returned %d", e.Op, e.StatusCode)
-	if b := strings.TrimSpace(e.Body); b != "" {
+	if b := redact.Upstream(e.Body); b != "" {
 		msg += ": " + b
 	}
 	return msg

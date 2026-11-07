@@ -4,13 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/geofox/publisher/internal/destination"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/redact"
 )
 
 // Image represents a single image to attach to a Threads post.
@@ -54,10 +56,11 @@ type Result struct {
 }
 
 // Client is a hand-rolled Threads Graph API client.
-// BaseURL, RefreshURL, PollInterval, PollTimeout, and VideoPollTimeout are exported for test overrides.
+// BaseURL, RefreshURL, DebugURL, PollInterval, PollTimeout, and VideoPollTimeout are exported for test overrides.
 type Client struct {
 	BaseURL          string
 	RefreshURL       string
+	DebugURL         string // GrantEnd's
 	UserID           string
 	token            string
 	expiresAt        time.Time // when token stops working; zero when unknown
@@ -82,6 +85,7 @@ func NewWithNet(token, userID string, n destination.Net) *Client {
 	return &Client{
 		BaseURL:          "https://graph.threads.net/v1.0",
 		RefreshURL:       "https://graph.threads.net/refresh_access_token",
+		DebugURL:         DebugURL,
 		UserID:           userID,
 		token:            token,
 		HTTP:             n.Client(30 * time.Second),
@@ -338,7 +342,7 @@ func (c *Client) RefreshToken(ctx context.Context, current string) (string, time
 	if resp.StatusCode != http.StatusOK {
 		// Threads can echo the access_token (query param) back in error bodies;
 		// this error is logged + sent in alerts, so scrub the token first.
-		msg := scrubToken(strings.TrimSpace(string(body)), current)
+		msg := redact.Upstream(scrubToken(string(body), current))
 		return "", 0, fmt.Errorf("threads refresh: status %d: %s", resp.StatusCode, msg)
 	}
 	var out struct {

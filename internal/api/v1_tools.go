@@ -45,7 +45,8 @@ func (a *API) v1Translate(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if a.Translator == nil {
+	tr := a.translator()
+	if tr == nil {
 		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "translation is not configured on this server (DEEPL_API_KEY)")
 		return
 	}
@@ -64,7 +65,7 @@ func (a *API) v1Translate(w http.ResponseWriter, r *http.Request) {
 		invalid(w, r, errs)
 		return
 	}
-	text, src, err := a.Translator.Translate(r.Context(), req.Text, strings.ToLower(req.TargetLang))
+	text, src, err := tr.Translate(r.Context(), req.Text, strings.ToLower(req.TargetLang))
 	if err != nil {
 		slog.WarnContext(r.Context(), "v1: translate", "err", store.Scrub(err.Error()))
 		problem(w, r, http.StatusBadGateway, codeUpstream, "the translation service failed or could not be reached; try again")
@@ -175,8 +176,13 @@ type relayAccount struct {
 	release func()
 }
 
-func (ra relayAccount) owner() relaysync.Owner {
-	return relaysync.Owner{Home: ra.lister.HomeRelay(), Pubkey: ra.lister.OwnerPubkey()}
+// relayOwner is who a scan or sync works for. The home relay is the
+// account's own (its network policy); the targets are relays the owner
+// set (NIP-65, or added here), dialed through the guard for owner-set
+// addresses whoever set the account up.
+func (a *API) relayOwner(ra relayAccount) relaysync.Owner {
+	return relaysync.Owner{Home: ra.lister.HomeRelay(), Pubkey: ra.lister.OwnerPubkey(),
+		HomeClient: ra.lister.RelayClient(), TargetClient: destination.GuardedNet(a.Guard.Allow).Client(0)}
 }
 
 // relayAccountOf leases the request's account when it is one of the
@@ -294,39 +300,11 @@ func (a *API) v1PutRelays(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ra.release()
-	var errs []fieldError
 	if req.Secondary == nil {
-		errs = append(errs, fieldError{Pointer: "/secondary", Code: "required", Detail: "the relay list ([] for none)"})
-	}
-	if len(req.Secondary) > maxSyncRelays {
-		errs = append(errs, fieldError{Pointer: "/secondary", Code: "too_many", Detail: "at most 50 relays"})
-		invalid(w, r, errs)
+		invalid(w, r, []fieldError{{Pointer: "/secondary", Code: "required", Detail: "the relay list ([] for none)"}})
 		return
 	}
-	seen := map[string]bool{}
-	urls := []string{}
-	home := normalizeRelay(ra.lister.HomeRelay())
-	for i, raw := range req.Secondary {
-		ptr := "/secondary/" + strconv.Itoa(i)
-		u := normalizeRelay(raw)
-		switch {
-		case len(raw) > maxSyncRelayURL:
-			errs = append(errs, fieldError{Pointer: ptr, Code: "too_long", Detail: "at most 512 characters"})
-		case !validRelayURL(u):
-			errs = append(errs, fieldError{Pointer: ptr, Code: "invalid", Detail: "a ws:// or wss:// relay URL"})
-		case u == home:
-			errs = append(errs, fieldError{Pointer: ptr, Code: "not_allowed", Detail: "this is the home relay, which the others are compared with"})
-		case pubnostr.IsOverlayRelay(u):
-			errs = append(errs, fieldError{Pointer: ptr, Code: "not_allowed", Detail: "Tor and I2P relays can't be reached from the server"})
-		case localRelay(u):
-			errs = append(errs, fieldError{Pointer: ptr, Code: "not_allowed", Detail: "loopback and link-local addresses are refused (a relay on your network is fine)"})
-		case seen[u]:
-			errs = append(errs, fieldError{Pointer: ptr, Code: "duplicate", Detail: "this relay is already in the list"})
-		default:
-			seen[u] = true
-			urls = append(urls, u)
-		}
-	}
+	urls, errs := checkSyncRelays(req.Secondary, ra.lister.HomeRelay(), "/secondary")
 	if len(errs) > 0 {
 		invalid(w, r, errs)
 		return
@@ -352,6 +330,42 @@ func hasBody(r *http.Request) bool {
 		io.Closer
 	}{br, r.Body}
 	return err == nil
+}
+
+// checkSyncRelays checks a relay-sync list as the owner sets it (PUT, or
+// an import): at most 50 ws:// or wss:// relays, none of them the home
+// relay, one on Tor or I2P, on a loopback or link-local address, or twice.
+// It answers the list normalized, or what is wrong, under ptr.
+func checkSyncRelays(list []string, home, ptr string) ([]string, []fieldError) {
+	if len(list) > maxSyncRelays {
+		return nil, []fieldError{{Pointer: ptr, Code: "too_many", Detail: "at most 50 relays"}}
+	}
+	var errs []fieldError
+	seen := map[string]bool{}
+	urls := []string{}
+	home = normalizeRelay(home)
+	for i, raw := range list {
+		p := ptr + "/" + strconv.Itoa(i)
+		u := normalizeRelay(raw)
+		switch {
+		case len(raw) > maxSyncRelayURL:
+			errs = append(errs, fieldError{Pointer: p, Code: "too_long", Detail: "at most 512 characters"})
+		case !validRelayURL(u):
+			errs = append(errs, fieldError{Pointer: p, Code: "invalid", Detail: "a ws:// or wss:// relay URL"})
+		case u == home:
+			errs = append(errs, fieldError{Pointer: p, Code: "not_allowed", Detail: "this is the home relay, which the others are compared with"})
+		case pubnostr.IsOverlayRelay(u):
+			errs = append(errs, fieldError{Pointer: p, Code: "not_allowed", Detail: "Tor and I2P relays can't be reached from the server"})
+		case localRelay(u):
+			errs = append(errs, fieldError{Pointer: p, Code: "not_allowed", Detail: "loopback and link-local addresses are refused (a relay on your network is fine)"})
+		case seen[u]:
+			errs = append(errs, fieldError{Pointer: p, Code: "duplicate", Detail: "this relay is already in the list"})
+		default:
+			seen[u] = true
+			urls = append(urls, u)
+		}
+	}
+	return urls, errs
 }
 
 // normalizeRelay is the form relay URLs are stored and compared in: no
@@ -504,14 +518,14 @@ func (a *API) v1RelaysAction(action string) http.HandlerFunc {
 		defer cancel()
 		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(relaySyncBudget + 30*time.Second))
 		if action == "scan" {
-			out := a.Sync.Scan(ctx, ra.owner(), targets)
+			out := a.Sync.Scan(ctx, a.relayOwner(ra), targets)
 			if out == nil {
 				out = []relaysync.RelayDiff{}
 			}
 			writeV1(w, http.StatusOK, map[string]any{"relays": out})
 			return
 		}
-		out := a.Sync.Apply(ctx, ra.owner(), targets, direction)
+		out := a.Sync.Apply(ctx, a.relayOwner(ra), targets, direction)
 		if out == nil {
 			out = []relaysync.ApplyResult{}
 		}
@@ -526,8 +540,9 @@ func (a *API) v1RelaysAction(action string) http.HandlerFunc {
 // server, which should hold nothing that can post. Not found while no
 // token is configured.
 func (a *API) v1PublicFeed(w http.ResponseWriter, r *http.Request) {
-	if a.PublicFeedToken == "" {
-		problem(w, r, http.StatusNotFound, codeNotFound, "the public feed is off on this server (set PUBLIC_FEED_TOKEN)")
+	token := a.feedToken()
+	if token == "" {
+		problem(w, r, http.StatusNotFound, codeNotFound, "the public feed is off on this server (set its token in Settings, or PUBLIC_FEED_TOKEN)")
 		return
 	}
 	if a.Store == nil {
@@ -537,7 +552,7 @@ func (a *API) v1PublicFeed(w http.ResponseWriter, r *http.Request) {
 	const prefix = "Bearer "
 	h := r.Header.Get("Authorization")
 	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) ||
-		subtle.ConstantTimeCompare([]byte(h[len(prefix):]), []byte(a.PublicFeedToken)) != 1 {
+		subtle.ConstantTimeCompare([]byte(h[len(prefix):]), []byte(token)) != 1 {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="public-feed"`)
 		problem(w, r, http.StatusUnauthorized, codeUnauthenticated, "send Authorization: Bearer with the public feed token")
 		return

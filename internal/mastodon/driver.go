@@ -56,6 +56,8 @@ func (Driver) Manifest() destination.Manifest {
 			// Mastodon keeps an Idempotency-Key for an hour.
 			IdempotencyKeyTTLSecs: 3600,
 		},
+		Auth:   authMethods(),
+		Config: configFields(),
 	}
 }
 

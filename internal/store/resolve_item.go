@@ -82,7 +82,7 @@ func (s *Store) ResolveItem(ctx context.Context, r Resolution) error {
 		// engine's duplicate guard (an uncertain attempt older than the
 		// destination remembers keys) no longer applies.
 		_, err = tx.ExecContext(ctx, `UPDATE target_items SET status = ?, next_attempt_at = ?, attempt_count = 0,
-			doubt_reset_at = ? WHERE id = ?`,
+			doubt_reset_at = ?, manual_due = 1 WHERE id = ?`,
 			ItemFailed, next, at, itemID)
 	}
 	if err != nil {
@@ -101,7 +101,7 @@ func (s *Store) ResolveItem(ctx context.Context, r Resolution) error {
 	if !canceled && (!r.Published || r.Continue) {
 		// The rest of the thread: what was planned, and failures the engine
 		// had stopped retrying when it gave the target up.
-		res, err := tx.ExecContext(ctx, `UPDATE target_items SET next_attempt_at = ?
+		res, err := tx.ExecContext(ctx, `UPDATE target_items SET next_attempt_at = ?, manual_due = 1
 			WHERE target_id = ? AND ordinal > ? AND status IN ('planned', 'failed')`, at, r.TargetID, r.Ordinal)
 		if err != nil {
 			return err

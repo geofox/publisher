@@ -93,7 +93,7 @@ func qaFetch(t *testing.T, pageLimit, relayCap int) {
 	srv := httptest.NewServer(rl)
 	defer srv.Close()
 	io := &LiveIO{PageLimit: pageLimit, PageTimeout: 5 * time.Second, TotalTimeout: 10 * time.Second, MaxEvents: 100}
-	got, err := io.Fetch(context.Background(), "ws"+strings.TrimPrefix(srv.URL, "http"), pk)
+	got, err := io.Fetch(context.Background(), http.DefaultClient, "ws"+strings.TrimPrefix(srv.URL, "http"), pk)
 	if err != nil {
 		t.Fatal(err)
 	}

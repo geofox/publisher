@@ -41,6 +41,10 @@ type ClaimFilter struct {
 	// MissedBefore, when set, skips scheduled posts due before it: they are
 	// missed, not late (MarkOverdueMissed records them).
 	MissedBefore time.Time
+	// HoldAutoRetries skips failures waiting for an automatic retry
+	// (automatic retries are off): what the owner retried by hand
+	// (manual_due) and first attempts are still claimed.
+	HoldAutoRetries bool
 }
 
 // ErrClaimLost is returned when an item is no longer in the state its
@@ -74,7 +78,7 @@ func (s *Store) ClaimItem(ctx context.Context, now time.Time, f ClaimFilter) (*C
 	// One statement, so the write lock is taken before the candidate is
 	// chosen and two workers can't claim the same item.
 	var c Claim
-	err = tx.QueryRowContext(ctx, `UPDATE target_items SET status = 'sending', next_attempt_at = ?, committing_at = NULL
+	err = tx.QueryRowContext(ctx, `UPDATE target_items SET status = 'sending', next_attempt_at = ?, committing_at = NULL, manual_due = 0
 		WHERE id = (
 		  SELECT ti.id FROM target_items ti
 		    JOIN post_targets pt ON pt.id = ti.target_id
@@ -86,12 +90,13 @@ func (s *Store) ClaimItem(ctx context.Context, now time.Time, f ClaimFilter) (*C
 		     AND (? = 0 OR pt.id = ?)
 		     AND p.id NOT IN (SELECT value FROM json_each(?))
 		     AND NOT (p.status = 'scheduled' AND ? IS NOT NULL AND p.scheduled_at < ?)
+		     AND NOT (? AND ti.status IN ('failed', 'unknown') AND ti.manual_due = 0)
 		     AND NOT EXISTS (SELECT 1 FROM target_items x WHERE x.target_id = ti.target_id AND x.status = 'sending')
 		     AND NOT EXISTS (SELECT 1 FROM target_items x WHERE x.target_id = ti.target_id AND x.ordinal < ti.ordinal
 		                       AND x.status NOT IN ('published', 'partial'))
 		   ORDER BY ti.next_attempt_at, ti.id LIMIT 1)
 		RETURNING id, target_id, ordinal, attempt_count, idem_key`,
-		now, now, f.TargetID, f.TargetID, string(exclude), missed, missed).Scan(&c.ItemID, &c.TargetID, &c.Ordinal, &c.Attempts, &c.IdemKey)
+		now, now, f.TargetID, f.TargetID, string(exclude), missed, missed, f.HoldAutoRetries).Scan(&c.ItemID, &c.TargetID, &c.Ordinal, &c.Attempts, &c.IdemKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -410,7 +415,8 @@ func (s *Store) MarkDue(ctx context.Context, postID string, targetIDs []int64, n
 		// A retry by hand is the owner's word to send: earlier attempts no
 		// longer count as maybe-posted for the duplicate guard.
 		res, err := tx.ExecContext(ctx, `UPDATE target_items
-			SET next_attempt_at = ?, doubt_reset_at = ?, status = CASE WHEN status = 'canceled' THEN 'planned' ELSE status END
+			SET next_attempt_at = ?, doubt_reset_at = ?, manual_due = 1,
+			    status = CASE WHEN status = 'canceled' THEN 'planned' ELSE status END
 			WHERE target_id = ? AND status IN ('planned', 'failed', 'unknown', 'canceled')
 			  AND target_id IN (SELECT id FROM post_targets WHERE post_id = ?)`, now, now, id, postID)
 		if err != nil {

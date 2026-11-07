@@ -11,7 +11,7 @@ var _ destination.EnvSource = Driver{}
 
 // EnvVars implements destination.EnvSource.
 func (Driver) EnvVars() []destination.EnvVar {
-	return []destination.EnvVar{{Name: "MASTODON_TOKEN", Required: true}, {Name: "MASTODON_BASE_URL", Required: true}}
+	return []destination.EnvVar{{Name: "MASTODON_TOKEN", Required: true, Secret: true}, {Name: "MASTODON_BASE_URL", Required: true}}
 }
 
 // FromEnv implements destination.EnvSource: MASTODON_TOKEN configures one

@@ -1,8 +1,8 @@
-import { test, expect, openApp, switchTab } from "./fixtures";
+import { test, expect, openApp, openSettings } from "./fixtures";
 
 test("creates a scoped token that works on /v1, then revokes it", async ({ page, request }) => {
   await openApp(page);
-  await switchTab(page, "tokens");
+  await openSettings(page, "access");
   const name = "e2e-" + Date.now();
   await page.locator("#tok-name-input").fill(name);
   // Publishing scopes are checked by default; add history reading.

@@ -317,13 +317,42 @@ func sourceImagesWanted(plan *createPlan) int {
 	return max(0, min(n, room))
 }
 
+// withoutUnreachableCopies: a network that fetches media by address
+// (Nostr, Threads) can't reach the original's images copied to this
+// server's disk unless it serves them publicly, so its link-quote goes
+// without them, and says so.
+func (a *API) withoutUnreachableCopies(plan *createPlan) {
+	ix := plan.ix
+	if a.DiskMedia == nil {
+		return
+	}
+	unreachable := false
+	for _, m := range ix.SourceMediaRecords {
+		if _, local := a.DiskMedia.Owns(m.BlossomURL); local && !a.DiskMedia.Reachable(m.BlossomURL) {
+			unreachable = true
+		}
+	}
+	if !unreachable {
+		return
+	}
+	for i := range ix.Targets {
+		pt := &plan.targets[i]
+		if pt.account.ID == ix.SourceAccount || pt.caps.Media.Transport != destination.TransportURL {
+			continue
+		}
+		ix.Targets[i].NoSourceMedia = true
+		pt.warnings = append(pt.warnings, "the original's images aren't attached: "+displayName(pt.account.Type)+
+			" fetches media by address, and this server's disk doesn't serve them publicly (Settings, Media)")
+	}
+}
+
 // rehostSourceMedia copies a quoted post's images to media storage, for
 // its link-quotes, and returns how many it copied. Best-effort: an image
 // that won't fetch is left out, and videos are (they would be too large
 // to copy here).
 func (a *API) rehostSourceMedia(ctx context.Context, plan *createPlan) int {
 	ix, want := plan.ix, sourceImagesWanted(plan)
-	if a.media == nil || len(ix.Targets) < 2 || want == 0 {
+	if !a.media.Enabled() || len(ix.Targets) < 2 || want == 0 {
 		return 0
 	}
 	ctx, cancel := context.WithTimeout(ctx, sourceMediaBudget)
@@ -373,6 +402,7 @@ func (a *API) rehostSourceMedia(ctx context.Context, plan *createPlan) int {
 			ix.SourceMediaRecords = append(ix.SourceMediaRecords, g.rec)
 		}
 	}
+	a.withoutUnreachableCopies(plan)
 	return len(ix.SourceMediaRecords)
 }
 

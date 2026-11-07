@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
@@ -16,8 +15,11 @@ import (
 )
 
 // /v1/accounts: the owner's accounts. GET lists and reads them, each with
-// its status, its profile as its network last reported it, and what it
-// can do; PATCH changes the owner's settings on one (accounts:write).
+// its status, its profile as its network last reported it, what it can
+// do, its configuration and which credentials are set (never their
+// values); PATCH changes the owner's settings on one, and the
+// configuration and credentials of one added in the app (accounts:write).
+// Adding, deleting and the actions are in v1_accounts_write.go.
 
 const maxAccountLabel = 64
 
@@ -44,11 +46,41 @@ type v1AccountBody struct {
 	Order           int  `json:"order"`
 	DefaultSelected bool `json:"default_selected"`
 	PublicFeed      bool `json:"public_feed"`
+	// Defaults are what a post to the account gets when it says nothing
+	// of them.
+	Defaults v1AccountDefaults `json:"defaults"`
 	// Capabilities is absent when no driver for the type is registered
 	// (an account kept for its history after its driver went away).
 	Capabilities *destination.Capabilities `json:"capabilities,omitempty"`
-	CreatedAt    string                    `json:"created_at"`
-	UpdatedAt    string                    `json:"updated_at"`
+	// AuthMethod is how it connects (GET /v1/destinations lists them).
+	AuthMethod string `json:"auth_method,omitempty"`
+	// Config is its configuration: the type's fields and the method's
+	// fields that aren't secret.
+	Config map[string]any `json:"config"`
+	// Credentials says which credentials are set and when; never what
+	// they are.
+	Credentials map[string]accounts.CredentialInfo `json:"credentials"`
+	// LockedFields are the fields environment variables set (an account
+	// from the environment): change them there, or adopt it.
+	LockedFields []string `json:"locked_fields,omitempty"`
+	// Health is the last authenticated check.
+	Health    *v1AccountHealth `json:"health,omitempty"`
+	CreatedAt string           `json:"created_at"`
+	UpdatedAt string           `json:"updated_at"`
+	// DeletedAt is set on a deleted account (?include=deleted).
+	DeletedAt string `json:"deleted_at,omitempty"`
+}
+
+// v1AccountHealth is an account's last authenticated check.
+type v1AccountHealth struct {
+	OK        bool   `json:"ok"`
+	Reachable bool   `json:"reachable"`
+	AuthOK    *bool  `json:"auth_ok,omitempty"`
+	Message   string `json:"message,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+	// ReconnectBy: the network's grant ends then (a Meta grant).
+	ReconnectBy string `json:"reconnect_by,omitempty"`
+	CheckedAt   string `json:"checked_at"`
 }
 
 // accountETag is an account's version: its updated_at, which moves only
@@ -65,17 +97,48 @@ func (a *API) v1AccountViews(r *http.Request, accts []store.Account) []v1Account
 	for _, ac := range accts {
 		v := v1AccountBody{
 			ID: ac.ID, Type: ac.Type, Label: ac.Label, Handle: ac.Handle, RemoteID: ac.RemoteID, Source: ac.Source,
-			Enabled: ac.Enabled, DefaultSelected: ac.DefaultSelected, PublicFeed: ac.PublicFeed,
+			Enabled: ac.Enabled, DefaultSelected: ac.DefaultSelected, PublicFeed: ac.PublicFeed, Defaults: accountDefaults(ac),
+			Config: map[string]any{}, Credentials: map[string]accounts.CredentialInfo{},
 			CreatedAt: rfc3339(ac.CreatedAt), UpdatedAt: rfc3339(ac.UpdatedAt),
 		}
-		if _, ok := destination.Lookup(ac.Type); ok {
+		if !ac.DeletedAt.IsZero() {
+			v.DeletedAt = rfc3339(ac.DeletedAt)
+		}
+		if _, ok := destination.Lookup(ac.Type); ok && ac.DeletedAt.IsZero() {
 			c := a.caps(r.Context(), ac.ID, ac.Type)
 			v.Capabilities = &c
 		}
+		if aw, ok := a.Accounts.(AccountWriter); ok && ac.DeletedAt.IsZero() {
+			d, err := aw.Details(r.Context(), ac)
+			if err != nil {
+				slog.ErrorContext(r.Context(), "v1: reading an account's settings failed", "account", ac.ID, "err", err)
+			}
+			v.AuthMethod, v.LockedFields = d.Method, d.LockedFields
+			if d.Config != nil {
+				v.Config = d.Config
+			}
+			if d.Credentials != nil {
+				v.Credentials = d.Credentials
+			}
+		}
 		v.Status, v.StatusReason, v.Order = string(accounts.NotConfigured), "this server hasn't loaded it; restart Publisher", -1
+		if !ac.DeletedAt.IsZero() {
+			v.Status, v.StatusReason = string(accounts.Deleted), "you deleted it"
+		}
 		if a.Accounts != nil {
 			if en, ok := a.Accounts.Get(ac.ID); ok {
 				v.Status, v.StatusReason, v.Order = string(en.Status), en.Reason, en.Order
+				if en.Health != nil {
+					h := en.Health
+					v.Health = &v1AccountHealth{OK: h.OK, Reachable: h.Reachable, AuthOK: h.AuthOK, Message: h.Message,
+						CheckedAt: rfc3339(en.CheckedAt)}
+					if h.ExpiresAt != nil {
+						v.Health.ExpiresAt = rfc3339(*h.ExpiresAt)
+					}
+					if h.ReconnectBy != nil {
+						v.Health.ReconnectBy = rfc3339(*h.ReconnectBy)
+					}
+				}
 			}
 			if p, ok := a.Accounts.Profile(ac.ID); ok {
 				if p.Handle != "" {
@@ -108,12 +171,22 @@ func (a *API) v1Accounts(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	list := a.Store.Accounts
+	switch inc := r.URL.Query().Get("include"); inc {
+	case "":
+	case "deleted":
+		list = a.Store.AccountsWithDeleted
+	default:
+		problem(w, r, http.StatusBadRequest, codeInvalidParameter, "include takes deleted",
+			fieldError{Parameter: "include", Code: "invalid", Detail: "deleted, or leave it out"})
+		return
+	}
 	if a.Store == nil {
 		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "no database")
 		return
 	}
 	p, _ := principalFrom(r.Context())
-	accts, err := a.Store.Accounts(r.Context(), p.OwnerID)
+	accts, err := list(r.Context(), p.OwnerID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "v1: list accounts", "err", err)
 		problem(w, r, http.StatusInternalServerError, codeInternal, "listing accounts failed")
@@ -166,6 +239,13 @@ type v1AccountPatchIn struct {
 	Enabled         json.RawMessage `json:"enabled"`
 	DefaultSelected json.RawMessage `json:"default_selected"`
 	PublicFeed      json.RawMessage `json:"public_feed"`
+	// Defaults replaces the account's defaults ({} clears them).
+	Defaults json.RawMessage `json:"defaults"`
+	// Method, Config and Credentials reconnect an account added in the
+	// app (checkCredentialPatch).
+	Method      json.RawMessage `json:"method"`
+	Config      json.RawMessage `json:"config"`
+	Credentials json.RawMessage `json:"credentials"`
 }
 
 // checkAccountPatch turns a patch into the store's change, or says what is
@@ -180,18 +260,10 @@ func checkAccountPatch(in v1AccountPatchIn) (store.AccountMeta, []fieldError) {
 		var s string
 		if err := json.Unmarshal(in.Label, &s); err != nil || isJSONNull(in.Label) {
 			add("/label", "invalid", "a string of 1 to 64 characters")
+		} else if s, fe := checkLabel(s, false); fe != nil {
+			errs = append(errs, *fe)
 		} else {
-			s = strings.TrimSpace(s)
-			switch {
-			case s == "":
-				add("/label", "required", "a label can't be empty")
-			case utf8.RuneCountInString(s) > maxAccountLabel:
-				add("/label", "too_long", "at most 64 characters")
-			case nameProblem(s) != "":
-				add("/label", "invalid", nameProblem(s))
-			default:
-				m.Label = &s
-			}
+			m.Label = &s
 		}
 	}
 	for _, f := range []struct {
@@ -220,8 +292,10 @@ func isJSONNull(m json.RawMessage) bool { return strings.TrimSpace(string(m)) ==
 
 // v1PatchAccount changes the owner's settings on an account: its label,
 // whether it is on, whether new posts select it, and whether its posts go
-// to the public feed. If-Match (the ETag of a read) refuses a change made
-// on a stale read; without it the change applies to the account as it is.
+// to the public feed; and, for an account added in the app, its
+// configuration and credentials (opened and identified first: spec
+// §5.4). If-Match (the ETag of a read) refuses a change made on a stale
+// read; without it the change applies to the account as it is.
 func (a *API) v1PatchAccount(w http.ResponseWriter, r *http.Request) {
 	var in v1AccountPatchIn
 	if !decodeJSON(w, r, &in) {
@@ -244,9 +318,33 @@ func (a *API) v1PatchAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m, errs := checkAccountPatch(in)
+	creds, cerrs := checkCredentialPatch(in)
+	errs = append(errs, cerrs...)
+	if in.Defaults != nil && cur.DeletedAt.IsZero() {
+		d, derrs := a.checkAccountDefaults(r.Context(), cur, in.Defaults)
+		if errs = append(errs, derrs...); len(derrs) == 0 && d != cur.Defaults {
+			m.Defaults = &d
+		}
+	}
 	if len(errs) > 0 {
 		invalid(w, r, errs)
 		return
+	}
+	if !cur.DeletedAt.IsZero() {
+		problem(w, r, http.StatusNotFound, codeNotFound, "account "+cur.ID+" was deleted")
+		return
+	}
+	// The connection first: when it is refused, nothing changes.
+	if creds.set {
+		next, ok := a.changeAccountCredentials(w, r, cur, creds)
+		if !ok {
+			return
+		}
+		cur = next
+		if m == (store.AccountMeta{}) {
+			a.writeAccountV1(w, r, cur)
+			return
+		}
 	}
 	p, _ := principalFrom(r.Context())
 	// The change applies to the account as just read, so one landing in

@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/dispatch"
+	"github.com/geofox/publisher/internal/export"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -117,3 +119,59 @@ func (e *engine) Acquire(id string) (destination.Account, func(), error) {
 	return e.registry().Acquire(id)
 }
 func (e *engine) Update(id string, row store.Account) error { return e.registry().Update(id, row) }
+
+// The api.AccountWriter methods (adding, changing and deleting accounts
+// in the app) reach the current registry too.
+
+func (e *engine) Create(ctx context.Context, n accounts.NewAccount) (accounts.Entry, error) {
+	return e.registry().Create(ctx, n)
+}
+func (e *engine) ChangeCredentials(ctx context.Context, u accounts.CredentialUpdate) (accounts.Entry, error) {
+	return e.registry().ChangeCredentials(ctx, u)
+}
+func (e *engine) Adopt(ctx context.Context, owner, id, actor, tokenID string) (accounts.Entry, error) {
+	return e.registry().Adopt(ctx, owner, id, actor, tokenID)
+}
+func (e *engine) Delete(ctx context.Context, owner, id, actor, tokenID string) error {
+	return e.registry().Delete(ctx, owner, id, actor, tokenID)
+}
+func (e *engine) Reveal(ctx context.Context, owner, id string) (map[string]string, error) {
+	return e.registry().Reveal(ctx, owner, id)
+}
+func (e *engine) Details(ctx context.Context, row store.Account) (accounts.Details, error) {
+	return e.registry().Details(ctx, row)
+}
+func (e *engine) CheckNow(ctx context.Context, id string) (destination.Health, bool) {
+	return e.registry().CheckNow(ctx, id)
+}
+
+// The api.AccountConnector methods (connecting by signing in at the
+// network) too.
+
+func (e *engine) BeginConnect(ctx context.Context, q accounts.ConnectStart) (accounts.StartedFlow, error) {
+	return e.registry().BeginConnect(ctx, q)
+}
+func (e *engine) CompleteConnect(ctx context.Context, typ string, callback url.Values, sessionUser string) (accounts.FlowView, error) {
+	return e.registry().CompleteConnect(ctx, typ, callback, sessionUser)
+}
+func (e *engine) Flow(ctx context.Context, owner, user, id string) (accounts.FlowView, error) {
+	return e.registry().Flow(ctx, owner, user, id)
+}
+func (e *engine) Choose(ctx context.Context, owner, user, id string, n int) (accounts.FlowView, error) {
+	return e.registry().Choose(ctx, owner, user, id, n)
+}
+func (e *engine) ExportAccounts(ctx context.Context, owner string) ([]export.Account, error) {
+	return e.registry().ExportAccounts(ctx, owner)
+}
+func (e *engine) ImportAccount(ctx context.Context, owner string, x export.Account, actor string) (accounts.Imported, error) {
+	return e.registry().ImportAccount(ctx, owner, x, actor)
+}
+func (e *engine) CheckImport(owner string, x export.Account) (string, string) {
+	return e.registry().CheckImport(owner, x)
+}
+func (e *engine) EnvMatch(owner string, x export.Account) (store.Account, bool) {
+	return e.registry().EnvMatch(owner, x)
+}
+func (e *engine) ConnectUnavailable(typ string, a destination.AuthMethod, redirectURI string) string {
+	return e.registry().ConnectUnavailable(typ, a, redirectURI)
+}

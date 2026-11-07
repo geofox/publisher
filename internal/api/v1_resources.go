@@ -2,7 +2,10 @@ package api
 
 import (
 	"net/http"
+	"slices"
+	"strings"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/translate"
@@ -24,6 +27,14 @@ type v1InstanceBody struct {
 	Scopes            []string         `json:"scopes"`
 	Destinations      []string         `json:"destinations"`
 	Pagination        v1PaginationInfo `json:"pagination"`
+	// Secrets is the master key's status: whether credentials can be
+	// saved in the app, and what to do when they can't.
+	Secrets v1SecretsInfo `json:"secrets"`
+}
+
+type v1SecretsInfo struct {
+	Status string `json:"status"` // none | ok | missing | mismatch
+	Detail string `json:"detail,omitempty"`
 }
 
 type v1Features struct {
@@ -54,12 +65,10 @@ type v1PaginationInfo struct {
 }
 
 func (a *API) v1Instance(w http.ResponseWriter, r *http.Request) {
-	langs := a.UserLanguages
-	if langs == nil {
-		langs = []string{}
-	}
+	langs := a.userLanguages()
+	tr := a.translator()
 	targets := []string{}
-	if a.Translator != nil {
+	if tr != nil {
 		targets = translate.Intersect(langs)
 	}
 	authMode := a.mode()
@@ -71,8 +80,8 @@ func (a *API) v1Instance(w http.ResponseWriter, r *http.Request) {
 		Version:           version,
 		Auth:              authMode,
 		SignInRecommended: authMode == ModeProxy,
-		Features: v1Features{Media: a.media != nil, Translate: a.Translator != nil, Video: a.media != nil && a.VideoJobs != nil,
-			PublicFeed: a.PublicFeedToken != "",
+		Features: v1Features{Media: a.media.Enabled(), Translate: tr != nil, Video: a.media.Enabled() && a.VideoJobs != nil,
+			PublicFeed: a.feedToken() != "",
 			RelaySync:  a.relaySyncAvailable(r.Context())},
 		UserLanguages:    langs,
 		TranslateTargets: targets,
@@ -84,19 +93,62 @@ func (a *API) v1Instance(w http.ResponseWriter, r *http.Request) {
 		Scopes:       v1Scopes,
 		Destinations: destination.Types(),
 		Pagination:   v1PaginationInfo{DefaultLimit: defaultPageLimit, MaxLimit: maxPageLimit},
+		Secrets:      a.secretsInfo(),
 	})
 }
 
 // GET /v1/destinations: the registered destination types.
 
+// manifester gives a type's manifest with the operator's defaults for a
+// new account (accounts.Registry).
+type manifester interface {
+	Manifest(typ string) (destination.Manifest, bool)
+}
+
+// connectReadiness says why a sign-in method can't start now
+// (accounts.Registry).
+type connectReadiness interface {
+	ConnectUnavailable(typ string, a destination.AuthMethod, redirectURI string) string
+}
+
 func (a *API) v1Destinations(w http.ResponseWriter, _ *http.Request) {
 	out := []destination.Manifest{}
+	mf, _ := a.Accounts.(manifester)
 	for _, t := range destination.Types() {
-		if d, ok := destination.Lookup(t); ok {
-			out = append(out, d.Manifest())
+		if mf != nil {
+			if m, ok := mf.Manifest(t); ok {
+				out = append(out, a.withConnect(m))
+			}
+		} else if d, ok := destination.Lookup(t); ok {
+			out = append(out, a.withConnect(d.Manifest()))
 		}
 	}
 	writeV1(w, http.StatusOK, newList(out, nil))
+}
+
+// withConnect adds what the server knows to a type's sign-in methods:
+// where the network sends the owner back, and why one can't start now.
+func (a *API) withConnect(m destination.Manifest) destination.Manifest {
+	auth := slices.Clone(m.Auth)
+	ready, _ := a.Accounts.(connectReadiness)
+	for i := range auth {
+		x := &auth[i]
+		x.RedirectURI, x.Unavailable = "", ""
+		if x.Flow != destination.FlowRedirect {
+			continue
+		}
+		base := a.connectBase()
+		if strings.TrimSpace(base) == "" {
+			x.Unavailable = "set PUBLIC_URL, Publisher's public address, where the network sends you back"
+			continue
+		}
+		x.RedirectURI = accounts.RedirectURI(base, m.Type)
+		if ready != nil {
+			x.Unavailable = ready.ConnectUnavailable(m.Type, *x, x.RedirectURI)
+		}
+	}
+	m.Auth = auth
+	return m
 }
 
 // GET /v1/me: who is calling, and what they may do.
@@ -129,4 +181,13 @@ func (a *API) v1Me(w http.ResponseWriter, r *http.Request) {
 		body.Token = &t
 	}
 	writeV1(w, http.StatusOK, body)
+}
+
+// secretsInfo is the master key's status for /v1/instance.
+func (a *API) secretsInfo() v1SecretsInfo {
+	ks := a.MasterKey
+	if ks.Status == "" {
+		ks.Status = accounts.KeyNone
+	}
+	return v1SecretsInfo{Status: string(ks.Status), Detail: ks.Detail}
 }

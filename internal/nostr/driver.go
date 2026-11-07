@@ -57,6 +57,8 @@ func (Driver) Manifest() destination.Manifest {
 			// event id.
 			Idempotent: destination.IdempotentNatural,
 		},
+		Auth:   authMethods(),
+		Config: configFields(),
 	}
 }
 
@@ -91,6 +93,9 @@ type RelayLister interface {
 	HomeRelay() string
 	OwnerPubkey() gonostr.PubKey
 	ResolveWriteRelays(ctx context.Context) ([]string, error)
+	// RelayClient dials the account's own relays (the home relay) with
+	// the host's network policy for the account.
+	RelayClient() *http.Client
 }
 
 // HomeRelay implements RelayLister: the account's bootstrap relay.
@@ -98,6 +103,9 @@ func (a *Account) HomeRelay() string { return a.P.HomeRelay() }
 
 // OwnerPubkey implements RelayLister.
 func (a *Account) OwnerPubkey() gonostr.PubKey { return a.P.OwnerPubkey() }
+
+// RelayClient implements RelayLister.
+func (a *Account) RelayClient() *http.Client { return a.P.RelayClient() }
 
 // ResolveWriteRelays implements RelayLister.
 func (a *Account) ResolveWriteRelays(ctx context.Context) ([]string, error) {

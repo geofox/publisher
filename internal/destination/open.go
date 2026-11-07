@@ -2,6 +2,7 @@ package destination
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -85,10 +86,16 @@ func MergeState(secrets map[string]string, config map[string]any, u StateUpdate)
 	return outS, outC
 }
 
+// ErrStateUnsupported is Save's answer for an account that has nowhere to
+// keep state (an account from the environment without a master key, other
+// than 2.x's one Threads account).
+var ErrStateUnsupported = errors.New("this account can't save state without a master key (PUBLISHER_MASTER_KEY)")
+
 // AccountHost is the core's side of an open account.
 type AccountHost interface {
 	// Save merges new secrets and config into the stored state (see
-	// StateUpdate), atomically and durably.
+	// StateUpdate), atomically and durably. ErrStateUnsupported: nowhere
+	// to keep it.
 	Save(ctx context.Context, u StateUpdate) error
 	// Net is how the account reaches the network for one kind of address.
 	// Drivers build every HTTP client, transport and WebSocket dial from
@@ -129,6 +136,9 @@ type Net struct {
 	// CheckRedirect decides whether a redirect is followed (nil: Go's
 	// default of at most 10).
 	CheckRedirect func(req *http.Request, via []*http.Request) error
+	// TLSClientConfig is the TLS configuration (nil: Go's, with the
+	// system's roots). Only the e2e harness sets one, to trust its fakes.
+	TLSClientConfig *tls.Config
 }
 
 // TransportOptions are the timeouts of an HTTP transport built from a Net.
@@ -161,6 +171,7 @@ func (n Net) Transport(o TransportOptions) *http.Transport {
 	return &http.Transport{
 		Proxy:                 n.Proxy,
 		DialContext:           n.Dial(),
+		TLSClientConfig:       n.TLSClientConfig,
 		ForceAttemptHTTP2:     true,
 		HTTP2:                 &http.HTTP2Config{SendPingTimeout: 30 * time.Second, PingTimeout: 15 * time.Second},
 		MaxIdleConns:          100,
@@ -193,17 +204,20 @@ func TrustedNet() Net {
 // replays a request body (a 307 or 308) only to the first request's host
 // or one of its subdomains: the hosts Go itself keeps the Authorization
 // header for. A body sent anywhere else could carry a password (a
-// sign-in) to a host the operator never named.
+// sign-in) to a host the operator never named. No Referer is sent.
 func SafeRedirect(req *http.Request, via []*http.Request) error {
+	// Go sends the previous address as Referer, query and all (a token
+	// in it included): a server has no use for one.
+	req.Header.Del("Referer")
 	if len(via) >= 10 {
-		return errors.New("stopped after 10 redirects")
+		return redirectRefused("stopped after 10 redirects")
 	}
 	prev := via[len(via)-1]
 	if prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
-		return fmt.Errorf("refused a redirect from https to %s", req.URL.Scheme)
+		return redirectRefused("refused a redirect from https to " + req.URL.Scheme)
 	}
 	if req.GetBody != nil && req.ContentLength != 0 && !sameSite(req.URL.Hostname(), via[0].URL.Hostname()) {
-		return errors.New("refused to send a request body to another host on a redirect")
+		return redirectRefused("refused to send a request body to another host on a redirect")
 	}
 	return nil
 }
@@ -239,7 +253,124 @@ func ContentNet(blocked func(net.IP) bool) Net {
 			}
 			return nil
 		}}
-	return Net{DialContext: d.DialContext, CheckRedirect: SafeRedirect}
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := d.DialContext(ctx, network, addr)
+		return c, hideAddress(network, err)
+	}
+	return Net{DialContext: dial, CheckRedirect: SafeRedirect}
+}
+
+// hideAddress drops the address from a refused dial's error (net.Dialer
+// names the address it refused): the error can reach the owner, and what
+// a name resolves to inside the server's network is not theirs to learn.
+func hideAddress(network string, err error) error {
+	if errors.Is(err, ErrBlockedAddress) {
+		return &net.OpError{Op: "dial", Net: network, Err: ErrBlockedAddress}
+	}
+	return err
+}
+
+// GuardedNet reaches addresses through allow, which judges every
+// connection by the host the caller dialed (a name or an address) and the
+// address actually connected to, on every redirect too: a name that
+// resolves to a refused address later is still refused. No proxy (a proxy
+// would dial for us, past the check); GuardedRedirect. allow's error is
+// returned as ErrBlockedAddress.
+func GuardedNet(allow func(host string, ip net.IP) error) Net {
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second,
+			Control: func(_, address string, _ syscall.RawConn) error {
+				h, _, err := net.SplitHostPort(address)
+				if err != nil {
+					return err
+				}
+				ip := net.ParseIP(h)
+				if ip == nil || allow(host, ip) != nil {
+					return ErrBlockedAddress
+				}
+				return nil
+			}}
+		c, err := d.DialContext(ctx, network, addr)
+		return c, hideAddress(network, err)
+	}
+	return Net{DialContext: dial, CheckRedirect: GuardedRedirect}
+}
+
+// maxGuardedRedirects bounds the redirects GuardedRedirect follows.
+const maxGuardedRedirects = 5
+
+// GuardedRedirect is the redirect rule for owner-set and content
+// addresses: at most 5 redirects, never from https to http, never a
+// redirect of a request other than GET or HEAD (its body may hold a
+// password), a request carrying a credential (Authorization, a cookie, a
+// body, a token in its address) never leaves its origin, and no Referer
+// is sent.
+func GuardedRedirect(req *http.Request, via []*http.Request) error {
+	req.Header.Del("Referer") // the previous address, a token in its query included
+	if len(via) >= maxGuardedRedirects {
+		return redirectRefused(fmt.Sprintf("stopped after %d redirects", maxGuardedRedirects))
+	}
+	first, prev := via[0], via[len(via)-1]
+	if prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return redirectRefused("refused a redirect from https to " + req.URL.Scheme)
+	}
+	if first.Method != http.MethodGet && first.Method != http.MethodHead {
+		return redirectRefused("refused to follow a redirect of a " + first.Method + " request")
+	}
+	credential := first.Header.Get("Authorization") != "" || first.Header.Get("Cookie") != "" ||
+		first.GetBody != nil || first.ContentLength > 0 || urlCredential(first.URL)
+	if credential && !sameOrigin(req.URL, first.URL) {
+		return redirectRefused("refused to send a credential to another server on a redirect")
+	}
+	return nil
+}
+
+// urlCredential reports whether an address carries a credential: a user
+// name or password, or a query parameter named like one (access_token,
+// api_key, secret, password, sig…).
+func urlCredential(u *url.URL) bool {
+	if u.User != nil {
+		return true
+	}
+	for k := range u.Query() {
+		k = strings.ToLower(k)
+		for _, w := range []string{"token", "key", "secret", "pass", "auth", "sig", "code", "session"} {
+			if strings.Contains(k, w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ErrRedirectRefused: a redirect rule refused to follow (errors.Is).
+var ErrRedirectRefused = errors.New("redirect refused")
+
+type redirectRefused string
+
+func (e redirectRefused) Error() string        { return string(e) }
+func (e redirectRefused) Is(target error) bool { return target == ErrRedirectRefused }
+
+// sameOrigin compares scheme, host and port (the default port spelled out
+// or not).
+func sameOrigin(a, b *url.URL) bool {
+	port := func(u *url.URL) string {
+		if p := u.Port(); p != "" {
+			return p
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "https", "wss":
+			return "443"
+		case "http", "ws":
+			return "80"
+		}
+		return ""
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Hostname(), b.Hostname()) && port(a) == port(b)
 }
 
 // ErrBlockedAddress is the dial error for an address a policy refuses. It
@@ -264,6 +395,9 @@ type EnvVar struct {
 	Name string `json:"name"`
 	// Required: an account from the environment needs it.
 	Required bool `json:"required,omitempty"`
+	// Secret: the variable holds a credential. The server removes it from
+	// its environment once read, so no subprocess inherits it.
+	Secret bool `json:"secret,omitempty"`
 }
 
 // EnvAccount is one account the environment configures.

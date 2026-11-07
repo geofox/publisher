@@ -28,7 +28,8 @@ info:
     Send `Authorization: Bearer <token>`, or use the browser session the web
     app signs in with. A bearer header wins over a session cookie. Tokens
     carry scopes; each operation names the one it needs (`admin` includes
-    every scope but `accounts:write`). A session can do everything.
+    every scope listed before `accounts:write`, not those after it). A
+    session can do everything.
 
     The server signs the owner in with OIDC (`auth: oidc` in
     `/v1/instance`) or with its own passkeys and password (`auth: local`).
@@ -54,6 +55,8 @@ tags:
     description: The server and what it can do.
   - name: accounts
     description: Destination types and the accounts that publish to them.
+  - name: settings
+    description: What the owner, and an instance admin, change in the app instead of the environment.
   - name: tokens
     description: API tokens and the caller's identity.
   - name: sign-in
@@ -137,13 +140,21 @@ paths:
       operationId: listAccounts
       tags: [accounts]
       summary: The owner's accounts, oldest first
-      description: Needs `accounts:read`. Disabled accounts are listed too (they keep their history).
+      description: |
+        Needs `accounts:read`. Disabled accounts are listed too (they keep
+        their history); deleted ones only with `include=deleted`.
       security:
         - bearer: ["accounts:read"]
         - session: []
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - name: include
+          in: query
+          description: "`deleted` lists deleted accounts too (with `deleted_at`)."
+          schema:
+            type: string
+            enum: [deleted]
       responses:
         "200":
           description: A page of accounts.
@@ -166,6 +177,91 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/InsufficientScope"
+        default:
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: createAccount
+      tags: [accounts]
+      summary: Add an account
+      description: |
+        Needs `accounts:write` and a master key (`PUBLISHER_MASTER_KEY`;
+        `409 master_key_required` or `master_key_mismatch` otherwise).
+        Refused behind the reverse proxy alone (`AUTH_MODE=proxy`: `403
+        sign_in_required`), to tokens too.
+
+        `type` and `method` come from `GET /v1/destinations` (`method` may
+        be left out when the type has one). `config` holds the type's
+        fields and `credentials` the method's, as their specs describe;
+        defaults fill what is left out. Addresses must be `https` (or
+        `http` for a host `PRIVATE_DESTINATIONS` allows), never the
+        server itself; they are kept as their origin. What the network can
+        find is looked up when left out: a Bluesky account's PDS from its
+        handle or DID (a not-found answer is `422` with `not_found` on
+        `/credentials/identifier`). `method: generate` makes the
+        credential (a new Nostr key; read it once with `:reveal`).
+
+        The account is then opened with the credentials and its network
+        asked who it is (15 s at most). A refusal is `422
+        credentials_rejected` with the network's words (at most 200
+        characters, without what you sent); an unreachable network is
+        `502 upstream_failed`. The same network account twice is `409
+        duplicate_account` with the existing account's `account_id`.
+        Nothing is stored until all of that passed; then the account and
+        its credentials (sealed with the master key, for its server only)
+        are stored in one step, with an `account.created` event naming the
+        credentials (never their values). The new account is on, and not
+        selected for new posts. The answer never carries a credential.
+
+        Idempotent: send an `Idempotency-Key` so a retry can't add the
+        account twice (the stored fingerprint of the request is keyed with
+        the master key, so it can't be used to test a guess of the
+        credentials). At most 10 accounts added or changed a minute
+        (`429 rate_limited`); a replay doesn't count.
+      security:
+        - bearer: ["accounts:write"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountCreate"
+      responses:
+        "201":
+          description: The account.
+          headers:
+            Location:
+              description: The account's URL.
+              schema:
+                type: string
+            ETag:
+              $ref: "#/components/headers/AccountETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "502":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
         default:
           $ref: "#/components/responses/Problem"
   /v1/accounts/{id}:
@@ -216,7 +312,11 @@ paths:
         token), so it works when turned on again.
         `default_selected` is whether the
         composer selects it for a new post; `public_feed` is whether its
-        posts appear in the public feed. Send `If-Match` with the ETag you
+        posts appear in the public feed. `defaults` replaces what a post
+        to the account gets when it says nothing of it (a content
+        warning, languages, the type's options such as `visibility`);
+        each is checked against what the account can take (`422` at
+        `/defaults/...`), and `{}` clears them. Send `If-Match` with the ETag you
         read: if the account changed since, the answer is `412
         precondition_failed` with the current `ETag`, and nothing changes.
         Without `If-Match` (or with `*`) the change applies to the account
@@ -225,6 +325,24 @@ paths:
         `account.updated` event naming the fields that changed. The answer
         is the whole account, as `GET /v1/accounts/{id}` shows it, so a
         token with `accounts:write` also reads the account it changes.
+
+        An account added in the app (`source: db`) can also change its
+        `config` (a merge patch: `null` puts a field back to its default),
+        `credentials` (the method's, replacing the stored ones; a secret
+        left out is kept when the method and the server address stay the
+        same, as for a new handle with the same app password) and
+        `method` (which needs its credentials). A new handle or other
+        identifier finds its server again unless `config` gives it. The result is opened and
+        its network asked who it is first, as when adding it, and must be
+        the same network account (`409 identity_changed`); a new server
+        address needs the credentials again (`422` with `required` on
+        `/credentials`), so they never go to a server they weren't given
+        for. Errors are as for adding one; nothing changes when one
+        happens. An account from the environment answers `409
+        locked_by_env`. Behind the reverse proxy alone, `credentials` and
+        `method` are refused (`403 sign_in_required`); `config` works.
+        These count towards the limit of 10 accounts added or changed a
+        minute.
       security:
         - bearer: ["accounts:write"]
         - session: []
@@ -258,12 +376,1163 @@ paths:
           $ref: "#/components/responses/InsufficientScope"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "415":
           $ref: "#/components/responses/Problem"
         "422":
           $ref: "#/components/responses/Invalid"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "502":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+    delete:
+      operationId: deleteAccount
+      tags: [accounts]
+      summary: Delete an account
+      description: |
+        Needs a signed-in browser session, re-authenticated for
+        `account.delete` with this account as the `target`. The account is
+        turned off and marked deleted, its credentials and relay-sync
+        lists are deleted, and what it still had to send (scheduled posts,
+        retries) is canceled with the reason; its posts stay in the
+        history, and `GET /v1/accounts?include=deleted` still lists it. An
+        account from the environment can be deleted only once its
+        variables are no longer set (`status: not_configured`): setting
+        them again later makes a new account. While they are set it is
+        `409 locked_by_env` (unset them and restart). An
+        `account.deleted` event is logged. An unknown account (`404`) or
+        one the environment configures is answered before asking for
+        re-authentication.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+        - $ref: "#/components/parameters/Reauth"
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts/{id}:check:
+    parameters:
+      - $ref: "#/components/parameters/AccountID"
+    post:
+      operationId: checkAccount
+      tags: [accounts]
+      summary: Check an account's credentials now
+      description: |
+        Needs `accounts:write`. Asks the account's network, with its
+        credentials, whether they work, and answers the account with the
+        result in `health` (its `status` follows: refused credentials make
+        it `needs_reconnect`). Once every 10 seconds per account (`429
+        rate_limited`). An account that isn't open, or whose network has
+        no check, is `409 invalid_state`.
+      security:
+        - bearer: ["accounts:write"]
+        - session: []
+      responses:
+        "200":
+          description: The account, with the check's result.
+          headers:
+            ETag:
+              $ref: "#/components/headers/AccountETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts/{id}:reveal:
+    parameters:
+      - $ref: "#/components/parameters/AccountID"
+    post:
+      operationId: revealAccount
+      tags: [accounts]
+      summary: Show an account's key
+      description: |
+        A signed-in browser session, re-authenticated for
+        `account.reveal` with this account as the `target`. Answers the
+        credentials its type lets you see again, as you would type them: a
+        Nostr key (`secret_key`, as `nsec1…`), to keep a copy. Never
+        stored or cached (`Cache-Control: no-store`); not idempotent. An
+        account whose credentials can't be shown is `409 invalid_state`;
+        one from the environment is `409 locked_by_env` (read its
+        variables). Both, and a master key that can't open the stored
+        credentials (`409 master_key_required` or
+        `master_key_mismatch`), are answered before asking for
+        re-authentication.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Reauth"
+      responses:
+        "200":
+          description: The credentials.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [credentials]
+                properties:
+                  credentials:
+                    type: object
+                    additionalProperties:
+                      type: string
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts/{id}:adopt:
+    parameters:
+      - $ref: "#/components/parameters/AccountID"
+    post:
+      operationId: adoptAccount
+      tags: [accounts]
+      summary: Move an account from the environment into the app
+      description: |
+        A signed-in browser session and a master key. The account's
+        configuration and credentials as the environment sets them (with
+        a token it renewed since) are stored in the app, sealed, and its
+        `source` becomes `db`; its id, history and your settings on it
+        stay. From then on its variables are ignored (a warning at startup
+        names them while they are set), and it can be changed and deleted
+        in the app. Its addresses must pass the checks of an address typed
+        in the app (`422` naming the field otherwise; `PRIVATE_DESTINATIONS`
+        allows a private one). An `account.adopted` event names the fields.
+        An account already in the app, or one the environment no longer
+        configures, is `409 invalid_state`. To undo it, restore the backup
+        made before.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The account, now in the app.
+          headers:
+            ETag:
+              $ref: "#/components/headers/AccountETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts/{id}:reconnect:
+    parameters:
+      - $ref: "#/components/parameters/AccountID"
+    post:
+      operationId: reconnectAccount
+      tags: [accounts]
+      summary: Sign an account in again at its network
+      description: |
+        A signed-in browser session. For an account added in the app, when
+        its credentials expired or were revoked, or to have one added with
+        a token sign in instead (its `method` then changes): starts a
+        connect flow as `POST /v1/accounts:connect` does, keeping the
+        account's settings unless `config` sets some. The network must sign
+        the same account in again (the flow ends with `identity_changed`
+        otherwise). One from the environment is `409 locked_by_env`.
+      security:
+        - session: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                method:
+                  type: string
+                config:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "201":
+          $ref: "#/components/responses/ConnectStarted"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "502":
+          $ref: "#/components/responses/ConnectFailed"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts:connect:
+    post:
+      operationId: connectAccount
+      tags: [accounts]
+      summary: Connect an account by signing in at its network
+      description: |
+        A signed-in browser session and a master key. For a method with
+        `flow: redirect` (`GET /v1/destinations`): Publisher prepares the
+        sign-in (a Mastodon server's discovery and app registration) and
+        answers the address where the owner signs in, to open in a new
+        tab. The network sends them back to
+        `<PUBLIC_URL>/oauth/callback/<type>`, which completes the flow and
+        stores the account; this tab reads the flow
+        (`GET /v1/connect-flows/{id}`) until it ends. The flow lasts 10
+        minutes and its sign-in address works once. Without `PUBLIC_URL`
+        (or, with OIDC, the app's address from `OIDC_REDIRECT_URL`) it is
+        `409 invalid_state`. A method that needs the server's app first
+        (`needs_instance_config`: Threads, set in
+        `PATCH /v1/instance/settings`), or an https `PUBLIC_URL` (Meta's
+        rule for Threads), is `422` at `/method` saying so. At most 10
+        starts a minute. A network that can't be prepared is `502
+        connect_failed` with a fixed `connect_error` code; its own words
+        are only logged.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [type]
+              properties:
+                type:
+                  type: string
+                method:
+                  type: string
+                  description: The sign-in method's id; may be left out when the type has one.
+                label:
+                  type: string
+                  maxLength: 64
+                config:
+                  type: object
+                  additionalProperties: true
+                  description: The type's settings and the method's fields (a Mastodon server's `instance_url`).
+      responses:
+        "201":
+          $ref: "#/components/responses/ConnectStarted"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "502":
+          $ref: "#/components/responses/ConnectFailed"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/connect-flows/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ConnectFlowID"
+    get:
+      operationId: getConnectFlow
+      tags: [accounts]
+      summary: Where a connect flow stands
+      description: |
+        A signed-in browser session, the user who started the flow.
+        `pending` until the network sends the owner back; then
+        `completed` (with `account`), `failed` (with `error`, one of
+        `denied`, `expired`, `state_invalid`, `session_mismatch`,
+        `identity_changed`, `duplicate_account`, `exchange_failed`,
+        `issuer_mismatch`, `master_key_required`, `interrupted` (this
+        server stopped mid-way: check the accounts), and `error_detail`
+        saying what it means), or `choose` (with `candidates`, picked
+        with `:choose`): the network offered several accounts, or it sent
+        the owner back to a browser that isn't signed in to Publisher, and
+        the one account it signed in waits to be confirmed here. A flow
+        is kept an hour after it ends.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The flow.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectFlow"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/connect-flows/{id}:choose:
+    parameters:
+      - $ref: "#/components/parameters/ConnectFlowID"
+    post:
+      operationId: chooseConnectFlow
+      tags: [accounts]
+      summary: Pick the account to connect
+      description: |
+        For a flow in `choose`: connects the candidate at that index (the
+        only one, to confirm it), as the callback would have. One choice at
+        a time; a flow in another state answers as it stands. An account
+        that can't be made from the candidate ends the flow `failed`; a
+        flow whose sealed data can't be opened is `502 connect_failed`.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [candidate]
+              properties:
+                candidate:
+                  type: integer
+                  minimum: 0
+      responses:
+        "200":
+          description: The flow, now ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectFlow"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "502":
+          $ref: "#/components/responses/ConnectFailed"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/account-sets:
+    get:
+      operationId: listAccountSets
+      tags: [accounts]
+      summary: Your account sets, by name
+      description: |
+        Needs `accounts:read`. An account set is a named selection of your
+        accounts the composer can start from ("Work": your Mastodon and
+        Bluesky accounts); at most one is the default, which a new post
+        starts with. A set lists its accounts that still exist (one
+        deleted since is left out). One page holds them all.
+      security:
+        - bearer: ["accounts:read"]
+        - session: []
+      responses:
+        "200":
+          description: The account sets.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AccountSet"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        default:
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: createAccountSet
+      tags: [accounts]
+      summary: Make an account set
+      description: |
+        Needs `accounts:write`. `name` (trimmed, 1 to 64 characters, as an
+        account's label; unique among your sets whatever its case) and
+        `accounts` (1 to 20 of your accounts, by id, each once) are
+        required. `is_default: true` makes it the default set, and the
+        set that was the default no longer is. At most 50 sets
+        (`409 invalid_state`).
+      security:
+        - bearer: ["accounts:write"]
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSetIn"
+      responses:
+        "201":
+          description: The new set.
+          headers:
+            Location:
+              description: The set's address.
+              schema:
+                type: string
+            ETag:
+              $ref: "#/components/headers/AccountSetETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSet"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/account-sets/{id}:
+    parameters:
+      - $ref: "#/components/parameters/AccountSetID"
+    get:
+      operationId: getAccountSet
+      tags: [accounts]
+      summary: One account set
+      description: Needs `accounts:read`. The `ETag` is for `If-Match` on `PATCH` and `DELETE`.
+      security:
+        - bearer: ["accounts:read"]
+        - session: []
+      responses:
+        "200":
+          description: The set.
+          headers:
+            ETag:
+              $ref: "#/components/headers/AccountSetETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSet"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: updateAccountSet
+      tags: [accounts]
+      summary: Change an account set
+      description: |
+        Needs `accounts:write`. Each field sent replaces the set's (as when
+        making one); a field left out is kept, and `null` is refused.
+        `is_default: true` makes it the default set; `false` leaves no
+        default. Send `If-Match` with the ETag you read: if the set changed
+        since, the answer is `412 precondition_failed` with the current
+        `ETag`, and nothing changes.
+      security:
+        - bearer: ["accounts:write"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/AccountSetIfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountSetPatch"
+      responses:
+        "200":
+          description: The set after the change.
+          headers:
+            ETag:
+              $ref: "#/components/headers/AccountSetETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSet"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "415":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+    delete:
+      operationId: deleteAccountSet
+      tags: [accounts]
+      summary: Delete an account set
+      description: Needs `accounts:write`. The accounts stay; only the selection goes.
+      security:
+        - bearer: ["accounts:write"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/AccountSetIfMatch"
+      responses:
+        "204":
+          description: Deleted.
+        "400":
+          $ref: "#/components/responses/BadParameter"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/settings:
+    get:
+      operationId: getSettings
+      tags: [settings]
+      summary: Your settings
+      description: |
+        Needs `settings:read`. Your settings by group, then name
+        (`composing.languages` is `{"composing": {"languages": …}}`). Each
+        is the value in effect, where it comes from (`env`: its variable
+        is set, which locks it; `saved`: set in the app; `default`), the
+        variable that can set it, and the field that describes it (label,
+        type, help, limits). A secret's value is only whether it is set
+        (an address shows its origin); `problem` says why a saved one
+        can't be used (type it again). The `ETag` is these settings'
+        version, for `If-Match`.
+      security:
+        - bearer: ["settings:read"]
+        - session: []
+      responses:
+        "200":
+          description: Your settings.
+          headers:
+            ETag:
+              $ref: "#/components/headers/SettingsETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        default:
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: patchSettings
+      tags: [settings]
+      summary: Change your settings
+      description: |
+        Needs `settings:write`. A JSON Merge Patch of the read's shape,
+        with plain values (`{"composing": {"languages": ["en", "fr"]}}`):
+        `null` puts a setting back to its default, or clears a secret.
+        Each value is checked as its field says; a webhook address must be
+        one the server may reach (`PRIVATE_DESTINATIONS`). A secret is
+        kept encrypted with the master key (`409 master_key_required`
+        without one). A token sent to a webhook goes with its address: a
+        new address needs it again (`422` with `required` on it), and an
+        address cleared takes it along. A setting its variable sets is
+        `409 locked_by_env`. With `If-Match`, a change on a stale read is
+        `412 precondition_failed`; without it, the change applies to the
+        settings as they are. Nothing changes when anything is refused.
+        Behind the reverse proxy alone (`AUTH_MODE=proxy`), secret
+        settings are refused (`403 sign_in_required`); the others work.
+        Answers the settings as read.
+      security:
+        - bearer: ["settings:write"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/SettingsIfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettingsPatch"
+          application/merge-patch+json:
+            schema:
+              $ref: "#/components/schemas/SettingsPatch"
+      responses:
+        "200":
+          description: Your settings, changed.
+          headers:
+            ETag:
+              $ref: "#/components/headers/SettingsETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "412":
+          $ref: "#/components/responses/SettingsPreconditionFailed"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/settings/{id}:copy-from-env:
+    parameters:
+      - $ref: "#/components/parameters/SettingKey"
+    post:
+      operationId: copySettingFromEnv
+      tags: [settings]
+      summary: Save a setting's environment value in the app
+      description: |
+        Needs `settings:write`. Saves the value the setting's variable
+        sets, so the variable can be removed without the setting going
+        back to its default. It stays locked while the variable is set,
+        and reports `also_saved` until it is removed. What one variable
+        sets together is copied together (`BLOSSOM_URL` sets
+        `media.store` and `media.blossom_url`), and so is an address with
+        the secret that goes to it, when the environment sets both. Each
+        value is checked as one typed in the app is: one the app would
+        refuse is `422 validation_failed`, naming the variable. A
+        setting no variable sets now is `409 invalid_state`; a secret is
+        refused behind the reverse proxy alone, as for `PATCH`. Answers
+        the settings.
+      security:
+        - bearer: ["settings:write"]
+        - session: []
+      responses:
+        "200":
+          description: Your settings.
+          headers:
+            ETag:
+              $ref: "#/components/headers/SettingsETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/settings/{id}:generate:
+    parameters:
+      - $ref: "#/components/parameters/SettingKey"
+    post:
+      operationId: generateSetting
+      tags: [settings]
+      summary: Make a new value for a setting
+      description: |
+        Needs `settings:write`. For a setting Publisher can make
+        (`feed.token`): a new random value is saved, replacing the one
+        before, and answered this once (never stored as an answer; not
+        idempotent: a repeat makes another). Others are `404`. Behind the
+        reverse proxy alone, `403 sign_in_required`.
+      security:
+        - bearer: ["settings:write"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/SettingsIfMatch"
+      responses:
+        "200":
+          description: The new value.
+          headers:
+            ETag:
+              $ref: "#/components/headers/SettingsETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeneratedSetting"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "412":
+          $ref: "#/components/responses/SettingsPreconditionFailed"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/settings/{id}:test:
+    parameters:
+      - $ref: "#/components/parameters/SettingKey"
+    post:
+      operationId: testSettings
+      tags: [settings]
+      summary: Test a webhook
+      description: |
+        Needs `settings:write`. For `alerts` (a test alert) and `feed` (a
+        test ping, `{"event": "test"}`), with the settings in effect. The
+        answer says whether the server took it, else only a class of
+        failure (`unreachable`, `refused`, `timeout`, `http_error`,
+        `blocked_destination`): never its status or words. Once every 10
+        seconds per group (`429`). Nothing set to test is `409
+        invalid_state`.
+      security:
+        - bearer: ["settings:write"]
+        - session: []
+      responses:
+        "200":
+          description: How the test went.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettingsTest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/instance/settings:
+    get:
+      operationId: getInstanceSettings
+      tags: [settings]
+      summary: The server's settings
+      description: |
+        Needs `instance:admin`. The server's own settings (where media
+        go, and what a network needs once per server: the Threads app,
+        `threads.app_id` and `threads.app_secret`), in the same shape as
+        yours. Behind the reverse proxy alone, `403 sign_in_required`.
+      security:
+        - bearer: ["instance:admin"]
+        - session: []
+      responses:
+        "200":
+          description: The server's settings.
+          headers:
+            ETag:
+              $ref: "#/components/headers/SettingsETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        default:
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: patchInstanceSettings
+      tags: [settings]
+      summary: Change the server's settings
+      description: |
+        Needs `instance:admin`; as `PATCH /v1/settings`. Changing a secret
+        (the media store's key, the Threads app's secret) needs a signed-in browser session,
+        re-authenticated for `instance.secrets`. Behind the reverse proxy
+        alone, `403 sign_in_required`. Turning `media.public` on first
+        fetches a probe from `PUBLIC_URL/media/`, following no redirect,
+        and needs it back whole with a `200`; otherwise nothing changes and
+        the answer is `422` with `not_reachable` at `/media/public`, saying
+        what was answered. It runs as a test does, once every 10 seconds
+        (`429`).
+      security:
+        - bearer: ["instance:admin"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/SettingsIfMatch"
+        - $ref: "#/components/parameters/Reauth"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettingsPatch"
+          application/merge-patch+json:
+            schema:
+              $ref: "#/components/schemas/SettingsPatch"
+      responses:
+        "200":
+          description: The server's settings, changed.
+          headers:
+            ETag:
+              $ref: "#/components/headers/SettingsETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "412":
+          $ref: "#/components/responses/SettingsPreconditionFailed"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/instance/settings/{id}:copy-from-env:
+    parameters:
+      - $ref: "#/components/parameters/SettingKey"
+    post:
+      operationId: copyInstanceSettingFromEnv
+      tags: [settings]
+      summary: Save a server setting's environment value in the app
+      description: |
+        Needs `instance:admin`; as for your settings (a secret needs
+        re-authentication for `instance.secrets`).
+      security:
+        - bearer: ["instance:admin"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Reauth"
+      responses:
+        "200":
+          description: The server's settings.
+          headers:
+            ETag:
+              $ref: "#/components/headers/SettingsETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/instance/settings/{id}:generate:
+    parameters:
+      - $ref: "#/components/parameters/SettingKey"
+    post:
+      operationId: generateInstanceSetting
+      tags: [settings]
+      summary: Make a new value for a server setting
+      description: |
+        Needs `instance:admin`, a signed-in browser session and
+        re-authentication for `instance.secrets`. For a setting Publisher
+        can make (`media.blossom_key`: a new Nostr key, whose public key,
+        `npub1…`, is answered for you to allow on your Blossom server; the
+        key itself is never shown).
+      security:
+        - bearer: ["instance:admin"]
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/SettingsIfMatch"
+        - $ref: "#/components/parameters/Reauth"
+      responses:
+        "200":
+          description: What to know of the new value.
+          headers:
+            ETag:
+              $ref: "#/components/headers/SettingsETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeneratedSetting"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "412":
+          $ref: "#/components/responses/SettingsPreconditionFailed"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/instance/settings/{id}:test:
+    parameters:
+      - $ref: "#/components/parameters/SettingKey"
+    post:
+      operationId: testInstanceSettings
+      tags: [settings]
+      summary: Test the media store
+      description: |
+        Needs `instance:admin`. For `media`, the store in effect: a
+        Blossom server is asked whether it would take an upload signed
+        with the key (BUD-06 `HEAD /upload`; one without BUD-06 answering
+        `404` or `405` is only known reachable, and passes); this server's
+        disk takes a small probe and gives it back, fetched at
+        `PUBLIC_URL/media/` when served publicly, and must come back
+        whole (else `wrong_answer`; a disk that refuses the probe is
+        `store_refused`). Answered as for `POST /v1/settings/{id}:test`;
+        a store set but unusable (no signing key) fails as
+        `unreachable`.
+      security:
+        - bearer: ["instance:admin"]
+        - session: []
+      responses:
+        "200":
+          description: How the test went.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettingsTest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/instance/system:
+    get:
+      operationId: getSystem
+      tags: [settings]
+      summary: What the server started with
+      description: |
+        Needs `instance:admin`. The version, how the owner signs in, and
+        the bootstrap and tuning variables the server read at start (the
+        settings' own and the accounts' show in their places): each with
+        its value, a secret only as set, an address without the user and
+        password it may carry. Behind the reverse proxy alone, `403
+        sign_in_required`.
+      security:
+        - bearer: ["instance:admin"]
+        - session: []
+      responses:
+        "200":
+          description: The server's version, sign-in mode and variables.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/System"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/export:
+    post:
+      operationId: exportAccounts
+      tags: [accounts, settings]
+      summary: Export the accounts and settings, credentials included
+      description: |
+        A signed-in browser session, re-authenticated for `export`. Makes
+        an export file (spec §9) of the accounts added in the app (their
+        configuration and every credential), what you chose for the
+        accounts the environment sets (their label, flags, defaults and
+        relay-sync list: the environment holds the rest), the account
+        sets, and the settings saved in the app, the server's included
+        (secrets too). Not posts, drafts, media or API tokens.
+
+        The file is sealed (AES-256-GCM under a key argon2id derives from
+        the passphrase: t=3, m=64 MiB, p=4) with a passphrase Publisher
+        makes: 24 words of the BIP-39 English list (264 bits), answered
+        this once and never kept. Without the passphrase the file can't be
+        opened; with it, it holds every credential, so keep the two apart.
+        Never stored or cached (`Cache-Control: no-store`); not
+        idempotent. At most 5 exports and imports a minute; while
+        passwords are being checked or another file is sealed, `429`
+        (the re-authentication isn't spent then). More than a file holds
+        (768 KiB, 100 accounts, 50 account sets) is `409`.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Reauth"
+      responses:
+        "200":
+          description: The file and its passphrase.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportFile"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/import:
+    post:
+      operationId: readImport
+      tags: [accounts, settings]
+      summary: Read an export file, to import it
+      description: |
+        A signed-in browser session and a master key. Opens the file with
+        its passphrase (typed or pasted as shown: any case and spacing)
+        and answers what importing it would do, changing nothing: each
+        account (added, an environment account here updated, or skipped
+        and why) with the server its credentials go to, each account set,
+        and each setting with its value (a secret address shows only its
+        origin, another secret nothing). Everything that needs no answer
+        from a network is checked now, as the import will check it, so
+        the summary says what will happen but for the networks' answers.
+        Send the `confirmation` to `POST /v1/import:confirm` within 10
+        minutes, from this session; the opened file waits in the server's
+        memory until then (one per session), and a restart forgets it.
+
+        An import goes into a server with no accounts added in the app
+        (`409 invalid_state` otherwise), so two setups are never merged.
+        What this server's environment sets wins: its accounts are kept
+        (the file's copy of one is skipped, and its account sets name the
+        one here) and its settings stay. A secret sent to an address (a
+        webhook's password or token) comes only with its address from the
+        file, and an address the file replaces takes the secret saved for
+        the old one along. Serving media publicly isn't turned on: its
+        test runs in Settings → Media. While another import runs, `409`. A file
+        that isn't an export, is from a newer Publisher, or names other
+        key parameters is `422` at `/file`, before any work; a passphrase
+        that isn't 24 words of the list, or doesn't open the file, `422`
+        at `/passphrase`. Counts toward the 5 a minute.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportIn"
+      responses:
+        "200":
+          description: What importing the file would do.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportSummary"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/import:confirm:
+    post:
+      operationId: confirmImport
+      tags: [accounts, settings]
+      summary: Import a file read just now
+      description: |
+        A signed-in browser session, re-authenticated for `import`. Does
+        what `POST /v1/import` said, once: the settings (the server's,
+        then yours), the accounts, then the account sets. Each account is
+        checked as one added by hand (its network and way of connecting
+        offered here, its addresses allowed here), then opened and asked
+        who it is before it is stored: `connected`; `refused` when its
+        network refuses the credentials, or `unchecked` when it doesn't
+        answer (both are added, with what you set for them, and need a
+        look); or `skipped`. An environment account here is `updated`.
+        Answers what it did, in the same shape. Begun, it finishes even
+        if the caller leaves; a large file can take a few minutes. One
+        import runs at a time. An unknown, used, replaced or expired
+        confirmation, or another session's, is `404`; accounts added in
+        the app since the file was read, or another import running,
+        `409`.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Reauth"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [confirmation]
+              properties:
+                confirmation:
+                  type: string
+                  description: The `confirmation` `POST /v1/import` answered.
+      responses:
+        "200":
+          description: What the import did.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportSummary"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
         default:
           $ref: "#/components/responses/Problem"
   /v1/me:
@@ -683,9 +1952,11 @@ paths:
         time it is shown: the server keeps only a hash.
 
         A token creating a token must give it an expiry no later than its
-        own, and can't give it `accounts:write` (`422 exceeds_caller`).
+        own, and can't give it `accounts:write`, `settings:write` or
+        `instance:admin` (`422 exceeds_caller`).
 
-        A token holding `admin` or `accounts:write` can be created only by
+        A token holding `admin`, `accounts:write`, `settings:write` or
+        `instance:admin` can be created only by
         the owner signed in in a browser, re-authenticated for
         `token.create` (`Publisher-Reauth`): a token gets `403
         session_required`, and behind the reverse proxy alone, `403
@@ -1600,7 +2871,10 @@ paths:
         `GET /v1/media/{id}` until it is `ready` or `failed`. Images are at
         most 64 MiB, videos 1 GiB. Not idempotent: a repeat stores the
         same file again under a new id. A server without a media store
-        (`features.media` false) answers `503 unavailable`.
+        (`features.media` false), or whose store can't be used now (a
+        Blossom server without a signing key), answers `503 unavailable`;
+        this server's disk without room for it (the quota set, or the
+        free-space floor), `507 insufficient_storage`.
       security:
         - bearer: ["media:write"]
         - session: []
@@ -2176,11 +3450,27 @@ components:
         A re-authentication nonce for this operation: the owner confirmed
         it's them just now (`POST /auth/reauth` with a passkey or the
         password, or a fresh OIDC login). Good once, for five minutes, in
-        the session that asked for it. Without a valid one: `403
-        reauth_required`, naming the `operation` to re-authenticate for.
+        the session that asked for it. An operation on one account
+        (`account.delete`, `account.reveal`) names it as the `target` when
+        re-authenticating, and its nonce is good for that account only.
+        Without a valid one: `403 reauth_required`, naming the `operation`
+        to re-authenticate for.
       schema:
         type: string
         maxLength: 128
+    SettingKey:
+      name: id
+      in: path
+      required: true
+      description: A setting's key (`feed.token`), or a group's name for `:test` (`alerts`).
+      schema:
+        type: string
+    SettingsIfMatch:
+      name: If-Match
+      in: header
+      description: The settings' ETag as you read them, or `*` for any version.
+      schema:
+        type: string
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -2204,6 +3494,13 @@ components:
       schema:
         type: string
         examples: [acc_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c]
+    ConnectFlowID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples: [flw_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c]
     DraftID:
       name: id
       in: path
@@ -2217,6 +3514,19 @@ components:
       description: The draft's ETag as you read it (`"3"`), or `*` for any version.
       schema:
         type: string
+    AccountSetIfMatch:
+      name: If-Match
+      in: header
+      description: The set's ETag as you read it, or `*` for any version.
+      schema:
+        type: string
+    AccountSetID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples: [set_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c]
     AccountIfMatch:
       name: If-Match
       in: header
@@ -2262,6 +3572,18 @@ components:
   headers:
     DraftETag:
       description: The draft's version, a strong ETag (`"3"`), for `If-Match`.
+      required: true
+      schema:
+        type: string
+        pattern: '^"[0-9]+"$'
+    SettingsETag:
+      description: The settings' version (a strong ETag), for `If-Match`.
+      required: true
+      schema:
+        type: string
+        pattern: '^"[0-9a-f]+"$'
+    AccountSetETag:
+      description: The set's version, a strong ETag (digits in quotes), for `If-Match`.
       required: true
       schema:
         type: string
@@ -2316,6 +3638,17 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+    SettingsPreconditionFailed:
+      description: |
+        The settings changed since you read them (`precondition_failed`);
+        the `ETag` header is their current version.
+      headers:
+        ETag:
+          $ref: "#/components/headers/SettingsETag"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     InvalidState:
       description: Not possible in the resource's current state (`invalid_state`).
       content:
@@ -2329,6 +3662,34 @@ components:
         text/event-stream:
           schema:
             type: string
+    ConnectStarted:
+      description: The flow, started; open `authorize_url` to sign in at the network. It works once.
+      headers:
+        Location:
+          description: The flow, to read until it ends.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [flow, authorize_url, expires_at]
+            properties:
+              flow:
+                type: string
+              authorize_url:
+                type: string
+                format: uri
+              expires_at:
+                type: string
+                format: date-time
+    ConnectFailed:
+      description: The network's sign-in couldn't be prepared, or the account couldn't be made from it (`connect_failed`, with `connect_error`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     Problem:
       description: An error.
       content:
@@ -2765,7 +4126,7 @@ components:
           items:
             type: object
             additionalProperties: false
-            required: [account, type, role, text, limit, items, link_card, warnings, media_notes]
+            required: [account, type, role, text, limit, items, link_card, warnings, media_notes, defaults_applied]
             properties:
               account:
                 type: string
@@ -2840,6 +4201,9 @@ components:
                 type: array
                 items:
                   type: string
+              defaults_applied:
+                description: The account's defaults the post takes (those it doesn't set itself).
+                $ref: "#/components/schemas/AccountDefaults"
               media_notes:
                 type: array
                 description: Media that will be converted to fit this account.
@@ -3329,6 +4693,14 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Attempt"
+        warnings:
+          type: array
+          description: |
+            In the answer to `POST /v1/posts` only: what the account ignores
+            of the request, and the account's defaults the post took
+            (`default applied: visibility=unlisted`).
+          items:
+            type: string
     ItemStatus:
       type: string
       enum: [planned, sending, published, partial, failed, unknown, canceled]
@@ -3522,8 +4894,12 @@ components:
           type: array
           items:
             type: string
-            enum: [label, enabled, default_selected, public_feed]
-          description: An account event's changed fields, by name (never their values).
+          description: >-
+            An account event's changed fields, by name (never their values):
+            `label`, `enabled`, `default_selected`, `public_feed`; for new
+            settings or credentials, the names of the config and credential
+            fields changed, `method` (another way of connecting) and
+            `credentials` (signed in again at the network).
         actor:
           type: string
           enum: [session, token, proxy]
@@ -3582,13 +4958,67 @@ components:
             - sign_in_required
             - last_sign_in_method
             - gone
+            - credentials_rejected
+            - duplicate_account
+            - locked_by_env
+            - identity_changed
+            - master_key_required
+            - master_key_mismatch
+            - connect_failed
         errors:
           type: array
           items:
             $ref: "#/components/schemas/FieldError"
         operation:
           type: string
-          description: "`reauth_required` only: the operation to re-authenticate for (`signin.add`, `signin.remove`, `password.set`, `token.create`)."
+          description: "`reauth_required` only: the operation to re-authenticate for (`signin.add`, `signin.remove`, `password.set`, `token.create`, `account.delete`, `account.reveal`, `instance.secrets`, `export`, `import`)."
+        target:
+          type: string
+          description: "`reauth_required` only, for an operation on one account (`account.delete`, `account.reveal`): its id, to re-authenticate for as `target`."
+        account_id:
+          type: string
+          description: "`duplicate_account` only: the account you already have."
+        connect_error:
+          type: string
+          description: "`connect_failed` only: why, as a fixed code (spec §6.1): `denied`, `expired`, `state_invalid`, `session_mismatch`, `identity_changed`, `duplicate_account`, `exchange_failed`, `issuer_mismatch`, `master_key_required`, `interrupted`."
+    ConnectFlow:
+      type: object
+      additionalProperties: false
+      required: [id, type, status, expires_at]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+          enum: [pending, completed, failed, choose]
+        account:
+          type: string
+          description: "`completed`: the account connected."
+        error:
+          type: string
+          description: "`failed`: why, as a fixed code."
+        error_detail:
+          type: string
+          description: "`failed`: what the code means, in fixed words."
+        expires_at:
+          type: string
+          format: date-time
+        candidates:
+          type: array
+          description: "`choose`: the accounts the network offered, picked by index."
+          items:
+            type: object
+            additionalProperties: false
+            required: [handle]
+            properties:
+              handle:
+                type: string
+              display_name:
+                type: string
+              avatar_url:
+                type: string
     FieldError:
       type: object
       additionalProperties: false
@@ -3604,6 +5034,237 @@ components:
           type: string
         detail:
           type: string
+    Settings:
+      type: object
+      description: Settings by group, then name.
+      additionalProperties:
+        type: object
+        additionalProperties:
+          $ref: "#/components/schemas/Setting"
+    Setting:
+      type: object
+      additionalProperties: false
+      required: [value, source, env, locked, field]
+      properties:
+        value:
+          description: The value in effect (null when none); for a secret, a SecretSetting.
+        source:
+          type: string
+          enum: [env, saved, default]
+        env:
+          type: string
+          description: The variable that sets it ("" when none can).
+        locked:
+          type: boolean
+          description: Its variable is set, so it can't be changed in the app.
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+        problem:
+          type: string
+          description: Why a saved secret can't be used now (type it again).
+        also_saved:
+          type: boolean
+          description: The environment sets it, and a value saved in the app (copied into it) applies once the variable is removed.
+        generate:
+          type: boolean
+          description: The server can make a value for it (`:generate`).
+        field:
+          $ref: "#/components/schemas/FieldSpec"
+    SecretSetting:
+      type: object
+      additionalProperties: false
+      required: [set]
+      properties:
+        set:
+          type: boolean
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+        origin:
+          type: string
+          description: An address's origin (its scheme, host and port).
+        public_key:
+          type: string
+          description: A signing key's public key (`npub1…`), to allow on the server that checks it (`media.blossom_key`).
+    SettingsPatch:
+      type: object
+      description: Settings by group, then name, with plain values; null puts one back to its default.
+      additionalProperties:
+        type: object
+        additionalProperties: {}
+    GeneratedSetting:
+      type: object
+      additionalProperties: false
+      required: [value]
+      properties:
+        value:
+          type: string
+          description: The new value (or, for a key, its public half), shown this once.
+    System:
+      type: object
+      additionalProperties: false
+      required: [version, auth, values]
+      properties:
+        version:
+          type: string
+        auth:
+          type: string
+          enum: [oidc, local, proxy]
+        values:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [env, set]
+            properties:
+              env:
+                type: string
+                description: The variable's name.
+              set:
+                type: boolean
+              secret:
+                type: boolean
+                description: Its value is never shown.
+              value:
+                type: string
+                description: The value, when set and not secret.
+    ExportFile:
+      type: object
+      additionalProperties: false
+      required: [passphrase, filename, file, created_at, accounts, account_sets, settings]
+      properties:
+        passphrase:
+          type: string
+          description: 24 words, separated by spaces; shown this once.
+        filename:
+          type: string
+          description: A name to save it as (`publisher-2026-11-07.export`).
+        file:
+          type: string
+          description: |
+            The file: two lines, a JSON header (`format`
+            `publisher-export`, `version` 1, the key's parameters, `salt`,
+            `nonce`, `created_at`) and the sealed contents in base64url.
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        accounts:
+          type: integer
+        account_sets:
+          type: integer
+        settings:
+          type: integer
+    ImportIn:
+      type: object
+      additionalProperties: false
+      required: [file, passphrase]
+      properties:
+        file:
+          type: string
+          maxLength: 786432
+          description: The export file's text, as `POST /v1/export` made it.
+        passphrase:
+          type: string
+          maxLength: 1024
+    ImportSummary:
+      type: object
+      additionalProperties: false
+      required: [created_at, accounts, account_sets, settings]
+      properties:
+        confirmation:
+          type: string
+          description: "`POST /v1/import` only: what to send to `:confirm`."
+        expires_at:
+          $ref: "#/components/schemas/Timestamp"
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        accounts:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [file_id, type, label, action]
+            properties:
+              file_id:
+                type: string
+                description: Its id in the file.
+              type:
+                type: string
+              label:
+                type: string
+              handle:
+                type: string
+              server:
+                type: string
+                description: The origin its credentials are sent to (left out for a network with one address).
+              action:
+                type: string
+                enum: [add, update, skip]
+              why:
+                type: string
+              id:
+                type: string
+                description: Its id here (an environment account's, or, after the import, the new one's).
+              status:
+                type: string
+                enum: [connected, refused, unchecked, skipped, updated]
+                description: "`:confirm` only: how it went."
+              detail:
+                type: string
+        account_sets:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, accounts, action]
+            properties:
+              name:
+                type: string
+              accounts:
+                type: integer
+                description: How many of its accounts are (or would be) here.
+              action:
+                type: string
+                enum: [add, skip]
+              why:
+                type: string
+        settings:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [scope, key, label, action]
+            properties:
+              scope:
+                type: string
+                enum: [owner, instance]
+              key:
+                type: string
+              label:
+                type: string
+              value:
+                description: The value it would have; a secret address's origin; nothing for another secret.
+              secret:
+                type: boolean
+              action:
+                type: string
+                enum: [set, skip]
+              why:
+                type: string
+                description: Why it is left as it is; for a secret set, why it is cleared (its address replaced).
+    SettingsTest:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+          enum: [unreachable, refused, timeout, http_error, blocked_destination, wrong_answer, store_refused]
+          description: |
+            Why it failed: `wrong_answer`, the address answered but not
+            with the test's file (a sign-in page, the web app);
+            `store_refused`, this server's disk didn't take the test's
+            file (no room, not writable).
     NextCursor:
       description: The cursor for the next page; null on the last page.
       type: [string, "null"]
@@ -3618,13 +5279,13 @@ components:
       description: |
         `admin` includes every scope listed before `accounts:write`. Scopes
         added since must be granted by name. Only the signed-in owner, just
-        re-authenticated, can create a token holding `admin` or
-        `accounts:write`.
-      enum: ["posts:read", "posts:write", "media:write", "drafts:read", "drafts:write", "accounts:read", "accounts:write", admin]
+        re-authenticated, can create a token holding `admin`,
+        `accounts:write`, `settings:write` or `instance:admin`.
+      enum: ["posts:read", "posts:write", "media:write", "drafts:read", "drafts:write", "accounts:read", "accounts:write", "settings:read", "settings:write", "instance:admin", admin]
     Instance:
       type: object
       additionalProperties: false
-      required: [version, auth, features, user_languages, translate_targets, limits, idempotency, scopes, destinations, pagination]
+      required: [version, auth, features, user_languages, translate_targets, limits, idempotency, scopes, destinations, pagination, secrets]
       properties:
         version:
           type: string
@@ -3716,11 +5377,28 @@ components:
               type: integer
             max_limit:
               type: integer
+        secrets:
+          type: object
+          description: |
+            The master key's status. `none`: no key, so accounts come from the
+            environment only; `ok`: credentials can be saved; `missing`: saved
+            credentials need the key; `mismatch`: they were saved with another key
+            (or a rotation failed). Until it is `ok`, accounts added in the app
+            that can't be opened are `locked` and saving a credential is refused.
+          additionalProperties: false
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [none, ok, missing, mismatch]
+            detail:
+              type: string
+              description: What to do, for the operator.
     Manifest:
       type: object
       description: A destination type, the same for every account of it.
       additionalProperties: false
-      required: [contract, type, name, kinds, defaults]
+      required: [contract, type, name, kinds, defaults, auth]
       properties:
         contract:
           type: integer
@@ -3742,6 +5420,133 @@ components:
             $ref: "#/components/schemas/OptionSpec"
         defaults:
           $ref: "#/components/schemas/Capabilities"
+        auth:
+          type: array
+          description: The ways to connect an account of the type, most recommended first.
+          items:
+            $ref: "#/components/schemas/AuthMethod"
+        config:
+          type: array
+          description: An account's configuration (never a credential).
+          items:
+            $ref: "#/components/schemas/FieldSpec"
+        instance_config:
+          type: array
+          description: Configuration the type needs once per server, set by the operator.
+          items:
+            $ref: "#/components/schemas/FieldSpec"
+    AuthMethod:
+      type: object
+      additionalProperties: false
+      required: [id, flow, label]
+      properties:
+        id:
+          type: string
+          description: The method's id, kept with the account as `auth_method`.
+        flow:
+          type: string
+          enum: [fields, redirect, generate]
+          description: "`fields`: the owner types the credential; `redirect`: they sign in at the network; `generate`: Publisher makes it."
+        label:
+          type: string
+        help:
+          type: string
+        help_url:
+          type: string
+          format: uri
+        fields:
+          type: array
+          description: What the owner types. A `secret` field becomes a credential; the others join the account's config.
+          items:
+            $ref: "#/components/schemas/FieldSpec"
+        needs_instance_config:
+          type: array
+          description: The keys of the server settings the method needs first (in `GET /v1/instance/settings` as `<type>.<key>`, such as `threads.app_id`).
+          items:
+            type: string
+        needs_public_url:
+          type: boolean
+        redirect_uri:
+          type: string
+          format: uri
+          description: >-
+            Where the network sends the owner back (`flow: redirect`, when the
+            server knows its public address): the address to register in an
+            app the network asks for, such as a Meta app.
+        unavailable:
+          type: string
+          description: "Why the method can't start now (`flow: redirect`): no public address, no usable master key, a server setting it needs, or a public address the network refuses (Threads: https only); absent when it can."
+    FieldSpec:
+      type: object
+      additionalProperties: false
+      required: [key, label, type]
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        help:
+          type: string
+        type:
+          type: string
+          enum: [string, text, bool, int, enum, string_list, url, url_list, duration]
+          description: "`duration`: a Go duration such as `30m` or `2h`; `min` and `max` are in seconds."
+        secret:
+          type: boolean
+          description: A credential, stored encrypted and never shown again.
+        revealable:
+          type: boolean
+          description: A credential the owner may see again (`:reveal`), such as a Nostr key.
+        audience:
+          type: boolean
+          description: Where the credentials are sent; changing it needs them again.
+        required:
+          type: boolean
+        pattern:
+          type: string
+          description: An RE2 expression the whole value must match.
+        placeholder:
+          type: string
+        enum:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [value, label]
+            properties:
+              value:
+                type: string
+              label:
+                type: string
+        default:
+          description: The value a new account (or a setting) gets when the field is left out.
+        min:
+          type: integer
+        max:
+          type: integer
+        max_length:
+          type: integer
+          description: In characters; 4096 when absent.
+        max_items:
+          type: integer
+          description: For a list; 64 when absent.
+        url:
+          type: object
+          description: What a `url` or `url_list` field takes. `plain` only for a private host the operator allows (PRIVATE_DESTINATIONS).
+          additionalProperties: false
+          required: [secure]
+          properties:
+            secure:
+              type: string
+            plain:
+              type: string
+            path:
+              type: boolean
+            query:
+              type: boolean
+              description: The path is kept as given, with a query (a webhook's address).
+        advanced:
+          type: boolean
     OptionSpec:
       type: object
       additionalProperties: false
@@ -3907,7 +5712,7 @@ components:
     Account:
       type: object
       additionalProperties: false
-      required: [id, type, label, source, enabled, status, order, default_selected, public_feed, created_at, updated_at]
+      required: [id, type, label, source, enabled, status, order, default_selected, public_feed, defaults, config, credentials, created_at, updated_at]
       description: |
         One of your accounts. The profile fields (`handle`,
         `display_name`, `avatar`, `profile_url`) are as the network last
@@ -3942,7 +5747,10 @@ components:
             asked.
         source:
           type: string
-          description: Where the account is configured (`env` for now).
+          enum: [env, db]
+          description: |
+            Where the account is configured: `env` (environment variables,
+            changed there) or `db` (added or adopted in the app).
         enabled:
           type: boolean
           description: Your switch; `status` says whether it can be used.
@@ -3974,13 +5782,168 @@ components:
         public_feed:
           type: boolean
           description: Its posts appear in the public feed.
+        defaults:
+          $ref: "#/components/schemas/AccountDefaults"
         capabilities:
-          description: Absent when this server has no driver for the account's type.
+          description: Absent when this server has no driver for the account's type, and on a deleted account.
           $ref: "#/components/schemas/Capabilities"
+        auth_method:
+          type: string
+          description: How it connects (`GET /v1/destinations` lists the methods).
+        config:
+          type: object
+          description: |
+            Its configuration: the type's fields and the method's fields
+            that aren't secret (state the account keeps for itself, such
+            as a token's expiry, is left out).
+        credentials:
+          type: object
+          description: Which credentials are set, and when; never what they are.
+          additionalProperties:
+            type: object
+            additionalProperties: false
+            required: [set]
+            properties:
+              set:
+                type: boolean
+              updated_at:
+                $ref: "#/components/schemas/Timestamp"
+        locked_fields:
+          type: array
+          description: The fields environment variables set (`source` `env`); change them there, or adopt the account.
+          items:
+            type: string
+        health:
+          type: object
+          additionalProperties: false
+          required: [ok, reachable, checked_at]
+          description: The last authenticated check (absent before one ran).
+          properties:
+            ok:
+              type: boolean
+            reachable:
+              type: boolean
+              description: The network answered at all.
+            auth_ok:
+              type: boolean
+              description: Whether the credentials work, when the network said.
+            message:
+              type: string
+            expires_at:
+              description: When the credentials stop working, when known (renewed before then where the network allows).
+              $ref: "#/components/schemas/Timestamp"
+            reconnect_by:
+              description: >-
+                When the network's grant to Publisher ends, when known (a Threads
+                grant lasts 90 days): renewing the token doesn't move it, so
+                connect the account again before then.
+              $ref: "#/components/schemas/Timestamp"
+            checked_at:
+              $ref: "#/components/schemas/Timestamp"
         created_at:
           $ref: "#/components/schemas/Timestamp"
         updated_at:
           $ref: "#/components/schemas/Timestamp"
+        deleted_at:
+          $ref: "#/components/schemas/Timestamp"
+    AccountDefaults:
+      type: object
+      additionalProperties: false
+      description: |
+        What a post to the account gets when it says nothing of these. A
+        target's own value comes first, then the post's shared `content`,
+        then the account's default; an explicit `""` or `[]` (or an
+        option's `""`) clears a default for that post. Visibility is an
+        option, as in a target's `options`.
+      properties:
+        content_warning:
+          type: string
+          maxLength: 1000
+        languages:
+          type: array
+          items:
+            type: string
+        options:
+          type: object
+          description: The type's options (`GET /v1/destinations`), and `visibility` where the account has one.
+    AccountSet:
+      type: object
+      additionalProperties: false
+      required: [id, name, accounts, is_default, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: "^set_"
+        name:
+          type: string
+        accounts:
+          type: array
+          description: The set's accounts that still exist, in the set's order.
+          items:
+            type: string
+            pattern: "^acc_"
+        is_default:
+          type: boolean
+          description: A new post starts with this set.
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+    AccountSetIn:
+      type: object
+      additionalProperties: false
+      required: [name, accounts]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        accounts:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: string
+        is_default:
+          type: boolean
+    AccountSetPatch:
+      type: object
+      additionalProperties: false
+      description: Send only what changes.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        accounts:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: string
+        is_default:
+          type: boolean
+    AccountCreate:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          description: The network (`GET /v1/destinations`).
+        label:
+          type: string
+          maxLength: 64
+          description: Your name for it; the network's name when left out.
+        method:
+          type: string
+          description: How it connects; may be left out when the type has one.
+        config:
+          type: object
+          description: The type's fields.
+        credentials:
+          type: object
+          description: The method's fields (a `generate` method has none).
     AccountPatch:
       type: object
       additionalProperties: false
@@ -3996,6 +5959,18 @@ components:
           type: boolean
         public_feed:
           type: boolean
+        defaults:
+          description: Replaces the account's defaults (`{}` clears them), checked against what the account can take.
+          $ref: "#/components/schemas/AccountDefaults"
+        method:
+          type: string
+          description: A new way of connecting (an account added in the app); needs `credentials`.
+        config:
+          type: object
+          description: A merge patch of the configuration (an account added in the app); `null` puts a field back to its default.
+        credentials:
+          type: object
+          description: Every credential of the method, replacing the stored ones (an account added in the app).
     Token:
       type: object
       additionalProperties: false

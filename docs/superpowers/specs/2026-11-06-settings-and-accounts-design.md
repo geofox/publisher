@@ -499,8 +499,8 @@ A credential is only ever sent to the server it was entered for.
   (§4.1): Mastodon `instance_url`, Bluesky `pds_url`, a webhook URL, the
   Blossom URL, a future WordPress site URL.
 - Changing an audience field deletes the secrets bound to it and requires
-  them again in the same request; otherwise `422 credentials_required`
-  with a pointer to each missing field.
+  them again in the same request; otherwise `422 validation_failed` with
+  `required` on `/credentials` (or on each secret left out).
 - The audience's normalized origin is part of the secret's AAD, so a value
   copied or edited in the database file fails to open rather than going to
   a new server.
@@ -778,7 +778,11 @@ accounts), `ETag`. `?include=deleted` lists deleted accounts.
 - `config`, `credentials`: database accounts only (`409 locked_by_env`
   otherwise). Re-validated, re-opened and re-identified; a different
   `remote_id` is `409 identity_changed`; changing an audience field needs
-  the credentials again (§3.3).
+  the credentials again (§3.3). With the same method, a secret left out
+  of `credentials` is kept while the audience stays the same (a new
+  handle, the same app password). A new non-secret identifier (a
+  Bluesky handle) doesn't keep the old audience: it is discovered again
+  unless `config` gives it.
 - A metadata-only change goes through `Registry.Update`; a credential or
   connection change through `Reopen`.
 
@@ -787,7 +791,10 @@ accounts), `ETag`. `?include=deleted` lists deleted accounts.
 - `DELETE /v1/accounts/{id}`: soft delete (`deleted_at`, `enabled = 0`),
   secrets deleted, scheduled targets of the account canceled with the
   reason, drafts drop it when opened. Needs re-authentication. An env
-  account can't be deleted (`409 locked_by_env`; unset its variables).
+  account the environment still configures can't be deleted (`409
+  locked_by_env`; unset its variables); one it no longer configures
+  (`not_configured`) can, and its `env_key` is cleared so that setting the
+  variables again makes a new account.
 - `POST /v1/accounts/{id}:check`: authenticated `Check`, rate limited to
   one per 10 s per account.
 - `POST /v1/accounts/{id}:reveal`: Nostr keys only (the driver marks which
@@ -893,19 +900,19 @@ No out-of-band (code paste) flow: token paste (part C) is the fallback.
   `app_id` and `app_secret` (secret). Settings → Integrations → Threads app
   (an `instance:admin` write, re-authenticated) stores them; the page shows
   the redirect URI to register and links Meta's guide.
-- Authorize at Meta's Threads authorization window with `client_id`,
-  `redirect_uri`, `scope=threads_basic,threads_content_publish`,
-  `response_type=code`, `state`.
-- Callback: exchange the code for a short-lived token and user id, then
-  for a long-lived token (`th_exchange_token`, server side). Secrets in
-  query strings are scrubbed from every log and error (today's
-  `scrubToken`).
-- **To verify at the start of part E** (Meta's access-token page didn't
-  load during the analysis): the authorize host, the code exchange
-  endpoint and parameters, https and exact-match rules for the redirect
-  URI, whether replies to the account's own threads need
-  `threads_manage_replies`. The part E plan records what was found; only
-  this subsection changes.
+- Authorize at `https://threads.com/oauth/authorize` with `client_id`,
+  `redirect_uri`, `scope=threads_basic,threads_content_publish,
+  threads_manage_replies` (replies need the last one), `response_type=code`,
+  `state`.
+- Callback: exchange the code (good once, for an hour; a trailing `#_`
+  stripped) at `POST https://graph.threads.com/oauth/access_token` for a
+  short-lived token and user id, then for a long-lived token (`GET
+  https://graph.threads.com/access_token?grant_type=th_exchange_token`,
+  server side). Secrets in query strings are scrubbed from every log and
+  error (today's `scrubToken`).
+- The redirect URI must match the app's list exactly, over https; Meta
+  refuses `localhost`. Verified 2026-11-07 (the plan's E1 has the
+  sources).
 - Verified (2026-11-06): each integrator needs a Meta app with the Threads
   use case; a Threads tester can grant permissions without App Review;
   short-lived tokens last 1 hour, long-lived 60 days, refreshable once 24
@@ -995,22 +1002,29 @@ next request or claim; nothing in flight is interrupted.
 - `GET /v1/settings` (`settings:read`) and `PATCH /v1/settings`
   (`settings:write`): the owner's settings, as nested JSON
   (`{"composing": {"languages": ["en", "fr"]}}`). Each leaf in `GET` is
-  `{"value", "source", "env", "locked"}`; a secret's value is
-  `{"set": bool, "updated_at"}` (a webhook URL shows its origin). `PATCH`
+  `{"value", "source", "env", "locked", "field"}`, with `updated_at` once
+  saved, `problem` when a saved secret can't be opened and `generate`
+  when the server can make a value; a secret's value is
+  `{"set": bool, "updated_at"}` (a webhook URL shows its `origin`, the
+  Blossom key its `public_key`). `PATCH`
   is a JSON Merge Patch: `null` reverts a key to its default or clears a
   secret. `If-Match` optional (missing: latest; `*` allowed); stale →
   `412 precondition_failed`. A locked key → `409 locked_by_env`.
-- `POST /v1/settings/{key}:copy-from-env` saves the env value.
+- `POST /v1/settings/{key}:copy-from-env` saves the env value;
+  `:generate` makes one (`feed.token`, shown once; `media.blossom_key`,
+  answering only its npub).
 - `GET`/`PATCH /v1/instance/settings` (`instance:admin`; secret writes
   re-authenticated): same shape, instance scope.
 - `POST /v1/settings/{group}:test` for `alerts` and `feed`, `POST
   /v1/instance/settings/media:test`: `{"ok": bool, "error": "<class>"}`
   where the class is `unreachable | refused | timeout | http_error |
-  blocked_destination`; never a status code or body. One per 10 s.
+  blocked_destination`; never a status code or body. One per 10 s (the
+  `media.public` self-test has a window of its own).
 - `/v1/account-sets[/{id}]` (`accounts:read`; writes `accounts:write`),
   with ETags.
-- `PATCH /v1/accounts/{id}` accepts `defaults`: visibility, content
-  warning, languages and the type's options, validated against the
+- `PATCH /v1/accounts/{id}` accepts `defaults`: content warning,
+  languages and `options` (the type's options, and `visibility` where
+  the account has it), validated against the
   account's capabilities and `OptionSpec`s. **Precedence:** a target's own
   value, then the request's shared `content`, then the account default; an
   explicit `""` or `[]` clears a default. `POST /v1/posts:preview` lists the
@@ -1018,6 +1032,9 @@ next request or claim; nothing in flight is interrupted.
   warnings say "default applied: visibility=unlisted".
 - `GET /v1/instance` keeps `user_languages` and `features.translate`
   (the owner's, while there is one owner).
+- `GET /v1/instance/system` (`instance:admin`, not behind the proxy
+  alone): the version, the sign-in mode and System's allowlist of
+  variables, secrets only as set, addresses without user or password.
 
 ### 7.5 The Settings tab
 
@@ -1037,17 +1054,19 @@ by `USER_LANGUAGES`" and offers "copy into the app".
 Added in this spec: without it a Bluesky-only self-hoster needs a Blossom
 server to attach a photo.
 
-- `media.Store`: `Put(ctx, body, mime)`, `PutFile`, `Fetch(ctx, url)`,
-  `Owns(url) bool`, `Public() bool`. Every `Put` path strips metadata as
+- `media.Store`: `Upload(ctx, body, size, sha, mime)` and `Public()
+  bool`; the disk store adds `Owns`, `Has` and `Fetch`. Every `Put` path strips metadata as
   today (EXIF/GPS/XMP), video posters included.
 - **Blossom** signs uploads with `media.blossom_key`, adding the BUD-11
-  server tag so a captured authorization can't be replayed elsewhere.
+  server tag so a captured authorization can't be replayed elsewhere
+  (encoded in standard base64, which servers from before BUD-11 read).
   Existing deployments keep signing with the Nostr env key until another
   key is set. The page shows the key's npub so the owner can allow it on
   their Blossom server.
 - **Local disk:**
-  - Objects at `MEDIA_DIR` (default `<data dir>/media`) as `<sha256>`
-    files (0600, directory 0700), served at `GET /media/<sha256>.<ext>`.
+  - Objects at `MEDIA_DIR` (default `<data dir>/media`) as
+    `<sha256>.<ext>` files, the extension from the sniffed type (0600,
+    directory 0700), served at `GET /media/<sha256>.<ext>`.
     The name must match `^[0-9a-f]{64}\.[a-z0-9]{2,5}$` and the extension
     the stored type, else 404. No path is ever built from a URL.
   - Served types are an allowlist of sniffed image and video types;
@@ -1066,7 +1085,9 @@ server to attach a photo.
     forward-auth proxy in front of `/media/`. The README documents the
     proxy rule that exposes only `/media/`. Only a public store can carry
     media for URL-transport accounts (Threads, Nostr); a post with media
-    to such an account without one is refused (`media_unsupported`). The
+    to such an account without one is refused (`media_unsupported`); a
+    quote's link-quote copies there go without the original's images,
+    with a warning. The
     page warns that Nostr images served from home reveal the home IP.
 - Switching stores applies to new uploads; existing media keep their URLs
   and are fetched where they live (drafts keep Blossom attachments).

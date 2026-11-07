@@ -29,7 +29,12 @@ function sortAccounts(list) {
 // fires an "accounts" event on document (before the callers continue).
 export function loadAccounts() {
   if (!loading) {
-    loading = v1All("/v1/accounts?limit=100").then(list => {
+    // The account sets come with them (a failure leaves none: the
+    // composer then starts from the accounts' own flags).
+    const setsRead = v1All("/v1/account-sets").catch(() => null);
+    loading = v1All("/v1/accounts?limit=100").then(async list => {
+      const s = await setsRead;
+      if (s) sets = s;
       all = sortAccounts(list || []);
       loaded = true;
       document.dispatchEvent(new CustomEvent("accounts"));
@@ -71,10 +76,29 @@ export function connected() { return all.filter(isConnected); }
 // one new posts select, else the first.
 export function primaryOf(type) { return primaryIn(all, type); }
 
-// defaultTargets is what a new post selects: the connected accounts that
-// new posts select, in order. Empty until the accounts load.
+// defaultTargets is what a new post selects: the default account set's
+// connected accounts when there is one (and one of them can be posted to
+// now), else the connected accounts that new posts select, in order.
+// Empty until the accounts load.
 export function defaultTargets() {
-  return all.filter(a => isConnected(a) && a.default_selected).map(a => a.id);
+  const d = sets.find(x => x.is_default);
+  const fromSet = d ? setTargetsOf(d) : [];
+  lastDefault = fromSet.length ? inOrder(fromSet) : all.filter(a => isConnected(a) && a.default_selected).map(a => a.id);
+  return [...lastDefault];
+}
+
+// lastDefaultTargets is what defaultTargets answered last: a selection
+// still on it follows a new default (main.js applyAccounts).
+let lastDefault = [];
+export function lastDefaultTargets() { return [...lastDefault]; }
+
+// The owner's account sets (GET /v1/account-sets), read with the accounts.
+let sets = [];
+export function accountSets() { return sets; }
+
+// setTargetsOf is a set's accounts that can be posted to now.
+export function setTargetsOf(set) {
+  return (set.accounts || []).filter(id => isConnected(byId(id)));
 }
 
 // inOrder sorts account ids in the app's order; ids it doesn't know go last.
@@ -207,3 +231,16 @@ export function identity() {
 // loadInstance reads GET /v1/instance: languages, translate targets, features
 // and limits.
 export function loadInstance() { return v1("/v1/instance"); }
+
+// loadDestinations reads the network types this server has (GET
+// /v1/destinations): how each connects and what it is configured with,
+// for the Settings forms. Read once, or again when fresh (what can start
+// now depends on the server's settings); a failed read isn't kept.
+let types = null;
+export function loadDestinations(fresh = false) {
+  if (fresh || !types) {
+    const p = v1All("/v1/destinations").catch(e => { if (types === p) types = null; throw e; });
+    types = p;
+  }
+  return types;
+}

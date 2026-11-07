@@ -1,9 +1,11 @@
 package accounts
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +33,7 @@ type fakeStore struct {
 	mu         sync.Mutex
 	rows       []store.Account
 	identities map[string][2]string
+	dup        *store.DuplicateAccountError // what SetAccountIdentity answers, when set
 }
 
 func (s *fakeStore) AllAccounts(context.Context) ([]store.Account, error) {
@@ -44,6 +47,10 @@ func (s *fakeStore) SetAccountIdentity(_ context.Context, id, handle, remote str
 	defer s.mu.Unlock()
 	if s.identities == nil {
 		s.identities = map[string][2]string{}
+	}
+	if s.dup != nil {
+		s.identities[id] = [2]string{handle, ""}
+		return s.dup
 	}
 	s.identities[id] = [2]string{handle, remote}
 	return nil
@@ -530,6 +537,75 @@ func TestProfiles(t *testing.T) {
 		t.Errorf("failure not recorded at %v", failedAt)
 	}
 }
+
+// Two accounts that turn out to be one network account: the second keeps
+// its handle but no remote id, and the owner is told once, not at every
+// profile refresh.
+func TestDuplicateIdentityWarnsOnce(t *testing.T) {
+	var buf bytes.Buffer
+	var bufMu sync.Mutex
+	logger := slog.New(slog.NewTextHandler(writerFunc(func(p []byte) (int, error) {
+		bufMu.Lock()
+		defer bufMu.Unlock()
+		return buf.Write(p)
+	}), nil))
+	h := newHarness(t, []store.Account{row("acc_b", "bluesky", "env", "default", 0, true)}, []EnvAccount{env("bluesky", "default")},
+		func(o *Options) { o.Logger = logger })
+	h.store.mu.Lock()
+	h.store.dup = &store.DuplicateAccountError{ID: "acc_first", Label: "Bluesky"}
+	h.store.mu.Unlock()
+	a := h.live("acc_b")
+	a.mu.Lock()
+	a.ident = destination.Identity{Handle: "me.example", RemoteID: "did:plc:x"}
+	a.mu.Unlock()
+	for range 3 {
+		h.Profile("acc_b")
+		h.wait()
+		h.clock.Add(profileTTL)
+	}
+	bufMu.Lock()
+	out := buf.String()
+	bufMu.Unlock()
+	if n := strings.Count(out, "two accounts are the same network account"); n != 1 {
+		t.Errorf("warned %d times:\n%s", n, out)
+	}
+	if !strings.Contains(out, "same_as=acc_first") || strings.Contains(out, "account identity not saved") {
+		t.Errorf("log:\n%s", out)
+	}
+	if e, _ := h.Get("acc_b"); e.Row.Handle != "me.example" || e.Row.RemoteID != "" {
+		t.Errorf("row = %q %q, want the handle and no remote id", e.Row.Handle, e.Row.RemoteID)
+	}
+	// The other account is deleted: the remote id is kept at the next
+	// refresh.
+	h.store.mu.Lock()
+	h.store.dup = nil
+	h.store.mu.Unlock()
+	h.Profile("acc_b")
+	h.wait()
+	if e, _ := h.Get("acc_b"); e.Row.RemoteID != "did:plc:x" || h.store.identities["acc_b"][1] != "did:plc:x" {
+		t.Errorf("after the other went: %q %v", e.Row.RemoteID, h.store.identities["acc_b"])
+	}
+	// The same account added again later is a new duplicate: said again.
+	h.store.mu.Lock()
+	h.store.dup = &store.DuplicateAccountError{ID: "acc_first", Label: "Bluesky"}
+	h.store.mu.Unlock()
+	a.mu.Lock()
+	a.ident = destination.Identity{Handle: "me.example", RemoteID: "did:plc:y"}
+	a.mu.Unlock()
+	h.clock.Add(profileTTL)
+	h.Profile("acc_b")
+	h.wait()
+	bufMu.Lock()
+	out = buf.String()
+	bufMu.Unlock()
+	if n := strings.Count(out, "two accounts are the same network account"); n != 2 {
+		t.Errorf("a new duplicate warned %d times in all", n)
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 // Close closes every open account.
 func TestCloseClosesAccounts(t *testing.T) {

@@ -3,8 +3,10 @@ import { el, v1, asDialog } from "./common.js";
 import { passkeysSupported, getPasskey, passkeyError, postJSON, waitText } from "./webauthn.js";
 
 // The "confirm it's you" dialog: some operations need the owner to prove,
-// just now, that they are the owner. reauth(op) answers a nonce for op
-// (good once, for five minutes), or null when the owner cancels.
+// just now, that they are the owner. reauth(op, target) answers a nonce
+// for op (good once, for five minutes; for an operation on one account,
+// target is its id and the nonce is good for it only), or null when the
+// owner cancels.
 //
 // local: the passkey, or the password. oidc: a fresh sign-in with the
 // identity provider in a small window, which then lets this page claim
@@ -15,6 +17,11 @@ const WHY = {
   "signin.remove": "remove a way to sign in",
   "password.set": "set your password",
   "token.create": "create a token",
+  "account.delete": "delete this account",
+  "account.reveal": "show this account's key",
+  "instance.secrets": "change the server's secret settings",
+  "export": "export your accounts and settings, credentials included",
+  "import": "import accounts and settings into this server",
 };
 
 let mode = "";
@@ -23,13 +30,15 @@ export function setReauthMode(m) { mode = m || ""; }
 
 let open = null; // the dialog on screen: a second request waits for it
 
-export function reauth(op) {
-  if (open) return open.then(() => reauth(op));
-  open = show(op).finally(() => { open = null; });
+export function reauth(op, target = "") {
+  if (open) return open.then(() => reauth(op, target));
+  open = show(op, target).finally(() => { open = null; });
   return open;
 }
 
-function show(op) {
+function show(op, target) {
+  // What each step sends: the operation, and its target when it has one.
+  const what = target ? { operation: op, target } : { operation: op };
   return new Promise(resolve => {
     const bk = el("div", { class: "modal-bk" });
     const card = el("div", { class: "modal reauth" });
@@ -67,7 +76,7 @@ function show(op) {
 
     const claim = async () => {
       try {
-        const n = await postJSON("/auth/reauth/claim", { operation: op });
+        const n = await postJSON("/auth/reauth/claim", what);
         finish(n.nonce);
       } catch (e) {
         if (e.status === 401) { signedOut(); return; }
@@ -119,7 +128,7 @@ function show(op) {
           b.disabled = true;
           say("Waiting for your passkey…");
           try {
-            const opts = await postJSON("/auth/reauth/begin", { operation: op });
+            const opts = await postJSON("/auth/reauth/begin", what);
             let cred;
             try {
               cred = await getPasskey(opts);
@@ -127,7 +136,7 @@ function show(op) {
               say(passkeyError(e) || (hasPassword ? "No passkey was used. You can confirm with your password instead." : ""));
               return;
             }
-            const n = await postJSON("/auth/reauth", { operation: op, credential: cred });
+            const n = await postJSON("/auth/reauth", { ...what, credential: cred });
             finish(n.nonce);
           } catch (e) {
             if (e.status === 401) { signedOut(); return; }
@@ -152,7 +161,7 @@ function show(op) {
           submit.disabled = true;
           say("Checking…");
           try {
-            const n = await postJSON("/auth/reauth", { operation: op, password: input.value });
+            const n = await postJSON("/auth/reauth", { ...what, password: input.value });
             finish(n.nonce);
           } catch (e) {
             if (e.status === 401) { signedOut(); return; }

@@ -44,7 +44,9 @@ export default defineConfig({
   }, {
     command: "go run ./e2e/harness",
     cwd: "..",
-    env: { PORT: String(LOCAL_PORT), E2E_AUTH: "local" },
+    // For settings.spec.ts: a setting locked by the environment, and a
+    // secret Settings → System must not show.
+    env: { PORT: String(LOCAL_PORT), E2E_AUTH: "local", E2E_SETTINGS_ENV: JSON.stringify({ SCHEDULE_GRACE: "3h" }), E2E_SECRET: "e2e-secret-not-for-the-page" },
     url: `http://127.0.0.1:${LOCAL_PORT}/readyz`,
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,

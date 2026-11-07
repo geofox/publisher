@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strings"
 )
@@ -36,6 +37,9 @@ func IsBlockedIP(ip net.IP) bool {
 		return true
 	}
 	switch {
+	case v4Compat.Contains(ip16):
+		// IPv4-compatible (RFC 4291, deprecated): never a public host.
+		return true
 	case nat64WKP.Contains(ip16):
 		// NAT64 (RFC 6052): the gateway turns it into the IPv4 address in
 		// its last 4 bytes, so judge that address.
@@ -55,9 +59,31 @@ var (
 	nat64Local = mustCIDR("64:ff9b:1::/48")
 	siit       = mustCIDR("::ffff:0:0:0/96")
 	sixToFour  = mustCIDR("2002::/16")
-	// reserved4: "this network", benchmarking, and reserved/broadcast.
-	reserved4 = []*net.IPNet{mustCIDR("0.0.0.0/8"), mustCIDR("198.18.0.0/15"), mustCIDR("240.0.0.0/4")}
+	v4Compat   = mustCIDR("::/96")
+	// reserved4: "this network", IETF protocol assignments (not globally
+	// reachable; a cloud's metadata has lived there), benchmarking,
+	// reserved/broadcast, and Azure's platform address (WireServer and
+	// its DNS: public, but only for the VMs it serves).
+	reserved4 = []*net.IPNet{mustCIDR("0.0.0.0/8"), mustCIDR("192.0.0.0/24"), mustCIDR("198.18.0.0/15"),
+		mustCIDR("240.0.0.0/4"), mustCIDR("168.63.129.16/32")}
 )
+
+// metadataAddrs are clouds' instance-metadata addresses inside ranges
+// PRIVATE_DESTINATIONS may list (Alibaba Cloud's in 100.64/10, AWS's IPv6
+// one in fc00::/7): never reached, whatever is listed.
+var metadataAddrs = []netip.Addr{netip.MustParseAddr("100.100.100.200"), netip.MustParseAddr("fd00:ec2::254")}
+
+// IsMetadataAddr reports whether a is a cloud's instance-metadata address
+// that a listed private range could otherwise open.
+func IsMetadataAddr(a netip.Addr) bool {
+	a = a.Unmap()
+	for _, m := range metadataAddrs {
+		if a == m {
+			return true
+		}
+	}
+	return false
+}
 
 func mustCIDR(s string) *net.IPNet {
 	_, n, err := net.ParseCIDR(s)

@@ -3,10 +3,10 @@ import { el, $, wcount, flash, confirmModal, v1, problemError, TZ, whenText, loc
 import { state, byKey, postedText, v1PostBody, ovOf, selected, setTargets, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen } from "./state.js";
 import { renderPreview } from "./preview.js";
 import { openDetail } from "./history.js";
-import { accounts, byId, typeOf, isConnected, defaultTargets, accountsLoaded, networkName, nameOf, accessibleName,
+import { accounts, accountSets, setTargetsOf, byId, typeOf, isConnected, defaultTargets, accountsLoaded, networkName, nameOf, accessibleName,
   handleOf, customLabel, isOpaque, shortId, fitHandle } from "./accounts.js";
 import { followPost } from "./follow.js";
-import { brandTile, icon } from "./brands.js";
+import { icon, accountTile } from "./brands.js";
 import { planFor, lastPlanFor, planError } from "./plan.js";
 import { editorInit, renderEditor, setTab } from "./editor.js";
 import { fromMarkers, toLF } from "./textpos.js";
@@ -138,20 +138,6 @@ function barredWhy(a) {
   return "";
 }
 
-// accountTile is the account's avatar with its network's mark, or the
-// network's tile when it has no avatar.
-function accountTile(a, size = 29) {
-  if (!a.avatar) return brandTile(a.type, { size });
-  const tile = el("span", { class: "acct-tile" });
-  const img = el("img", { class: "acct-av", src: a.avatar, alt: "", width: String(size), height: String(size),
-    referrerpolicy: "no-referrer", loading: "lazy" });
-  img.addEventListener("error", () => tile.replaceWith(brandTile(a.type, { size })));
-  const mark = brandTile(a.type, { size: 14, r: 4 });
-  mark.classList.add("acct-mark");
-  tile.append(img, mark);
-  return tile;
-}
-
 // toggled redraws what a change of selection touches and tells the drafts
 // autosave (it listens for change events in the composer).
 function toggled(focusId) {
@@ -248,8 +234,14 @@ function renderChips() {
         el("span", { class: "bad", text: say = "Couldn't read your accounts: " + accountsPhase.error }), again));
       if (hadFocus) again.focus({ preventScroll: true }); // the keyboard stays on Try again
     } else {
-      c.append(el("p", { class: "targets-empty muted",
-        text: say = "No accounts yet: set them in the server's environment (see the README), then restart it." }));
+      // Settings says how: added there, or from the server's environment
+      // (the only way behind the reverse proxy alone).
+      const open = el("button", { class: "ghost sm", type: "button", text: "Open Settings",
+        onclick: () => document.dispatchEvent(new CustomEvent("open-settings", { detail: "accounts" })) });
+      c.append(el("div", { class: "targets-empty" },
+        el("span", { class: "muted", text: say = state.proxyAuth
+          ? "No accounts yet: set them in the server's environment, then restart it."
+          : "No accounts yet: add one in Settings." }), open));
     }
     if (hadFocus && !c.contains(document.activeElement)) { c.tabIndex = -1; c.focus({ preventScroll: true }); }
     live.textContent = say;
@@ -258,6 +250,9 @@ function renderChips() {
     return;
   }
   c.dataset.state = "ready";
+  // The account sets that hold an account that can be posted to.
+  const sets = accountSets().filter(s => setTargetsOf(s).length);
+  if (sets.length) c.append(setsRow(sets));
   // One group per network, in the accounts' order.
   const groups = [];
   for (const a of list) {
@@ -296,6 +291,33 @@ function renderChips() {
   if (hadFocus && !c.contains(document.activeElement)) c.querySelector(".target-row")?.focus({ preventScroll: true });
   renderTargetsMeta();
   renderThreadNotice();
+}
+
+// setsRow picks an account set: exactly its accounts that can be posted
+// to now (in a reply or a quote, the account acting stays, and those it
+// keeps out stay out). The set the selection is shows as pressed.
+function setsRow(sets) {
+  const it = state.interaction;
+  const row = el("div", { class: "target-sets", role: "group", "aria-label": "Account sets" },
+    el("span", { class: "ts-lbl", text: "Sets" }));
+  for (const s of sets) {
+    let ids = setTargetsOf(s).filter(id => !barredWhy(byId(id)));
+    if (it && it.account) ids = [...new Set([it.account, ...ids])];
+    const on = ids.length === state.targets.size && ids.every(id => state.targets.has(id));
+    row.append(el("button", {
+      class: "ts-set" + (on ? " on" : ""), type: "button", "aria-pressed": on ? "true" : "false",
+      "data-account-set": s.id, text: s.name,
+      title: ids.map(nameOf).join(", "),
+      onclick: () => {
+        state.targets = new Set(ids);
+        state.chosen = true;
+        if (!state.targets.has(state.focus)) state.focus = selected()[0] || "";
+        toggled(null);
+        document.querySelector(`#chips [data-account-set="${CSS.escape(s.id)}"]`)?.focus({ preventScroll: true });
+      },
+    }));
+  }
+  return row;
 }
 
 // refreshTargets updates each row's count + thread badge in place on every
@@ -710,10 +732,21 @@ function langField(value, onChange) {
   if (langs.length > 1) {
     const sel = el("select", { onchange: e => { onChange(e.target.value); renderPreview(); } });
     for (const code of langs) sel.append(el("option", { value: code, text: code }));
-    sel.value = langs.includes(value) ? value : langs[0];
+    // A value that isn't one of the owner's languages (an account's
+    // default, a draft's) shows as it is, since it is what the post sends.
+    if (value) ensureOption(sel, value, String(value).split(",").join(", "));
+    else sel.value = langs[0];
     return sel;
   }
-  return el("span", { class: "lang-static muted", text: value });
+  return el("span", { class: "lang-static muted", text: String(value || "").split(",").join(", ") });
+}
+
+// ensureOption selects value in sel, adding it (shown as text) when none
+// of the options is it: the card shows what the post sends.
+function ensureOption(sel, value, text) {
+  value = value == null ? "" : String(value);
+  if (![...sel.options].some(o => o.value === value)) sel.append(el("option", { value, text: text || value }));
+  sel.value = value;
 }
 
 function fieldsFor(p, ov, onText = renderPreview) {
@@ -723,7 +756,7 @@ function fieldsFor(p, ov, onText = renderPreview) {
     const rsel = el("select", { onchange: e => { ov.reply = e.target.value; renderPreview(); } });
     [["", "anyone"], ["nobody", "nobody"], ["following", "following"], ["follower", "followers"], ["mention", "mentioned"]]
       .forEach(([v, t]) => rsel.append(el("option", { value: v, text: t })));
-    rsel.value = ov.reply;
+    ensureOption(rsel, ov.reply, String(ov.reply || "").split(",").map(x => ({ follower: "followers", mention: "mentioned" }[x.trim()] || x.trim())).join(" + "));
     f.append(lbl("replies", rsel));
     f.append(lbl("disable quotes", el("input", { type: "checkbox", checked: ov.disable_quotes, onchange: e => { ov.disable_quotes = e.target.checked; renderPreview(); } })));
   }
@@ -733,16 +766,16 @@ function fieldsFor(p, ov, onText = renderPreview) {
     const sel = el("select", { onchange: e => { ov.visibility = e.target.value; renderPreview(); } });
     [["", "default"], ["public", "public"], ["unlisted", "unlisted"], ["private", "private"], ["direct", "direct"]]
       .forEach(([v, t]) => sel.append(el("option", { value: v, text: t })));
-    sel.value = ov.visibility;
+    ensureOption(sel, ov.visibility);
     f.append(lbl("visibility", sel));
     f.append(lbl("lang (ISO 639-1)", langField(ov.language, v => { ov.language = v; })));
   }
   if (p === "threads") {
     f.append(lbl("topic", el("input", { type: "text", value: ov.topic_tag, oninput: e => { ov.topic_tag = e.target.value; renderPreview(); } })));
     const tsel = el("select", { onchange: e => { ov.reply_control = e.target.value; renderPreview(); } });
-    [["", "anyone"], ["accounts_you_follow", "following"], ["followers_only", "followers"], ["mentioned_only", "mentioned"], ["parent_post_author_only", "author only"]]
-      .forEach(([v, t]) => tsel.append(el("option", { value: v, text: t })));
-    tsel.value = ov.reply_control;
+    [["", "anyone"], ["everyone", "anyone"], ["accounts_you_follow", "following"], ["followers_only", "followers"], ["mentioned_only", "mentioned"], ["parent_post_author_only", "author only"]]
+      .forEach(([v, t]) => { if (v !== "everyone" || ov.reply_control === "everyone") tsel.append(el("option", { value: v, text: t })); });
+    ensureOption(tsel, ov.reply_control);
     f.append(lbl("replies", tsel));
   }
   if (p === "nostr") {
