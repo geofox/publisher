@@ -219,6 +219,10 @@ type API struct {
 	EndSession bool
 	// AppBaseURL is the public origin (scheme://host) used to build post-logout redirects.
 	AppBaseURL string
+	// ConnectBaseURL, when set, is where networks send the owner back
+	// after signing in instead of AppBaseURL. Only the e2e harness sets
+	// one: an https name (Meta's rule) its browser is routed back from.
+	ConnectBaseURL string
 	// AllowedHosts, when set, are the only Host names served (plus
 	// loopback names and AppBaseURL's host): a DNS-rebinding page whose name
 	// now points at this server sends its own name as Host and is refused.

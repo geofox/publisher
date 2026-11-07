@@ -730,6 +730,49 @@ written by earlier upgrades (`publisher.db.pre-v*.bak`) still hold it in
 plaintext, and the log says so. Delete them once this version works for
 you.
 
+#### Connecting by signing in
+
+Mastodon and Threads accounts can also be added by signing in at the
+network instead of pasting a token: **Settings → Accounts → Add an
+account**, then **Sign in at your server** (Mastodon) or **Sign in at
+Threads**. A new tab opens at the network; once you allow Publisher
+there, it sends you back to `<PUBLIC_URL>/oauth/callback/<network>`
+and the account appears in the first tab. This needs `PUBLIC_URL` (with
+OIDC, the app's address from `OIDC_REDIRECT_URL` is used when it isn't
+set), the master key, and a signed-in browser (not the proxy alone, not
+an API token). A sign-in lasts 10 minutes. An account added this way
+that needs reconnecting shows **Reconnect**, which signs in again; its
+**Settings** have **Sign in again**, also for moving it to another
+server. Signing in as another account than the one being reconnected is
+refused.
+
+- **Mastodon:** nothing to set up. Publisher registers itself on your
+  server the first time (an app named `Publisher (<your host>)`, with
+  the scopes `read:accounts read:search read:statuses write:media
+  write:statuses`), using PKCE on Mastodon 4.3 and later. The token
+  doesn't expire.
+- **Threads:** Meta signs you in only through a Meta app you make once,
+  free, in [Meta's App Dashboard](https://developers.facebook.com/documentation/threads/get-started):
+  1. Create an app with the **Threads** use case (the permissions
+     `threads_basic`, `threads_content_publish` and
+     `threads_manage_replies`).
+  2. Add your Threads account as a **Threads Tester** (App roles,
+     Roles, Add People), and accept the invite in Threads (Account
+     settings, Website permissions). Your own accounts need no App
+     Review.
+  3. Add Publisher's redirect URI to the app's valid OAuth redirect
+     URIs, exactly as **Settings → Integrations → Threads app** shows it
+     (`https://<your host>/oauth/callback/threads`). Meta takes only
+     `https://` and refuses `localhost`.
+  4. Copy the **Threads App ID** and **Threads App secret** (App
+     settings, Basic: the Threads ones, not the Meta app's) into
+     **Settings → Integrations → Threads app**.
+
+  The long-lived token lasts 60 days and Publisher renews it. Meta's
+  permission itself ends 90 days after you allow it (renewing moves that
+  on only for a public profile): the account's card shows the date, and
+  an alert comes a week ahead, so you sign in again before then.
+
 #### Servers on your own network
 
 An address you set in the app (an account's server, a Nostr relay, a

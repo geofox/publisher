@@ -5169,10 +5169,21 @@ components:
             $ref: "#/components/schemas/FieldSpec"
         needs_instance_config:
           type: array
+          description: The server settings (`<type>.<key>`, in `GET /v1/instance/settings`) the method needs first.
           items:
             type: string
         needs_public_url:
           type: boolean
+        redirect_uri:
+          type: string
+          format: uri
+          description: >-
+            Where the network sends the owner back (`flow: redirect`, when the
+            server knows its public address): the address to register in an
+            app the network asks for, such as a Meta app.
+        unavailable:
+          type: string
+          description: "Why the method can't start now (`flow: redirect`), such as a server setting it needs; absent when it can."
     FieldSpec:
       type: object
       additionalProperties: false

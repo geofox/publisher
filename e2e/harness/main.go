@@ -102,6 +102,16 @@ func run() error {
 
 	rec := newRecorder()
 	drivers.Register()
+	// Signing in at a network reaches the harness's fakes (oauth.go); the
+	// Threads sign-in's addresses are theirs too.
+	signIn, err := newFakeSignIn()
+	if err != nil {
+		return err
+	}
+	defer signIn.srv.Close()
+	threads.AuthorizeURL = "https://threads.e2e.invalid/oauth/authorize"
+	threads.TokenURL = "https://graph.e2e.invalid/oauth/access_token"
+	threads.ExchangeURL = "https://graph.e2e.invalid/access_token"
 	env, err := seedAccounts(context.Background(), st, harnessAccounts)
 	if err != nil {
 		return err
@@ -150,7 +160,7 @@ func run() error {
 	defer stop()
 	eng, err := newEngine(ctx, func(ctx context.Context) (*accounts.Registry, *dispatch.Dispatcher, error) {
 		reg := accounts.New(accounts.Options{Store: st, Env: env, Secrets: st, Writes: st, Flows: st, Keys: keys, KeyState: keyState,
-			Instance: svc.Instance,
+			Instance: svc.Instance, ConnectNet: signIn.connectNet,
 			Open: func(_ context.Context, typ string, req destination.OpenRequest) (destination.Account, error) {
 				return newFake(rec, typ, req)
 			}})
@@ -222,6 +232,9 @@ func run() error {
 			return err
 		}
 		a.Mode, a.Local, a.PublicURL, a.AppBaseURL = api.ModeLocal, lsvc, publicURL, publicURL
+		// Networks send the owner back to an https name (Meta takes no
+		// other); the spec routes the browser from there to this server.
+		a.ConnectBaseURL = "https://pub.e2e.invalid"
 		disk.BaseURL = publicURL
 		a.Clients, a.SessionTTL = &httpx.ClientAddrs{}, time.Hour
 		// The setup link a start would log, minted on demand.
@@ -244,6 +257,10 @@ func run() error {
 		})
 	}
 
+	// What the fake sign-in servers were sent, oldest first.
+	mux.HandleFunc("GET /__e2e/sign-ins", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, signIn.calls())
+	})
 	mux.Handle("/__e2e/", rec.handler())
 	mux.Handle("/__blossom/", http.StripPrefix("/__blossom", blossom))
 	mux.Handle("/", a.Routes())

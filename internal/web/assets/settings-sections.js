@@ -1,5 +1,6 @@
 "use strict";
-import { el, v1 } from "./common.js";
+import { el, v1, flash } from "./common.js";
+import { loadDestinations } from "./accounts.js";
 import { settingsForm, readSettings } from "./settings-config.js";
 import { setsSection, defaultsSection } from "./settings-sets.js";
 
@@ -40,13 +41,14 @@ const SECTIONS = {
     settingsForm("owner", ["publishing.auto_retry", "publishing.max_attempts", "publishing.schedule_grace"], {
       title: "Publishing", intro: "What happens when a post fails, or a scheduled one is late." }).node,
   ] },
-  integrations: { scopes: ["owner"], build: () => [
+  integrations: { scopes: ["owner", "instance"], build: () => [
     settingsForm("owner", ["feed.token", "feed.webhook_url", "feed.webhook_token"], { title: "Public feed",
       intro: feedIntro(),
       test: { group: "feed", label: "Send a test ping", what: "The feed webhook" } }).node,
     settingsForm("owner", ["alerts.webhook_url", "alerts.webhook_user", "alerts.webhook_pass"], { title: "Alerts",
       intro: "Told when a scheduled post fails, or an account needs you.",
       test: { group: "alerts", label: "Send a test alert", what: "The alert webhook" } }).node,
+    settingsForm("instance", ["threads.app_id", "threads.app_secret"], { title: "Threads app", intro: threadsIntro() }).node,
   ] },
   system: { scopes: [], build: () => [systemSection()] },
 };
@@ -64,6 +66,39 @@ export function showSection(name, panel) {
   }
   for (const scope of s.scopes) readSettings(scope);
   if (name === "system") readSystem();
+}
+
+// threadsIntro is how to make the Meta app Threads sign-ins go through,
+// with the address Meta sends the owner back to (GET /v1/destinations).
+function threadsIntro() {
+  const guide = el("a", { target: "_blank", rel: "noopener noreferrer", text: "Meta's guide", hidden: "" });
+  const where = el("p", { class: "set-sect-intro", text: "Reading where Meta sends you back…" });
+  loadDestinations(true).then(list => {
+    const m = (list || []).find(x => x.type === "threads");
+    const a = m && (m.auth || []).find(x => x.flow === "redirect");
+    if (a && /^https:\/\//i.test(a.help_url || "")) { guide.href = a.help_url; guide.hidden = false; }
+    const uri = a && a.redirect_uri;
+    if (!uri) {
+      where.replaceChildren("Set PUBLIC_URL first, at an https address: Meta sends you back to it, at ", code("/oauth/callback/threads"), ".");
+      return;
+    }
+    const copy = el("button", { class: "ghost sm", type: "button", text: "Copy", "aria-label": "Copy the redirect URI" });
+    copy.addEventListener("click", () => navigator.clipboard.writeText(uri).then(
+      () => { copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1800); },
+      () => flash("Select it and copy it")));
+    where.replaceChildren("Add this address to the app's valid OAuth redirect URIs, exactly (Meta compares it character by character): ",
+      code(uri), " ", copy);
+    if (!/^https:\/\//i.test(uri)) {
+      where.append(el("span", { class: "fld-warn", text: " Meta takes only https: set PUBLIC_URL to Publisher's https address." }));
+    }
+  }, e => { where.textContent = "Where Meta sends you back couldn't be read: " + e.message; });
+  return el("div", {},
+    el("p", { class: "set-sect-intro" },
+      "To add Threads accounts by signing in, Publisher goes through a Meta app you make once: one with the Threads use case. ",
+      "Add your Threads account to it as a Threads Tester (App roles, Roles, Add People) and accept the invite in Threads ",
+      "(Account settings, Website permissions); your own accounts need no App Review. ", guide),
+    where,
+    el("p", { class: "set-sect-intro", text: "Then copy its Threads App ID and Threads App secret here. Without them, add Threads accounts with a token." }));
 }
 
 function feedIntro() {

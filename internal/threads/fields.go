@@ -58,9 +58,10 @@ func instanceConfig() []destination.FieldSpec {
 	return []destination.FieldSpec{
 		{Key: InstanceAppID, Label: "Threads app ID", Type: destination.FieldString, Pattern: `[0-9]{1,32}`,
 			Placeholder: "1234567890123456",
-			Help: "From your Meta app's dashboard, the Threads use case's settings: the Threads app ID, " +
-				"not the Meta app ID."},
+			Help: "In your Meta app's dashboard: App settings, Basic, Threads App ID. A Meta app has two IDs: " +
+				"use the Threads one."},
 		{Key: InstanceAppSecret, Label: "Threads app secret", Type: destination.FieldString, Secret: true, MaxLength: 200,
-			Help: "Beside the Threads app ID. Kept sealed; sent only to Threads."},
+			Help: "App settings, Basic, Threads App secret (the one paired with the Threads App ID). " +
+				"Kept sealed; sent only to Threads."},
 	}
 }

@@ -155,6 +155,25 @@ the `edge` image.
 
 ### Added
 
+- **Connect Mastodon and Threads accounts by signing in** at the network
+  (Settings → Accounts → Add an account), in a new tab that sends you
+  back to `<PUBLIC_URL>/oauth/callback/<network>`; the first tab
+  finishes by itself. Mastodon needs nothing set up: Publisher registers
+  itself on your server (PKCE on 4.3 and later). Threads goes through a
+  Meta app you make once, set in **Settings → Integrations → Threads
+  app**, which shows the redirect URI to register. An account added this
+  way reconnects by signing in again (**Reconnect**, or **Sign in
+  again** in its settings), and signing in as another account is
+  refused. API: `POST /v1/accounts:connect`, `POST
+  /v1/accounts/{id}:reconnect`, `GET /v1/connect-flows/{id}` and
+  `:choose`; `GET /v1/destinations` gives each sign-in method its
+  `redirect_uri` and why it can't start yet (`unavailable`); the
+  instance settings `threads.app_id` and `threads.app_secret`.
+- **When Meta's permission ends.** A Threads account's check reports
+  the end of the 90 days Meta grants (`health.reconnect_by`); the card
+  shows it, and an alert comes a week ahead, once a day, to sign in
+  again.
+
 - **Sign-in without OIDC** (`AUTH_MODE=local`): passkeys for
   `PUBLIC_URL`'s host and an optional password (argon2id, throttled per
   address; `TRUSTED_PROXIES` names the proxies whose `X-Forwarded-For`

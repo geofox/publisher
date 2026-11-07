@@ -198,27 +198,56 @@ func connectorOf(typ, method string) (destination.Driver, destination.Connector,
 
 // connectRequest is what a type's connector gets for a flow.
 func (r *Registry) connectRequest(owner string, f store.OAuthFlow, a destination.AuthMethod, config map[string]any) (destination.ConnectRequest, error) {
+	n := destination.GuardedNet(r.opt.Guard.Allow)
+	if r.opt.ConnectNet != nil {
+		n = r.opt.ConnectNet(f.Type)
+	}
 	req := destination.ConnectRequest{Method: a.ID, Config: config, RedirectURI: f.RedirectURI,
-		Net:     destination.GuardedNet(r.opt.Guard.Allow),
+		Net:     n,
 		Clients: &oauthClients{r: r, owner: owner, typ: f.Type, redirect: f.RedirectURI},
 		Logger:  r.log.With("connect_flow", f.ID, "account_type", f.Type)}
 	if r.opt.Instance != nil {
 		req.InstanceConfig, req.InstanceSecrets = r.opt.Instance(f.Type)
 	}
-	for _, k := range a.NeedsInstanceConfig {
-		if v, ok := req.InstanceConfig[k]; ok && v != nil && v != "" {
-			continue
-		}
-		if req.InstanceSecrets[k] != "" {
-			continue
-		}
-		name := f.Type
-		if d, ok := destination.Lookup(f.Type); ok {
-			name = d.Manifest().Name
-		}
-		return req, invalid("/method", "not_allowed", "this needs the server's "+name+" app first (Settings, Integrations)")
+	if why := missingInstance(f.Type, a, req.InstanceConfig, req.InstanceSecrets); why != "" {
+		return req, invalid("/method", "not_allowed", why)
 	}
 	return req, nil
+}
+
+// missingInstance says what server setting a method needs first, or "".
+func missingInstance(typ string, a destination.AuthMethod, cfg map[string]any, sec map[string]string) string {
+	for _, k := range a.NeedsInstanceConfig {
+		if v, ok := cfg[k]; ok && v != nil && v != "" {
+			continue
+		}
+		if sec[k] != "" {
+			continue
+		}
+		name := typ
+		if d, ok := destination.Lookup(typ); ok {
+			name = d.Manifest().Name
+		}
+		return "this needs the server's " + name + " app first (Settings, Integrations)"
+	}
+	return ""
+}
+
+// ConnectUnavailable says why a type's sign-in method can't start now,
+// as starting it would ("" when it can, or it isn't one).
+func (r *Registry) ConnectUnavailable(typ string, a destination.AuthMethod) string {
+	if a.Flow != destination.FlowRedirect {
+		return ""
+	}
+	if r.opt.Flows == nil || r.opt.Writes == nil {
+		return ErrNoFlows.Error()
+	}
+	var cfg map[string]any
+	var sec map[string]string
+	if r.opt.Instance != nil {
+		cfg, sec = r.opt.Instance(typ)
+	}
+	return missingInstance(typ, a, cfg, sec)
 }
 
 // BeginConnect starts a flow: a new account, or a reconnect of an

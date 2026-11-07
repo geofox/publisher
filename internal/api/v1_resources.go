@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
@@ -103,19 +105,50 @@ type manifester interface {
 	Manifest(typ string) (destination.Manifest, bool)
 }
 
+// connectReadiness says why a sign-in method can't start now
+// (accounts.Registry).
+type connectReadiness interface {
+	ConnectUnavailable(typ string, a destination.AuthMethod) string
+}
+
 func (a *API) v1Destinations(w http.ResponseWriter, _ *http.Request) {
 	out := []destination.Manifest{}
 	mf, _ := a.Accounts.(manifester)
 	for _, t := range destination.Types() {
 		if mf != nil {
 			if m, ok := mf.Manifest(t); ok {
-				out = append(out, m)
+				out = append(out, a.withConnect(m))
 			}
 		} else if d, ok := destination.Lookup(t); ok {
-			out = append(out, d.Manifest())
+			out = append(out, a.withConnect(d.Manifest()))
 		}
 	}
 	writeV1(w, http.StatusOK, newList(out, nil))
+}
+
+// withConnect adds what the server knows to a type's sign-in methods:
+// where the network sends the owner back, and why one can't start now.
+func (a *API) withConnect(m destination.Manifest) destination.Manifest {
+	auth := slices.Clone(m.Auth)
+	ready, _ := a.Accounts.(connectReadiness)
+	for i := range auth {
+		x := &auth[i]
+		x.RedirectURI, x.Unavailable = "", ""
+		if x.Flow != destination.FlowRedirect {
+			continue
+		}
+		base := a.connectBase()
+		if strings.TrimSpace(base) == "" {
+			x.Unavailable = "set PUBLIC_URL, Publisher's public address, where the network sends you back"
+			continue
+		}
+		x.RedirectURI = accounts.RedirectURI(base, m.Type)
+		if ready != nil {
+			x.Unavailable = ready.ConnectUnavailable(m.Type, *x)
+		}
+	}
+	m.Auth = auth
+	return m
 }
 
 // GET /v1/me: who is calling, and what they may do.

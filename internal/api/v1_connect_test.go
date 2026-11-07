@@ -316,6 +316,28 @@ func TestV1ConnectThreads(t *testing.T) {
 	start := func() v1Resp {
 		return w.do(req{method: "POST", path: "/v1/accounts:connect", body: `{"type":"threads"}`})
 	}
+	// The list says where Meta sends the owner back, and why signing in
+	// can't start yet.
+	method := func() destination.AuthMethod {
+		t.Helper()
+		var l struct{ Data []destination.Manifest }
+		w.do(req{method: "GET", path: "/v1/destinations"}).json(&l)
+		for _, m := range l.Data {
+			for _, a := range m.Auth {
+				if m.Type == "threads" && a.ID == "oauth" {
+					return a
+				}
+				if a.Flow != destination.FlowRedirect && (a.RedirectURI != "" || a.Unavailable != "") {
+					t.Errorf("%s %s: %+v", m.Type, a.ID, a)
+				}
+			}
+		}
+		t.Fatal("no Threads sign-in")
+		return destination.AuthMethod{}
+	}
+	if a := method(); a.RedirectURI != "https://pub.example/oauth/callback/threads" || !strings.Contains(a.Unavailable, "Threads app") {
+		t.Fatalf("listed: %+v", a)
+	}
 	p := wantProblem(t, start(), http.StatusUnprocessableEntity, codeValidation)
 	if len(p.Errors) != 1 || p.Errors[0].Pointer != "/method" || !strings.Contains(p.Errors[0].Detail, "Threads app") {
 		t.Fatalf("no app: %+v", p)
@@ -328,6 +350,13 @@ func TestV1ConnectThreads(t *testing.T) {
 		return map[string]any{"app_id": "1234567890"}, map[string]string{"app_secret": "meta-s3cret"}
 	}
 	w.mu.Unlock()
+	if a := method(); a.Unavailable != "" {
+		t.Fatalf("with the app: %+v", a)
+	}
+	w.api.AppBaseURL = ""
+	if a := method(); a.RedirectURI != "" || !strings.Contains(a.Unavailable, "PUBLIC_URL") {
+		t.Fatalf("without a public address: %+v", a)
+	}
 	w.api.AppBaseURL = "http://pub.example"
 	p = wantProblem(t, start(), http.StatusUnprocessableEntity, codeValidation)
 	if len(p.Errors) != 1 || p.Errors[0].Pointer != "/method" || !strings.Contains(p.Errors[0].Detail, "https") {

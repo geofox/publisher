@@ -41,12 +41,19 @@ function writeBlocked() {
 // The types this server has, once read.
 let types = null, typesError = "";
 const manifest = t => (types || []).find(m => m.type === t) || null;
-// usable lists the ways of connecting the app can offer now (a redirect
-// comes with part E).
-const usable = m => (m.auth || []).filter(a => a.flow === "fields" || a.flow === "generate");
+// usable lists the ways of connecting the app offers: typing the
+// credentials, Publisher making them, or signing in at the network.
+const usable = m => (m.auth || []).filter(a => a.flow === "fields" || a.flow === "generate" || a.flow === "redirect");
+// methodOf is the way an account connects, once the types are read.
+const methodOf = a => { const m = manifest(a.type); return (m && (m.auth || []).find(x => x.id === a.auth_method)) || null; };
+// signedIn: the account was connected by signing in at its network, so
+// it connects again the same way.
+const signedIn = a => { const x = methodOf(a); return !!x && x.flow === "redirect"; };
 
+// readTypes reads them afresh: whether a sign-in can start depends on
+// the server's settings now (the Threads app).
 function readTypes() {
-  return loadDestinations().then(list => { types = list; typesError = ""; }, e => { typesError = e.message; });
+  return loadDestinations(true).then(list => { types = list; typesError = ""; }, e => { typesError = e.message; });
 }
 
 // Hints, not refusals: shown under a field as the owner types.
@@ -298,6 +305,11 @@ function healthLine(a) {
     text = "Works" + (when ? ", " + when : "");
     if (h.expires_at) text += ". Its token runs until " + dateText(h.expires_at);
     cls = "ok";
+    // The network's grant ends then, whatever renewing does.
+    if (h.reconnect_by) {
+      text += ". " + networkName(a.type) + "'s permission lasts until " + dateText(h.reconnect_by) + ": sign in again before then";
+      if (Date.parse(h.reconnect_by) - Date.now() < 7 * 86400e3) cls = "warn";
+    }
   } else if (!h.reachable) {
     text = "Couldn't reach its server" + (when ? ", " + when : "") + (h.message ? ": " + h.message : "");
     cls = "warn";
@@ -402,8 +414,14 @@ function actions(a) {
   }
   out.push(btn("Rename", "rename-" + a.id, () => rename(a), { "aria-label": "Rename " + name }));
   if (db && !proxy()) {
-    const reconnect = a.status === "needs_reconnect";
-    out.push(btn(reconnect ? "Reconnect" : "Settings", "edit-" + a.id, () => editAccount(a), { "aria-label": (reconnect ? "Reconnect " : "Settings of ") + name }));
+    const again = a.status === "needs_reconnect";
+    if (again && signedIn(a)) {
+      // Signed in at the network: reconnecting is signing in again.
+      out.push(btn("Reconnect", "reconnect-" + a.id, () => reconnect(a), { "aria-label": "Reconnect " + name + ": sign in at " + networkName(a.type) + " again" }));
+      out.push(btn("Settings", "edit-" + a.id, () => editAccount(a), { "aria-label": "Settings of " + name }));
+    } else {
+      out.push(btn(again ? "Reconnect" : "Settings", "edit-" + a.id, () => editAccount(a), { "aria-label": (again ? "Reconnect " : "Settings of ") + name }));
+    }
     if (revealable(a)) out.push(btn("Show key", "reveal-" + a.id, () => reveal(a, false), { "aria-label": "Show key: " + name }));
     out.push(btn("Delete", "delete-" + a.id, () => del(a), { class: "ghost sm danger-text", "aria-label": "Delete " + name }));
   }
@@ -568,7 +586,8 @@ function pickMethod(s, m, from = "") {
   s.setTitle("Add a " + m.name + " account");
   const buttons = ms.map(a => el("button", { class: "acct-method", type: "button", "data-method": a.id, onclick: () => form(s, m, a, () => pickMethod(s, m, a.id)) },
     el("span", { class: "acct-method-name", text: a.label }),
-    a.help ? el("span", { class: "acct-method-help", text: a.help }) : null));
+    a.help ? el("span", { class: "acct-method-help", text: a.help }) : null,
+    a.unavailable ? el("span", { class: "acct-method-help warn", text: "Not yet: " + a.unavailable + "." }) : null));
   s.body.replaceChildren(
     el("p", { class: "acct-dlg-lead", text: "How does it connect?" }),
     el("div", { class: "acct-methods" }, ...buttons),
@@ -587,6 +606,7 @@ function howTo(m, a) {
 }
 
 function form(s, m, a, back) {
+  if (a.flow === "redirect") return connectForm(s, m, a, back);
   s.setTitle("Add a " + m.name + " account");
   const byPointer = new Map();
   const creds = controls(a.fields, "/credentials/", null, byPointer, f => ({ warn: warnFor(m.type, f.key) }));
@@ -635,6 +655,248 @@ function form(s, m, a, back) {
   return first.input;
 }
 
+// ── signing in at the network ───────────────────────────────────────────
+
+// connectForm asks what signing in needs (a Mastodon server's address)
+// and a label, then opens the network's sign-in in a new tab; this dialog
+// follows the flow until it ends there.
+function connectForm(s, m, a, back) {
+  s.setTitle("Add a " + m.name + " account");
+  const byPointer = new Map();
+  const conf = controls(m.config, "/config/", null, byPointer);
+  const label = field({ key: "label", label: "Label", type: "string", max_length: 64, placeholder: m.name,
+    help: "What you call it here. When left empty: " + m.name + "." }, undefined);
+  byPointer.set("/label", label);
+  const status = el("p", { class: "acct-dlg-status", role: "status", "aria-live": "polite" });
+  const submit = el("button", { class: "primary sm", type: "submit", text: "Sign in at " + m.name });
+  const f = el("form", { class: "acct-form", novalidate: "" },
+    howTo(m, a),
+    a.unavailable ? unavailableNote(s, a) : null,
+    ...fieldSet([...conf, label]),
+    status,
+    el("div", { class: "confirm-actions" }, el("button", { class: "ghost sm", type: "button", text: "Back", onclick: back }), submit));
+  let busy = false;
+  f.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    if (busy) return;
+    if (badInputs(conf)) { status.className = "acct-dlg-status err"; status.textContent = "Fix the field marked above."; return; }
+    // The tab opens now, while the click still counts as the owner's (a
+    // browser blocks one opened after the server answers).
+    const tab = openTab();
+    busy = true;
+    submit.disabled = true;
+    status.className = "acct-dlg-status";
+    status.textContent = "Preparing the sign-in at " + m.name + "…";
+    const body = { type: m.type, method: a.id, config: collect(conf) };
+    const l = label.read();
+    if (l) body.label = l;
+    try {
+      const started = await v1("/v1/accounts:connect", { method: "POST", body });
+      follow(s, m, started, tab, () => connectForm(s, m, a, back), null);
+    } catch (e) {
+      if (tab) tab.close();
+      status.textContent = connectProblem(e, m, byPointer);
+      status.className = "acct-dlg-status err";
+      busy = false;
+      submit.disabled = false;
+    }
+  });
+  s.body.replaceChildren(f);
+  const first = conf.find(c => !c.spec.advanced && !c.locked) || label;
+  if (s.open()) first.focus();
+  return first.input;
+}
+
+// unavailableNote says why a sign-in can't start yet, with the way to the
+// server setting it needs.
+function unavailableNote(s, a) {
+  const go = /Integrations/.test(a.unavailable)
+    ? el("button", { class: "ghost sm", type: "button", text: "Open Settings, Integrations", onclick: () => {
+      s.close();
+      const nav = document.querySelector('.set-nav [data-set="integrations"]');
+      if (nav) { nav.click(); nav.focus(); }
+    } })
+    : null;
+  return el("div", { class: "set-note warn" }, el("p", { text: "Not yet: " + a.unavailable + "." }), go);
+}
+
+// connectProblem is what a refused start says, beyond the fields.
+function connectProblem(e, m, byPointer) {
+  switch (e.code) {
+    case "rate_limited": return "Too many sign-ins started in a minute. " + waitText(e.retryAfter);
+    case "connect_failed": return m.name + " couldn't be prepared: " + e.message + ".";
+  }
+  return showProblems(e, byPointer).join(" ");
+}
+
+// openTab opens an empty tab for the sign-in, cut off from this page, or
+// answers null when the browser refused it.
+function openTab() {
+  let w = null;
+  try { w = window.open("", "_blank"); } catch (_) { w = null; }
+  if (w) { try { w.opener = null; } catch (_) { /* not ours to change */ } }
+  return w;
+}
+
+// signInURL is a sign-in address the server answered, or "" when it isn't
+// a web address.
+const signInURL = u => typeof u === "string" && /^https?:\/\//i.test(u) ? u : "";
+
+// follow sends the tab to the network's sign-in and reads the flow until
+// it ends: connected, failed, or several accounts to choose from. again
+// starts over; a is the account being reconnected (null: a new one).
+function follow(s, m, started, tab, again, a) {
+  // Closed while the server prepared it: the flow just expires.
+  if (!s.open()) { if (tab) tab.close(); return; }
+  const url = signInURL(started.authorize_url);
+  if (tab && url) tab.location.replace(url);
+  else if (tab) tab.close();
+  const id = started.flow;
+  s.setTitle(a ? "Sign in to " + nameOf(a.id) + " again" : "Sign in at " + m.name);
+  const status = el("p", { class: "acct-dlg-status", role: "status", "aria-live": "polite", text: "Waiting for " + m.name + "…" });
+  const link = url ? el("a", { class: tab ? "ghost sm" : "primary sm", href: url, target: "_blank", rel: "noopener noreferrer",
+    text: tab ? "Open the sign-in again" : "Open the sign-in at " + m.name }) : null;
+  const cancel = el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: () => s.close() });
+  s.body.replaceChildren(
+    el("p", { class: "acct-dlg-lead", text: tab
+      ? "Sign in at " + m.name + " in the new tab and allow Publisher. This finishes by itself when you're back."
+      : "Your browser didn't open a new tab: open the sign-in at " + m.name + " below, allow Publisher, then come back here." }),
+    link ? el("p", {}, link) : null,
+    status,
+    el("div", { class: "confirm-actions" }, cancel));
+  (link || cancel).focus();
+
+  let timer = 0, reading = false, over = false;
+  const schedule = ms => { clearTimeout(timer); timer = setTimeout(read, ms); };
+  // Back from the sign-in's tab: read at once.
+  const now = () => { if (document.visibilityState === "visible") schedule(0); };
+  document.addEventListener("visibilitychange", now);
+  window.addEventListener("focus", now);
+  const end = () => {
+    over = true;
+    clearTimeout(timer);
+    document.removeEventListener("visibilitychange", now);
+    window.removeEventListener("focus", now);
+  };
+  async function read() {
+    if (over) return;
+    if (!s.open()) { end(); return; }
+    if (reading) { schedule(500); return; }
+    reading = true;
+    let f;
+    try {
+      f = await v1("/v1/connect-flows/" + enc(id));
+    } catch (e) {
+      reading = false;
+      if (!s.open()) { end(); return; }
+      status.textContent = "Couldn't read how the sign-in is going (" + e.message + "); trying again…";
+      schedule(5000);
+      return;
+    }
+    reading = false;
+    if (!s.open()) { end(); return; }
+    outcome(f);
+  }
+  function outcome(f) {
+    switch (f.status) {
+      case "pending": schedule(2000); return;
+      case "choose": end(); choose(s, m, f, outcome); return;
+      case "completed": end(); connected(s, m, f, a); return;
+      default: end(); notConnected(s, m, f, again);
+    }
+  }
+  schedule(2000);
+}
+
+// choose asks which of the accounts the network offered to add.
+function choose(s, m, f, outcome) {
+  s.setTitle("Which " + m.name + " account?");
+  const name = "cand-" + f.id;
+  const opts = (f.candidates || []).map((c, i) => {
+    const id = name + "-" + i;
+    const r = el("input", { type: "radio", name, id, value: String(i), checked: i === 0 ? "" : false });
+    return el("div", { class: "fld-check" }, r, el("label", { for: id },
+      el("span", { text: c.display_name || c.handle || "Account " + (i + 1) }),
+      c.display_name && c.handle ? el("span", { class: "muted", text: " " + c.handle }) : null));
+  });
+  const status = el("p", { class: "acct-dlg-status", role: "status", "aria-live": "polite" });
+  const add = el("button", { class: "primary sm", type: "submit", text: "Add this one" });
+  const form = el("form", { class: "acct-form", novalidate: "" },
+    el("fieldset", { class: "set-pick" }, el("legend", { text: m.name + " offered these accounts" }), ...opts),
+    status,
+    el("div", { class: "confirm-actions" }, el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: () => s.close() }), add));
+  form.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    if (add.disabled) return;
+    const picked = form.querySelector("input[type=radio]:checked");
+    if (!picked) return;
+    add.disabled = true;
+    status.className = "acct-dlg-status";
+    status.textContent = "Adding it…";
+    try {
+      const next = await v1("/v1/connect-flows/" + enc(f.id) + ":choose", { method: "POST", body: { candidate: Number(picked.value) } });
+      outcome(next);
+    } catch (e) {
+      status.className = "acct-dlg-status err";
+      status.textContent = e.message;
+      add.disabled = false;
+    }
+  });
+  s.body.replaceChildren(form);
+  const first = form.querySelector("input[type=radio]");
+  if (first) first.focus();
+}
+
+// connected closes the dialog once the account is in.
+async function connected(s, m, f, a) {
+  s.close();
+  // The keyboard goes to the account's Settings once the list shows it.
+  pendingFocus = "edit-" + (a ? a.id : f.account);
+  await reloadAccounts().catch(() => {});
+  flash(a ? "Signed in to " + nameOf(a.id) + " again" : "Connected " + (f.account ? nameOf(f.account) : m.name));
+}
+
+// notConnected says why, in the server's fixed words, and offers to start
+// over.
+function notConnected(s, m, f, again) {
+  s.setTitle("Not connected");
+  const why = f.error_detail || "the sign-in didn't finish";
+  const retry = el("button", { class: "primary sm", type: "button", text: "Start again", onclick: again });
+  s.body.replaceChildren(
+    el("p", { class: "acct-dlg-status err", role: "alert", text: m.name + ": " + why + "." }),
+    el("div", { class: "confirm-actions" }, el("button", { class: "ghost sm", type: "button", text: "Close", onclick: () => s.close() }), retry));
+  retry.focus();
+}
+
+// reconnect signs in to an account's network again (a renewal, or a new
+// server: config holds the settings the owner changed).
+async function reconnect(a, config = {}) {
+  const m = manifest(a.type);
+  if (!m) { flash("Couldn't read how " + networkName(a.type) + " accounts connect" + (typesError ? ": " + typesError : "")); return; }
+  const why = writeBlocked();
+  if (why) { flash(why); return; }
+  const tab = openTab();
+  const s = sheet("Sign in to " + nameOf(a.id) + " again");
+  const status = el("p", { class: "acct-dlg-status", role: "status", "aria-live": "polite", text: "Preparing the sign-in at " + m.name + "…" });
+  const cancel = el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: () => s.close() });
+  s.body.replaceChildren(status, el("div", { class: "confirm-actions" }, cancel));
+  s.show(cancel);
+  const start = async () => {
+    try {
+      const body = Object.keys(config || {}).length ? { config } : {};
+      return await v1("/v1/accounts/" + enc(a.id) + ":reconnect", { method: "POST", body });
+    } catch (e) {
+      if (tab) tab.close();
+      status.className = "acct-dlg-status err";
+      status.textContent = "Couldn't start signing in: " + (e.code === "connect_failed" ? m.name + " couldn't be prepared: " : "") + e.message + ".";
+      return null;
+    }
+  };
+  const started = await start();
+  if (!started || !s.open()) { if (started && tab) tab.close(); return; }
+  follow(s, m, started, tab, () => { s.close(); reconnect(a, config); }, a);
+}
+
 // ── an account's settings ───────────────────────────────────────────────
 
 // current is a config field's value as the server applies it: the saved
@@ -660,6 +922,15 @@ async function editAccount(a) {
       keep: same && f.secret && !!(a.credentials && a.credentials[f.key] && a.credentials[f.key].set),
       warn: warnFor(a.type, f.key),
     }));
+    if (method.flow === "redirect") {
+      // Signed in at the network: what it saved can only be renewed by
+      // signing in again (with the settings below, a new server too).
+      credBox.replaceChildren(
+        el("p", { class: "fld-help", text: "Connected by signing in at " + m.name + ". Sign in again to renew it, or after changing its server below." }),
+        el("button", { class: "ghost sm", type: "button", text: "Sign in again", "data-focus-key": "signin-again-" + a.id,
+          onclick: () => { const cfg = changedConfig(); s.close(); reconnect(a, cfg); } }));
+      return;
+    }
     credBox.replaceChildren(
       method.flow === "generate"
         ? el("p", { class: "fld-help", text: "Its key was made here." + (revealable(a) ? " Show key shows it." : "") })
@@ -677,6 +948,16 @@ async function editAccount(a) {
     pick = el("div", { class: "fld" }, el("label", { for: id, class: "fld-label", text: "How it connects" }), pick);
   }
   const conf = controls(m.config, "/config/", a.config, byPointer);
+  // changedConfig is what the owner changed in the settings ({} when
+  // nothing).
+  function changedConfig() {
+    const cfg = {};
+    for (const c of conf) {
+      const v = c.read();
+      if (!sameValue(c.spec, v, current(a, c.spec))) cfg[c.spec.key] = v === undefined ? null : v;
+    }
+    return cfg;
+  }
   const submit = el("button", { class: "primary sm", type: "submit", text: "Save" });
   const f = el("form", { class: "acct-form", novalidate: "" },
     pick,
@@ -695,11 +976,7 @@ async function editAccount(a) {
     const typedSecret = creds.some(c => c.spec.secret && c.read() !== undefined);
     const changedPlain = creds.some(c => !c.spec.secret && !sameValue(c.spec, c.read(), a.config ? a.config[c.spec.key] : undefined));
     if (body.method || typedSecret || changedPlain) body.credentials = collect(creds);
-    const cfg = {};
-    for (const c of conf) {
-      const v = c.read();
-      if (!sameValue(c.spec, v, current(a, c.spec))) cfg[c.spec.key] = v === undefined ? null : v;
-    }
+    const cfg = changedConfig();
     if (Object.keys(cfg).length) body.config = cfg;
     if (!Object.keys(body).length) { s.close(); flash("Nothing changed"); return; }
     busy = true;
@@ -714,7 +991,8 @@ async function editAccount(a) {
     } catch (e) {
       let text = problemText(e, m, byPointer);
       if (e.code === "validation_failed" && !body.credentials && e.problem && (e.problem.errors || []).some(x => x.pointer === "/credentials")) {
-        text = "A new server address needs the credentials again: type them above.";
+        text = method.flow === "redirect" ? "A new server address needs signing in again: use Sign in again above."
+          : "A new server address needs the credentials again: type them above.";
         const secret = creds.find(c => c.spec.secret);
         if (secret) secret.focus();
       }
@@ -726,7 +1004,9 @@ async function editAccount(a) {
     }
   });
   s.body.replaceChildren(f);
-  s.show(pick ? pick.querySelector("select") : (creds[0] || conf[0] || { input: submit }).input);
+  s.show(pick ? pick.querySelector("select")
+    : method.flow === "redirect" ? credBox.querySelector("button")
+    : (creds[0] || conf[0] || { input: submit }).input);
 }
 
 // envSettings shows an environment account's settings, which the

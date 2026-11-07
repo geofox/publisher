@@ -176,7 +176,7 @@ func (a *API) startConnect(w http.ResponseWriter, r *http.Request, q accounts.Co
 	q.Actor, q.TokenID = actorOf(p)
 	// Never from the request: the network sends the owner back to the
 	// address the operator set.
-	q.RedirectBase = a.AppBaseURL
+	q.RedirectBase = a.connectBase()
 	f, err := conn.BeginConnect(r.Context(), q)
 	if err != nil {
 		a.connectError(w, r, err)
@@ -348,4 +348,13 @@ func upperFirst(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// connectBase is where networks send the owner back: PUBLIC_URL (else
+// the OIDC app's address), or "" when there is none.
+func (a *API) connectBase() string {
+	if a.ConnectBaseURL != "" {
+		return a.ConnectBaseURL
+	}
+	return a.AppBaseURL
 }

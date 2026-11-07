@@ -114,7 +114,7 @@ test("add a Bluesky account with an app password; a main password is only warned
 });
 
 test("Mastodon: credentials the network refuses stay on the form; the same account twice is refused", async () => {
-  await startAdding("Mastodon");
+  await startAdding("Mastodon", "Access token");
   await expect(field("Server address")).toBeFocused();
   await field("Server address").fill(`https://${RUN}.e2e.invalid`);
   await field("Access token").fill("bad-token");
@@ -133,7 +133,7 @@ test("Mastodon: credentials the network refuses stay on the form; the same accou
   await expect(card(`@alice@${RUN}.e2e.invalid`)).toBeVisible();
 
   // The same account again (another token of alice's): refused.
-  await startAdding("Mastodon");
+  await startAdding("Mastodon", "Access token");
   await field("Server address").fill(`https://${RUN}.e2e.invalid`);
   await field("Access token").fill("alice:two");
   await submit();
@@ -143,7 +143,7 @@ test("Mastodon: credentials the network refuses stay on the form; the same accou
 });
 
 test("Threads with a token", async () => {
-  await startAdding("Threads");
+  await startAdding("Threads", "Long-lived access token");
   await field("Access token").fill(`t${RUN}:token`);
   await submit();
   await expect(dialog()).toHaveCount(0);

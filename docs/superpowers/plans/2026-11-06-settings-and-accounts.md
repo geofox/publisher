@@ -2243,16 +2243,52 @@ tokens and permissions, long-lived tokens, create replies; and the
 
 ### Task E6: the web app
 
-- [ ] Connect buttons (new tab; the starting tab polls the flow);
+- [x] Connect buttons (new tab; the starting tab polls the flow);
   candidates; reconnect for `needs_reconnect`; Settings → Integrations →
   Threads app with the redirect URI and Meta's guide.
 
 ### Task E7: e2e, docs, PR
 
-- [ ] The harness serves a fake Mastodon instance (4.3+ and pre-4.3) and
+- [x] The harness serves a fake Mastodon instance (4.3+ and pre-4.3) and
   a fake Graph API; `connect.spec.ts` (local-auth project) connects both
   and reconnects one.
-- [ ] README: connecting Mastodon; the Meta app for Threads.
+- [x] README: connecting Mastodon; the Meta app for Threads.
+
+### As built (E6–E7)
+
+- **Readiness in the list:** `GET /v1/destinations` fills, for each
+  `flow: redirect` method, `redirect_uri` (when the server knows its
+  public address) and `unavailable` (no public address, or the server
+  setting it needs, as starting would say). The web reads the types
+  afresh each time Accounts shows.
+- **Web:** the method picker offers the sign-in methods (saying "Not
+  yet: …" with a way to Settings → Integrations when the app is
+  missing); the form asks only the type's settings and a label; the tab
+  opens in the click (a browser blocks one opened after the answer),
+  cut off from the app (`opener = null`), then goes to the sign-in
+  address; when the browser refused it, a link stands in. The dialog
+  reads the flow every 2 s and at once when the window gets focus back,
+  stops when closed, and ends connected (the keyboard on the account's
+  Settings), failed (the fixed words, Start again) or with candidates
+  to pick. An account connected by signing in shows Reconnect when it
+  needs it, and Sign in again in its settings (with a changed server
+  address sent as the reconnect's config). The card shows Meta's grant
+  end, as a warning within a week. Settings → Integrations → Threads
+  app: the two settings, Meta's steps (tester, redirect URI, the
+  Threads App ID and secret, wording checked against Meta's pages),
+  and the redirect URI with Copy, or what to set when there's none.
+- **Harness:** `oauth.go` serves fake Mastodon servers (any
+  `*.e2e.invalid`; `old-…` without metadata or PKCE) and a fake Graph
+  API over TLS with a certificate it makes and trusts, reached through
+  the registry's `ConnectNet` (test-only, like `Net.TLSClientConfig`
+  and the API's `ConnectBaseURL`, an https name the spec's routes send
+  the browser back from). `GET /__e2e/sign-ins` lists what they were
+  sent. The spec answers the sign-in pages with Playwright routes.
+- `connect.spec.ts`: Mastodon 4.3+ (PKCE verified end to end:
+  the token request's verifier hashes to the sign-in's challenge),
+  pre-4.3, declined then started again (one app per server), signing in
+  again as the same account and as another (refused), and Threads from
+  a missing app through Settings to a connected account.
 - [ ] Open PR E; 2 QA + 1 security reviews; fix; hand over.
 
 ---

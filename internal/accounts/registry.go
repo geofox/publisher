@@ -99,6 +99,10 @@ type Options struct {
 	// Instance answers a type's InstanceConfig values and secrets (a
 	// Threads app); nil: none.
 	Instance func(typ string) (map[string]any, map[string]string)
+	// ConnectNet is how a connect flow reaches the network (nil: through
+	// Guard, as an account added in the app). Only the e2e harness sets
+	// one, to reach its fake servers.
+	ConnectNet func(typ string) destination.Net
 	// Seed gives an account just added in the app its starting state
 	// beside its row (a Nostr account's relay-sync list); nil: none.
 	Seed func(ctx context.Context, row store.Account) error

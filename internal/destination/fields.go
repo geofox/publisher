@@ -34,6 +34,11 @@ type AuthMethod struct {
 	NeedsInstanceConfig []string `json:"needs_instance_config,omitempty"`
 	// NeedsPublicURL: the method needs PUBLIC_URL (an OAuth redirect).
 	NeedsPublicURL bool `json:"needs_public_url,omitempty"`
+	// RedirectURI and Unavailable are the server's, never a driver's: the
+	// callback address of a FlowRedirect method when the server knows its
+	// public address, and why the method can't start now ("" when it can).
+	RedirectURI string `json:"redirect_uri,omitempty"`
+	Unavailable string `json:"unavailable,omitempty"`
 }
 
 // FlowKind is how an AuthMethod collects the credential.

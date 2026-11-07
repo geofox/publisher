@@ -2,6 +2,7 @@ package destination
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -135,6 +136,9 @@ type Net struct {
 	// CheckRedirect decides whether a redirect is followed (nil: Go's
 	// default of at most 10).
 	CheckRedirect func(req *http.Request, via []*http.Request) error
+	// TLSClientConfig is the TLS configuration (nil: Go's, with the
+	// system's roots). Only the e2e harness sets one, to trust its fakes.
+	TLSClientConfig *tls.Config
 }
 
 // TransportOptions are the timeouts of an HTTP transport built from a Net.
@@ -167,6 +171,7 @@ func (n Net) Transport(o TransportOptions) *http.Transport {
 	return &http.Transport{
 		Proxy:                 n.Proxy,
 		DialContext:           n.Dial(),
+		TLSClientConfig:       n.TLSClientConfig,
 		ForceAttemptHTTP2:     true,
 		HTTP2:                 &http.HTTP2Config{SendPingTimeout: 30 * time.Second, PingTimeout: 15 * time.Second},
 		MaxIdleConns:          100,
