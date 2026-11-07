@@ -170,9 +170,20 @@ func (r *Registry) applyHealth(ctx context.Context, id string, l *lease, h desti
 		e.lastHealthAlert = now
 		alert = "expire " + h.ExpiresAt.UTC().Format(time.RFC3339)
 	}
+	// A grant that renewing doesn't extend (Meta's 90 days): only
+	// connecting again does.
+	var grant string
+	if h.ReconnectBy != nil && h.ReconnectBy.Sub(now) <= expiryAlertWindow && now.Sub(e.lastGrantAlert) >= alertEvery {
+		e.lastGrantAlert = now
+		grant = h.ReconnectBy.UTC().Format(time.RFC3339)
+	}
 	r.mu.Unlock()
 	if alert != "" {
 		r.alert(ctx, snap.Row.Label+": credentials expire soon", "The "+snap.Row.Type+" account's credentials "+alert+"; connect it again before then.")
+	}
+	if grant != "" {
+		r.alert(ctx, snap.Row.Label+": connect it again soon", "The "+snap.Row.Type+" account's access ends "+grant+
+			"; connect it again (Settings, Accounts) before then.")
 	}
 	if before != after {
 		r.log.Warn("account status changed", "account", id, "type", snap.Row.Type, "from", before, "to", after, "reason", reason)

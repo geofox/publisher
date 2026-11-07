@@ -307,6 +307,12 @@ func (r *Registry) BeginConnect(ctx context.Context, q ConnectStart) (StartedFlo
 // connectFailure logs a driver's failure (its error may quote the
 // network) and answers it as a *destination.ConnectError.
 func (r *Registry) connectFailure(f store.OAuthFlow, err error) error {
+	// A driver's own word on what the owner must change first (Threads:
+	// PUBLIC_URL must be https), with its fixed text.
+	var fe *destination.FieldError
+	if errors.As(err, &fe) {
+		return invalid("/"+fe.Key, fe.Code, fe.Detail)
+	}
 	var ce *destination.ConnectError
 	if !errors.As(err, &ce) {
 		ce = &destination.ConnectError{Code: destination.ConnectExchangeFailed, Err: err}

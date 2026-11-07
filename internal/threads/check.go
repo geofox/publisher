@@ -3,6 +3,7 @@ package threads
 import (
 	"context"
 	"net/url"
+	"time"
 
 	"github.com/geofox/publisher/internal/destination"
 )
@@ -26,7 +27,26 @@ func (a *Account) Check(ctx context.Context, req destination.CheckRequest) desti
 	if exp := a.C.TokenExpiry(); !exp.IsZero() {
 		h.ExpiresAt = &exp
 	}
+	if req.Authenticated && h.AuthOK != nil && *h.AuthOK {
+		if end := a.grant(ctx); !end.IsZero() {
+			h.ReconnectBy = &end
+		}
+	}
 	return h
+}
+
+// grant is when Meta's grant ends: asked again at each authenticated
+// check (a renewal moves it on for a public profile), the last answer
+// kept when Meta doesn't say (an app that has left development mode
+// answers debug_token only with its own token).
+func (a *Account) grant(ctx context.Context) time.Time {
+	end, err := a.C.GrantEnd(ctx)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err == nil {
+		a.grantEnd = end
+	}
+	return a.grantEnd
 }
 
 // apiRoot is the Graph API host's root ("https://graph.threads.net/").

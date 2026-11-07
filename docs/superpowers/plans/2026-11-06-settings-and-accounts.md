@@ -2203,11 +2203,43 @@ tokens and permissions, long-lived tokens, create replies; and the
 
 ### Task E5: Threads connect with the owner's Meta app
 
-- [ ] Per E1; `InstanceConfig` `app_id`/`app_secret`; long-lived token;
+- [x] Per E1; `InstanceConfig` `app_id`/`app_secret`; long-lived token;
   expiry state set so A2.2's refresher takes over; the grant's end date
   shown.
-- [ ] Tests against a fake Graph API, including tokens in query strings
+- [x] Tests against a fake Graph API, including tokens in query strings
   never logged.
+
+### As built (E5)
+
+- **The Meta app:** Threads' manifest declares `InstanceConfig`
+  `app_id` (digits) and `app_secret` (secret); `settings.DriverDefs()`
+  makes every driver's `InstanceConfig` an instance setting
+  `<type>.<key>` (no variable sets it), and `Service.Instance(type)`
+  answers them under the driver's keys for `accounts.Options.Instance`.
+- **Sign-in:** method `oauth` ("Sign in at Threads", before `token`):
+  `https://threads.com/oauth/authorize` with the three scopes
+  comma-separated and the state; no PKCE (Meta documents none; the app
+  is a confidential client). A redirect URI that isn't https, or is
+  localhost or loopback, is refused before the flow starts (`422` at
+  `/method`: a driver's `*destination.FieldError` now reaches the owner
+  as a field problem instead of `connect_failed`). The callback refuses
+  an app that changed meanwhile, exchanges the code (`POST
+  graph.threads.com/oauth/access_token`, the secret in the body), then
+  the short-lived token (`GET graph.threads.com/access_token`,
+  `th_exchange_token`, secret and token in the query), and stores
+  `expires_at`/`refreshed_at` so the refresher takes over a day later
+  at the soonest. Errors name the step, the status and the Graph
+  error's type and code; transport errors lose their address and are
+  scrubbed of the secret, the code and the tokens (a mutation test
+  shows the leak without it).
+- **The grant's end:** `destination.Health.ReconnectBy` (API
+  `health.reconnect_by`). Each authenticated Threads check that passes
+  asks `debug_token` (`data_access_expires_at`, the owner being a tester
+  of their own app) and keeps the last answer when Meta stops saying;
+  within 7 days of it the owner is alerted once a day to connect again.
+  The hosts used by posting and refreshing (`graph.threads.net`) are
+  unchanged: Meta's pages now name `graph.threads.com`, and moving the
+  working ones is not this part's change.
 
 ### Task E6: the web app
 

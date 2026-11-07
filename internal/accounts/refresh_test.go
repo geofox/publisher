@@ -238,3 +238,35 @@ func TestThreadsRefreshThroughLegacyState(t *testing.T) {
 		t.Errorf("after a restart the expiry is %v", exp)
 	}
 }
+
+// A grant the network ends (Meta's 90 days) alerts within a week of its
+// end, at most once a day, saying to connect again: renewing the token
+// doesn't move it.
+func TestGrantEndAlerts(t *testing.T) {
+	ra := &refreshAcct{}
+	h, al := refreshHarness(t, ra)
+	apply := func(end time.Time) {
+		t.Helper()
+		l, release := h.leaseAny("acc_t")
+		defer release()
+		h.applyHealth(context.Background(), "acc_t", l, destination.Health{OK: true, Reachable: true, AuthOK: &yes, ReconnectBy: &end})
+	}
+	now := h.clock.Now()
+	apply(now.Add(30 * 24 * time.Hour))
+	if al.count() != 0 {
+		t.Fatalf("a month ahead: %v", al.msgs)
+	}
+	apply(now.Add(6 * 24 * time.Hour))
+	apply(now.Add(6 * 24 * time.Hour))
+	if al.count() != 1 || !strings.Contains(al.msgs[0], "connect it again") {
+		t.Fatalf("within a week: %v", al.msgs)
+	}
+	h.clock.Add(alertEvery)
+	apply(now.Add(6 * 24 * time.Hour))
+	if al.count() != 2 {
+		t.Fatalf("a day later: %v", al.msgs)
+	}
+	if e, _ := h.Get("acc_t"); e.Health == nil || e.Health.ReconnectBy == nil {
+		t.Fatalf("the entry's health: %+v", e.Health)
+	}
+}

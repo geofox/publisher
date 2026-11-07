@@ -2,8 +2,10 @@ package threads
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -33,6 +35,7 @@ func graph(t *testing.T, status int, body string, authed *[]string) *Client {
 	t.Cleanup(srv.Close)
 	c := New("tok", "")
 	c.BaseURL = srv.URL + "/v1.0"
+	c.DebugURL = srv.URL + "/v1.0/debug_token" // 404: Meta doesn't say
 	return c
 }
 
@@ -106,5 +109,73 @@ func TestCheckReportsTokenExpiry(t *testing.T) {
 	real := now.Add(60 * 24 * time.Hour)
 	if exp := check(tokenState{expiresAt: real, refreshedAt: now}); exp == nil || !exp.Equal(real) {
 		t.Fatalf("expires_at = %v, want %v", exp, real)
+	}
+}
+
+// An authenticated check that works asks when Meta's grant ends and
+// reports it; when Meta stops saying, the last answer stays; a check that
+// fails, or an unauthenticated one, doesn't ask. The token never reaches
+// an error.
+func TestCheckReportsGrantEnd(t *testing.T) {
+	end := time.Date(2027, 2, 4, 10, 0, 0, 0, time.UTC)
+	var debug atomic.Int32
+	var answer atomic.Value
+	answer.Store(fmt.Sprintf(`{"data":{"is_valid":true,"data_access_expires_at":%d,"expires_at":1}}`, end.Unix()))
+	var meStatus atomic.Int32
+	meStatus.Store(200)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1.0/me":
+			w.WriteHeader(int(meStatus.Load()))
+			_, _ = w.Write([]byte(`{"id":"1","error":{"code":190}}`))
+		case "/v1.0/debug_token":
+			debug.Add(1)
+			if r.URL.Query().Get("input_token") != "tok-x/+=" || r.URL.Query().Get("access_token") != "tok-x/+=" {
+				w.WriteHeader(400)
+				return
+			}
+			a := answer.Load().(string)
+			if a == "" {
+				w.WriteHeader(400)
+				_, _ = w.Write([]byte(`{"error":{"message":"bad tok-x/+=","type":"OAuthException","code":100}}`))
+				return
+			}
+			_, _ = w.Write([]byte(a))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := New("tok-x/+=", "")
+	c.BaseURL, c.DebugURL = srv.URL+"/v1.0", srv.URL+"/v1.0/debug_token"
+	a := &Account{C: c}
+	check := func(auth bool) *time.Time {
+		t.Helper()
+		return a.Check(context.Background(), destination.CheckRequest{Authenticated: auth}).ReconnectBy
+	}
+	if got := check(true); got == nil || !got.Equal(end) {
+		t.Fatalf("reconnect_by = %v, want %v", got, end)
+	}
+	answer.Store("")
+	if got := check(true); got == nil || !got.Equal(end) {
+		t.Fatalf("after Meta stopped saying: %v, want the last answer", got)
+	}
+	if _, err := c.GrantEnd(context.Background()); err == nil || strings.Contains(err.Error(), "tok-x") ||
+		strings.Contains(err.Error(), url.QueryEscape("tok-x/+=")) || !strings.Contains(err.Error(), "OAuthException 100") {
+		t.Fatalf("GrantEnd's error: %v", err)
+	}
+	n := debug.Load()
+	if check(false); debug.Load() != n {
+		t.Fatal("an unauthenticated check asked Meta")
+	}
+	meStatus.Store(400)
+	if check(true); debug.Load() != n {
+		t.Fatal("a refused token was sent to debug_token")
+	}
+	// Valid but no end: never.
+	meStatus.Store(200)
+	answer.Store(`{"data":{"is_valid":true,"data_access_expires_at":0}}`)
+	if got := check(true); got != nil {
+		t.Fatalf("no end: %v", got)
 	}
 }

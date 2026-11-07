@@ -64,6 +64,9 @@ type Def struct {
 	// EnvFunc, when set, decides the env value from every variable read
 	// (media.store follows BLOSSOM_URL); ok false: not set by env.
 	EnvFunc func(env map[string]string) (v any, ok bool)
+	// Driver is the type whose InstanceConfig declares the setting
+	// (DriverDefs); "" for a built-in one.
+	Driver string
 }
 
 // Group is the key's first part ("publishing").
@@ -181,6 +184,23 @@ func Defs() []Def {
 			Field: destination.FieldSpec{Label: "Most disk space for media (MiB)", Type: destination.FieldInt, Min: intp(0), Max: intp(1 << 30),
 				Help: "This server's disk only. Uploads past it are refused; empty or 0: no limit but the free-space floor."}},
 	}
+}
+
+// DriverDefs are the instance settings the registered drivers' manifests
+// declare in InstanceConfig, as "<type>.<key>" (threads.app_id), in the
+// types' order. No variable sets them.
+func DriverDefs() []Def {
+	var out []Def
+	for _, typ := range destination.TypesInOrder() {
+		d, ok := destination.Lookup(typ)
+		if !ok {
+			continue
+		}
+		for _, f := range d.Manifest().InstanceConfig {
+			out = append(out, Def{Key: typ + "." + f.Key, Scope: Instance, Field: f, Driver: typ})
+		}
+	}
+	return out
 }
 
 func splitCSV(s string) []string {

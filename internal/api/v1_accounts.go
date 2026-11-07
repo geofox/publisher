@@ -78,7 +78,9 @@ type v1AccountHealth struct {
 	AuthOK    *bool  `json:"auth_ok,omitempty"`
 	Message   string `json:"message,omitempty"`
 	ExpiresAt string `json:"expires_at,omitempty"`
-	CheckedAt string `json:"checked_at"`
+	// ReconnectBy: the network's grant ends then (a Meta grant).
+	ReconnectBy string `json:"reconnect_by,omitempty"`
+	CheckedAt   string `json:"checked_at"`
 }
 
 // accountETag is an account's version: its updated_at, which moves only
@@ -132,6 +134,9 @@ func (a *API) v1AccountViews(r *http.Request, accts []store.Account) []v1Account
 						CheckedAt: rfc3339(en.CheckedAt)}
 					if h.ExpiresAt != nil {
 						v.Health.ExpiresAt = rfc3339(*h.ExpiresAt)
+					}
+					if h.ReconnectBy != nil {
+						v.Health.ReconnectBy = rfc3339(*h.ReconnectBy)
 					}
 				}
 			}

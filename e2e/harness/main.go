@@ -131,6 +131,7 @@ func run() error {
 		}
 	}
 	svc, err = settings.New(context.Background(), settings.Options{Store: st, Keys: keys, CanSeal: keyState.WriteError, Env: settingsEnv,
+		Defs: append(settings.Defs(), settings.DriverDefs()...),
 		URL: func(raw string, rule destination.URLRule) (string, error) {
 			return netguard.Policy{}.OwnerURL(raw, netguard.URLOptions{Secure: rule.Secure, Plain: rule.Plain, Path: rule.Path, Query: rule.Query})
 		}})
@@ -149,6 +150,7 @@ func run() error {
 	defer stop()
 	eng, err := newEngine(ctx, func(ctx context.Context) (*accounts.Registry, *dispatch.Dispatcher, error) {
 		reg := accounts.New(accounts.Options{Store: st, Env: env, Secrets: st, Writes: st, Flows: st, Keys: keys, KeyState: keyState,
+			Instance: svc.Instance,
 			Open: func(_ context.Context, typ string, req destination.OpenRequest) (destination.Account, error) {
 				return newFake(rec, typ, req)
 			}})

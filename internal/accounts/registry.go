@@ -187,6 +187,7 @@ type entry struct {
 	nextCheck       time.Time
 	lastReport      time.Time
 	lastHealthAlert time.Time
+	lastGrantAlert  time.Time
 
 	refresh refreshState
 	profile profileState

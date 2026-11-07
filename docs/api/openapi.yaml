@@ -621,9 +621,13 @@ paths:
         (`GET /v1/connect-flows/{id}`) until it ends. The flow lasts 10
         minutes and its sign-in address works once. Without `PUBLIC_URL`
         (or, with OIDC, the app's address from `OIDC_REDIRECT_URL`) it is
-        `409 invalid_state`. At most 10 starts a minute. A network that
-        can't be prepared is `502 connect_failed` with a fixed
-        `connect_error` code; its own words are only logged.
+        `409 invalid_state`. A method that needs the server's app first
+        (`needs_instance_config`: Threads, set in
+        `PATCH /v1/instance/settings`), or an https `PUBLIC_URL` (Meta's
+        rule for Threads), is `422` at `/method` saying so. At most 10
+        starts a minute. A network that can't be prepared is `502
+        connect_failed` with a fixed `connect_error` code; its own words
+        are only logged.
       security:
         - session: []
       requestBody:
@@ -1147,8 +1151,9 @@ paths:
       summary: The server's settings
       description: |
         Needs `instance:admin`. The server's own settings (where media
-        go), in the same shape as yours. Behind the reverse proxy alone,
-        `403 sign_in_required`.
+        go, and what a network needs once per server: the Threads app,
+        `threads.app_id` and `threads.app_secret`), in the same shape as
+        yours. Behind the reverse proxy alone, `403 sign_in_required`.
       security:
         - bearer: ["instance:admin"]
         - session: []
@@ -1174,7 +1179,7 @@ paths:
       summary: Change the server's settings
       description: |
         Needs `instance:admin`; as `PATCH /v1/settings`. Changing a secret
-        (the media store's key) needs a signed-in browser session,
+        (the media store's key, the Threads app's secret) needs a signed-in browser session,
         re-authenticated for `instance.secrets`. Behind the reverse proxy
         alone, `403 sign_in_required`. Turning `media.public` on first
         fetches a probe from `PUBLIC_URL/media/`, following no redirect,
@@ -5522,6 +5527,13 @@ components:
             message:
               type: string
             expires_at:
+              description: When the credentials stop working, when known (renewed before then where the network allows).
+              $ref: "#/components/schemas/Timestamp"
+            reconnect_by:
+              description: >-
+                When the network's grant to Publisher ends, when known (a Threads
+                grant lasts 90 days): renewing the token doesn't move it, so
+                connect the account again before then.
               $ref: "#/components/schemas/Timestamp"
             checked_at:
               $ref: "#/components/schemas/Timestamp"

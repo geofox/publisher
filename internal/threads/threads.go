@@ -56,10 +56,11 @@ type Result struct {
 }
 
 // Client is a hand-rolled Threads Graph API client.
-// BaseURL, RefreshURL, PollInterval, PollTimeout, and VideoPollTimeout are exported for test overrides.
+// BaseURL, RefreshURL, DebugURL, PollInterval, PollTimeout, and VideoPollTimeout are exported for test overrides.
 type Client struct {
 	BaseURL          string
 	RefreshURL       string
+	DebugURL         string // GrantEnd's
 	UserID           string
 	token            string
 	expiresAt        time.Time // when token stops working; zero when unknown
@@ -84,6 +85,7 @@ func NewWithNet(token, userID string, n destination.Net) *Client {
 	return &Client{
 		BaseURL:          "https://graph.threads.net/v1.0",
 		RefreshURL:       "https://graph.threads.net/refresh_access_token",
+		DebugURL:         DebugURL,
 		UserID:           userID,
 		token:            token,
 		HTTP:             n.Client(30 * time.Second),

@@ -75,6 +75,8 @@ type writeEnv struct {
 	kr    secrets.Keyring
 	mu    sync.Mutex
 	opens []destination.OpenRequest
+	// instance answers a type's server settings (the Threads app).
+	instance func(typ string) (map[string]any, map[string]string)
 }
 
 func newWriteEnv(t *testing.T, signIn, noKey bool) *writeEnv {
@@ -101,6 +103,15 @@ func newWriteEnv(t *testing.T, signIn, noKey bool) *writeEnv {
 	}
 	reg := accounts.New(accounts.Options{Store: w.st, Env: env, Secrets: w.st, Writes: w.st, Flows: w.st, Keys: w.kr, KeyState: ks,
 		Getenv: func(string) string { return "" },
+		Instance: func(typ string) (map[string]any, map[string]string) {
+			w.mu.Lock()
+			f := w.instance
+			w.mu.Unlock()
+			if f == nil {
+				return nil, nil
+			}
+			return f(typ)
+		},
 		Open: func(_ context.Context, typ string, req destination.OpenRequest) (destination.Account, error) {
 			w.mu.Lock()
 			w.opens = append(w.opens, req)

@@ -392,3 +392,57 @@ func TestBlossomNeedsItsAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// instanceDriver declares a per-server app, as Threads does.
+type instanceDriver struct{}
+
+func (instanceDriver) Manifest() destination.Manifest {
+	return destination.Manifest{Contract: destination.ContractVersion, Type: "apptest", Name: "App test",
+		InstanceConfig: []destination.FieldSpec{
+			{Key: "app_id", Label: "App ID", Type: destination.FieldString, Pattern: `[0-9]{1,32}`},
+			{Key: "app_secret", Label: "App secret", Type: destination.FieldString, Secret: true},
+		}}
+}
+
+func (instanceDriver) Open(context.Context, destination.OpenRequest) (destination.Account, error) {
+	return nil, errors.New("not here")
+}
+
+// A driver's InstanceConfig becomes instance settings "<type>.<key>",
+// validated by their specs and the secret sealed; Instance answers them
+// under the driver's own keys, and nothing of another type's.
+func TestDriverInstanceSettings(t *testing.T) {
+	destination.Register(instanceDriver{})
+	t.Cleanup(func() { destination.Unregister("apptest") })
+	ctx := context.Background()
+	st := openStore(t)
+	s, err := New(ctx, Options{Store: st, Keys: testKeys(t), URL: ownerURL, Defs: append(Defs(), DriverDefs()...)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, ok := s.Def("apptest.app_secret")
+	if !ok || d.Scope != Instance || !d.Field.Secret || d.Driver != "apptest" || d.Field.Key != "apptest.app_secret" {
+		t.Fatalf("def %+v %v", d, ok)
+	}
+	if cfg, sec := s.Instance("apptest"); len(cfg) != 0 || len(sec) != 0 {
+		t.Fatalf("before: %v %v", cfg, sec)
+	}
+	var ve *ValidationError
+	if _, err := s.Apply(ctx, Change{Scope: Instance, Values: map[string]any{"apptest.app_id": "not digits"}}); !errors.As(err, &ve) {
+		t.Fatalf("bad id: %v", err)
+	}
+	if _, err := s.Apply(ctx, Change{Scope: Instance, Values: map[string]any{"apptest.app_id": "42", "apptest.app_secret": "shh-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, sec := s.Instance("apptest")
+	if cfg["app_id"] != "42" || sec["app_secret"] != "shh-1" || len(cfg) != 1 || len(sec) != 1 {
+		t.Fatalf("instance: %v %v", cfg, sec)
+	}
+	if cfg, sec := s.Instance("media"); len(cfg) != 0 || len(sec) != 0 {
+		t.Fatalf("a built-in group answered as a type: %v %v", cfg, sec)
+	}
+	_, sealed, err := st.Settings(ctx, store.SettingsInstance)
+	if err != nil || len(sealed) != 1 || strings.Contains(sealed[0].Sealed, "shh-1") {
+		t.Fatalf("sealed %v err %v", sealed, err)
+	}
+}

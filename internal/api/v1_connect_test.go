@@ -308,6 +308,48 @@ func TestV1ConnectStart(t *testing.T) {
 	}
 }
 
+// Threads: the server's Meta app comes first, then an https public
+// address (Meta's rule); then the sign-in goes to threads.com, without
+// the app secret.
+func TestV1ConnectThreads(t *testing.T) {
+	w, _ := newConnectEnv(t)
+	start := func() v1Resp {
+		return w.do(req{method: "POST", path: "/v1/accounts:connect", body: `{"type":"threads"}`})
+	}
+	p := wantProblem(t, start(), http.StatusUnprocessableEntity, codeValidation)
+	if len(p.Errors) != 1 || p.Errors[0].Pointer != "/method" || !strings.Contains(p.Errors[0].Detail, "Threads app") {
+		t.Fatalf("no app: %+v", p)
+	}
+	w.mu.Lock()
+	w.instance = func(typ string) (map[string]any, map[string]string) {
+		if typ != "threads" {
+			return nil, nil
+		}
+		return map[string]any{"app_id": "1234567890"}, map[string]string{"app_secret": "meta-s3cret"}
+	}
+	w.mu.Unlock()
+	w.api.AppBaseURL = "http://pub.example"
+	p = wantProblem(t, start(), http.StatusUnprocessableEntity, codeValidation)
+	if len(p.Errors) != 1 || p.Errors[0].Pointer != "/method" || !strings.Contains(p.Errors[0].Detail, "https") {
+		t.Fatalf("http: %+v", p)
+	}
+	w.api.AppBaseURL = "https://pub.example"
+	r := start()
+	wantStatus(t, r, http.StatusCreated)
+	var b v1ConnectStartBody
+	r.json(&b)
+	u, err := url.Parse(b.AuthorizeURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	if u.Host != "threads.com" || q.Get("client_id") != "1234567890" ||
+		q.Get("redirect_uri") != "https://pub.example/oauth/callback/threads" || q.Get("state") == "" ||
+		strings.Contains(r.Body.String(), "meta-s3cret") {
+		t.Fatalf("started: %s", r.Body.String())
+	}
+}
+
 // Several accounts offered: the starting tab picks one; a reconnect must
 // bring the same account back.
 func TestV1ConnectChooseAndReconnect(t *testing.T) {

@@ -130,6 +130,29 @@ func (s *Service) Def(key string) (Def, bool) {
 	return *d, true
 }
 
+// Instance is a type's InstanceConfig values and secrets now, under the
+// driver's own keys (app_id, not threads.app_id): what
+// accounts.Options.Instance answers.
+func (s *Service) Instance(typ string) (map[string]any, map[string]string) {
+	snap := s.Current()
+	cfg, sec := map[string]any{}, map[string]string{}
+	for _, d := range s.defs {
+		if d.Driver == "" || d.Driver != typ {
+			continue
+		}
+		if d.Field.Secret {
+			if v := snap.Secret(d.Key); v != "" {
+				sec[d.Name()] = v
+			}
+			continue
+		}
+		if v, ok := snap.Get(d.Key); ok && v.Value != nil {
+			cfg[d.Name()] = v.Value
+		}
+	}
+	return cfg, sec
+}
+
 // Current is the settings now. It never changes; a write makes a new one.
 func (s *Service) Current() *Snapshot { return s.cur.Load() }
 

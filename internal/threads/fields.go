@@ -2,11 +2,37 @@ package threads
 
 import "github.com/geofox/publisher/internal/destination"
 
-// MethodToken connects with a long-lived access token.
-const MethodToken = "token"
+// Ways to connect.
+const (
+	// MethodOAuth connects by signing in at Threads with the server's
+	// Meta app (InstanceAppID, InstanceAppSecret).
+	MethodOAuth = "oauth"
+	// MethodToken connects with a long-lived access token.
+	MethodToken = "token"
+)
+
+// The server's Meta app: instance settings threads.app_id and
+// threads.app_secret.
+const (
+	InstanceAppID     = "app_id"
+	InstanceAppSecret = "app_secret"
+)
+
+// GuideURL is Meta's guide to making the app.
+const GuideURL = "https://developers.facebook.com/documentation/threads/get-started"
 
 func authMethods() []destination.AuthMethod {
 	return []destination.AuthMethod{{
+		ID:      MethodOAuth,
+		Flow:    destination.FlowRedirect,
+		Label:   "Sign in at Threads",
+		HelpURL: GuideURL,
+		Help: "Uses the server's Meta app (Settings, Integrations, Threads app): you sign in at Threads and allow it to " +
+			"read your profile, post and reply for you. Needs PUBLIC_URL at an https address, which Meta sends you back to. " +
+			"Publisher renews the token; Meta's grant lasts 90 days, then you sign in again.",
+		NeedsInstanceConfig: []string{InstanceAppID, InstanceAppSecret},
+		NeedsPublicURL:      true,
+	}, {
 		ID:    MethodToken,
 		Flow:  destination.FlowFields,
 		Label: "Long-lived access token",
@@ -24,5 +50,17 @@ func configFields() []destination.FieldSpec {
 		{Key: ConfigUserID, Label: "Threads user id", Type: destination.FieldString, Default: "me",
 			Pattern: `me|[0-9]{1,32}`, Advanced: true,
 			Help: "“me” is the token's own account."},
+	}
+}
+
+// instanceConfig is the server's Meta app, set once in Settings.
+func instanceConfig() []destination.FieldSpec {
+	return []destination.FieldSpec{
+		{Key: InstanceAppID, Label: "Threads app ID", Type: destination.FieldString, Pattern: `[0-9]{1,32}`,
+			Placeholder: "1234567890123456",
+			Help: "From your Meta app's dashboard, the Threads use case's settings: the Threads app ID, " +
+				"not the Meta app ID."},
+		{Key: InstanceAppSecret, Label: "Threads app secret", Type: destination.FieldString, Secret: true, MaxLength: 200,
+			Help: "Beside the Threads app ID. Kept sealed; sent only to Threads."},
 	}
 }

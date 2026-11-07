@@ -173,6 +173,9 @@ func run(ctx context.Context, o runOptions) int {
 	// The owner's settings (env, then saved in the app, then defaults).
 	svc, err := settings.New(context.Background(), settings.Options{
 		Store: st, Keys: keys, CanSeal: keyState.WriteError, Env: settingsEnv,
+		// The built-in settings, then what each driver needs once per
+		// server (the Threads app).
+		Defs: append(settings.Defs(), settings.DriverDefs()...),
 		URL: func(raw string, rule destination.URLRule) (string, error) {
 			return guard.OwnerURL(raw, netguard.URLOptions{Secure: rule.Secure, Plain: rule.Plain, Path: rule.Path, Query: rule.Query})
 		},
@@ -234,12 +237,13 @@ func run(ctx context.Context, o runOptions) int {
 			VerifyTimeout:   cfg.VerifyHTTPTimeout,
 			PLCDirectoryURL: cfg.PLCDirectoryURL,
 		},
-		Alerter: notifier,
-		Guard:   guard,
-		Writes:  st,
-		Flows:   st,
-		Seed:    drivers.NewAccountSeeder(st, getenv),
-		Getenv:  getenv,
+		Alerter:  notifier,
+		Guard:    guard,
+		Writes:   st,
+		Flows:    st,
+		Instance: svc.Instance,
+		Seed:     drivers.NewAccountSeeder(st, getenv),
+		Getenv:   getenv,
 	})
 	if err := reg.Load(context.Background()); err != nil {
 		slog.Error("loading accounts failed", "err", err)
