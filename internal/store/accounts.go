@@ -26,7 +26,22 @@ type Account struct {
 	DefaultSelected bool `json:"default_selected"`
 	// PublicFeed: the account's posts go to the public feed.
 	PublicFeed bool `json:"public_feed"`
+	// AuthMethod is the destination.AuthMethod the account was added with
+	// ("" for an env account).
+	AuthMethod string `json:"auth_method,omitempty"`
+	// Config is the account's non-secret configuration, as JSON (an
+	// account added in the app; "{}" otherwise).
+	Config string `json:"-"`
+	// DeletedAt is when the owner deleted the account (zero: not deleted).
+	// A deleted account keeps its row, so History can still name it.
+	DeletedAt time.Time `json:"deleted_at,omitzero"`
 }
+
+// Account sources.
+const (
+	SourceEnv = "env" // configured by environment variables
+	SourceDB  = "db"  // added in the app, credentials in secrets
+)
 
 // AccountMeta is what the owner can change on an account; a nil field is
 // left as it is.
@@ -119,15 +134,23 @@ func (s *Store) InsertAccount(ctx context.Context, a Account) error {
 	return err
 }
 
-// Accounts lists the owner's accounts, enabled or not, oldest first.
+// Accounts lists the owner's accounts, enabled or not, oldest first;
+// deleted ones are left out.
 func (s *Store) Accounts(ctx context.Context, owner string) ([]Account, error) {
+	return s.queryAccounts(ctx, `SELECT `+accountColumns+` FROM accounts WHERE owner_id = ? AND deleted_at IS NULL
+		ORDER BY created_at, id`, owner)
+}
+
+// AccountsWithDeleted lists the owner's accounts, deleted ones included,
+// oldest first.
+func (s *Store) AccountsWithDeleted(ctx context.Context, owner string) ([]Account, error) {
 	return s.queryAccounts(ctx, `SELECT `+accountColumns+` FROM accounts WHERE owner_id = ? ORDER BY created_at, id`, owner)
 }
 
-// AllAccounts lists every owner's accounts, oldest first (the account
-// registry loads them all: account ids are global).
+// AllAccounts lists every owner's live accounts, oldest first (the
+// account registry loads them all: account ids are global).
 func (s *Store) AllAccounts(ctx context.Context) ([]Account, error) {
-	return s.queryAccounts(ctx, `SELECT `+accountColumns+` FROM accounts ORDER BY created_at, id`)
+	return s.queryAccounts(ctx, `SELECT `+accountColumns+` FROM accounts WHERE deleted_at IS NULL ORDER BY created_at, id`)
 }
 
 func (s *Store) queryAccounts(ctx context.Context, query string, args ...any) ([]Account, error) {
@@ -148,12 +171,18 @@ func (s *Store) queryAccounts(ctx context.Context, query string, args ...any) ([
 }
 
 const accountColumns = `id, owner_id, type, label, COALESCE(handle, ''), source, COALESCE(env_key, ''),
-	enabled, created_at, updated_at, COALESCE(remote_id, ''), default_selected, public_feed`
+	enabled, created_at, updated_at, COALESCE(remote_id, ''), default_selected, public_feed,
+	auth_method, config_json, deleted_at`
 
 func scanAccount(r interface{ Scan(...any) error }) (Account, error) {
 	var a Account
+	var deleted sql.NullTime
 	err := r.Scan(&a.ID, &a.OwnerID, &a.Type, &a.Label, &a.Handle, &a.Source, &a.EnvKey,
-		&a.Enabled, &a.CreatedAt, &a.UpdatedAt, &a.RemoteID, &a.DefaultSelected, &a.PublicFeed)
+		&a.Enabled, &a.CreatedAt, &a.UpdatedAt, &a.RemoteID, &a.DefaultSelected, &a.PublicFeed,
+		&a.AuthMethod, &a.Config, &deleted)
+	if deleted.Valid {
+		a.DeletedAt = deleted.Time
+	}
 	return a, err
 }
 
@@ -163,7 +192,8 @@ var ErrAccountNotFound = errors.New("account not found")
 // ErrAccountConflict: the account changed since the caller read it.
 var ErrAccountConflict = errors.New("account changed since it was read")
 
-// Account returns one of the owner's accounts.
+// Account returns one of the owner's accounts, deleted or not (see
+// DeletedAt).
 func (s *Store) Account(ctx context.Context, owner, id string) (Account, error) {
 	a, err := scanAccount(s.sql.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts WHERE owner_id = ? AND id = ?`, owner, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -182,7 +212,8 @@ func (s *Store) UpdateAccountMeta(ctx context.Context, owner, id string, m Accou
 		return Account{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	cur, err := scanAccount(tx.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts WHERE owner_id = ? AND id = ?`, owner, id))
+	cur, err := scanAccount(tx.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts
+		WHERE owner_id = ? AND id = ? AND deleted_at IS NULL`, owner, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrAccountNotFound
 	}

@@ -1,3 +1,7 @@
+-- index idx_accounts_remote
+CREATE UNIQUE INDEX idx_accounts_remote ON accounts(owner_id, type, remote_id)
+  WHERE deleted_at IS NULL AND remote_id IS NOT NULL;
+
 -- index idx_draft_media_draft_id
 CREATE INDEX idx_draft_media_draft_id ON draft_media(draft_id);
 
@@ -43,6 +47,9 @@ CREATE INDEX idx_posts_created ON posts(created_at DESC);
 -- index idx_reauth_nonces_session
 CREATE INDEX idx_reauth_nonces_session ON reauth_nonces(session_id);
 
+-- index idx_secrets_key
+CREATE INDEX idx_secrets_key ON secrets(key_id);
+
 -- index idx_sessions_public_id
 CREATE UNIQUE INDEX idx_sessions_public_id ON sessions(public_id);
 
@@ -73,7 +80,7 @@ CREATE TABLE accounts (
   config_json TEXT NOT NULL DEFAULT '{}',
   enabled     INTEGER NOT NULL DEFAULT 1,
   created_at  TIMESTAMP NOT NULL,
-  updated_at  TIMESTAMP NOT NULL, remote_id TEXT, default_selected INTEGER NOT NULL DEFAULT 1, public_feed INTEGER NOT NULL DEFAULT 1,
+  updated_at  TIMESTAMP NOT NULL, remote_id TEXT, default_selected INTEGER NOT NULL DEFAULT 1, public_feed INTEGER NOT NULL DEFAULT 1, deleted_at TIMESTAMP, auth_method TEXT NOT NULL DEFAULT '',
   UNIQUE(owner_id, type, env_key)
 );
 
@@ -278,6 +285,20 @@ CREATE TABLE schema_migrations (
   version    INTEGER PRIMARY KEY,
   name       TEXT NOT NULL,
   applied_at TIMESTAMP NOT NULL
+);
+
+-- table secrets
+CREATE TABLE secrets (
+  owner_id   TEXT NOT NULL,
+  scope      TEXT NOT NULL,
+  ref        TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  audience   TEXT NOT NULL DEFAULT '',
+  sealed     TEXT NOT NULL,
+  key_id     TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (owner_id, scope, ref, name)
 );
 
 -- table sessions

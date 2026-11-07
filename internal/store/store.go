@@ -28,6 +28,9 @@ func Open(path string) (*Store, error) {
 	dsn := "file:" + path +
 		"?_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)" +
 		"&_pragma=temp_store(MEMORY)&_pragma=foreign_keys(ON)" +
+		// Deleted rows (an account's secrets, a moved token) are zeroed
+		// in the file, not left in free pages.
+		"&_pragma=secure_delete(ON)" +
 		// A transaction that reads and then writes must hold the write lock
 		// from the start: under WAL a deferred one that upgrades fails with
 		// SQLITE_BUSY at once instead of waiting out busy_timeout.
