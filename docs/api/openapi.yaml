@@ -1118,9 +1118,11 @@ paths:
         with the key (BUD-06 `HEAD /upload`; one without BUD-06 answering
         `404` or `405` is only known reachable, and passes); this server's
         disk takes a small probe and gives it back, fetched at
-        `PUBLIC_URL/media/` when served publicly. Answered as for
-        `POST /v1/settings/{id}:test`; a store set but unusable (no
-        signing key) fails as `unreachable`.
+        `PUBLIC_URL/media/` when served publicly, and must come back
+        whole (else `wrong_answer`; a disk that refuses the probe is
+        `store_refused`). Answered as for `POST /v1/settings/{id}:test`;
+        a store set but unusable (no signing key) fails as
+        `unreachable`.
       security:
         - bearer: ["instance:admin"]
         - session: []
@@ -4688,7 +4690,12 @@ components:
           type: boolean
         error:
           type: string
-          enum: [unreachable, refused, timeout, http_error, blocked_destination]
+          enum: [unreachable, refused, timeout, http_error, blocked_destination, wrong_answer, store_refused]
+          description: |
+            Why it failed: `wrong_answer`, the address answered but not
+            with the test's file (a sign-in page, the web app);
+            `store_refused`, this server's disk didn't take the test's
+            file (no room, not writable).
     NextCursor:
       description: The cursor for the next page; null on the last page.
       type: [string, "null"]

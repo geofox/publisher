@@ -292,8 +292,27 @@ func TestV1QuoteCopiesOnDisk(t *testing.T) {
 	img := pngBytes(t, 4, 4)
 	e.api.fetchMedia = func(context.Context, string) ([]byte, string, error) { return img, "image/png", nil }
 	bsky, masto, nostr := e.acct("bluesky"), e.acct("mastodon"), e.acct("nostr")
-	r := e.do(req{method: "POST", path: "/v1/posts", body: `{"content":{"text":"look"},"targets":[{"account":"` + bsky +
-		`"},{"account":"` + masto + `"},{"account":"` + nostr + `"}],"quote":{"url":"` + bskySource + `"}}`})
+	post := `{"content":{"text":"look"},"targets":[{"account":"` + bsky +
+		`"},{"account":"` + masto + `"},{"account":"` + nostr + `"}],"quote":{"url":"` + bskySource + `"}}`
+	// The preview says what the post will do.
+	r := e.do(req{method: "POST", path: "/v1/posts:preview", body: post})
+	wantStatus(t, r, 200)
+	var pv v1PreviewBody
+	r.json(&pv)
+	for _, tg := range pv.Targets {
+		w := strings.Join(tg.Warnings, " ")
+		switch tg.Account {
+		case nostr:
+			if !strings.Contains(w, "the original's images aren't attached") || strings.Contains(w, "are copied") {
+				t.Errorf("preview, nostr: %q", tg.Warnings)
+			}
+		case masto:
+			if !strings.Contains(w, "are copied") {
+				t.Errorf("preview, mastodon: %q", tg.Warnings)
+			}
+		}
+	}
+	r = e.do(req{method: "POST", path: "/v1/posts", body: post})
 	wantStatus(t, r, 202)
 	var body v1PostBody
 	r.json(&body)
@@ -314,6 +333,20 @@ func TestV1QuoteCopiesOnDisk(t *testing.T) {
 		warned := strings.Contains(strings.Join(tg.Warnings, " "), "the original's images aren't attached")
 		if warned != (tg.Account == nostr) {
 			t.Errorf("%s warnings = %q", tg.Account, tg.Warnings)
+		}
+	}
+}
+
+// A media test's failure says what went wrong in the owner's terms.
+func TestTestErrorClassForMedia(t *testing.T) {
+	for err, want := range map[error]string{
+		&media.ProbeError{Mismatch: true, Status: 200}: "wrong_answer",
+		&media.ProbeError{Store: os.ErrPermission}:     "store_refused",
+		&media.ProbeError{Status: 401}:                 "unreachable",
+		nil:                                            "http_error",
+	} {
+		if got := testErrorClass(err); got != want {
+			t.Errorf("%v: %s, want %s", err, got, want)
 		}
 	}
 }

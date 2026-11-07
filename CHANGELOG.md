@@ -66,6 +66,11 @@ the `edge` image.
   to allow instead.
 - Automatic retries no longer resend a failure older than the retry
   policy's whole span.
+- **Retries off** (`AUTO_RETRY_ENABLED=false`, or Settings → Publishing)
+  now holds every waiting failure, including the retries scheduled
+  before they were turned off: those wait for **Retry** by hand. First
+  tries, posts waiting for an account and retries by hand still go.
+  Turned on again, they go at their time, without a restart.
 - After a restart, an item that was being sent is resent only when it
   never reached the network; otherwise it is marked unknown for you to
   check.
@@ -236,7 +241,11 @@ the `edge` image.
   restart (`GET/PATCH /v1/settings` and `/v1/instance/settings`, with
   `If-Match`; `:copy-from-env`, `:generate`, `:test`). A variable that is
   set still wins: the setting shows locked with its name, and **Copy
-  into the app** saves its value so the variable can go. Secrets are
+  into the app** saves its value so the variable can go (checked as a
+  value typed in the app is; an address is copied with its secret, and
+  `BLOSSOM_URL` with the store it chooses; the setting then reports
+  `also_saved`). A secret from the environment is only sent to an
+  address from the environment. Secrets are
   encrypted with the master key, never shown again, and refused behind
   the reverse proxy alone; one Publisher makes (a feed token) is shown
   once. The new scopes `settings:read`, `settings:write` and
@@ -262,11 +271,17 @@ the `edge` image.
   pasted in Settings → Media; allow its `npub` on the server). Uploads
   signed with it name the server (BUD-11). `BLOSSOM_URL` no longer needs
   `NSEC_HEX` to start: an upload says to make a key. Settings → Media's
-  test asks the server (BUD-06) or writes and reads back the disk.
+  test asks the server (BUD-06) or writes and reads back the disk
+  (fetched at `PUBLIC_URL/media/` when served publicly: other bytes fail
+  as `wrong_answer`). A server set in the app is reached as any address
+  set there (`PRIVATE_DESTINATIONS`), and the addresses it answers stay
+  on its own origin; media are fetched again for a retry the same way.
+  `/readyz` follows the store in effect (`blossom`, and `media_disk` for
+  this server's disk).
 - **Settings → System** (`GET /v1/instance/system`): the version, how you
   sign in, the master key, the health checks, and the variables the
-  server started with; secrets only as set, and no user name or password
-  from an address.
+  server started with; secrets only as set, and no user name, password,
+  query or fragment from an address.
 
 ### Security
 

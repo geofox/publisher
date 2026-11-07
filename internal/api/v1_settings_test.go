@@ -226,6 +226,14 @@ func TestV1SettingsReadAndWrite(t *testing.T) {
 	}
 	wantStatus(t, e.do(req{method: "PATCH", path: "/v1/settings", header: map[string]string{"If-Match": "*"},
 		body: `{"publishing":{"schedule_grace":"1h"}}`}), 200)
+	// An empty patch with a stale If-Match is stale too; an unknown group
+	// is refused, empty or not.
+	wantProblem(t, e.do(req{method: "PATCH", path: "/v1/settings", header: map[string]string{"If-Match": etag}, body: `{}`}),
+		412, codePreconditionFailed)
+	p = wantProblem(t, e.do(req{method: "PATCH", path: "/v1/settings", body: `{"unknown":{}}`}), 422, codeValidation)
+	if len(p.Errors) != 1 || p.Errors[0].Pointer != "/unknown" || p.Errors[0].Code != "unknown_field" {
+		t.Errorf("unknown group = %+v", p)
+	}
 }
 
 // Each refused write says which setting and why, as a JSON Pointer into
@@ -477,4 +485,59 @@ func TestV1SettingsUnavailable(t *testing.T) {
 	e := newV1Env(t, true)
 	wantProblem(t, e.do(req{method: "GET", path: "/v1/settings"}), 503, codeUnavailable)
 	wantProblem(t, e.do(req{method: "PATCH", path: "/v1/settings", body: `{"publishing":{"max_attempts":2}}`}), 503, codeUnavailable)
+}
+
+// The owner's settings apply at the next request: the translator is made
+// once per DeepL key and kept, the languages and the feed's token are
+// read as saved.
+func TestSettingsReadLive(t *testing.T) {
+	ctx := context.Background()
+	e := newSettingsEnv(t, true, nil)
+	made := 0
+	e.api.NewTranslator = func(key string) Translator { made++; return nil }
+	if e.api.translator() != nil || made != 0 {
+		t.Fatal("a translator without a key")
+	}
+	apply := func(v map[string]any) {
+		t.Helper()
+		if _, err := e.svc.Apply(ctx, settings.Change{Scope: settings.Owner, Values: v}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply(map[string]any{settings.TranslateDeepLKey: "k1:fx"})
+	e.api.translator()
+	e.api.translator()
+	if made != 1 {
+		t.Fatalf("made %d translators for one key", made)
+	}
+	apply(map[string]any{settings.TranslateDeepLKey: "k2:fx"})
+	e.api.translator()
+	if made != 2 {
+		t.Fatalf("a new key kept the old translator (%d made)", made)
+	}
+	apply(map[string]any{settings.TranslateDeepLKey: nil})
+	if e.api.translator() != nil {
+		t.Fatal("translator kept after the key was cleared")
+	}
+	apply(map[string]any{settings.ComposingLanguages: []any{"de", "en"}, settings.FeedToken: "feed-tok"})
+	if got := e.api.userLanguages(); strings.Join(got, ",") != "de,en" {
+		t.Fatalf("languages %v", got)
+	}
+	if e.api.feedToken() != "feed-tok" {
+		t.Fatal("feed token not read live")
+	}
+	wantStatus(t, e.do(req{method: "GET", path: "/v1/public/feed", auth: "none", header: map[string]string{"Authorization": "Bearer feed-tok"}}), 200)
+}
+
+// Old drafts' media on the Blossom server set are this server's, even
+// while it can't take uploads (no key to sign them with).
+func TestBlossomBaseAsSet(t *testing.T) {
+	e := newSettingsEnv(t, true, map[string]string{"BLOSSOM_URL": "https://blossom.example/"})
+	if got := e.api.blossomBase(); got != "https://blossom.example" {
+		t.Fatalf("base %q", got)
+	}
+	e2 := newSettingsEnv(t, true, nil)
+	if got := e2.api.blossomBase(); got != "" {
+		t.Fatalf("no store: %q", got)
+	}
 }

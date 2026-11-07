@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -353,7 +354,7 @@ func run(ctx context.Context, o runOptions) int {
 		Threads:  verify.NewThreadsVerifier(cfg.VerifyHTTPTimeout),
 	}
 	var draining atomic.Bool
-	a.Ready = readinessChecks(cfg, st, a.VideoWorkdir, reg)
+	a.Ready = readinessChecks(cfg, st, a.VideoWorkdir, reg, mp)
 	a.Ready.Local = append(a.Ready.Local, health.Check{Name: "accepting_work", Critical: true,
 		Run: func(context.Context) error {
 			if draining.Load() {
@@ -530,7 +531,7 @@ func gracefulStop(draining *atomic.Bool, srv *http.Server, d *dispatch.Dispatche
 // readinessChecks builds the /readyz checks. Local checks run on every probe;
 // upstream checks only on /readyz?external=1, cached, and never critical. No
 // probe sends credentials.
-func readinessChecks(cfg config.Config, st *store.Store, videoWorkdir string, reg *accounts.Registry) *health.Checker {
+func readinessChecks(cfg config.Config, st *store.Store, videoWorkdir string, reg *accounts.Registry, mp *media.Pipeline) *health.Checker {
 	dataDir := filepath.Dir(cfg.DBPath)
 	c := &health.Checker{Local: []health.Check{
 		health.Database(st, store.LatestSchemaVersion()),
@@ -539,10 +540,8 @@ func readinessChecks(cfg config.Config, st *store.Store, videoWorkdir string, re
 	if videoWorkdir != "" {
 		c.Local = append(c.Local, health.WritableDir("video_workdir", videoWorkdir))
 	}
-	if cfg.BlossomURL != "" {
-		hc := &http.Client{Timeout: 5 * time.Second}
-		c.External = append(c.External, health.HTTPReachable("blossom", hc, http.MethodHead, cfg.BlossomURL, nil))
-	}
+	mediaDisk, mediaChecks := mediaReadiness(cfg.MediaDir, mp)
+	c.Local = append(c.Local, mediaDisk)
 	// The master key: not critical (accounts from the environment work),
 	// but accounts added in the app are locked until it is fixed.
 	c.Local = append(c.Local, health.Check{Name: "secrets", Run: func(context.Context) error {
@@ -556,8 +555,36 @@ func readinessChecks(cfg config.Config, st *store.Store, videoWorkdir string, re
 	}})
 	// One check per open account (account:<id>), asked again at each
 	// refresh so an account turned off or reopened is followed.
-	c.MoreExternal = func() []health.Check { return reg.Readiness(store.DefaultOwner) }
+	c.MoreExternal = func() []health.Check { return append(mediaChecks(), reg.Readiness(store.DefaultOwner)...) }
 	return c
+}
+
+// mediaReadiness follows the media store the settings set: this server's
+// disk is checked for room (MEDIA_DIR may be another volume), a Blossom
+// server for reachability, through the client its uploads use.
+func mediaReadiness(dir string, mp *media.Pipeline) (health.Check, func() []health.Check) {
+	room := health.DiskSpace("media_disk", dir, health.MinFreeBytes)
+	disk := health.Check{Name: "media_disk", Run: func(ctx context.Context) error {
+		if s, err := mp.Store(); err != nil {
+			return nil
+		} else if _, local := s.(*media.Local); !local {
+			return nil
+		}
+		if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+			return nil // made at the first upload
+		}
+		return room.Run(ctx)
+	}}
+	external := func() []health.Check {
+		s, err := mp.Store()
+		b, ok := s.(*media.Blossom)
+		if err != nil || !ok {
+			return nil
+		}
+		hc := &http.Client{Transport: b.HTTP.Transport, CheckRedirect: b.HTTP.CheckRedirect, Timeout: 5 * time.Second}
+		return []health.Check{health.HTTPReachable("blossom", hc, http.MethodHead, b.URL, nil)}
+	}
+	return disk, external
 }
 
 // runHealthcheck is the container healthcheck: it asks /readyz (local checks
@@ -817,12 +844,15 @@ func testMediaStore(ctx context.Context, mp *media.Pipeline) (int, bool, error) 
 	case *media.Local:
 		if !s.Public() {
 			if err := s.CheckWritable(ctx); err != nil {
-				return 0, true, err
+				return 0, true, &media.ProbeError{Store: err}
 			}
 			return http.StatusNoContent, true, nil
 		}
+		// What PUBLIC_URL/media/ answered: a status, a redirect, or other
+		// bytes (a sign-in page or the web app answer 200 too); or the
+		// disk's refusal.
 		var pe *media.ProbeError
-		if err := s.CheckPublic(ctx, media.NoRedirects()); errors.As(err, &pe) && pe.Store == nil {
+		if err := s.CheckPublic(ctx, media.NoRedirects()); errors.As(err, &pe) && pe.Store == nil && !pe.Mismatch {
 			return pe.Status, true, nil
 		} else if err != nil {
 			return 0, true, err

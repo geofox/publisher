@@ -1,6 +1,8 @@
 package api
 
 import (
+	"strings"
+
 	"github.com/geofox/publisher/internal/settings"
 	"github.com/geofox/publisher/internal/translate"
 )
@@ -54,4 +56,18 @@ func (a *API) feedToken() string {
 		return a.Settings.Current().Secret(settings.FeedToken)
 	}
 	return a.PublicFeedToken
+}
+
+// blossomBase is the Blossom server set ("" when the store is another),
+// as set even while it can't be used (no key to sign uploads with): old
+// drafts' media on it are still this server's.
+func (a *API) blossomBase() string {
+	if a.Settings != nil {
+		cur := a.Settings.Current()
+		if cur.String(settings.MediaStore) == settings.StoreBlossom {
+			return strings.TrimRight(cur.String(settings.MediaBlossomURL), "/")
+		}
+		return ""
+	}
+	return a.media.BlossomBase() // nil-safe: "" without one
 }

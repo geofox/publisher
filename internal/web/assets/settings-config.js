@@ -44,6 +44,8 @@ const TEST_FAIL = {
   timeout: "didn't answer in time",
   http_error: "answered, but not with success",
   blocked_destination: "is an address Publisher may not reach (a private or local one: see PRIVATE_DESTINATIONS in the README)",
+  wrong_answer: "answered, but not with the test's file: is /media/ sent to this server, past any sign-in?",
+  store_refused: "is this server's disk, which didn't take the test's file (is there room? can it write to MEDIA_DIR?)",
 };
 
 const code = s => el("code", { text: s });

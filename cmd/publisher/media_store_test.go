@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -226,6 +227,20 @@ func TestTestMediaStore(t *testing.T) {
 	if got, set, err := testMediaStore(ctx, mp); got != 401 || !set || err != nil {
 		t.Errorf("public behind a sign-in: %d %v %v", got, set, err)
 	}
+	// A 200 with other bytes (a sign-in page, the web app) fails.
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("<html>Sign in</html>")) }))
+	defer page.Close()
+	disk.BaseURL = page.URL
+	var pe *media.ProbeError
+	if _, set, err := testMediaStore(ctx, mp); !set || !errors.As(err, &pe) || !pe.Mismatch {
+		t.Errorf("public, answered by a page: %v %v", set, err)
+	}
+	// A disk that refuses the probe says so.
+	disk.Free = func(string) (uint64, uint64, error) { return 0, 100 << 30, nil }
+	public = false
+	if _, set, err := testMediaStore(ctx, mp); !set || !errors.As(err, &pe) || pe.Store == nil {
+		t.Errorf("full disk: %v %v", set, err)
+	}
 }
 
 // Media fetched again for a send: an address that isn't the environment's
@@ -290,5 +305,46 @@ func TestPairedSecret(t *testing.T) {
 	s = mk(map[string]string{"ALERT_WEBHOOK_PASS": "operator-pw", "ALERT_WEBHOOK_URL": "https://am.example/hook"}).Current()
 	if got := pairedSecret(s, settings.AlertsWebhookPass, settings.AlertsWebhookURL); got != "operator-pw" {
 		t.Fatalf("env with env: %q", got)
+	}
+}
+
+// Readiness follows the media store: a Blossom server's reachability when
+// it is one (set in the app or not), this server's disk room when it is.
+func TestReadinessFollowsMediaStore(t *testing.T) {
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "media")
+	var cur media.Store
+	mp := media.New(func() (media.Store, error) {
+		if cur == nil {
+			return nil, media.ErrNoStore
+		}
+		return cur, nil
+	})
+	disk, external := mediaReadiness(dir, mp)
+	if err := disk.Run(ctx); err != nil || len(external()) != 0 {
+		t.Fatalf("no store: %v %v", err, external())
+	}
+	cur = &media.Local{Dir: dir}
+	if err := disk.Run(ctx); err != nil {
+		t.Fatalf("disk, not made yet: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := disk.Run(ctx); err != nil || len(external()) != 0 {
+		t.Fatalf("disk: %v %v", err, external())
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(404) }))
+	defer srv.Close()
+	cur = &media.Blossom{URL: srv.URL, Key: gonostr.Generate(), HTTP: srv.Client()}
+	ext := external()
+	if len(ext) != 1 || ext[0].Name != "blossom" || ext[0].Run(ctx) != nil {
+		t.Fatalf("blossom: %+v", ext)
+	}
+	// Set in the app: reached through the guard (a loopback server is
+	// refused).
+	cur = &media.Blossom{URL: srv.URL, Key: gonostr.Generate(), HTTP: guardedStreamClient(netguard.Policy{}), Confined: true}
+	if ext := external(); len(ext) != 1 || ext[0].Run(ctx) == nil {
+		t.Fatal("an app-set server inside the network passed through the guard")
 	}
 }

@@ -89,7 +89,7 @@ func (a *API) convertOldDraft(ctx context.Context, od store.OldDraft) error {
 	req := v1CreatePostReq{Content: v1CreateContent{Text: &text}, Targets: []v1CreateTarget{}}
 
 	// Media: the draft's files in this server's storage, in order.
-	blossom := a.media.BlossomBase() // nil-safe: "" without one
+	blossom := a.blossomBase()
 	var given []string
 	for _, m := range od.Media {
 		if !adoptable(m, blossom) {

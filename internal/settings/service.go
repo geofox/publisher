@@ -463,7 +463,7 @@ func (s *Service) seal(d *Def, audience, plain string) (store.SealedSecret, erro
 func (s *Service) reload(ctx context.Context) (*Snapshot, error) {
 	snap, err := s.load(ctx)
 	if err != nil {
-		return s.Current(), err
+		return s.Current(), fmt.Errorf("%w: %w", ErrSavedNotRead, err)
 	}
 	s.cur.Store(snap)
 	for _, fn := range s.subs {
@@ -471,6 +471,10 @@ func (s *Service) reload(ctx context.Context) (*Snapshot, error) {
 	}
 	return snap, nil
 }
+
+// ErrSavedNotRead: a change was saved, but reading the settings back
+// failed; the one in effect is the last read until the next succeeds.
+var ErrSavedNotRead = errors.New("the change was saved, but reading the settings back failed")
 
 // ErrNotFromEnv: a setting copied into the app isn't set by the
 // environment.

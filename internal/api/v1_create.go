@@ -835,7 +835,13 @@ func (a *API) v1PreviewPost(w http.ResponseWriter, r *http.Request) {
 					if c := pt.caps.Media.Images.MaxCount; c > 0 {
 						n = max(0, min(n, c-len(plan.media)))
 					}
-					if n > 0 {
+					switch {
+					case n > 0 && pt.caps.Media.Transport == destination.TransportURL && !a.media.Public():
+						// As the post will (withoutUnreachableCopies): the
+						// copies land on a disk the network can't fetch from.
+						vt.Warnings = append(vt.Warnings, "the original's images aren't attached: "+displayName(pt.account.Type)+
+							" fetches media by address, and this server's disk doesn't serve them publicly (Settings, Media)")
+					case n > 0:
 						vt.Warnings = append(vt.Warnings, "up to "+strconv.Itoa(n)+" of the original's images are copied to media storage and attached after yours when posting")
 					}
 				}

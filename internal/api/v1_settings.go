@@ -156,11 +156,20 @@ func (a *API) patchSettings(w http.ResponseWriter, r *http.Request, scope settin
 	}
 	values := map[string]any{}
 	var errs []fieldError
+	groups := map[string]bool{}
+	for _, d := range svc.Defs(scope) {
+		groups[d.Group()] = true
+	}
 	for _, group := range sortedRawKeys(in) {
 		raw := in[group]
 		var leaves map[string]json.RawMessage
 		if isJSONNull(raw) || json.Unmarshal(raw, &leaves) != nil || leaves == nil {
 			errs = append(errs, fieldError{Pointer: "/" + group, Code: "invalid", Detail: "an object of the settings to change (null puts one back to its default)"})
+			continue
+		}
+		if !groups[group] && len(leaves) == 0 {
+			// (Settings named in an unknown group are refused one by one.)
+			errs = append(errs, fieldError{Pointer: "/" + group, Code: "unknown_field", Detail: "not a group of settings here"})
 			continue
 		}
 		for _, name := range sortedRawKeys(leaves) {
@@ -177,7 +186,12 @@ func (a *API) patchSettings(w http.ResponseWriter, r *http.Request, scope settin
 		return
 	}
 	if len(values) == 0 {
+		// Nothing to change, but a stale If-Match is still stale.
 		snap := svc.Current()
+		if m := settingsIfMatch(r); m != "" && m != "*" && m != snap.Version(scope) {
+			a.settingsError(w, r, scope, snap, settings.ErrStale)
+			return
+		}
 		w.Header().Set("ETag", snap.Version(scope))
 		writeV1(w, http.StatusOK, settingsBody(svc, snap, scope))
 		return
@@ -215,7 +229,7 @@ func (a *API) mayWriteSettings(w http.ResponseWriter, r *http.Request, svc *sett
 		return true
 	}
 	if p.Kind == "proxy" || a.mode() == ModeProxy {
-		problem(w, r, http.StatusForbidden, codeSignInRequired, "secret settings can't be set behind the reverse proxy alone: "+signInRequired)
+		problem(w, r, http.StatusForbidden, codeSignInRequired, "secret settings can't be set behind the reverse proxy alone: set up sign-in (AUTH_MODE=local, or OIDC) first")
 		return false
 	}
 	if scope == settings.Instance {
@@ -259,6 +273,9 @@ func (a *API) settingsError(w http.ResponseWriter, r *http.Request, scope settin
 		problem(w, r, http.StatusConflict, codeMasterKeyRequired, "secret settings are kept encrypted: "+err.Error())
 	case errors.Is(err, accounts.ErrMasterKeyMismatch):
 		problem(w, r, http.StatusConflict, codeMasterKeyMismatch, err.Error())
+	case errors.Is(err, settings.ErrSavedNotRead):
+		slog.ErrorContext(r.Context(), "v1: reading the settings back failed", "err", err)
+		problem(w, r, http.StatusInternalServerError, codeInternal, settings.ErrSavedNotRead.Error()+": read them again")
 	default:
 		slog.ErrorContext(r.Context(), "v1: saving settings failed", "err", err)
 		problem(w, r, http.StatusInternalServerError, codeInternal, "saving the settings failed")
@@ -492,7 +509,12 @@ func mediaPublicDetail(err error) string {
 // Publisher may not reach).
 func testErrorClass(err error) string {
 	var ne net.Error
+	var pe *media.ProbeError
 	switch {
+	case errors.As(err, &pe) && pe.Store != nil:
+		return "store_refused"
+	case errors.As(err, &pe) && pe.Mismatch:
+		return "wrong_answer"
 	case err == nil, errors.Is(err, destination.ErrRedirectRefused):
 		return "http_error"
 	case errors.Is(err, destination.ErrBlockedAddress):

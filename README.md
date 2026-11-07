@@ -354,10 +354,12 @@ The **Settings** tab has these sections:
 Each setting says where its value comes from: saved in the app, the
 server's environment, or the default. One the environment sets is
 locked: change the variable, or **Copy into the app** and then remove
-the variable. A secret (a token, a key) is never shown again once saved;
-one Publisher makes for you is shown once. Behind the reverse proxy
-alone, Media and System aren't shown, and secret settings can't be
-changed in the app: [set up sign-in](#sign-in) first.
+the variable (a copied setting says so until you do). A secret (a token,
+a key) is never shown again once saved; one Publisher makes for you is
+shown once, until you say you copied it. Behind the reverse proxy alone,
+secret settings and the server's own (Media) can't be changed in the
+app, and System doesn't list the variables: [set up sign-in](#sign-in)
+first.
 
 Adding or removing a way to sign in, setting the first password, creating
 an API token, deleting an account and showing a Nostr key ask you to
@@ -430,6 +432,7 @@ Readiness: can this instance accept and persist work right now?
 | `database` | yes | SQLite doesn't answer, or its schema version isn't the one this build expects |
 | `data_disk` | no | less than 256 MiB free on the database's filesystem |
 | `video_workdir` | no | (video enabled only) the work directory isn't writable |
+| `media_disk` | no | (media on this server's disk only) less than 256 MiB free where `MEDIA_DIR` is |
 | `accepting_work` | yes | the publisher is shutting down |
 
 `status` is `ok`, `degraded` (a non-critical check failed; still `200`), or
@@ -437,7 +440,8 @@ Readiness: can this instance accept and persist work right now?
 `error` class (`timeout`, `unreachable`, `schema mismatch`, `low space`, …);
 details are logged once when a check starts failing and when it recovers.
 
-Add `?external=1` to also check upstream reachability — `blossom`, and
+Add `?external=1` to also check upstream reachability — `blossom` (the
+Blossom server in effect, from `BLOSSOM_URL` or Settings → Media), and
 `account:<id>` for each account that is turned on and open (its server: a
 Nostr account's bootstrap relay, by NIP-11). These never make the
 instance unavailable, are cached for 30 s, and send no credentials
@@ -532,7 +536,7 @@ reported at once. Boolean variables take `true/false`, `1/0`, `yes/no` or
 | `POW_DIFFICULTY_MAX` | no | `28` | Hard cap on per-request PoW override (not negative) |
 | `POW_TIMEOUT` | no | `30s` | Per-publish mining timeout |
 | `SCHEDULE_GRACE` | no (*app*) | `2h` | Grace window for firing overdue scheduled posts (must be positive) |
-| `AUTO_RETRY_ENABLED` | no (*app*) | `true` | Master switch for automatic retries (failed parts and relay deliveries) |
+| `AUTO_RETRY_ENABLED` | no (*app*) | `true` | Master switch for automatic retries (failed parts and relay deliveries). Off, a failed part waits for **Retry** by hand, including one already scheduled for a retry; first tries and retries by hand still go |
 | `AUTO_RETRY_MAX_ATTEMPTS` | no (*app*) | `6` | Attempts per part (and per relay) before giving up (at least 1; turn retries off with `AUTO_RETRY_ENABLED=false`) |
 | `AUTO_RETRY_BASE_DELAY` | no | `2m` | First backoff interval |
 | `AUTO_RETRY_MAX_DELAY` | no | `1h` | Backoff ceiling |
@@ -890,8 +894,19 @@ that need action:
    Accounts.
 8. **Settings in the app.** Your variables keep working and win over
    the app: Settings shows each of them locked, with **Copy into the app**
-   to move it there (then remove the variable). `BLOSSOM_URL` keeps
-   working as before, signed with `NSEC_HEX`. A script that changes
+   to move it there (then remove the variable). A copy is checked as a
+   value typed in the app is, so one the app would refuse (a
+   `SCHEDULE_GRACE` under a minute, an `http://` webhook) is refused,
+   naming the variable to fix. Once a webhook or Blossom address lives in
+   the app, it is reached as any address you set there: one on your own
+   network needs its host in `PRIVATE_DESTINATIONS`. An address and its
+   secret (`ALERT_WEBHOOK_URL` and `ALERT_WEBHOOK_PASS`, say) are copied
+   together, and a secret from the environment is only ever sent to an
+   address from the environment. `BLOSSOM_URL` keeps
+   working as before, signed with `NSEC_HEX`. **Retries off**
+   (`AUTO_RETRY_ENABLED=false`) now also holds the retries that were
+   already scheduled when you turned them off: they wait for **Retry**
+   by hand. A script that changes
    settings through the API needs a token made with `settings:read` and
    `settings:write` (or `instance:admin` for the server's) by name:
    `admin` doesn't include them, and only a signed-in owner can grant
