@@ -8,6 +8,13 @@ const MethodToken = "token"
 
 func authMethods() []destination.AuthMethod {
 	return []destination.AuthMethod{{
+		ID:             MethodOAuth,
+		Flow:           destination.FlowRedirect,
+		Label:          "Sign in at your server",
+		NeedsPublicURL: true,
+		Help: "Publisher registers itself on your Mastodon server and sends you there to sign in and allow it " +
+			"to read your account and post for you. Needs PUBLIC_URL, where the server sends you back.",
+	}, {
 		ID:    MethodToken,
 		Flow:  destination.FlowFields,
 		Label: "Access token",

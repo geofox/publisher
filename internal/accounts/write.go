@@ -163,8 +163,18 @@ func problems(prefix string, errs []destination.FieldError) []FieldProblem {
 // methodOf finds a method the owner can connect with by typing (or
 // generating) its credentials.
 func methodOf(m destination.Manifest, id string) (destination.AuthMethod, *InvalidError) {
-	if id == "" && len(m.Auth) == 1 {
-		id = m.Auth[0].ID
+	if id == "" {
+		// The one way to type (or generate) credentials, when there is one
+		// beside ways that sign in at the network.
+		var typed []string
+		for _, x := range m.Auth {
+			if x.Flow == destination.FlowFields || x.Flow == destination.FlowGenerate {
+				typed = append(typed, x.ID)
+			}
+		}
+		if len(typed) == 1 {
+			id = typed[0]
+		}
 	}
 	a, ok := m.AuthMethod(id)
 	if !ok {

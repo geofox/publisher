@@ -2178,12 +2178,28 @@ tokens and permissions, long-lived tokens, create replies; and the
 
 ### Task E4: Mastodon connect
 
-- [ ] Spec §6.2, with `iss` required whenever the metadata advertises
+- [x] Spec §6.2, with `iss` required whenever the metadata advertises
   `authorization_response_iss_parameter_supported` (and checked when
   present otherwise).
-- [ ] Tests against a fake instance: 4.3+ with PKCE; pre-4.3; issuer and
+- [x] Tests against a fake instance: 4.3+ with PKCE; pre-4.3; issuer and
   endpoint mismatches; `iss` missing when advertised; `invalid_client`
   then re-registration.
+
+### As built (E4)
+
+- Mastodon's manifest lists `oauth` ("Sign in at your server",
+  `FlowRedirect`, `NeedsPublicURL`) before `token`; an add without a
+  method picks the one typed method, so existing API calls keep working.
+- The metadata's issuer must be the server's origin and both endpoints
+  on it (no userinfo), else `issuer_mismatch` before anything is
+  registered; a 404 means before 4.3: the standard paths, no PKCE.
+  PKCE is sent only when `S256` is listed.
+- The app is registered once per server and redirect URI (`POST
+  /api/v1/apps`, scopes `read:accounts read:search read:statuses
+  write:media write:statuses`, named `Publisher (<host>)`), again when
+  the kept one's scopes don't cover these. `invalid_client` at the
+  exchange forgets it, so the next sign-in registers again. An OAuth
+  error shows only its code word (`a-z_`), never its description.
 
 ### Task E5: Threads connect with the owner's Meta app
 
