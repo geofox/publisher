@@ -139,7 +139,9 @@ func (l *Local) Owns(raw string) (string, bool) {
 // from the validated name only).
 func (l *Local) Open(name string) (*os.File, string, bool, error) {
 	mime, attach, ok := TypeOf(name)
-	if !ok {
+	// IsLocal says again, where the path is made, what TypeOf's pattern
+	// already holds: one name in Dir, no separator, no "..".
+	if !ok || !filepath.IsLocal(name) {
 		return nil, "", false, fs.ErrNotExist
 	}
 	// A link put in the directory is never followed: only the files the
@@ -150,7 +152,7 @@ func (l *Local) Open(name string) (*os.File, string, bool, error) {
 
 // Has: a stored object by that name is on disk.
 func (l *Local) Has(name string) bool {
-	if _, _, ok := TypeOf(name); !ok {
+	if _, _, ok := TypeOf(name); !ok || !filepath.IsLocal(name) {
 		return false
 	}
 	fi, err := os.Lstat(filepath.Join(l.Dir, name))
