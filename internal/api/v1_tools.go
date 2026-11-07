@@ -300,39 +300,11 @@ func (a *API) v1PutRelays(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ra.release()
-	var errs []fieldError
 	if req.Secondary == nil {
-		errs = append(errs, fieldError{Pointer: "/secondary", Code: "required", Detail: "the relay list ([] for none)"})
-	}
-	if len(req.Secondary) > maxSyncRelays {
-		errs = append(errs, fieldError{Pointer: "/secondary", Code: "too_many", Detail: "at most 50 relays"})
-		invalid(w, r, errs)
+		invalid(w, r, []fieldError{{Pointer: "/secondary", Code: "required", Detail: "the relay list ([] for none)"}})
 		return
 	}
-	seen := map[string]bool{}
-	urls := []string{}
-	home := normalizeRelay(ra.lister.HomeRelay())
-	for i, raw := range req.Secondary {
-		ptr := "/secondary/" + strconv.Itoa(i)
-		u := normalizeRelay(raw)
-		switch {
-		case len(raw) > maxSyncRelayURL:
-			errs = append(errs, fieldError{Pointer: ptr, Code: "too_long", Detail: "at most 512 characters"})
-		case !validRelayURL(u):
-			errs = append(errs, fieldError{Pointer: ptr, Code: "invalid", Detail: "a ws:// or wss:// relay URL"})
-		case u == home:
-			errs = append(errs, fieldError{Pointer: ptr, Code: "not_allowed", Detail: "this is the home relay, which the others are compared with"})
-		case pubnostr.IsOverlayRelay(u):
-			errs = append(errs, fieldError{Pointer: ptr, Code: "not_allowed", Detail: "Tor and I2P relays can't be reached from the server"})
-		case localRelay(u):
-			errs = append(errs, fieldError{Pointer: ptr, Code: "not_allowed", Detail: "loopback and link-local addresses are refused (a relay on your network is fine)"})
-		case seen[u]:
-			errs = append(errs, fieldError{Pointer: ptr, Code: "duplicate", Detail: "this relay is already in the list"})
-		default:
-			seen[u] = true
-			urls = append(urls, u)
-		}
-	}
+	urls, errs := checkSyncRelays(req.Secondary, ra.lister.HomeRelay(), "/secondary")
 	if len(errs) > 0 {
 		invalid(w, r, errs)
 		return
@@ -358,6 +330,42 @@ func hasBody(r *http.Request) bool {
 		io.Closer
 	}{br, r.Body}
 	return err == nil
+}
+
+// checkSyncRelays checks a relay-sync list as the owner sets it (PUT, or
+// an import): at most 50 ws:// or wss:// relays, none of them the home
+// relay, one on Tor or I2P, on a loopback or link-local address, or twice.
+// It answers the list normalized, or what is wrong, under ptr.
+func checkSyncRelays(list []string, home, ptr string) ([]string, []fieldError) {
+	if len(list) > maxSyncRelays {
+		return nil, []fieldError{{Pointer: ptr, Code: "too_many", Detail: "at most 50 relays"}}
+	}
+	var errs []fieldError
+	seen := map[string]bool{}
+	urls := []string{}
+	home = normalizeRelay(home)
+	for i, raw := range list {
+		p := ptr + "/" + strconv.Itoa(i)
+		u := normalizeRelay(raw)
+		switch {
+		case len(raw) > maxSyncRelayURL:
+			errs = append(errs, fieldError{Pointer: p, Code: "too_long", Detail: "at most 512 characters"})
+		case !validRelayURL(u):
+			errs = append(errs, fieldError{Pointer: p, Code: "invalid", Detail: "a ws:// or wss:// relay URL"})
+		case u == home:
+			errs = append(errs, fieldError{Pointer: p, Code: "not_allowed", Detail: "this is the home relay, which the others are compared with"})
+		case pubnostr.IsOverlayRelay(u):
+			errs = append(errs, fieldError{Pointer: p, Code: "not_allowed", Detail: "Tor and I2P relays can't be reached from the server"})
+		case localRelay(u):
+			errs = append(errs, fieldError{Pointer: p, Code: "not_allowed", Detail: "loopback and link-local addresses are refused (a relay on your network is fine)"})
+		case seen[u]:
+			errs = append(errs, fieldError{Pointer: p, Code: "duplicate", Detail: "this relay is already in the list"})
+		default:
+			seen[u] = true
+			urls = append(urls, u)
+		}
+	}
+	return urls, errs
 }
 
 // normalizeRelay is the form relay URLs are stored and compared in: no

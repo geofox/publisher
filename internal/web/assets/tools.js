@@ -99,7 +99,12 @@ async function loadSyncRelays() {
     details.append(body);
     c.append(details);
     if (d.nip65_error) c.append(el("div", { class: "rmsg", text: "Your relay list (NIP-65) couldn't be read: " + d.nip65_error }));
-  } catch (e) { c.innerHTML = ""; c.append(el("div", { class: "err", text: "Error: " + e.message })); }
+  } catch (e) {
+    c.innerHTML = "";
+    c.append(el("div", { class: "err", text: "Error: " + e.message }));
+    const home = $("#synchome");
+    if (home) home.textContent = "";
+  }
   finally { setSyncBusy(false); }
 }
 
@@ -229,6 +234,8 @@ export async function loadTools() {
 // showNoRelaySync says why there is nothing to sync, instead of an error.
 function showNoRelaySync() {
   const c = $("#syncrelays");
+  const home = $("#synchome");
+  if (home) home.textContent = "";
   if (c) c.replaceChildren(el("div", { class: "muted", text: "Relay sync needs a connected Nostr account (set NSEC_HEX)." }));
   for (const id of ["#syncacct", "#reconcile-head", "#syncscan", "#syncpull", "#syncpush", "#syncout"]) { const e = $(id); if (e) e.hidden = true; }
 }

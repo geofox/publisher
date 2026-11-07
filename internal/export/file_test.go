@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +46,15 @@ func TestPassphrase(t *testing.T) {
 	if got, err := ParsePassphrase("\n " + strings.ToUpper(strings.ReplaceAll(a, " ", "\t\n  ")) + " "); err != nil || got != a {
 		t.Fatalf("parse = %q, %v", got, err)
 	}
-	for _, bad := range []string{"", strings.Join(ws[:23], " "), a + " abandon", strings.Replace(a, ws[3], "zebraa", 1),
+	// Copied from a numbered list.
+	numbered := ""
+	for i, w := range ws {
+		numbered += fmt.Sprintf("%d. %s\n", i+1, w)
+	}
+	if got, err := ParsePassphrase(numbered); err != nil || got != a {
+		t.Fatalf("parse numbered = %q, %v", got, err)
+	}
+	for _, bad := range []string{"", strings.Join(ws[:23], " "), a + " abandon", strings.Join(ws[:23], " ") + " 24x", strings.Replace(a, ws[3], "zebraa", 1),
 		strings.Replace(a, ws[0], ws[0]+"-", 1)} {
 		if _, err := ParsePassphrase(bad); !errors.Is(err, ErrPassphraseForm) {
 			t.Fatalf("parse %q: %v", bad, err)
@@ -117,6 +126,7 @@ func TestOpenRefusals(t *testing.T) {
 		{"lanes", edit(`"p":4`, `"p":255`), pass, ErrParams},
 		{"kdf", edit(`"kdf":"argon2id"`, `"kdf":"pbkdf2"`), pass, ErrParams},
 		{"newer", edit(`"version":1`, `"version":2`), pass, ErrVersion},
+		{"newer with a new field", edit(`{"format":"publisher-export","version":1`, `{"format":"publisher-export","version":2,"cipher":"x"`), pass, ErrVersion},
 		{"older", edit(`"version":1`, `"version":0`), pass, ErrNotExport},
 		{"format", edit(`"publisher-export"`, `"other"`), pass, ErrNotExport},
 		{"unknown field", edit(`{"format"`, `{"x":1,"format"`), pass, ErrNotExport},
@@ -170,7 +180,7 @@ func TestDecode(t *testing.T) {
 		t.Fatalf("decode = %+v, %v", c, err)
 	}
 	many := Contents{Version: ContentsVersion}
-	for i := range maxAccounts + 1 {
+	for i := range MaxAccounts + 1 {
 		many.Accounts = append(many.Accounts, Account{ID: string(rune('a' + i%26)), Source: SourceApp})
 	}
 	for name, c := range map[string]Contents{
@@ -179,7 +189,8 @@ func TestDecode(t *testing.T) {
 		"same id":   {Version: 1, Accounts: []Account{{ID: "a", Source: SourceApp}, {ID: "a", Source: SourceEnv}}},
 		"source":    {Version: 1, Accounts: []Account{{ID: "a", Source: "db"}}},
 		"too many":  many,
-		"many sets": {Version: 1, Sets: make([]Set, maxSets+1)},
+		"many sets": {Version: 1, Sets: make([]Set, MaxSets+1)},
+		"version 0": {Version: 0},
 	} {
 		b, _ := json.Marshal(c)
 		if _, err := Decode(b); err == nil {
@@ -189,5 +200,11 @@ func TestDecode(t *testing.T) {
 	if _, err := Decode([]byte(`{"version":1,"accounts":[{"id":"canary-x","enabled":"yes"}]}`)); err == nil ||
 		strings.Contains(err.Error(), "canary") || strings.Contains(err.Error(), "yes") {
 		t.Fatalf("a bad shape: %v", err)
+	}
+	if _, err := Decode([]byte(`{"version":1,"accounts":[{"id":"a","source":"canary-src"}]}`)); err == nil || strings.Contains(err.Error(), "canary") {
+		t.Fatalf("a bad source: %v", err)
+	}
+	if _, err := Decode([]byte(`{"version":0}`)); err == nil || errors.Is(err, ErrVersion) {
+		t.Fatalf("version 0: %v", err)
 	}
 }

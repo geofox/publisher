@@ -30,6 +30,17 @@ func (Driver) EnvVars() []destination.EnvVar {
 	return vars
 }
 
+// EnvNotice is what the log says at startup of an account from the
+// environment that uses the built-in home relay ("" when there is none):
+// the default changed in 3.0, and every post goes to it.
+func EnvNotice(getenv func(string) string) string {
+	if destination.EnvString(getenv, "NSEC_HEX", "") == "" || destination.EnvString(getenv, "NIP65_BOOTSTRAP_RELAY", "") != "" {
+		return ""
+	}
+	return "nostr: the home relay is the built-in " + defaultBootstrapRelay +
+		": the relay list is read there and every post goes there too (NIP65_BOOTSTRAP_RELAY chooses it)"
+}
+
 // FromEnv implements destination.EnvSource: NSEC_HEX configures one
 // account. OWNER_PUBKEY is optional (it is derived from the key) but must
 // match when set.

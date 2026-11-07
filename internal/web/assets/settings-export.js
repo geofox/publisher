@@ -2,6 +2,8 @@
 import { el, v1, flash, copyText, asDialog } from "./common.js";
 import { accounts, loadAccounts, reloadAccounts, networkName } from "./accounts.js";
 import { readSettings } from "./settings-config.js";
+import { signInState } from "./settings-accounts.js";
+import { waitText } from "./webauthn.js";
 
 // Settings → System → Export and import (spec §9). An export is a file of
 // the accounts and settings, credentials included, sealed with a
@@ -13,6 +15,7 @@ const MAX_FILE = 768 << 10;
 
 let node = null;
 let importArea = null;
+let exportBtn = null;
 
 // portSection is the section, built once; showPort reads again whether
 // this server can take an import.
@@ -30,14 +33,21 @@ export function portSection() {
 
 export function showPort() {
   if (!node) return;
+  markBlocked();
   loadAccounts().then(() => markBlocked(), () => {});
 }
+
+// PROXY says why neither works behind the reverse proxy alone.
+const PROXY = "Behind the reverse proxy alone, accounts' credentials can't be exported or imported: set up sign-in first.";
+
+// limited is a 429's message, with how long to wait.
+const limited = e => e.message + (e.retryAfter ? " " + waitText(e.retryAfter) : "");
 
 // ── export ──────────────────────────────────────────────────────────────
 
 function exportPart() {
   const status = el("p", { class: "set-status", role: "status" });
-  const btn = el("button", { class: "primary sm", type: "button", text: "Export…" });
+  const btn = exportBtn = el("button", { class: "primary sm", type: "button", text: "Export…" });
   btn.addEventListener("click", async () => {
     btn.disabled = true;
     status.className = "set-status";
@@ -45,12 +55,12 @@ function exportPart() {
     try {
       const out = await v1("/v1/export", { method: "POST" });
       status.textContent = "";
-      showExport(out);
+      showExport(out, btn);
     } catch (e) {
-      status.textContent = e.cancelled ? "" : "The export failed: " + e.message;
+      status.textContent = e.cancelled ? "" : e.status === 429 ? limited(e) : "The export failed: " + e.message;
       status.className = "set-status bad";
     } finally {
-      btn.disabled = false;
+      btn.disabled = signInState().proxy;
     }
   });
   return el("div", { class: "port-part" },
@@ -63,7 +73,7 @@ function exportPart() {
 
 // showExport shows the passphrase, once, and the file to save. It closes
 // only by its buttons: what it shows can't be shown again.
-function showExport(out) {
+function showExport(out, opener) {
   const words = (out.passphrase || "").split(" ");
   let saved = false;
   const bk = el("div", { class: "modal-bk" });
@@ -106,6 +116,8 @@ function showExport(out) {
     out.passphrase = "";
     out.file = "";
     close();
+    // The dialog opened from the re-authentication's, not the button.
+    if (opener && opener.isConnected) opener.focus();
   };
   bk.append(card);
   document.body.append(bk);
@@ -117,12 +129,23 @@ const count = (n, what) => (n || 0) + " " + what + (n === 1 ? "" : "s");
 // ── import ──────────────────────────────────────────────────────────────
 
 // markBlocked says, before anything is read, when this server can't take
-// an import: it has accounts added in the app.
+// an import: it has accounts added in the app, no usable master key, or
+// no sign-in of its own (then no export either).
 function markBlocked() {
   const note = importArea && importArea.querySelector(".port-blocked");
   if (!note) return;
-  const n = accounts().filter(a => a.source === "db").length;
-  note.hidden = n === 0;
+  const st = signInState();
+  let why = "";
+  if (st.proxy) why = PROXY;
+  else if (accounts().some(a => a.source === "db")) why = "This server has accounts added in the app, so it can't take an import " +
+    "(two setups are never merged). Import on a new server, or delete those accounts first.";
+  else if (st.key === "none") why = "Set a master key first: the credentials in the file are kept encrypted with it here.";
+  else if (st.key !== "ok") why = st.keyDetail || "Fix the master key first.";
+  note.hidden = !why;
+  note.querySelector("p").textContent = why;
+  const read = importArea.querySelector(".port-form button[type=submit]");
+  if (read) read.disabled = !!why;
+  if (exportBtn) exportBtn.disabled = st.proxy;
 }
 
 function importPart() {
@@ -162,30 +185,29 @@ function importPart() {
       // Opened: the passphrase isn't needed again.
       passIn.value = "";
       form.hidden = true;
-      showSummary(out, sum, () => { form.hidden = false; out.replaceChildren(); fileIn.value = ""; });
+      showSummary(out, sum, () => { form.hidden = false; out.replaceChildren(); fileIn.value = ""; fileIn.focus(); });
     } catch (e) {
       const errs = (e.problem && e.problem.errors) || [];
       const at = ptr => errs.filter(x => x.pointer === ptr).map(x => x.detail).join("; ");
       if (at("/file")) { fieldErr(fileIn, fileErr, at("/file")); fileIn.focus(); }
       if (at("/passphrase")) { fieldErr(passIn, passErr, at("/passphrase")); if (!at("/file")) passIn.focus(); }
-      if (!at("/file") && !at("/passphrase")) { status.textContent = e.message; status.className = "set-status bad"; }
+      if (!at("/file") && !at("/passphrase")) { status.textContent = e.status === 429 ? limited(e) : e.message; status.className = "set-status bad"; }
       else status.textContent = "";
     } finally {
       read.disabled = false;
+      markBlocked();
     }
   });
   return el("div", { class: "port-part" },
     el("h3", { class: "set-sub", text: "Import" }),
     el("p", { class: "set-sect-intro", text: "Into a server without accounts added in the app: what its environment sets stays as it is. " +
       "You see what the file would do before anything changes." }),
-    el("div", { class: "set-note warn port-blocked", hidden: "" },
-      el("p", { text: "This server has accounts added in the app, so it can't take an import (two setups are never merged). " +
-        "Import on a new server, or delete those accounts first." })),
+    el("div", { class: "set-note warn port-blocked", hidden: "" }, el("p")),
     form,
     out);
 }
 
-const ACTION = { add: "Will be added", update: "Here from the environment: its label, flags and defaults will be set", set: "Will be set" };
+const ACTION = { add: "Will be added", update: "Will be updated", set: "Will be set" };
 
 const when = iso => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleString(); };
 
@@ -197,7 +219,7 @@ function accountLine(a, done) {
   const name = net + label + (a.handle && a.handle !== a.label ? " (" + a.handle + ")" : "");
   let what, cls = "";
   if (!done) {
-    what = a.action === "skip" ? "Skipped: " + (a.why || "") : ACTION[a.action] || a.action;
+    what = a.action === "skip" ? "Skipped: " + (a.why || "") : (ACTION[a.action] || a.action) + (a.action === "update" && a.why ? " (" + a.why + ")" : "");
     if (a.action === "skip") cls = "is-skip";
   } else {
     switch (a.status) {
@@ -215,15 +237,22 @@ function accountLine(a, done) {
     el("span", { class: "port-what", text: what }));
 }
 
-function settingLine(s) {
+// settingLine is one setting in a summary. A secret set with a reason is
+// one cleared (it went with an address the file replaces).
+function settingLine(s, done) {
   let val = "";
   if (s.secret) val = s.value ? "secret, for " + s.value : "secret";
   else if (Array.isArray(s.value)) val = s.value.join(", ");
   else if (s.value !== undefined && s.value !== null) val = String(s.value);
+  const server = s.scope === "instance" ? " (the server's)" : "";
+  let what;
+  if (s.action === "skip") what = "Skipped: " + (s.why || "");
+  else if (s.why) what = done ? s.why[0].toUpperCase() + s.why.slice(1) : "Will be " + s.why;
+  else what = (done ? "Set" : "Will be set") + server;
   return el("li", { class: s.action === "skip" ? "is-skip" : "" },
     el("span", { class: "port-name", text: s.label || s.key }),
-    val ? el("span", { class: "port-where" }, " ", el("code", { text: val })) : null,
-    el("span", { class: "port-what", text: s.action === "skip" ? "Skipped: " + (s.why || "") : "Will be set" + (s.scope === "instance" ? " (the server's)" : "") }));
+    val && !(s.secret && s.why) ? el("span", { class: "port-where" }, " ", el("code", { text: val })) : null,
+    el("span", { class: "port-what", text: what }));
 }
 
 function lists(sum, done) {
@@ -240,11 +269,7 @@ function lists(sum, done) {
   }
   const settings = sum.settings || [];
   if (settings.length) {
-    parts.push(el("h4", { class: "port-h", text: "Settings" }), el("ul", { class: "port-list" }, ...settings.map(s => {
-      const li = settingLine(s);
-      if (done && s.action !== "skip") li.querySelector(".port-what").textContent = "Set" + (s.scope === "instance" ? " (the server's)" : "");
-      return li;
-    })));
+    parts.push(el("h4", { class: "port-h", text: "Settings" }), el("ul", { class: "port-list" }, ...settings.map(s => settingLine(s, done))));
   }
   return parts;
 }
@@ -266,16 +291,24 @@ function showSummary(out, sum, reset) {
       const res = await v1("/v1/import:confirm", { method: "POST", body: { confirmation: sum.confirmation } });
       showResult(out, res, reset);
       flash("Imported");
-      reloadAccounts().then(() => markBlocked(), () => {});
-      readSettings("owner");
-      readSettings("instance");
+      refresh();
     } catch (e) {
-      go.disabled = cancel.disabled = false;
+      cancel.disabled = false;
       status.className = "set-status bad";
-      status.textContent = e.cancelled ? e.message : "The import failed: " + e.message;
-      if (e.status === 404) {
-        go.disabled = true;
-        status.textContent = "This file waited too long (10 minutes): read it again.";
+      if (e.cancelled) {
+        go.disabled = false;
+        status.textContent = e.message;
+      } else if (e.status === 404 || e.status === 409) {
+        // Gone (it waited too long, the server restarted, the file was
+        // read again), or the server can't take it now: say the server's
+        // words; Import again won't help.
+        status.textContent = e.message;
+      } else {
+        // No answer, or the server's failure: it may have run (once
+        // begun, an import finishes). Look before trying again.
+        status.textContent = "The import's answer didn't arrive" + (e.status ? " (" + e.message + ")" : "") +
+          ": it may have run. Look in Accounts and Settings before reading the file again.";
+        refresh();
       }
     }
   });
@@ -287,7 +320,19 @@ function showSummary(out, sum, reset) {
       ...lists(sum, false)),
     el("div", { class: "set-item-actions" }, go, cancel),
     status);
-  go.focus();
+  (go.disabled ? cancel : go).focus();
+}
+
+// refresh reads again what an import changes: the accounts, and each
+// scope's settings, which the rest of the app follows (the media store,
+// the languages).
+function refresh() {
+  reloadAccounts().then(() => markBlocked(), () => {});
+  for (const scope of ["owner", "instance"]) {
+    readSettings(scope).then(r => {
+      if (r && r.body) document.dispatchEvent(new CustomEvent("settings-saved", { detail: { scope, body: r.body } }));
+    }, () => {});
+  }
 }
 
 function showResult(out, res, reset) {
@@ -297,7 +342,7 @@ function showResult(out, res, reset) {
   out.replaceChildren(
     el("div", { class: "set-note" + (needs ? " warn" : "") },
       el("p", { class: "set-note-title", text: "Imported" }),
-      needs ? el("p", { text: count(needs, "account") + " need a look: see Accounts." }) : null,
+      needs ? el("p", { text: count(needs, "account") + (needs === 1 ? " needs" : " need") + " a look: see Accounts." }) : null,
       ...lists(res, true)),
     el("div", { class: "set-item-actions" }, again));
   again.focus();

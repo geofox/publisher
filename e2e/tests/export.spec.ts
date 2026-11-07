@@ -50,7 +50,8 @@ test.beforeAll(async ({ browser }) => {
 });
 
 test.afterAll(async () => {
-  // The harness is shared with the specs that follow: leave it as found.
+  // The harness is shared with the specs that follow: take away the
+  // account and the setting this spec made.
   expect((await page.request.post("/__e2e/forget-app-accounts")).status()).toBe(204);
   const reset = await page.request.patch("/v1/settings", { headers: { "If-Match": "*" }, data: { publishing: { max_attempts: null } } });
   expect(reset.status(), await reset.text()).toBe(200);
@@ -101,6 +102,10 @@ test("export: the passphrase shown once, and the file", async () => {
 
 test("import: refused while the server has accounts added in the app", async () => {
   await expect(section().locator(".port-blocked")).toBeVisible();
+  await expect(section().getByRole("button", { name: "Read the file" })).toBeDisabled();
+  const refused = await page.request.post("/v1/import", { data: { file, passphrase } });
+  expect(refused.status()).toBe(409);
+  expect((await refused.json()).code).toBe("invalid_state");
   expect((await page.request.post("/__e2e/forget-app-accounts")).status()).toBe(204);
   expect(await accountByHandle(HANDLE)).toBeUndefined();
   await openSystem();
@@ -124,7 +129,7 @@ test("import: a wrong passphrase, then the summary, then the import", async () =
   const line = summary.locator(".port-list li", { hasText: "Ported " + RUN });
   await expect(line).toContainText("credentials go to https://pds.e2e.invalid");
   await expect(line).toContainText("Will be added");
-  await expect(summary.locator(".port-list li", { hasText: "Tries before giving up" })).toContainText("4");
+  await expect(summary.locator(".port-list li", { hasText: "Tries before giving up" }).locator(".port-where code")).toHaveText("4");
   expect(await accountByHandle(HANDLE)).toBeUndefined();
 
   await summary.getByRole("button", { name: "Import" }).click();

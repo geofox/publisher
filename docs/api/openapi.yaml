@@ -1398,7 +1398,9 @@ paths:
         opened; with it, it holds every credential, so keep the two apart.
         Never stored or cached (`Cache-Control: no-store`); not
         idempotent. At most 5 exports and imports a minute; while
-        passwords are being checked or another file is sealed, `429`.
+        passwords are being checked or another file is sealed, `429`
+        (the re-authentication isn't spent then). More than a file holds
+        (768 KiB, 100 accounts, 50 account sets) is `409`.
       security:
         - session: []
       parameters:
@@ -1432,15 +1434,22 @@ paths:
         account (added, an environment account here updated, or skipped
         and why) with the server its credentials go to, each account set,
         and each setting with its value (a secret address shows only its
-        origin, another secret nothing). Send the `confirmation` to
-        `POST /v1/import:confirm` within 10 minutes, from this session;
-        the opened file waits in the server's memory until then (one per
-        session), and a restart forgets it.
+        origin, another secret nothing). Everything that needs no answer
+        from a network is checked now, as the import will check it, so
+        the summary says what will happen but for the networks' answers.
+        Send the `confirmation` to `POST /v1/import:confirm` within 10
+        minutes, from this session; the opened file waits in the server's
+        memory until then (one per session), and a restart forgets it.
 
         An import goes into a server with no accounts added in the app
         (`409 invalid_state` otherwise), so two setups are never merged.
         What this server's environment sets wins: its accounts are kept
-        (the file's copy of one is skipped) and its settings stay. A file
+        (the file's copy of one is skipped, and its account sets name the
+        one here) and its settings stay. A secret sent to an address (a
+        webhook's password or token) comes only with its address from the
+        file, and an address the file replaces takes the secret saved for
+        the old one along. Serving media publicly isn't turned on: its
+        test runs in Settings → Media. While another import runs, `409`. A file
         that isn't an export, is from a newer Publisher, or names other
         key parameters is `422` at `/file`, before any work; a passphrase
         that isn't 24 words of the list, or doesn't open the file, `422`
@@ -1488,9 +1497,11 @@ paths:
         answer (both are added, with what you set for them, and need a
         look); or `skipped`. An environment account here is `updated`.
         Answers what it did, in the same shape. Begun, it finishes even
-        if the caller leaves; a large file can take a few minutes. An
-        unknown, used or expired confirmation, or another session's, is
-        `404`; accounts added in the app since the file was read, `409`.
+        if the caller leaves; a large file can take a few minutes. One
+        import runs at a time. An unknown, used, replaced or expired
+        confirmation, or another session's, is `404`; accounts added in
+        the app since the file was read, or another import running,
+        `409`.
       security:
         - session: []
       parameters:
@@ -5183,7 +5194,7 @@ components:
                 type: string
               server:
                 type: string
-                description: Where its credentials are sent (left out for a network with one address).
+                description: The origin its credentials are sent to (left out for a network with one address).
               action:
                 type: string
                 enum: [add, update, skip]
@@ -5238,6 +5249,7 @@ components:
                 enum: [set, skip]
               why:
                 type: string
+                description: Why it is left as it is; for a secret set, why it is cleared (its address replaced).
     SettingsTest:
       type: object
       additionalProperties: false

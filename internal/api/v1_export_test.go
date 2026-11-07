@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -352,6 +354,20 @@ func TestV1ImportOutcomes(t *testing.T) {
 		!strings.HasPrefix(plan["a6"].Why, "pds_url: ") || !strings.Contains(plan["a8"].Why, "way of connecting") {
 		t.Errorf("why: %q, %q, %q, %q", plan["a4"].Why, plan["a5"].Why, plan["a6"].Why, plan["a8"].Why)
 	}
+	// What needs no network is planned as it will go: the set named
+	// badly, the value refused.
+	planned := map[string]v1ImportSet{}
+	for _, s := range sum.AccountSets {
+		planned[s.Name] = s
+	}
+	if planned["Some"].Action != importAdd || planned["bad\x00name"].Action != importSkip || planned["None"].Action != importSkip {
+		t.Errorf("planned sets: %+v", sum.AccountSets)
+	}
+	for _, s := range sum.Settings {
+		if s.Key == settings.PublishingMaxAttempts && s.Action != importSkip {
+			t.Errorf("planned max attempts: %+v", s)
+		}
+	}
 
 	r = to.confirm(sum.Confirmation)
 	wantStatus(t, r, 200)
@@ -381,6 +397,13 @@ func TestV1ImportOutcomes(t *testing.T) {
 	row, err := to.st.Account(ctx, store.DefaultOwner, res["a2"].ID)
 	if err != nil || row.RemoteID != "did:plc:no.example" || row.Handle != "no.example" {
 		t.Fatalf("the refused account: %+v, %v", row, err)
+	}
+	// Refused, it says so at once, not at its first check.
+	if e, _ := to.reg.Get(res["a2"].ID); e.Status != accounts.NeedsReconnect || e.Reason == "" {
+		t.Fatalf("the refused account's status: %v %q", e.Status, e.Reason)
+	}
+	if e, _ := to.reg.Get(res["a1"].ID); e.Status != accounts.Connected {
+		t.Fatalf("the connected account's status: %v", e.Status)
 	}
 	sets := map[string]v1ImportSet{}
 	for _, s := range done.AccountSets {
@@ -528,4 +551,158 @@ func TestV1ImportNeedsKeyAndEmptyServer(t *testing.T) {
 	e := newPortEnv(t)
 	wantStatus(t, e.create("ada.example", "abcd-efgh-ijkl-mnop", nil), 201)
 	wantProblem(t, e.read(f, pass), http.StatusConflict, codeInvalidState)
+}
+
+// What a file brings is checked as what the owner types: a credential
+// in the configuration, a name no method has, a relay-sync list out of
+// bounds, a list for an account that has none. An account already here
+// takes its place in the file's sets.
+func TestV1ImportChecks(t *testing.T) {
+	to := newPortEnv(t)
+	ctx := context.Background()
+	if err := to.st.SetAccountIdentity(ctx, to.acct("bluesky"), "env.example", "did:plc:env.example"); err != nil {
+		t.Fatal(err)
+	}
+	if err := to.reg.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// More saved state than any driver keeps: refused.
+	odd := bskyInFile("b1", "odd.example", "fine-1")
+	for i := range 33 {
+		odd.Config["k"+strconv.Itoa(i)] = "v"
+	}
+	plain := bskyInFile("b2", "plain.example", "fine-2")
+	plain.Config["app_password"] = "canary-in-config"
+	plain.Config["big"] = strings.Repeat("canary", 1000)
+	plain.Config["expires_at"] = "2027-01-01T00:00:00Z"
+	plain.Secrets["zzz"] = "canary-extra"
+	key := strings.Repeat("1", 64)
+	nostr := export.Account{ID: "b3", Source: export.SourceApp, Type: "nostr", Method: "secret_key", Label: "Notes", Enabled: true,
+		Config: map[string]any{"bootstrap_relay": "wss://relay.example"}, Secrets: map[string]string{"secret_key": key},
+		SyncRelays: []string{"wss://relay.example", "wss://nos.example", "javascript:alert(1)"}}
+	// Moved into the app from the environment: its config keeps the
+	// environment's seed list, which isn't taken.
+	nostr2 := export.Account{ID: "b4", Source: export.SourceApp, Type: "nostr", Method: "secret_key", Label: "More", Enabled: true,
+		Config:     map[string]any{"bootstrap_relay": "wss://relay.example", "sync_relays_seed": []any{"wss://seed.example"}},
+		Secrets:    map[string]string{"secret_key": strings.Repeat("2", 64)},
+		SyncRelays: []string{"wss://relay.example", "wss://nos.example"}}
+	file, pass := sealed(t, export.Contents{Version: export.ContentsVersion,
+		Accounts: []export.Account{odd, plain, nostr, nostr2, bskyInFile("b5", "env.example", "fine-5"),
+			{ID: "b6", Source: export.SourceEnv, EnvKey: "default", Type: "mastodon", Label: "Masto", Enabled: true,
+				SyncRelays: []string{"ws://10.0.0.1/"}}},
+		Sets: []export.Set{{Name: "With env", Accounts: []string{"b5", "b2"}}}})
+	r := to.read(file, pass)
+	wantStatus(t, r, 200)
+	var sum v1ImportSummary
+	r.json(&sum)
+	plan := map[string]v1ImportAccount{}
+	for _, a := range sum.Accounts {
+		plan[a.FileID] = a
+	}
+	if plan["b1"].Action != importSkip || !strings.Contains(plan["b1"].Why, "saved state") || plan["b2"].Action != importAdd || plan["b5"].Action != importSkip ||
+		plan["b6"].Action != importUpdate || !strings.Contains(plan["b6"].Why, "turned on") {
+		t.Fatalf("plan: %+v", sum.Accounts)
+	}
+	if len(sum.AccountSets) != 1 || sum.AccountSets[0].Accounts != 2 {
+		t.Fatalf("planned sets: %+v", sum.AccountSets)
+	}
+	r = to.confirm(sum.Confirmation)
+	wantStatus(t, r, 200)
+	var done v1ImportSummary
+	r.json(&done)
+	res := map[string]v1ImportAccount{}
+	for _, a := range done.Accounts {
+		res[a.FileID] = a
+	}
+	// The credential kept in the configuration is dropped, and so are
+	// the secret no method has and a value too long to be state; the
+	// driver's own state stays.
+	row, err := to.st.Account(ctx, store.DefaultOwner, res["b2"].ID)
+	if err != nil || strings.Contains(row.Config, "canary") || !strings.Contains(row.Config, "expires_at") {
+		t.Fatalf("plain: %+v, %v", row, err)
+	}
+	to.mu.Lock()
+	for _, o := range to.opens {
+		if _, ok := o.Secrets["zzz"]; ok {
+			t.Error("a secret no method has was kept")
+		}
+	}
+	to.mu.Unlock()
+	// The home relay is left out of the list; a list out of bounds isn't
+	// kept, and says so; an account without relays gets none.
+	if l, _ := to.st.AccountSyncRelays(ctx, res["b4"].ID); len(l) != 1 || l[0] != "wss://nos.example" {
+		t.Fatalf("b4 relays: %v", l)
+	}
+	if row, err := to.st.Account(ctx, store.DefaultOwner, res["b4"].ID); err != nil || strings.Contains(row.Config, "seed.example") {
+		t.Fatalf("b4: %+v, %v", row, err)
+	}
+	if !strings.Contains(res["b3"].Detail, "relay-sync list wasn't kept") {
+		t.Fatalf("b3: %+v", res["b3"])
+	}
+	if l, _ := to.st.AccountSyncRelays(ctx, res["b3"].ID); slices.Contains(l, "javascript:alert(1)") {
+		t.Fatalf("b3 relays: %v", l)
+	}
+	if l, _ := to.st.AccountSyncRelays(ctx, to.acct("mastodon")); len(l) != 0 {
+		t.Fatalf("mastodon relays: %v", l)
+	}
+	// The set has the environment's account in place of the file's.
+	ss, err := to.st.AccountSets(ctx, store.DefaultOwner)
+	if err != nil || len(ss) != 1 || !slices.Contains(ss[0].Accounts, to.acct("bluesky")) || !slices.Contains(ss[0].Accounts, res["b2"].ID) {
+		t.Fatalf("sets: %+v, %v", ss, err)
+	}
+	if strings.Contains(r.Body.String(), "canary") {
+		t.Fatalf("the answer shows a secret: %s", r.Body.String())
+	}
+}
+
+// One import runs at a time: another file can't be read or confirmed
+// while it does.
+func TestV1ImportOneAtATime(t *testing.T) {
+	from, to := newPortEnv(t), newPortEnv(t)
+	from.seed()
+	f := from.export()
+	var sum v1ImportSummary
+	to.read(f.File, f.Passphrase).json(&sum)
+	po := to.api.port()
+	po.running.Lock()
+	p := wantProblem(t, to.confirm(sum.Confirmation), http.StatusConflict, codeInvalidState)
+	if p.Detail != errImportRunning {
+		t.Fatalf("detail %q", p.Detail)
+	}
+	wantProblem(t, to.read(f.File, f.Passphrase), http.StatusConflict, codeInvalidState)
+	po.running.Unlock()
+	// The refusals spent nothing: the confirmation still waits.
+	wantStatus(t, to.confirm(sum.Confirmation), 200)
+}
+
+// A busy answer (both key-derivation slots taken) spends neither a try
+// nor the re-authentication.
+func TestV1ExportBusy(t *testing.T) {
+	e := newPortEnv(t)
+	h := e.api.port().hasher
+	if e.api.Local != nil && e.api.Local.Hasher != nil {
+		h = e.api.Local.Hasher
+	}
+	held, release := make(chan struct{}), make(chan struct{})
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = h.Do(func() { held <- struct{}{}; <-release })
+		}()
+	}
+	<-held
+	<-held
+	nonce := e.reauth(opExport)
+	wantProblem(t, e.do(req{method: "POST", path: "/v1/export", header: nonce}), http.StatusTooManyRequests, codeRateLimited)
+	f, pass := sealed(t, export.Contents{Version: export.ContentsVersion})
+	wantProblem(t, e.read(f, pass), http.StatusTooManyRequests, codeRateLimited)
+	close(release)
+	wg.Wait()
+	wantStatus(t, e.do(req{method: "POST", path: "/v1/export", header: nonce}), 200)
+	// Only that export counted.
+	if wait := e.api.limits().exports.Take(store.DefaultOwner); wait > 0 {
+		t.Fatal("the busy answers were counted")
+	}
 }

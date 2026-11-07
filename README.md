@@ -480,7 +480,8 @@ expose it.
 
 You need Docker, and a host name with https in front of Publisher
 (Caddy, Traefik, `tailscale serve`, …): passkeys and the sign-in cookie
-need it. On your own computer, `http://localhost:8080` works too.
+need it. On your own computer, `http://localhost:8080` works too (with
+`PUBLIC_URL=http://localhost:8080`).
 
 1. **Make the master key.** It encrypts the credentials you save in the
    app. Run `docker run --rm ghcr.io/geofox/publisher keygen` and follow
@@ -961,16 +962,24 @@ two apart (the passphrase in a password manager, say).
 **Settings → System → Import** reads such a file with its passphrase
 (any case and spacing) and shows what it would do before anything
 changes: each account and the server its credentials would go to, each
-account set and setting. Confirm within 10 minutes. It goes into a
-server with no accounts added in the app (a new one, or one whose
-accounts all come from the environment), so two setups are never
-merged, and what this server's environment sets stays: its accounts and
-settings win over the file's. Each account is checked as one added by
-hand (its addresses allowed here) and asked who it is before it is
-stored. One whose network refuses the credentials, or doesn't answer,
-is still added, marked as needing a look. Both steps ask you to confirm
-it's you, need a signed-in browser (not a token, not the proxy alone)
-and, for the import, the master key.
+account set and setting, checked as the import will check them. Confirm
+within 10 minutes. It goes into a server with no accounts added in the
+app (a new one, or one whose accounts all come from the environment), so
+two setups are never merged, one import at a time, and what this
+server's environment sets stays: its accounts and settings win over the
+file's. Each account is checked as one added by hand (its addresses
+allowed here) and asked who it is before it is stored. One whose network
+refuses the credentials is still added, as needing reconnecting; one
+whose network doesn't answer is added and checked again within a
+minute. A webhook's password or token comes only with the webhook's
+address from the file, never for an address this server already has;
+**Serve media publicly** stays off until its test passes here. Both
+steps ask you to confirm it's you, need a signed-in browser (not a
+token, not the proxy alone) and, for the import, the master key.
+
+If the import stops partway (the server was stopped, say), the accounts
+it added stay, and this server no longer takes an import: delete them
+in Settings → Accounts and import the file again.
 
 ### Backups
 
@@ -1106,13 +1115,18 @@ To 3.0. No environment variable was removed or renamed. Read the
    `PRIMARY_RELAYS` follows the home relay. If your Nostr account comes
    from the environment and relied on the old defaults, set them before
    upgrading to keep them: every post goes to the home relay, and your
-   relay list is read there.
+   relay list is read there. Each start logs the home relay while it is
+   the built-in one.
+10. **API callers that pick targets with `enabled`** must use
+    `status == "connected"` instead: `enabled` is now only your switch,
+    and every account starts with it on.
 
 Your accounts keep their ids (`acc_…` in `GET /v1/accounts`), so posts,
 drafts and API callers that name them keep working; the relay-sync list
 moves to your Nostr account. Before migrating, the first start writes a
-copy named after the first version it applies (`publisher.db.pre-v9.bak`
-from 2.0); see [Database upgrades](#database-upgrades).
+copy named after the first version it applies (`publisher.db.pre-v11.bak`
+from 2.1, `publisher.db.pre-v9.bak` from 2.0); see
+[Database upgrades](#database-upgrades).
 
 ### Build from source
 

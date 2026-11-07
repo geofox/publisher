@@ -328,6 +328,8 @@ type Change struct {
 	IfMatch string
 	// By is who writes, for the record ("session", "token:<id>").
 	By string
+	// DryRun checks the change and saves nothing.
+	DryRun bool
 }
 
 // Apply validates and saves a change, then publishes the new snapshot.
@@ -444,6 +446,9 @@ func (s *Service) Apply(ctx context.Context, c Change) (*Snapshot, error) {
 	if len(fieldErrs) > 0 {
 		sort.SliceStable(fieldErrs, func(i, j int) bool { return fieldErrs[i].Key < fieldErrs[j].Key })
 		return cur, &ValidationError{Fields: fieldErrs}
+	}
+	if c.DryRun {
+		return cur, nil
 	}
 	for _, k := range sortedKeys(newSecret) {
 		plain := newSecret[k]

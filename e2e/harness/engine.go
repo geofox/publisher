@@ -166,7 +166,7 @@ func (e *engine) ExportAccounts(ctx context.Context, owner string) ([]export.Acc
 func (e *engine) ImportAccount(ctx context.Context, owner string, x export.Account, actor string) (accounts.Imported, error) {
 	return e.registry().ImportAccount(ctx, owner, x, actor)
 }
-func (e *engine) CheckImport(owner string, x export.Account) string {
+func (e *engine) CheckImport(owner string, x export.Account) (string, string) {
 	return e.registry().CheckImport(owner, x)
 }
 func (e *engine) EnvMatch(owner string, x export.Account) (store.Account, bool) {

@@ -17,6 +17,10 @@ import { waitText } from "./webauthn.js";
 // master key's status, the features.
 let inst = { auth: "", secrets: { status: "none", detail: "" }, features: {} };
 export function setAccountsInstance(i) { if (i) inst = { ...inst, ...i }; }
+// signInState is how the owner signs in here and the master key's state,
+// as last read, for the sections that depend on them (export and import).
+export const signInState = () => ({ proxy: inst.auth === "proxy", key: (inst.secrets && inst.secrets.status) || "none",
+  keyDetail: (inst.secrets && inst.secrets.detail) || "" });
 // A media store chosen in Settings, Media counts at once.
 document.addEventListener("settings-saved", e => {
   const b = e.detail && e.detail.scope === "instance" && e.detail.body;

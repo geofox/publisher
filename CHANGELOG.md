@@ -43,7 +43,8 @@ Settings and accounts in the web app. Read
   relay list from relay.damus.io and posts there; to keep the old
   behaviour, set `NIP65_BOOTSTRAP_RELAY=wss://relay.geoffrey.one` and
   `FALLBACK_RELAYS=wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io`.
-  Accounts added in the app keep the relays they were saved with.
+  Accounts added in the app keep the relays they were saved with. Each
+  start logs the home relay while it is the built-in one.
 
 ### Changed
 
@@ -298,15 +299,16 @@ Settings and accounts in the web app. Read
   24 words that Publisher makes, shows once and doesn't keep
   (AES-256-GCM, the key from argon2id). An import reads the file with
   its passphrase, shows what it would do (each account and the server
-  its credentials would go to, each set and setting), and does it once
-  you confirm, within 10 minutes. It goes only into a server without
-  accounts added in the app; what the environment sets there wins, and
-  each account is checked as one added by hand and asked who it is
-  (stored either way, marked when its network refused or didn't
-  answer). Both ask you to confirm it's you and need a signed-in
-  browser; the import needs the master key. API: `POST /v1/export`,
-  `POST /v1/import` and `POST /v1/import:confirm`; at most 5 exports or
-  files read a minute.
+  its credentials would go to, each set and setting, checked as the
+  import will check them), and does it once you confirm, within 10
+  minutes. It goes only into a server without accounts added in the app,
+  one import at a time; what the environment sets there wins, a
+  webhook's secret comes only with its address from the file, and each
+  account is checked as one added by hand and asked who it is (one its
+  network refuses is stored as needing reconnecting). Both ask you to
+  confirm it's you and need a signed-in browser; the import needs the
+  master key. API: `POST /v1/export`, `POST /v1/import` and `POST
+  /v1/import:confirm`; at most 5 exports or files read a minute.
 
 ### Security
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"slices"
 
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/export"
@@ -89,11 +90,10 @@ func (r *Registry) ImportAccount(ctx context.Context, owner string, x export.Acc
 	if err := r.opt.KeyState.WriteError(); err != nil {
 		return Imported{}, err
 	}
-	d, a, config, why := r.checkImport(owner, x)
+	d, a, config, secrets, why, _ := r.checkImport(owner, x)
 	if why != "" {
 		return skip(why)
 	}
-	secrets := maps.Clone(x.Secrets)
 	id := store.NewAccountID()
 	row := store.Account{ID: id, OwnerID: owner, Type: x.Type, Source: store.SourceDB, AuthMethod: a.ID}
 	out := Imported{Status: ImportConnected, Handle: x.Handle}
@@ -129,49 +129,104 @@ func (r *Registry) ImportAccount(ctx context.Context, owner string, x export.Acc
 		return Imported{}, err
 	}
 	out.ID = id
+	if out.Status == ImportRefused {
+		r.markRefused(id, out.Detail)
+	}
 	return out, nil
+}
+
+// markRefused records at once that an account just added was refused by
+// its network, as a check would: it needs reconnecting, and is checked
+// again as one that does.
+func (r *Registry) markRefused(id, detail string) {
+	r.mu.Lock()
+	e, ok := r.entries[id]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
+	before, _ := e.status()
+	e.refused = true
+	e.refusedReason = "the network refused its credentials"
+	if detail != "" {
+		e.refusedReason += ": " + detail
+	}
+	e.nextCheck = r.now().Add(checkEveryRefused)
+	after, _ := e.status()
+	snap := e.snapshot()
+	r.mu.Unlock()
+	if before != after {
+		r.emit(Change{ID: id, Kind: ChangeStatus, Entry: snap})
+	}
 }
 
 // CheckImport says why an account in an export file wouldn't be added
 // here ("" when it would be, if its network takes its credentials): the
-// checks ImportAccount makes before asking the network.
-func (r *Registry) CheckImport(owner string, x export.Account) string {
-	_, _, _, why := r.checkImport(owner, x)
-	return why
+// checks ImportAccount makes before asking the network. here is the id of
+// the account that is already here, when that is why.
+func (r *Registry) CheckImport(owner string, x export.Account) (why, here string) {
+	_, _, _, _, why, here = r.checkImport(owner, x)
+	return why, here
 }
+
+// Bounds of the state a driver saved in an account's configuration (a
+// token's expiry), as a file brings it.
+const (
+	maxStateKeys  = 32
+	maxStateBytes = 1024
+)
 
 // checkImport checks an account in a file as a new one is checked: its
 // type and way of connecting offered here, what the owner set allowed
 // here (an address this server may reach), every required credential
 // there, and not here already. It answers the driver, the method and the
 // configuration to open it with, or why it is skipped.
-func (r *Registry) checkImport(owner string, x export.Account) (destination.Driver, destination.AuthMethod, map[string]any, string) {
-	var none destination.AuthMethod
+func (r *Registry) checkImport(owner string, x export.Account) (d destination.Driver, a destination.AuthMethod, config map[string]any, secrets map[string]string, why, here string) {
+	refuse := func(why string) (destination.Driver, destination.AuthMethod, map[string]any, map[string]string, string, string) {
+		return nil, destination.AuthMethod{}, nil, nil, why, ""
+	}
 	if x.Source != export.SourceApp {
-		return nil, none, nil, "not an account added in the app"
+		return refuse("not an account added in the app")
 	}
 	d, ok := destination.Lookup(x.Type)
 	if !ok {
-		return nil, none, nil, "this server has no accounts of that network"
+		return refuse("this server has no accounts of that network")
 	}
 	m := d.Manifest()
-	a, ok := m.AuthMethod(x.Method)
+	a, ok = m.AuthMethod(x.Method)
 	if !ok {
-		return nil, none, nil, "its way of connecting isn't offered here"
+		return refuse("its way of connecting isn't offered here")
 	}
 	if e, dup := r.liveDuplicate(owner, x.Type, x.RemoteID); dup {
-		return nil, none, nil, alreadyHere(e)
+		return nil, destination.AuthMethod{}, nil, nil, alreadyHere(e), e.Row.ID
 	}
 	// What the owner set is checked as when it was added (an address
-	// this server may reach); the rest is state its driver saved.
+	// this server may reach); the rest is state its driver saved: plain
+	// values only (a list, such as the seed an environment account kept
+	// when it was moved into the app, is left out), and never a field of
+	// the type (a credential kept in the clear, another method's
+	// setting).
 	keys := specKeys(m, a)
+	fields := map[string]bool{}
+	for _, f := range m.Config {
+		fields[f.Key] = true
+	}
+	for _, am := range m.Auth {
+		for _, f := range am.Fields {
+			fields[f.Key] = true
+		}
+	}
 	owned, state := map[string]any{}, map[string]any{}
 	for k, v := range x.Config {
-		if keys[k] {
+		switch {
+		case keys[k]:
 			owned[k] = v
-		} else {
+		case plainState(v) && !fields[k]:
 			state[k] = v
 		}
+	}
+	if len(state) > maxStateKeys {
+		return refuse("its saved state isn't what this server keeps")
 	}
 	specs := r.configSpecs(d)
 	for _, f := range a.Fields {
@@ -179,17 +234,59 @@ func (r *Registry) checkImport(owner string, x export.Account) (destination.Driv
 			specs = append(specs, f)
 		}
 	}
-	config, errs := destination.ValidateFields(specs, owned, r.fieldOptions(false))
-	if len(errs) > 0 {
-		return nil, none, nil, errs[0].Key + ": " + errs[0].Detail
-	}
-	maps.Copy(config, state)
-	for _, f := range a.Fields {
-		if f.Secret && f.Required && x.Secrets[f.Key] == "" {
-			return nil, none, nil, "its credentials aren't all in the file"
+	// The credentials a type keeps are its methods' secret fields (one
+	// signed in at the network keeps the token another method types).
+	var secretSpecs []destination.FieldSpec
+	for _, am := range append([]destination.AuthMethod{a}, m.Auth...) {
+		for _, f := range am.Fields {
+			if f.Secret && !slices.ContainsFunc(secretSpecs, func(g destination.FieldSpec) bool { return g.Key == f.Key }) {
+				secretSpecs = append(secretSpecs, f)
+			}
 		}
 	}
-	return d, a, config, ""
+	config, errs := destination.ValidateFields(specs, owned, r.fieldOptions(false))
+	if len(errs) > 0 {
+		return refuse(errs[0].Key + ": " + errs[0].Detail)
+	}
+	maps.Copy(config, state)
+	// Its credentials, checked as typed ones are; a name the method
+	// doesn't have is left out.
+	given := map[string]any{}
+	for _, f := range secretSpecs {
+		if v := x.Secrets[f.Key]; v != "" {
+			given[f.Key] = v
+		}
+	}
+	// Each is checked, none is required by another method's rules: this
+	// method's required ones are below.
+	checked, errs := destination.ValidateFields(secretSpecs, given, r.fieldOptions(true))
+	if len(errs) > 0 {
+		return refuse(errs[0].Key + ": " + errs[0].Detail)
+	}
+	secrets = map[string]string{}
+	for k, v := range checked {
+		if s, ok := v.(string); ok && s != "" {
+			secrets[k] = s
+		}
+	}
+	for _, f := range a.Fields {
+		if f.Secret && f.Required && secrets[f.Key] == "" {
+			return refuse("its credentials aren't all in the file")
+		}
+	}
+	return d, a, config, secrets, "", ""
+}
+
+// plainState is a value a driver may have saved as state: a short
+// string, a number or a flag.
+func plainState(v any) bool {
+	switch v := v.(type) {
+	case string:
+		return len(v) <= maxStateBytes
+	case bool, float64, json.Number:
+		return true
+	}
+	return false
 }
 
 // liveDuplicate is the owner's account of typ with remoteID, if any.

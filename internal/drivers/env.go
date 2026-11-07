@@ -42,6 +42,16 @@ func EnvAccounts(getenv func(string) string) ([]EnvAccount, error) {
 	return out, errors.Join(errs...)
 }
 
+// EnvNotices are lines for the startup log about the accounts the
+// environment sets (a built-in default worth knowing about).
+func EnvNotices(getenv func(string) string) []string {
+	var out []string
+	if n := nostr.EnvNotice(getenv); n != "" {
+		out = append(out, n)
+	}
+	return out
+}
+
 // SecretEnvVars are the credential variables every registered driver
 // reads (EnvVar.Secret).
 func SecretEnvVars() []string {

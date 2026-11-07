@@ -181,3 +181,18 @@ func TestOpenRefusesShortKey(t *testing.T) {
 		t.Fatalf("err = %v, want an invalid error naming %s", err, SecretKey)
 	}
 }
+
+// The startup log names the built-in home relay when an account from
+// the environment uses it.
+func TestEnvNotice(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	key := strings.Repeat("1", 64)
+	if n := EnvNotice(env(map[string]string{"NSEC_HEX": key})); !strings.Contains(n, defaultBootstrapRelay) {
+		t.Fatalf("notice %q", n)
+	}
+	for _, m := range []map[string]string{{}, {"NSEC_HEX": key, "NIP65_BOOTSTRAP_RELAY": "wss://relay.example"}} {
+		if n := EnvNotice(env(m)); n != "" {
+			t.Fatalf("notice %q for %v", n, m)
+		}
+	}
+}

@@ -104,7 +104,9 @@ the page at `/setup` answers 410 with a short HTML page saying so).
 browser that hasn't signed in before, from many places), too many passkey
 requests or failed passkeys, or password checks already running; more
 than 10 accounts added or changed in a minute; an account checked again
-within 10 seconds. The `Retry-After` header says how many seconds to
+within 10 seconds; more than 5 exports and export files read in a
+minute, or one asked for while the key derivations it needs are all
+running. The `Retry-After` header says how many seconds to
 wait. A passkey is never held back by wrong passwords.
 
 ## cross_origin
@@ -211,9 +213,10 @@ connected now (or while a scan or sync of its relays is running), a
 passkey request that expired, was used, or is another session's,
 checking an account that isn't open, showing a key an account doesn't
 have, adopting an account already in the app (or one the environment
-no longer configures), importing into a server that has accounts added
-in the app, or confirming an import that ran already. `detail` says
-which.
+no longer configures), an export with more than an export file holds
+(768 KiB, 100 accounts, 50 account sets), importing into a server that
+has accounts added in the app, or reading or confirming an import while
+another one runs. `detail` says which.
 
 ## idempotency_key_invalid
 

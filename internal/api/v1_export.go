@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -18,6 +19,7 @@ import (
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/export"
 	"github.com/geofox/publisher/internal/localauth"
+	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/settings"
 	"github.com/geofox/publisher/internal/store"
 )
@@ -45,7 +47,7 @@ const (
 type AccountPorter interface {
 	ExportAccounts(ctx context.Context, owner string) ([]export.Account, error)
 	ImportAccount(ctx context.Context, owner string, x export.Account, actor string) (accounts.Imported, error)
-	CheckImport(owner string, x export.Account) string
+	CheckImport(owner string, x export.Account) (why, here string)
 	EnvMatch(owner string, x export.Account) (store.Account, bool)
 }
 
@@ -65,6 +67,9 @@ type porting struct {
 	hasher  *localauth.Hasher
 	mu      sync.Mutex
 	pending map[string]*pendingImport
+	// running is held by the import being confirmed: one at a time, so
+	// two files are never merged.
+	running sync.Mutex
 }
 
 type pendingImport struct {
@@ -112,11 +117,9 @@ func (a *API) v1Export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, _ := principalFrom(r.Context())
-	if !a.requireReauth(w, r, opExport, "") {
-		return
-	}
-	if wait := a.limits().exports.Take(p.OwnerID); wait > 0 {
-		rateLimited(w, r, wait, "too many exports and imports in a minute")
+	// The nonce is spent only once the export runs (a busy answer keeps
+	// it for the next try).
+	if !a.checkReauth(w, r, opExport, "") {
 		return
 	}
 	ctx := r.Context()
@@ -126,18 +129,24 @@ func (a *API) v1Export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range accts {
+		if accts[i].Type != pubnostr.Type {
+			continue
+		}
 		relays, err := a.Store.AccountSyncRelays(ctx, accts[i].ID)
 		if err != nil {
 			a.internalError(w, r, "reading the relay-sync lists", err)
 			return
 		}
-		if len(relays) > 0 {
-			accts[i].SyncRelays = relays
-		}
+		accts[i].SyncRelays = relays
 	}
 	sets, err := a.Store.AccountSets(ctx, p.OwnerID)
 	if err != nil {
 		a.internalError(w, r, "reading the account sets", err)
+		return
+	}
+	if len(accts) > export.MaxAccounts || len(sets) > export.MaxSets {
+		problem(w, r, http.StatusConflict, codeInvalidState, fmt.Sprintf("an export file holds at most %d accounts and %d account sets: delete some first",
+			export.MaxAccounts, export.MaxSets))
 		return
 	}
 	c := export.Contents{Version: export.ContentsVersion, Accounts: accts, Sets: make([]export.Set, 0, len(sets)),
@@ -157,6 +166,7 @@ func (a *API) v1Export(w http.ResponseWriter, r *http.Request) {
 		a.internalError(w, r, "writing the export", err)
 		return
 	}
+	defer clear(plain)
 	pass, err := export.NewPassphrase()
 	if err != nil {
 		a.internalError(w, r, "making the passphrase", err)
@@ -165,11 +175,26 @@ func (a *API) v1Export(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	var file []byte
 	var serr error
-	if !a.withKDF(func() { file, serr = export.Seal(plain, pass, now) }) {
+	var wait time.Duration
+	spent := false
+	if !a.withKDF(func() {
+		if wait = a.limits().exports.Take(p.OwnerID); wait > 0 {
+			return
+		}
+		if spent = a.requireReauth(w, r, opExport, ""); spent {
+			file, serr = export.Seal(plain, pass, now)
+		}
+	}) {
 		rateLimited(w, r, 2*time.Second, "an export or import is running; try again in a moment")
 		return
 	}
-	clear(plain)
+	switch {
+	case wait > 0:
+		rateLimited(w, r, wait, "too many exports and imports in a minute")
+		return
+	case !spent:
+		return // requireReauth answered
+	}
 	if errors.Is(serr, export.ErrTooLarge) {
 		problem(w, r, http.StatusConflict, codeInvalidState, "the accounts and settings are more than an export file holds (768 KiB)")
 		return
@@ -190,6 +215,10 @@ func (a *API) internalError(w http.ResponseWriter, r *http.Request, doing string
 	slog.ErrorContext(r.Context(), "v1: "+doing+" failed", "err", err)
 	problem(w, r, http.StatusInternalServerError, codeInternal, doing+" failed")
 }
+
+// maxPassphrase bounds the passphrase field (24 words are at most 215
+// characters; room for spacing and numbers pasted with them).
+const maxPassphrase = 1024
 
 // v1ImportIn is POST /v1/import's body.
 type v1ImportIn struct {
@@ -221,6 +250,9 @@ type v1ImportAccount struct {
 	ID     string `json:"id,omitempty"`
 	Status string `json:"status,omitempty"`
 	Detail string `json:"detail,omitempty"`
+	// here is the account already here that it is (skipped as such): the
+	// file's account sets get it in its place.
+	here string
 }
 
 type v1ImportSetting struct {
@@ -284,6 +316,12 @@ func (a *API) v1Import(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, http.StatusConflict, codeInvalidState, why)
 		return
 	}
+	po := a.port()
+	if !po.running.TryLock() {
+		problem(w, r, http.StatusConflict, codeInvalidState, errImportRunning)
+		return
+	}
+	po.running.Unlock()
 	if err := a.MasterKey.WriteError(); err != nil {
 		a.accountWriteError(w, r, "importing", err)
 		return
@@ -293,20 +331,30 @@ func (a *API) v1Import(w http.ResponseWriter, r *http.Request) {
 		invalid(w, r, []fieldError{{Pointer: "/file", Code: "invalid", Detail: err.Error()}})
 		return
 	}
+	if len(in.Passphrase) > maxPassphrase {
+		invalid(w, r, []fieldError{{Pointer: "/passphrase", Code: "too_long", Detail: export.ErrPassphraseForm.Error()}})
+		return
+	}
 	pass, err := export.ParsePassphrase(in.Passphrase)
 	if err != nil {
 		invalid(w, r, []fieldError{{Pointer: "/passphrase", Code: "invalid", Detail: err.Error()}})
 		return
 	}
-	if wait := a.limits().exports.Take(p.OwnerID); wait > 0 {
-		rateLimited(w, r, wait, "too many exports and imports in a minute")
-		return
-	}
 	var h export.Header
 	var plain []byte
 	var oerr error
-	if !a.withKDF(func() { h, plain, oerr = export.Open(file, pass) }) {
+	var wait time.Duration
+	if !a.withKDF(func() {
+		// Counted only when it runs: a busy answer costs no try.
+		if wait = a.limits().exports.Take(p.OwnerID); wait == 0 {
+			h, plain, oerr = export.Open(file, pass)
+		}
+	}) {
 		rateLimited(w, r, 2*time.Second, "an export or import is running; try again in a moment")
+		return
+	}
+	if wait > 0 {
+		rateLimited(w, r, wait, "too many exports and imports in a minute")
 		return
 	}
 	if oerr != nil {
@@ -336,7 +384,7 @@ func (a *API) v1Import(w http.ResponseWriter, r *http.Request) {
 	id := "imp_" + randomHex(16)
 	exp := time.Now().Add(importTTL).UTC().Truncate(time.Second)
 	sum.Confirmation, sum.ExpiresAt = id, &exp
-	po := a.port()
+	pi := &pendingImport{owner: p.OwnerID, session: p.Session.ID, contents: c, header: h, expires: exp}
 	po.mu.Lock()
 	for k, x := range po.pending {
 		// One file waits per session; expired ones go.
@@ -344,10 +392,25 @@ func (a *API) v1Import(w http.ResponseWriter, r *http.Request) {
 			delete(po.pending, k)
 		}
 	}
-	po.pending[id] = &pendingImport{owner: p.OwnerID, session: p.Session.ID, contents: c, header: h, expires: exp}
+	po.pending[id] = pi
 	po.mu.Unlock()
+	// What the file holds (credentials in the clear) is dropped when its
+	// time is up, whether or not anything else comes.
+	time.AfterFunc(importTTL, func() { po.drop(id, pi) })
 	w.Header().Set("Cache-Control", "no-store")
 	writeV1(w, http.StatusOK, sum)
+}
+
+// errImportRunning is the answer while another import is confirmed.
+const errImportRunning = "an import is running on this server; wait for it to finish"
+
+// drop forgets a read file, if it is still the one waiting under id.
+func (po *porting) drop(id string, x *pendingImport) {
+	po.mu.Lock()
+	if po.pending[id] == x {
+		delete(po.pending, id)
+	}
+	po.mu.Unlock()
 }
 
 func randomHex(n int) string {
@@ -365,13 +428,14 @@ func (a *API) planImport(ctx context.Context, owner string, c export.Contents) v
 	for _, x := range c.Accounts {
 		v := v1ImportAccount{FileID: x.ID, Type: x.Type, Label: x.Label, Handle: x.Handle}
 		d, ok := destination.Lookup(x.Type)
-		if ok {
-			v.Server = destination.AudienceOf(d.Manifest(), x.Config)
+		if ok && x.Source == export.SourceApp {
+			// Only the origin: never a user name or a token in an address.
+			v.Server = settings.Origin(destination.AudienceOf(d.Manifest(), x.Config))
 		}
 		switch {
 		case x.Source == export.SourceEnv:
 			if row, ok := porter.EnvMatch(owner, x); ok {
-				v.Action, v.Why = importUpdate, "set by this server's environment: its label, flags and defaults are kept"
+				v.Action, v.Why = importUpdate, "this server's environment sets it; from the file: "+metaSummary(x)
 				v.ID = row.ID
 				added[x.ID] = true
 			} else {
@@ -381,8 +445,11 @@ func (a *API) planImport(ctx context.Context, owner string, c export.Contents) v
 			v.Action, v.Why = importSkip, "this server has no accounts of that network"
 		default:
 			key := x.Type + "\x00" + x.RemoteID
-			if why := porter.CheckImport(owner, x); why != "" {
-				v.Action, v.Why = importSkip, why
+			if why, here := porter.CheckImport(owner, x); why != "" {
+				v.Action, v.Why, v.here = importSkip, why, here
+				if here != "" {
+					added[x.ID] = true
+				}
 			} else if x.RemoteID != "" && seen[key] {
 				v.Action, v.Why = importSkip, "it is in the file twice"
 			} else {
@@ -393,25 +460,39 @@ func (a *API) planImport(ctx context.Context, owner string, c export.Contents) v
 		}
 		sum.Accounts = append(sum.Accounts, v)
 	}
-	existing := map[string]bool{}
+	// Each set is checked as one made here is, with the accounts that
+	// would be here in it.
+	names := map[string]bool{}
+	count := 0
 	if sets, err := a.Store.AccountSets(ctx, owner); err == nil {
+		count = len(sets)
 		for _, s := range sets {
-			existing[strings.ToLower(s.Name)] = true
+			names[strings.ToLower(s.Name)] = true
 		}
 	}
 	for _, s := range c.Sets {
-		n := 0
+		members := []string{}
 		for _, id := range s.Accounts {
-			if added[id] {
-				n++
+			if added[id] && !slices.Contains(members, id) {
+				members = append(members, id)
 			}
 		}
-		v := v1ImportSet{Name: s.Name, Accounts: n, Action: importAdd}
+		v := v1ImportSet{Name: s.Name, Accounts: len(members), Action: importAdd}
+		name := strings.ToLower(strings.TrimSpace(s.Name))
 		switch {
-		case existing[strings.ToLower(s.Name)]:
-			v.Action, v.Why = importSkip, "a set of that name is here"
-		case n == 0:
+		case len(members) == 0:
 			v.Action, v.Why = importSkip, "none of its accounts would be here"
+		case names[name]:
+			v.Action, v.Why = importSkip, errNameTaken.Detail
+		case count >= maxAccountSets:
+			v.Action, v.Why = importSkip, fmt.Sprintf("at most %d account sets", maxAccountSets)
+		default:
+			if _, errs := checkAccountSet(accountSetIn(s, members), added, true); len(errs) > 0 {
+				v.Action, v.Why = importSkip, errs[0].Detail
+			} else {
+				names[name] = true
+				count++
+			}
 		}
 		sum.AccountSets = append(sum.AccountSets, v)
 	}
@@ -420,16 +501,64 @@ func (a *API) planImport(ctx context.Context, owner string, c export.Contents) v
 			scope settings.Scope
 			vals  map[string]any
 		}{{settings.Instance, c.Instance}, {settings.Owner, c.Owner}} {
-			set, skipped := a.Settings.PlanImport(sc.scope, sc.vals)
-			for _, k := range set {
-				sum.Settings = append(sum.Settings, a.importSetting(sc.scope, k, sc.vals[k], importSet, ""))
-			}
-			for _, s := range skipped {
-				sum.Settings = append(sum.Settings, a.importSetting(sc.scope, s.Key, sc.vals[s.Key], importSkip, s.Why))
-			}
+			set, skipped := a.Settings.PlanImport(ctx, sc.scope, sc.vals)
+			sum.Settings = append(sum.Settings, a.importSettings(sc.scope, sc.vals, set, skipped)...)
 		}
 	}
 	return sum
+}
+
+// accountSetIn is a file's set as POST /v1/account-sets takes one, with
+// members.
+func accountSetIn(s export.Set, members []string) v1AccountSetIn {
+	name, _ := json.Marshal(s.Name)
+	list, _ := json.Marshal(members)
+	def, _ := json.Marshal(s.IsDefault)
+	return v1AccountSetIn{Name: name, Accounts: list, IsDefault: def}
+}
+
+// importSettings lists a scope's settings in a summary: those set, then
+// those left as they are.
+func (a *API) importSettings(scope settings.Scope, vals map[string]any, set, skipped []settings.Item) []v1ImportSetting {
+	var out []v1ImportSetting
+	for _, it := range set {
+		out = append(out, a.importSetting(scope, it.Key, vals[it.Key], importSet, it.Why))
+	}
+	for _, it := range skipped {
+		out = append(out, a.importSetting(scope, it.Key, vals[it.Key], importSkip, it.Why))
+	}
+	return out
+}
+
+// metaSummary says what a file sets on an account the environment sets
+// here: what the owner chose for it.
+func metaSummary(x export.Account) string {
+	var parts []string
+	if l := strings.TrimSpace(x.Label); l != "" {
+		parts = append(parts, "the label “"+l+"”")
+	}
+	if x.Enabled {
+		parts = append(parts, "turned on")
+	} else {
+		parts = append(parts, "turned off")
+	}
+	if x.DefaultSelected {
+		parts = append(parts, "picked for new posts")
+	} else {
+		parts = append(parts, "not picked for new posts")
+	}
+	if x.PublicFeed {
+		parts = append(parts, "in the public feed")
+	} else {
+		parts = append(parts, "not in the public feed")
+	}
+	if len(x.Defaults) > 0 && string(x.Defaults) != "{}" && string(x.Defaults) != "null" {
+		parts = append(parts, "its defaults")
+	}
+	if x.SyncRelays != nil {
+		parts = append(parts, fmt.Sprintf("%d relays to sync", len(x.SyncRelays)))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // importSetting is one setting in a summary: a secret shows nothing but
@@ -471,13 +600,25 @@ func (a *API) v1ImportConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	p, _ := principalFrom(r.Context())
 	po := a.port()
+	const gone = "no import waiting for this confirmation here (they wait 10 minutes): read the file again"
 	po.mu.Lock()
 	x := po.pending[in.Confirmation]
 	po.mu.Unlock()
-	if x == nil || p.Session == nil || x.owner != p.OwnerID || x.session != p.Session.ID || time.Now().After(x.expires) {
-		problem(w, r, http.StatusNotFound, codeNotFound, "no import waiting for this confirmation here (they wait 10 minutes): read the file again")
+	if x != nil && time.Now().After(x.expires) {
+		po.drop(in.Confirmation, x)
+		x = nil
+	}
+	if x == nil || p.Session == nil || x.owner != p.OwnerID || x.session != p.Session.ID {
+		problem(w, r, http.StatusNotFound, codeNotFound, gone)
 		return
 	}
+	// One import at a time, and the server checked again for accounts
+	// added in the app while it holds it.
+	if !po.running.TryLock() {
+		problem(w, r, http.StatusConflict, codeInvalidState, errImportRunning)
+		return
+	}
+	defer po.running.Unlock()
 	if why := a.importBlocked(p.OwnerID); why != "" {
 		problem(w, r, http.StatusConflict, codeInvalidState, why)
 		return
@@ -487,8 +628,9 @@ func (a *API) v1ImportConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	po.mu.Lock()
 	if po.pending[in.Confirmation] != x {
+		// Read again, or confirmed, since.
 		po.mu.Unlock()
-		problem(w, r, http.StatusConflict, codeInvalidState, "this import ran already")
+		problem(w, r, http.StatusNotFound, codeNotFound, gone)
 		return
 	}
 	delete(po.pending, in.Confirmation)
@@ -499,6 +641,8 @@ func (a *API) v1ImportConfirm(w http.ResponseWriter, r *http.Request) {
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(importBudget + 30*time.Second))
 	actor, _ := actorOf(p)
 	sum := a.applyImport(ctx, p.OwnerID, actor, x.contents, porter)
+	// Done with what the file holds (its timer still points at it).
+	x.contents = export.Contents{}
 	sum.CreatedAt = x.header.CreatedAt
 	slog.InfoContext(ctx, "v1: an export file was imported", "accounts", countAction(sum.Accounts), "settings", len(sum.Settings))
 	w.Header().Set("Cache-Control", "no-store")
@@ -528,18 +672,20 @@ func (a *API) applyImport(ctx context.Context, owner, actor string, c export.Con
 		}{{settings.Instance, c.Instance}, {settings.Owner, c.Owner}} {
 			saved, skipped, err := a.Settings.Import(ctx, sc.scope, sc.vals, actor)
 			if err != nil {
+				// Not a value refused (those are skipped): the database.
 				slog.ErrorContext(ctx, "import: saving settings failed", "scope", sc.scope, "err", err)
-				for _, k := range sortedKeys(sc.vals) {
-					sum.Settings = append(sum.Settings, a.importSetting(sc.scope, k, sc.vals[k], importSkip, "saving it failed"))
+				left := map[string]bool{}
+				for _, it := range skipped {
+					left[it.Key] = true
 				}
-				continue
+				for _, k := range sortedKeys(sc.vals) {
+					if !left[k] {
+						skipped = append(skipped, settings.Item{Key: k, Why: "saving it failed"})
+					}
+				}
+				saved = nil
 			}
-			for _, k := range saved {
-				sum.Settings = append(sum.Settings, a.importSetting(sc.scope, k, sc.vals[k], importSet, ""))
-			}
-			for _, s := range skipped {
-				sum.Settings = append(sum.Settings, a.importSetting(sc.scope, s.Key, sc.vals[s.Key], importSkip, s.Why))
-			}
+			sum.Settings = append(sum.Settings, a.importSettings(sc.scope, sc.vals, saved, skipped)...)
 		}
 	}
 	byFile := map[string]export.Account{}
@@ -559,7 +705,18 @@ func (a *API) applyImport(ctx context.Context, owner, actor string, c export.Con
 			wg.Add(1)
 			sem <- struct{}{}
 			go func() {
-				defer func() { <-sem; wg.Done() }()
+				defer func() {
+					if p := recover(); p != nil {
+						// Not the value: it may hold what the account was
+						// opened with.
+						slog.ErrorContext(ctx, "import: adding an account panicked", "type", x.Type, "panic", fmt.Sprintf("%T", p))
+						if v.ID == "" {
+							v.Status, v.Detail = accounts.ImportSkipped, "adding it failed on this server"
+						}
+					}
+					<-sem
+					wg.Done()
+				}()
 				res, err := porter.ImportAccount(ctx, owner, x, actor)
 				if err != nil {
 					slog.ErrorContext(ctx, "import: adding an account failed", "type", x.Type, "err", err)
@@ -584,8 +741,11 @@ func (a *API) applyImport(ctx context.Context, owner, actor string, c export.Con
 	wg.Wait()
 	ids := map[string]string{}
 	for _, v := range sum.Accounts {
-		if v.ID != "" {
+		switch {
+		case v.ID != "":
 			ids[v.FileID] = v.ID
+		case v.here != "":
+			ids[v.FileID] = v.here
 		}
 	}
 	live := map[string]bool{}
@@ -610,10 +770,7 @@ func (a *API) applyImport(ctx context.Context, owner, actor string, c export.Con
 			continue
 		}
 		// Checked as one made here is.
-		name, _ := json.Marshal(set.Name)
-		list, _ := json.Marshal(members)
-		def, _ := json.Marshal(set.IsDefault)
-		ch, errs := checkAccountSet(v1AccountSetIn{Name: name, Accounts: list, IsDefault: def}, live, true)
+		ch, errs := checkAccountSet(accountSetIn(set, members), live, true)
 		if len(errs) > 0 {
 			v.Action, v.Why = importSkip, errs[0].Detail
 			continue
@@ -624,7 +781,7 @@ func (a *API) applyImport(ctx context.Context, owner, actor string, c export.Con
 		case errors.Is(err, store.ErrAccountSetName):
 			v.Action, v.Why = importSkip, errNameTaken.Detail
 		case errors.Is(err, store.ErrAccountSetsFull):
-			v.Action, v.Why = importSkip, "at most 50 account sets"
+			v.Action, v.Why = importSkip, fmt.Sprintf("at most %d account sets", maxAccountSets)
 		default:
 			slog.ErrorContext(ctx, "import: an account set wasn't saved", "err", err)
 			v.Action, v.Why = importSkip, "saving it failed"
@@ -662,13 +819,38 @@ func (a *API) applyAccountMeta(ctx context.Context, owner, actor, id string, x e
 	if err := a.Accounts.Update(id, saved); err != nil {
 		slog.WarnContext(ctx, "import: the registry didn't take an account's flags", "account", id, "err", err)
 	}
-	if x.SyncRelays != nil {
-		if err := a.Store.SetAccountSyncRelays(ctx, id, x.SyncRelays); err != nil {
-			slog.ErrorContext(ctx, "import: a relay-sync list wasn't saved", "account", id, "err", err)
-			note = strings.TrimSpace(note + " its relay-sync list wasn't kept.")
+	if x.SyncRelays != nil && row.Type == pubnostr.Type {
+		if why := a.importSyncRelays(ctx, id, x); why != "" {
+			note = strings.TrimSpace(note + " its relay-sync list wasn't kept (" + why + ").")
 		}
 	}
 	return note
+}
+
+// importSyncRelays gives an account here a file's relay-sync list,
+// checked as one the owner sets: "" when it was saved, else why not. A
+// relay that is this account's home relay here is left out.
+func (a *API) importSyncRelays(ctx context.Context, id string, x export.Account) string {
+	home := ""
+	if acct, release, err := a.Accounts.Acquire(id); err == nil {
+		if l, ok := acct.(pubnostr.RelayLister); ok {
+			home = l.HomeRelay()
+		}
+		release()
+	}
+	if s, ok := x.Config[pubnostr.ConfigBootstrapRelay].(string); ok && home == "" {
+		home = s
+	}
+	list := slices.DeleteFunc(slices.Clone(x.SyncRelays), func(u string) bool { return home != "" && normalizeRelay(u) == normalizeRelay(home) })
+	urls, errs := checkSyncRelays(list, home, "")
+	if len(errs) > 0 {
+		return errs[0].Detail
+	}
+	if err := a.Store.SetAccountSyncRelays(ctx, id, urls); err != nil {
+		slog.ErrorContext(ctx, "import: a relay-sync list wasn't saved", "account", id, "err", err)
+		return "saving it failed"
+	}
+	return ""
 }
 
 func sortedKeys(m map[string]any) []string {

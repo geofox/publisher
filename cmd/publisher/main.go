@@ -96,6 +96,7 @@ func run(ctx context.Context, o runOptions) int {
 	// config and the drivers, is reported at once.
 	cfg, cfgErr := config.LoadFrom(getenv)
 	env, envErr := drivers.EnvAccounts(getenv)
+	envNotices := drivers.EnvNotices(getenv)
 	keys, keyWarnings, keyErr := secrets.FromEnv(getenv)
 	// The settings' variables, read before the credential ones are
 	// removed: each one set locks its setting (settings.Defs).
@@ -127,6 +128,9 @@ func run(ctx context.Context, o runOptions) int {
 	metrics.SetBuildInfo(version, commit)
 	for _, w := range keyWarnings {
 		slog.Warn("master key: " + w)
+	}
+	for _, n := range envNotices {
+		slog.Info(n)
 	}
 
 	st, err := store.Open(cfg.DBPath)

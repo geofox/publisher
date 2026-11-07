@@ -3,7 +3,6 @@ package export
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 )
 
 // ContentsVersion is the version of what a file holds.
@@ -53,8 +52,9 @@ type Account struct {
 	DefaultSelected bool            `json:"default_selected"`
 	PublicFeed      bool            `json:"public_feed"`
 	Defaults        json.RawMessage `json:"defaults,omitempty"`
-	// SyncRelays is a Nostr account's relay sync list (nil: none set).
-	SyncRelays []string `json:"sync_relays,omitempty"`
+	// SyncRelays is a Nostr account's relay-sync list ([] when the
+	// owner emptied it; null for another network).
+	SyncRelays []string `json:"sync_relays"`
 }
 
 // Set is an account set, by the accounts' ids in the file.
@@ -64,10 +64,11 @@ type Set struct {
 	IsDefault bool     `json:"is_default"`
 }
 
-// Bounds of a file's contents, checked before anything is imported.
+// Bounds of a file's contents, checked before anything is imported (and
+// before an export is made, so every file can be imported).
 const (
-	maxAccounts = 100
-	maxSets     = 50
+	MaxAccounts = 100
+	MaxSets     = 50
 )
 
 // Decode reads a file's contents, checking their shape.
@@ -77,10 +78,13 @@ func Decode(plain []byte) (Contents, error) {
 		// Not the decoder's words: they may quote the contents.
 		return Contents{}, errors.New("the file's contents can't be read")
 	}
-	if c.Version != ContentsVersion {
+	switch {
+	case c.Version > ContentsVersion:
 		return Contents{}, ErrVersion
+	case c.Version != ContentsVersion:
+		return Contents{}, errors.New("the file's contents can't be read")
 	}
-	if len(c.Accounts) > maxAccounts || len(c.Sets) > maxSets {
+	if len(c.Accounts) > MaxAccounts || len(c.Sets) > MaxSets {
 		return Contents{}, errors.New("the file holds more accounts or sets than Publisher keeps")
 	}
 	ids := map[string]bool{}
@@ -90,7 +94,7 @@ func Decode(plain []byte) (Contents, error) {
 		}
 		ids[a.ID] = true
 		if a.Source != SourceApp && a.Source != SourceEnv {
-			return Contents{}, fmt.Errorf("an account in the file has an unknown source %q", a.Source)
+			return Contents{}, errors.New("an account in the file comes from an unknown source")
 		}
 	}
 	return c, nil

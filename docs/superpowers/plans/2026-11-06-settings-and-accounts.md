@@ -2463,6 +2463,62 @@ Spec §9, §12 (F).
   section is `3.0.0 (unreleased)`, and the items that shipped in 2.1.0
   moved to a section of their own.
 
+### As built (F): review fixes
+
+Two QA reviews (server; web and docs) and a security review (nothing
+critical or high; one medium, which a QA review found too). Fixed:
+
+- **A webhook's secret** comes only with its address from the file: a
+  secret whose address isn't imported (the environment sets it here, or
+  the file doesn't have it) is skipped, so it is never sealed for this
+  server's address. An address the file replaces clears the secret saved
+  for the old one (it used to fail the whole scope).
+- **The summary is the outcome** but for the networks' answers:
+  `PlanImport` is the import run as a dry run (`Change.DryRun`), and the
+  account sets are checked with `checkAccountSet` (names, duplicates in
+  the file, the 50 limit). A refused value never fails the scope.
+- **One import at a time** (`porting.running`, held across the recheck
+  of app accounts and the import); reading while one runs is `409`.
+- **A refused account** is marked needing reconnecting at once
+  (`markRefused`), not at its first check.
+- **What a file brings** is checked as typed: credentials only under the
+  type's secret field names, each validated, and only the chosen
+  method's required ones required (another method's rules don't
+  apply); state keys only plain values, never a field name (a credential
+  in the clear), anything else left out without refusing the account
+  (an environment account's seed list), and more than 32 of them
+  refused; relay-sync lists
+  through the PUT's checks (`checkSyncRelays`), Nostr accounts only, the
+  home relay left out; `media.public` isn't turned on (its probe runs in
+  Settings → Media). An account already here takes its place in the
+  file's sets.
+- **Export**: refused over 100 accounts (what an import takes); an
+  emptied relay-sync list is exported as `[]`; the re-authentication is
+  spent, and a try counted, only when the key derivation runs (a busy
+  answer costs neither).
+- **Memory**: a read file is dropped when its 10 minutes are up
+  (`time.AfterFunc`), not at the next read. Workers recover from a panic.
+- **File format**: the version is read before the strict header check
+  (a newer file with a new field is "newer"); a contents version 0 isn't
+  "newer"; no error quotes a source; a passphrase copied with its list
+  numbers is read.
+- **Web**: a confirm whose answer didn't arrive (a proxy timeout) says
+  the import may have run and reads the accounts again; a 404 or 409
+  shows the server's words; `settings-saved` is sent for both scopes, so
+  the media store and languages follow; focus returns to the Export
+  button, and to the file field after Cancel or Done; behind the proxy
+  alone, or without a usable master key, the section says so first;
+  429s say how long to wait.
+- **Docs**: the startup log names the built-in home relay while it is
+  used; the upgrade notes list `enabled` → `status` and the 2.1 backup
+  name; the release notes are ready to paste (absolute links).
+- **Decided, not changed**: the import's outcome isn't kept after the
+  answer (a proxy that drops a long answer loses it; Accounts and
+  Settings show what was done). A read file isn't dropped at sign-out
+  (it goes within 10 minutes). Driver state keys aren't declared per
+  driver yet: every driver dials through the guarded network, so a
+  state address can't reach what the guard refuses.
+
 ---
 
 ## Spec deviations

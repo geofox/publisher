@@ -113,7 +113,14 @@ func NewPassphrase() (string, error) {
 // ParsePassphrase reads a passphrase as the owner typed or pasted it:
 // any case, any spaces or line breaks between the words.
 func ParsePassphrase(s string) (string, error) {
-	ws := strings.Fields(strings.ToLower(s))
+	var ws []string
+	for _, w := range strings.Fields(strings.ToLower(s)) {
+		// A list copied with its numbers ("1." or "1)" before each word).
+		if n := strings.TrimRight(w, ".)"); n != "" && strings.Trim(n, "0123456789") == "" {
+			continue
+		}
+		ws = append(ws, w)
+	}
 	if len(ws) != Words {
 		return "", ErrPassphraseForm
 	}
@@ -185,17 +192,28 @@ func ReadHeader(file []byte) (Header, []byte, []byte, error) {
 	if !ok || len(line) == 0 || len(line) > maxHeaderBytes {
 		return Header{}, nil, nil, ErrNotExport
 	}
-	var h Header
-	dec := json.NewDecoder(bytes.NewReader(line))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&h); err != nil || dec.More() || h.Format != Format {
+	// The format and version first, leniently: a newer file may name
+	// fields this version doesn't know, and is "newer", not "not one".
+	var v struct {
+		Format  string `json:"format"`
+		Version int    `json:"version"`
+	}
+	if err := json.Unmarshal(line, &v); err != nil || v.Format != Format {
 		return Header{}, nil, nil, ErrNotExport
 	}
 	switch {
-	case h.Version > Version:
+	case v.Version > Version:
 		return Header{}, nil, nil, ErrVersion
-	case h.Version != Version:
+	case v.Version != Version:
 		return Header{}, nil, nil, ErrNotExport
+	}
+	var h Header
+	dec := json.NewDecoder(bytes.NewReader(line))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&h); err != nil || dec.More() || h.Format != Format || h.Version != Version {
+		return Header{}, nil, nil, ErrNotExport
+	}
+	switch {
 	case h.KDF != KDF || h.T != KDFTime || h.M != KDFMemory || h.P != KDFLanes:
 		return Header{}, nil, nil, ErrParams
 	}
