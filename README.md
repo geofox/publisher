@@ -311,8 +311,8 @@ sign-in of its own. See [Sign-in](#sign-in).
 The **Access** tab lists your passkeys and password, the browsers you are
 signed in on (sign any of them out), recent sign-ins and failed attempts,
 and your API tokens. Adding or removing a way to sign in, setting the
-password, and creating a token that holds `admin` or `accounts:write` ask
-you to confirm it's you first.
+first password, and creating an API token ask you to confirm it's you
+first; changing the password asks for the current one instead.
 
 The composer picks **accounts**, not networks. They are grouped by
 network, each with its avatar and handle; a network with several
@@ -624,10 +624,10 @@ that need action:
    proxy alone (`AUTH_MODE=proxy`), with a "Set up sign-in" banner; to
    sign in with a passkey, set `AUTH_MODE=local` and `PUBLIC_URL` (see
    [Sign-in](#sign-in)). In proxy mode a token holding `admin` or
-   `accounts:write` can no longer be created. **With OIDC,** creating
-   such a token now sends you through your provider's login again: use
-   Authelia 4.39 or later. A token can no longer create a token holding
-   `admin`.
+   `accounts:write` can no longer be created. **With OIDC,** creating a
+   token in the web app (any token: it outlives the session) now sends
+   you through your provider's login again: use Authelia 4.39 or later.
+   A token can no longer create a token holding `admin`.
 
 2. **API callers that split threads with `---`** (an n8n flow, say) must
    send `content.breaks` instead: `---` is plain text now.
@@ -681,9 +681,11 @@ Publisher signs you in one of three ways (`AUTH_MODE`); see
   without a session; restrict it at the network or proxy layer if that is
   a concern in your deployment.
 - Some operations need you to confirm it's you, just now, in the browser:
-  adding or removing a passkey, setting or removing the password, and
-  creating a token that holds `admin` or `accounts:write`. A token can't
-  do them (`403 session_required`), and behind the proxy alone they are
+  adding or removing a passkey, setting the first password or removing
+  it, and creating an API token (a token outlives the session that made
+  it). Changing the password takes the current one instead. A token
+  holding `admin` or `accounts:write` can only be made this way: a token
+  can't (`403 session_required`), and behind the proxy alone it is
   refused (`403 sign_in_required`).
 
 **Single-tenant caveat:** the app signs with one operator key and posts to
@@ -712,21 +714,29 @@ per-user data isolation.
 3. Open the link and create a passkey (or a password, at least 12
    characters). You're signed in; setup is closed for good.
 
-Add more passkeys (one per device, or a synced one) and a password under
-**Access**. Wrong passwords are throttled per address: 5 are free, then
-you wait 1, 2, 4, 8 and then 15 minutes between tries (a passkey still
-works meanwhile). Behind a reverse proxy, set `TRUSTED_PROXIES` so the
-throttle sees your visitors' addresses, not the proxy's.
+Add more passkeys (one per device, or a synced one; up to 20) and a
+password under **Access**. Wrong passwords are throttled per address: 5
+are free, then you wait 1, 2, 4, 8 and then 15 minutes between tries (a
+passkey still works meanwhile). After 20 wrong passwords in a row from
+anywhere, each try waits a few seconds (at most 30), except in a browser
+you've signed in with before (it keeps a cookie for that, for 400 days).
+Behind a reverse proxy, set `TRUSTED_PROXIES` so the throttle sees your
+visitors' addresses, not the proxy's.
+
+**Changing `PUBLIC_URL` to another host name?** Passkeys belong to the
+old name and can't sign you in at the new one (**Access** marks them).
+With a password, sign in with it and add passkeys; without one, setup
+opens again and the next start logs a setup link.
 
 **Lost the setup link?** In the container: `docker exec publisher
 /publisher setup-url` prints a new one (older ones stop working).
 
 **Locked out?** `docker exec publisher /publisher owner reset-login`
-removes every passkey and the password, signs every browser out, lists
-the API tokens that can make tokens or change accounts, and prints a new
-setup link. Add `--revoke-tokens` to revoke those tokens too. Whoever can
-run commands in the container already controls Publisher, so these need
-no password.
+removes every passkey and the password, signs every browser out,
+forgets the browsers you signed in with and the failed attempts, lists
+every active API token, and prints a new setup link. Add
+`--revoke-tokens` to revoke those tokens too. Whoever can run commands in
+the container already controls Publisher, so these need no password.
 
 #### OIDC
 

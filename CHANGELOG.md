@@ -27,9 +27,9 @@ the `edge` image.
   without OIDC keeps running behind your proxy alone (`proxy`) until you
   set `AUTH_MODE=local`. In proxy mode a token holding `admin` or
   `accounts:write` can't be created any more (`403 sign_in_required`).
-  With OIDC, creating one sends you through your provider's login again
-  (Authelia 4.39 or later). A token can no longer create a token holding
-  `admin` (`403 session_required`).
+  With OIDC, creating a token in the web app (any token) sends you
+  through your provider's login again (Authelia 4.39 or later). A token
+  can no longer create a token holding `admin` (`403 session_required`).
 
 ### Changed
 
@@ -149,11 +149,16 @@ the `edge` image.
   is believed). First-run setup by a one-time link in the log (or
   `SETUP_TOKEN_FILE`); `publisher setup-url` makes a new one, and
   `publisher owner reset-login [--revoke-tokens]` recovers a locked-out
-  owner.
+  owner. After 20 wrong passwords in a row from anywhere, a short delay
+  (at most 30 s) applies, except in a browser the owner signed in with
+  before. Up to 20 passkeys. Passkeys made for an earlier `PUBLIC_URL`
+  host are shown but don't count; with no other way in, setup opens
+  again.
 - **Confirm it's you:** adding or removing a way to sign in, setting the
-  password and creating a token holding `admin` or `accounts:write` need
-  a fresh passkey, password or OIDC login (a `Publisher-Reauth` nonce,
-  single use, five minutes; `403 reauth_required` names the operation).
+  first password and creating an API token from the browser need a fresh
+  passkey, password or OIDC login (a `Publisher-Reauth` nonce, single
+  use, five minutes; `403 reauth_required` names the operation).
+  Changing the password takes the current one instead.
 - The **Access** tab (was Tokens): passkeys, password, the browsers
   you're signed in on (sign any out), recent sign-ins and failed
   attempts, and API tokens. `/v1/me/sign-in`, `/v1/me/passkeys`,
