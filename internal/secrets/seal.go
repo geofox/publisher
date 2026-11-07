@@ -73,7 +73,7 @@ func (k *Key) seal(b Binding, plain string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	nonce := make([]byte, aead.NonceSize(), aead.NonceSize()+len(plain)+aead.Overhead())
+	nonce := make([]byte, aead.NonceSize()) // Seal grows it to fit
 	if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
