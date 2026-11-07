@@ -2,20 +2,22 @@
 import { el, $, v1, flash } from "./common.js";
 import { startInteraction, sendPost, openProgressModal } from "./compose.js";
 import { setInflight } from "./state.js";
-import { accountFor } from "./accounts.js";
+import { loadAccounts, connected, networkName, nameOf } from "./accounts.js";
 import { brandTile } from "./brands.js";
 
-const PLAT_LABEL = { bluesky: "Bluesky", mastodon: "Mastodon", nostr: "Nostr", threads: "Threads" };
-
 let _seq = 0;
+// shown is the source post the card shows (null: none).
+let shown = null;
 
 // fromV1 reads a POST /v1/resolve answer into the shape the composer keeps
-// for a source post.
+// for a source post: account is the one that looked it up, and replies,
+// quotes or reposts it (null: none of the owner's is connected there).
 export function fromV1(r) {
   const caps = {};
   for (const a of ["reply", "repost", "quote"]) caps[a] = (r.actions && r.actions[a]) || { allowed: false };
   return {
     platform: r.platform,
+    account: r.account || null,
     preview: {
       author_name: (r.author && r.author.name) || "",
       author_handle: (r.author && r.author.handle) || "",
@@ -28,35 +30,70 @@ export function fromV1(r) {
 }
 
 // resolveInput looks up the pasted URL (or Nostr id) and renders the post.
-async function resolveInput(input) {
+// account picks which of the owner's accounts on the post's network looks
+// it up and acts (a Mastodon post id is only valid on its own server);
+// without one, the server picks the first connected one.
+async function resolveInput(input, account = "") {
   const card = $("#srccard"), status = $("#srcstatus");
-  card.innerHTML = "";
+  // Another account picked: the card stays, but its actions wait for that
+  // account's answer (until then they would act as the one shown).
+  const prev = account ? shown : null;
+  if (prev) setActionsWaiting(card, true);
+  else { card.innerHTML = ""; shown = null; }
   const seq = ++_seq; // before the empty case too: a lookup in flight is now stale
-  if (!input.trim()) { status.textContent = ""; return; }
+  if (!input.trim()) { card.innerHTML = ""; status.textContent = ""; return; }
   status.textContent = "Resolving…";
   let data;
   try {
-    data = fromV1(await v1("/v1/resolve", { method: "POST", body: { url: input.trim() } }));
+    const body = { url: input.trim() };
+    if (account) body.account = account;
+    data = fromV1(await v1("/v1/resolve", { method: "POST", body }));
     // What was typed names the post for the server again (a Nostr id, a
     // Mastodon URL); the answer's url is for showing (njump, the origin).
     data.input = input.trim();
   } catch (e) {
     if (seq !== _seq) return;
+    if (prev) {
+      // That account couldn't read it: the card and picker go back to the
+      // account that did.
+      setActionsWaiting(card, false);
+      const pick = $("#srcacct");
+      if (pick) pick.value = prev.account;
+      status.textContent = "✗ " + nameOf(account) + " couldn't read it: " + e.message;
+      return;
+    }
     status.textContent = "✗ " + e.message;
     return;
   }
   if (seq !== _seq) return; // a newer input superseded this response
   status.textContent = "";
-  card.append(renderSource(data));
+  // The picker needs the accounts (they may not have loaded yet).
+  await loadAccounts().catch(() => {});
+  if (seq !== _seq) return;
+  shown = data;
+  const picking = document.activeElement && document.activeElement.id === "srcacct";
+  card.replaceChildren(renderSource(data));
+  setActionsWaiting(card, false);
+  // Arrow keys on the picker change it: the keyboard stays there.
+  if (picking) $("#srcacct")?.focus();
 }
 
-// renderSource builds the preview card + action row.
+// setActionsWaiting disables the card's actions while another account looks
+// the post up, and gives back the ones the post allows.
+function setActionsWaiting(card, waiting) {
+  card.setAttribute("aria-busy", waiting ? "true" : "false");
+  for (const b of card.querySelectorAll(".act-btn")) b.disabled = waiting || b.classList.contains("blocked");
+}
+
+// renderSource builds the preview card, the acting-account picker (when
+// several of the owner's accounts are on the post's network) and the
+// action row.
 function renderSource(s) {
   const card = el("div", { class: "src-card p-" + s.platform });
   const p = s.preview;
   card.append(el("div", { class: "src-head" },
     brandTile(s.platform, { size: 24, r: 7 }),
-    el("span", { class: "src-plat", text: PLAT_LABEL[s.platform] || s.platform }),
+    el("span", { class: "src-plat", text: networkName(s.platform) }),
     el("span", { class: "src-author", text: p.author_name || "" }),
     el("span", { class: "src-handle muted", text: p.author_handle || "" }),
   ));
@@ -67,6 +104,14 @@ function renderSource(s) {
     card.append(g);
   }
   if (p.web_url) card.append(el("a", { class: "src-link", href: p.web_url, target: "_blank", rel: "noopener", text: "open original ↗" }));
+  const mine = connected().filter(a => a.type === s.platform);
+  if (mine.length > 1 && s.account) {
+    const sel = el("select", { id: "srcacct", "aria-label": "Account that replies, quotes or reposts",
+      onchange: e => resolveInput(s.input, e.target.value) });
+    for (const a of mine) sel.append(el("option", { value: a.id, text: nameOf(a.id) }));
+    sel.value = s.account;
+    card.append(el("label", { class: "src-acct" }, el("span", { class: "fl", text: "as" }), sel));
+  }
   card.append(actionRow(s));
   return card;
 }
@@ -93,14 +138,13 @@ function actionRow(s) {
   return row;
 }
 
-// doRepost reposts at once: POST /v1/posts with repost and the source
-// network's account, then the progress modal.
+// doRepost reposts at once: POST /v1/posts with repost and the acting
+// account, then the progress modal.
 async function doRepost(s, btn) {
-  const acct = accountFor(s.platform);
-  if (!acct) { flash("No " + (PLAT_LABEL[s.platform] || s.platform) + " account is connected"); return; }
+  if (!s.account) { flash("No " + networkName(s.platform) + " account is connected"); return; }
   btn.disabled = true;
   try {
-    const post = await sendPost({ repost: { url: s.input }, targets: [{ account: acct.id }] }, "interact");
+    const post = await sendPost({ repost: { url: s.input }, targets: [{ account: s.account }] }, "interact");
     setInflight(post.id);
     openProgressModal(post.id, post);
   } catch (e) {

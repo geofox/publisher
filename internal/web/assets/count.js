@@ -5,7 +5,7 @@
 // side in e2e/tests/counting.spec.ts), so the counters the composer shows
 // while typing agree with the server's planner.
 import { META } from "./common.js";
-import { accountFor } from "./accounts.js";
+import { byId } from "./accounts.js";
 
 // Go's \s and \w are ASCII: [\t\n\f\r ] and [0-9A-Za-z_].
 const URL_RE = /https?:\/\/[^\t\n\f\r <>"]+/g;
@@ -72,21 +72,31 @@ export function count(c, s) {
   return n + unitLen(c, s);
 }
 
-// countingFor is platform p's counting rule: its account's, else graphemes.
-export function countingFor(p) {
-  const a = accountFor(p);
+// countingFor is account id's counting rule: its network's, else graphemes.
+export function countingFor(id) {
+  const a = byId(id);
   const t = a && a.capabilities && a.capabilities.text;
   return (t && t.counting) || { unit: "graphemes" };
 }
 
-// limitFor is the most one post of platform p may count, after a content
-// warning the destination counts in (cw: the warning's text).
-export function limitFor(p, cw = "") {
-  const limit = META[p].limit;
-  const c = countingFor(p);
+// limitOf is the most one post of account id may count: what its server
+// announces (a Mastodon instance has its own), else its network's usual
+// limit; 0 for none.
+export function limitOf(id) {
+  const a = byId(id);
+  const max = a && a.capabilities && a.capabilities.text && a.capabilities.text.max_length;
+  if (Number.isInteger(max) && max >= 0) return max;
+  return (a && META[a.type] && META[a.type].limit) || 0;
+}
+
+// limitFor is limitOf after a content warning the network counts in (cw:
+// the warning's text).
+export function limitFor(id, cw = "") {
+  const limit = limitOf(id);
+  const c = countingFor(id);
   if (!limit || !c.content_warning_counts || !cw) return limit;
   return Math.max(limit - count(c, cw), 1);
 }
 
-// countFor measures text as platform p counts it.
-export function countFor(p, text) { return count(countingFor(p), text); }
+// countFor measures text as account id's network counts it.
+export function countFor(id, text) { return count(countingFor(id), text); }

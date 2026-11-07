@@ -1,24 +1,28 @@
 "use strict";
 // editor.js is the thread editor: one tab for the shared text and one per
-// selected platform.
+// selected account.
 //
 // The shared tab writes the text as a stack of cards, one per hand-made
 // break: Ctrl/Cmd+Enter splits a card at the cursor, Backspace at a card's
 // start merges it into the one above, and a line of "---" becomes a break
 // as soon as it is followed by a new line.
 //
-// A platform tab shows that platform's thread as the server plans it (the
+// An account's tab shows that account's thread as the server plans it (the
 // plan, see plan.js): solid lines for hand-made breaks, dashed ones for the
-// splits made to fit the limit. Changing a break there gives the platform
+// splits made to fit the limit. Changing a break there gives the account
 // its own breaks (the wording still follows the shared text); "Edit
 // wording" gives it its own text, edited as its own stack of cards.
 //
+// Tabs: Alt+1 is Shared, Alt+2…Alt+9 the account tabs in order; on a tab,
+// the arrow keys (and Home, End) move between tabs.
+//
 // Positions are UTF-16 offsets (see textpos.js) and move with the text as
 // it is edited.
-import { el, META, ORDER, flash, confirmModal } from "./common.js";
-import { state, layoutBreaks, effectiveText } from "./state.js";
+import { el, flash, confirmModal } from "./common.js";
+import { state, layoutBreaks, effectiveText, ovOf, selected } from "./state.js";
 import { planFor, lastPlanFor } from "./plan.js";
 import { brandTile } from "./brands.js";
+import { typeOf, labelsFor, nameOf, accessibleName } from "./accounts.js";
 import { cpIndex, diff, rebase, cleanBreaks, splitPoint, wordStarts, sentenceStarts, nextMarker } from "./textpos.js";
 
 // The API takes at most 99 breaks (100 posts).
@@ -26,8 +30,10 @@ const MAX_BREAKS = 99;
 
 let hooks = { changed() {}, tab() {} };
 let root = null;
-let sharedPane = null, platformPane = null, tabsRow = null;
-// The word picked on a platform tab, for "Break here": {p, at}.
+let sharedPane = null, platformPane = null, tabsRow = null, compareBtn = null;
+// The tab the row last brought into view (it does again only on a change).
+let shownTab = null;
+// The word picked on an account's tab, for "Break here": {p, at}.
 let picked = null;
 
 // editorInit draws the editor into #editor. hooks.changed runs after any
@@ -36,20 +42,41 @@ export function editorInit(h) {
   hooks = { ...hooks, ...h };
   root = document.getElementById("editor");
   if (!root) return;
-  tabsRow = el("div", { class: "ed-tabs", role: "tablist" });
-  sharedPane = el("div", { class: "ed-pane ed-shared" });
-  platformPane = el("div", { class: "ed-pane ed-platform", hidden: true });
-  root.replaceChildren(tabsRow, sharedPane, platformPane);
+  tabsRow = el("div", { class: "ed-tabs", role: "tablist", "aria-label": "Thread: shared text and each account" });
+  tabsRow.addEventListener("keydown", onTabKey);
+  // Compare sits beside the tab list, not in it: it isn't a tab, and the
+  // list scrolls sideways when its tabs don't fit.
+  compareBtn = el("button", { class: "ed-compare", type: "button", title: "Every account's thread side by side (Alt+C)",
+    hidden: true, onclick: openCompare }, "⇆ Compare");
+  sharedPane = el("div", { class: "ed-pane ed-shared", id: "ed-pane-shared", role: "tabpanel", "aria-labelledby": "ed-tab-shared" });
+  platformPane = el("div", { class: "ed-pane ed-platform", id: "ed-pane-account", role: "tabpanel", hidden: true });
+  root.replaceChildren(el("div", { class: "ed-tabbar" }, tabsRow, compareBtn), sharedPane, platformPane);
   document.addEventListener("plan", onPlan);
   document.addEventListener("keydown", onKey);
   renderEditor();
 }
 
-// tabKeys are the editor's tabs in order, for Alt+1…Alt+5.
+// tabKeys are the editor's tabs in order, for Alt+1…Alt+9.
 function tabKeys() { return ["shared", ...selected()]; }
 
-// onKey takes the editor's shortcuts while the composer shows: Alt+1…5 pick
-// a tab, Alt+C opens the comparison; on a platform tab Enter breaks at the
+// onTabKey moves between tabs with the arrow keys, Home and End (the tab
+// list's keyboard, WAI-ARIA tabs with automatic activation).
+function onTabKey(e) {
+  const keys = tabKeys();
+  const i = keys.indexOf(state.tab);
+  let j = -1;
+  if (e.key === "ArrowRight") j = (i + 1) % keys.length;
+  else if (e.key === "ArrowLeft") j = (i - 1 + keys.length) % keys.length;
+  else if (e.key === "Home") j = 0;
+  else if (e.key === "End") j = keys.length - 1;
+  if (j < 0 || !e.target.closest(".ed-tab")) return;
+  e.preventDefault();
+  setTab(keys[j]);
+  tabsRow.querySelector(".ed-tab.on")?.focus();
+}
+
+// onKey takes the editor's shortcuts while the composer shows: Alt+1…9 pick
+// a tab, Alt+C opens the comparison; on an account's tab Enter breaks at the
 // picked word and Escape lets it go. (Ctrl/Cmd+Enter and Backspace work in
 // the cards themselves.)
 function onKey(e) {
@@ -83,17 +110,17 @@ function onKey(e) {
 const wide = () => window.matchMedia("(min-width: 1100px)").matches;
 
 // ---------------------------------------------------------------------------
-// Documents: the shared text, or one platform's own text
+// Documents: the shared text, or one account's own text
 // ---------------------------------------------------------------------------
 
-// A doc is {p: null} for the shared text, {p} for platform p's own text.
+// A doc is {p: null} for the shared text, {p: id} for account id's own text.
 const SHARED = { p: null };
 
-function docText(d) { return d.p ? state.ov[d.p].text || "" : state.master; }
-function docBreaks(d) { return d.p ? state.ov[d.p].breaks || [] : state.breaks; }
+function docText(d) { return d.p ? ovOf(d.p).text || "" : state.master; }
+function docBreaks(d) { return d.p ? ovOf(d.p).breaks || [] : state.breaks; }
 function docMedia(d) {
   if (!d.p) return state.anchors;
-  const ov = state.ov[d.p];
+  const ov = ovOf(d.p);
   return ov.mediaAt || (ov.mediaAt = {});
 }
 
@@ -103,7 +130,7 @@ function setDocBreaks(d, breaks) {
   const t = docText(d);
   const clean = cleanBreaks(t, breaks.filter(b => b < t.length), MAX_BREAKS);
   if (t.length && breaks.includes(t.length) && clean.length < MAX_BREAKS) clean.push(t.length);
-  if (d.p) state.ov[d.p].breaks = clean; else state.breaks = clean;
+  if (d.p) ovOf(d.p).breaks = clean; else state.breaks = clean;
 }
 
 // tidy drops positions an edit left outside the text or doubled; it doesn't
@@ -114,7 +141,7 @@ function tidy(breaks, len) {
 
 // applyEdit replaces removed units at `at` in d's text with inserted, and
 // moves every position in that text with it: the breaks, the media, and the
-// own breaks of platforms that post the shared text.
+// own breaks of accounts that post the shared text (selected or not).
 export function applyEdit(d, at, removed, inserted) {
   const t = docText(d);
   const next = t.slice(0, at) + inserted + t.slice(at + removed);
@@ -122,15 +149,14 @@ export function applyEdit(d, at, removed, inserted) {
   const media = docMedia(d);
   for (const k of Object.keys(media)) media[k] = Math.min(mv(media[k]), next.length);
   if (d.p) {
-    const ov = state.ov[d.p];
+    const ov = ovOf(d.p);
     ov.text = next;
     if (ov.breaks) ov.breaks = tidy(ov.breaks.map(mv), next.length);
     return;
   }
   state.master = next;
   state.breaks = tidy(state.breaks.map(mv), next.length);
-  for (const p of ORDER) {
-    const ov = state.ov[p];
+  for (const ov of Object.values(state.ov)) {
     if (ov.text == null && ov.breaks) ov.breaks = tidy(ov.breaks.map(mv), next.length);
   }
 }
@@ -162,12 +188,10 @@ function cards(d) {
 // Tabs
 // ---------------------------------------------------------------------------
 
-function selected() { return ORDER.filter(p => state.platforms.has(p)); }
-
-// mode is how platform p is laid out: "shared", "breaks" (own breaks) or
+// mode is how account id is laid out: "shared", "breaks" (own breaks) or
 // "text" (own text).
 function mode(p) {
-  const ov = state.ov[p];
+  const ov = ovOf(p);
   if (ov.text != null) return "text";
   return ov.breaks ? "breaks" : "shared";
 }
@@ -178,35 +202,57 @@ function postsOf(p) {
 }
 
 function renderTabs() {
+  const had = tabsRow.contains(document.activeElement);
+  const left = tabsRow.scrollLeft; // where the owner scrolled the row to
   tabsRow.replaceChildren();
   const keys = tabKeys();
-  const tab = (key, label, extra) => {
+  const ids = selected();
+  const labels = labelsFor(ids);
+  const tab = (key, label, extra, name) => {
     const k = keys.indexOf(key) + 1;
+    const on = state.tab === key;
     const b = el("button", {
-      title: k > 0 && k < 10 ? `Alt+${k}` : null,
-      class: "ed-tab" + (state.tab === key ? " on" : "") + (key === "shared" ? "" : " p-" + key),
-      type: "button", role: "tab", "aria-selected": state.tab === key ? "true" : "false",
-      "data-tab": key, onclick: () => setTab(key),
-    }, label);
+      title: k > 0 && k < 10 ? `${name || label} (Alt+${k})` : name || label,
+      class: "ed-tab" + (on ? " on" : "") + (key === "shared" ? "" : " p-" + typeOf(key)),
+      type: "button", role: "tab", "aria-selected": on ? "true" : "false", id: key === "shared" ? "ed-tab-shared" : "ed-tab-" + key,
+      "aria-controls": key === "shared" ? "ed-pane-shared" : "ed-pane-account",
+      "aria-label": name || null, tabindex: on ? "0" : "-1",
+      "data-tab": key, "data-account": key === "shared" ? null : key, onclick: () => setTab(key),
+    });
+    if (key !== "shared") b.append(brandTile(typeOf(key), { size: 14, r: 4 }));
+    b.append(el("span", { class: "ed-tab-lbl", text: label }));
     if (extra) b.append(extra);
     tabsRow.append(b);
   };
   tab("shared", "Shared");
-  for (const p of selected()) {
-    const n = postsOf(p);
-    const m = mode(p);
+  for (const id of ids) {
+    const n = postsOf(id);
+    const m = mode(id);
     const extra = el("span", { class: "ed-tab-meta" });
     if (n > 1) extra.append(el("span", { class: "ed-tab-n", text: String(n) }));
     if (m !== "shared") extra.append(el("span", { class: "ed-tab-mode", title: m === "text" ? "own text" : "own breaks", text: m === "text" ? "✎" : "✂" }));
-    tab(p, META[p].label, extra);
+    tab(id, labels[id], extra, accessibleName(id));
   }
-  if (selected().length > 1) {
-    tabsRow.append(el("button", { class: "ed-compare", type: "button", title: "Every platform's thread side by side (Alt+C)",
-      onclick: openCompare }, "⇆ Compare"));
+  compareBtn.hidden = ids.length < 2;
+  platformPane.setAttribute("aria-labelledby", state.tab === "shared" ? "ed-tab-shared" : "ed-tab-" + state.tab);
+  // The row keeps its sideways scroll; when the active tab changed, it is
+  // brought into view by scrolling the row only (scrollIntoView would also
+  // scroll the page to the editor). The keyboard stays on it when it was
+  // in the row.
+  tabsRow.scrollLeft = left;
+  const on = tabsRow.querySelector(".ed-tab.on");
+  if (on && state.tab !== shownTab) {
+    const r = on.getBoundingClientRect(), box = tabsRow.getBoundingClientRect();
+    if (box.width) { // laid out (not a hidden view)
+      if (r.left < box.left) tabsRow.scrollLeft -= box.left - r.left + 8;
+      else if (r.right > box.right) tabsRow.scrollLeft += r.right - box.right + 8;
+      shownTab = state.tab;
+    }
   }
+  if (on && had) on.focus({ preventScroll: true });
 }
 
-// setTab shows the shared tab ("shared") or platform p's.
+// setTab shows the shared tab ("shared") or account id's.
 export function setTab(t) {
   state.tab = t;
   picked = null;
@@ -215,10 +261,10 @@ export function setTab(t) {
 }
 
 // renderEditor redraws the editor from state (after a load, a reset, a
-// platform switched on or off, a layout change).
+// account switched on or off, a layout change).
 export function renderEditor() {
   if (!root) return;
-  if (state.tab !== "shared" && !state.platforms.has(state.tab)) state.tab = "shared";
+  if (state.tab !== "shared" && !state.targets.has(state.tab)) state.tab = "shared";
   renderTabs();
   const shared = state.tab === "shared";
   sharedPane.hidden = !shared;
@@ -228,7 +274,7 @@ export function renderEditor() {
   else renderPlatform(state.tab);
 }
 
-// onPlan takes a new plan: post counts on tabs and cards, and a platform
+// onPlan takes a new plan: post counts on tabs and cards, and an account's
 // tab's thread (unless it is being typed in).
 function onPlan() {
   if (!root) return;
@@ -248,7 +294,7 @@ function changed() {
 }
 
 // ---------------------------------------------------------------------------
-// Card stack (the shared text, or a platform's own text)
+// Card stack (the shared text, or an account's own text)
 // ---------------------------------------------------------------------------
 
 function autoGrow(ta) {
@@ -285,8 +331,8 @@ function renderStack(d, host, keep) {
     if (i > 0) list.append(breakDivider(d, i));
     const ta = el("textarea", {
       class: "master ec-text", rows: i === 0 ? 4 : 2,
-      placeholder: i === 0 ? (d.p ? META[d.p].label + "'s own wording…" : "write once — mirror to every platform…") : "",
-      "aria-label": cs.length > 1 ? `post ${i + 1} of ${cs.length}` : (d.p ? META[d.p].label + " text" : "post text"),
+      placeholder: i === 0 ? (d.p ? nameOf(d.p) + "'s own wording…" : "write once — mirror to every account…") : "",
+      "aria-label": cs.length > 1 ? `post ${i + 1} of ${cs.length}` : (d.p ? accessibleName(d.p) + " text" : "post text"),
     });
     if (i === 0 && !d.p) ta.id = "master";
     ta.value = t.slice(c.start, c.end);
@@ -474,16 +520,16 @@ function moveMedia(d, id, j, host) {
 }
 
 // ---------------------------------------------------------------------------
-// Post counts on cards: how each platform's plan splits a card
+// Post counts on cards: how each account's plan splits a card
 // ---------------------------------------------------------------------------
 
-// followers are the platforms whose posts d's breaks shape.
+// followers are the accounts whose posts d's breaks shape.
 function followers(d) {
   if (d.p) return [d.p];
   return selected().filter(p => mode(p) === "shared");
 }
 
-// planStarts is where platform p's planned posts start, as UTF-16 offsets
+// planStarts is where account p's planned posts start, as UTF-16 offsets
 // into the text they come from.
 function planStarts(p) {
   const pl = planFor(p) || lastPlanFor(p);
@@ -497,6 +543,7 @@ function refreshChips(d, host) {
   const spots = host.querySelectorAll(".ecard .ec-chips");
   const plats = followers(d);
   const starts = Object.fromEntries(plats.map(p => [p, planStarts(p)]));
+  const labels = labelsFor(plats);
   spots.forEach((spot, i) => {
     spot.replaceChildren();
     if (!cs[i]) return;
@@ -505,21 +552,22 @@ function refreshChips(d, host) {
       if (!s) continue;
       const n = s.filter(x => x >= cs[i].start && (i === cs.length - 1 || x < cs[i + 1].start)).length;
       if (!n) continue;
-      spot.append(el("span", { class: "ec-chip p-" + p + (n > 1 ? " split" : ""),
-        title: n > 1 ? `${META[p].label} splits this into ${n} posts to fit` : `${META[p].label}: one post`,
-        text: `${META[p].label} ${n}` }));
+      spot.append(el("span", { class: "ec-chip p-" + typeOf(p) + (n > 1 ? " split" : ""), "data-account": p,
+        title: n > 1 ? `${nameOf(p)} splits this into ${n} posts to fit` : `${nameOf(p)}: one post`,
+        text: `${labels[p]} ${n}` }));
     }
   });
 }
 
 // ---------------------------------------------------------------------------
-// Platform tab
+// An account's tab
 // ---------------------------------------------------------------------------
 
 function platformHead(p) {
   const m = mode(p);
   const it = state.interaction;
-  const head = el("div", { class: "pp-head p-" + p }, brandTile(p, { size: 22, r: 6 }));
+  const head = el("div", { class: "pp-head p-" + typeOf(p) }, brandTile(typeOf(p), { size: 22, r: 6 }),
+    el("span", { class: "pp-name", text: nameOf(p) }));
   const badge = { shared: "Shared breaks", breaks: "Own breaks", text: "Own text" }[m];
   head.append(el("span", { class: "pp-mode" + (m === "shared" ? "" : " own"), text: badge }));
   head.append(el("span", { class: "grow" }));
@@ -529,24 +577,24 @@ function platformHead(p) {
   }
   if (m === "breaks") {
     head.append(el("button", { class: "ghost xs", type: "button", text: "Reset to shared",
-      onclick: () => { state.ov[p].breaks = null; renderEditor(); changed(); } }));
+      onclick: () => { ovOf(p).breaks = null; renderEditor(); changed(); } }));
   }
   if (m === "text") {
     head.append(el("button", { class: "ghost xs", type: "button", text: "Back to shared text",
       onclick: () => confirmModal({
-        title: `Use the shared text on ${META[p].label}?`,
-        body: `${META[p].label}'s own wording is thrown away.`,
+        title: `Use the shared text on ${nameOf(p)}?`,
+        body: `${nameOf(p)}'s own wording is thrown away.`,
         confirmText: "Use shared text",
         onConfirm: async () => {
-          Object.assign(state.ov[p], { text: null, breaks: null, mediaAt: null });
+          Object.assign(ovOf(p), { text: null, breaks: null, mediaAt: null });
           renderEditor(); changed();
           return true;
         },
       }) }));
   } else {
-    head.append(el("button", { class: "ghost xs", type: "button", text: `Edit wording for ${META[p].label}`,
+    head.append(el("button", { class: "ghost xs", type: "button", text: `Edit wording for ${nameOf(p)}`,
       onclick: () => {
-        const ov = state.ov[p];
+        const ov = ovOf(p);
         const breaks = [...layoutBreaks(p)];
         Object.assign(ov, { text: state.master, breaks, mediaAt: { ...state.anchors } });
         renderEditor(); changed();
@@ -570,7 +618,7 @@ function renderPlatform(p) {
   platformPane.replaceChildren(head, thread(p, pl, !!fresh));
 }
 
-// thread draws platform p's planned posts. Break controls work on a fresh
+// thread draws account p's planned posts. Break controls work on a fresh
 // plan only: a stale one's positions may not match the text any more.
 function thread(p, pl, fresh) {
   const text = pl.text || "";
@@ -578,7 +626,7 @@ function thread(p, pl, fresh) {
   const u = cp => ix[Math.min(cp, ix.length - 1)];
   const items = pl.items || [];
   const editable = fresh && !state.interaction;
-  const box = el("div", { class: "pp-thread p-" + p + (fresh ? "" : " stale") });
+  const box = el("div", { class: "pp-thread p-" + typeOf(p) + (fresh ? "" : " stale") });
   const media = postableImages();
   items.forEach((item, i) => {
     const from = u(item.range[0]), to = u(item.range[1]);
@@ -648,17 +696,17 @@ function pick(p, at, box, again = false) {
     onclick: () => { picked = null; setOwn(p, [...layoutBreaks(p), at]); } }));
 }
 
-// setOwn gives platform p its own breaks (on the text it posts).
+// setOwn gives account p its own breaks (on the text it posts).
 function setOwn(p, breaks) {
   const text = effectiveText(p);
-  state.ov[p].breaks = cleanBreaks(text, breaks, MAX_BREAKS);
+  ovOf(p).breaks = cleanBreaks(text, breaks, MAX_BREAKS);
   picked = null;
   renderEditor();
   changed();
 }
 
 // handMade is the hand-made break that starts post i, if one does: the
-// last of the platform's breaks after post i-1's start and at or before
+// last of the account's breaks after post i-1's start and at or before
 // post i's.
 function handMade(p, items, i, u) {
   const lo = u(items[i - 1].range[0]), hi = u(items[i].range[0]);
@@ -727,7 +775,7 @@ function placeBreak(p, items, i, u, at) {
 export { SHARED };
 
 // ---------------------------------------------------------------------------
-// Compare: every platform's thread side by side (wide screens)
+// Compare: every account's thread side by side (wide screens)
 // ---------------------------------------------------------------------------
 
 let cmpOpen = null; // the open comparison's backdrop
@@ -746,11 +794,13 @@ function closeCompare() {
   document.getElementById("editor")?.querySelector("button, [tabindex]")?.focus({ preventScroll: true });
 }
 
-// renderCompare draws one column per selected platform, post k of each on
+// renderCompare draws one column per selected account, post k of each on
 // row k, so a post that ends mid-sentence or a link left alone stands out.
-// A column's header or post opens that platform's tab.
+// A column's header or post opens that account's tab. Columns keep a
+// minimum width; the grid scrolls sideways when they don't fit.
 function renderCompare() {
   const plats = selected();
+  const labels = labelsFor(plats);
   const plans = plats.map(p => ({ p, pl: planFor(p) || lastPlanFor(p) }));
   const rows = Math.max(1, ...plans.map(x => (x.pl ? x.pl.items.length : 0)));
   const grid = el("div", { class: "cmp-grid", role: "table" });
@@ -758,8 +808,9 @@ function renderCompare() {
   const open = p => { closeCompare(); setTab(p); document.getElementById("editor")?.scrollIntoView({ block: "start" }); };
   for (const { p, pl } of plans) {
     const n = pl ? pl.items.length : 0;
-    grid.append(el("button", { class: "cmp-head p-" + p, type: "button", role: "columnheader", onclick: () => open(p) },
-      brandTile(p, { size: 20, r: 5 }), el("span", { class: "cmp-name", text: META[p].label }),
+    grid.append(el("button", { class: "cmp-head p-" + typeOf(p), type: "button", role: "columnheader", "data-account": p,
+      title: accessibleName(p), "aria-label": `${accessibleName(p)}, ${n === 1 ? "1 post" : `${n} posts`}`, onclick: () => open(p) },
+      brandTile(typeOf(p), { size: 20, r: 5 }), el("span", { class: "cmp-name", text: labels[p] }),
       el("span", { class: "muted", text: n === 1 ? "1 post" : `${n} posts` }),
       mode(p) !== "shared" ? el("span", { class: "pp-mode own", text: mode(p) === "text" ? "own text" : "own breaks" }) : null));
   }
@@ -768,8 +819,8 @@ function renderCompare() {
       const item = pl && pl.items[k];
       if (!item) { grid.append(el("div", { class: "cmp-cell empty" })); continue; }
       const over = pl.limit && item.length > pl.limit;
-      grid.append(el("div", { class: "cmp-cell p-" + p + (k > 0 ? " brk-" + (item.break === "manual" ? "manual" : "auto") : ""),
-        role: "cell", tabindex: "0", title: `Open ${META[p].label}'s tab`,
+      grid.append(el("div", { class: "cmp-cell p-" + typeOf(p) + (k > 0 ? " brk-" + (item.break === "manual" ? "manual" : "auto") : ""),
+        role: "cell", tabindex: "0", title: `Open ${nameOf(p)}'s tab`, "data-account": p,
         onclick: () => open(p), onkeydown: e => { if (e.key === "Enter") open(p); } },
         el("div", { class: "cmp-text", text: item.text }),
         el("div", { class: "cmp-meta" },

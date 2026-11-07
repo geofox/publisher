@@ -1,16 +1,45 @@
 "use strict";
 import { el, $, flash, v1 } from "./common.js";
-import { loadAccounts, accountFor } from "./accounts.js";
+import { loadAccounts, accountsLoaded, connected, byId, isConnected, primaryOf, nameOf } from "./accounts.js";
 
-// Relay sync for the Nostr account, on /v1/accounts/{id}/nostr/relays.
+// Relay sync for a Nostr account, on /v1/accounts/{id}/nostr/relays. With
+// several connected Nostr accounts a picker chooses which one.
 
-// relaysPath is the Nostr account's relays resource; it throws when there
-// is no Nostr account.
+// nostrId is the Nostr account the tab works on ("" before one is known).
+let nostrId = "";
+
+// nostrAccounts lists the connected Nostr accounts.
+function nostrAccounts() { return connected().filter(a => a.type === "nostr"); }
+
+// relaysPath is the chosen Nostr account's relays resource; it throws when
+// there is no connected Nostr account.
 async function relaysPath() {
   await loadAccounts();
-  const a = accountFor("nostr");
-  if (!a) throw new Error("no Nostr account is connected");
-  return "/v1/accounts/" + encodeURIComponent(a.id) + "/nostr/relays";
+  if (!isConnected(byId(nostrId))) { const a = primaryOf("nostr"); nostrId = a ? a.id : ""; }
+  if (!nostrId) throw new Error("no Nostr account is connected");
+  return "/v1/accounts/" + encodeURIComponent(nostrId) + "/nostr/relays";
+}
+
+// renderPicker shows which Nostr account the relays are for, as a picker
+// when there are several.
+function renderPicker() {
+  const host = $("#syncacct");
+  if (!host) return;
+  const list = nostrAccounts();
+  host.replaceChildren();
+  host.hidden = list.length < 2;
+  if (list.length < 2) return;
+  const sel = el("select", { "aria-label": "Nostr account", onchange: e => {
+    // A load, scan or sync in progress works on the account it started
+    // with: switching now would show its result under the other one.
+    if (syncBusy) { e.target.value = nostrId; flash("Wait until the relay work in progress finishes"); return; }
+    nostrId = e.target.value;
+    const out = $("#syncout"); if (out) out.innerHTML = "";
+    loadSyncRelays();
+  } });
+  for (const a of list) sel.append(el("option", { value: a.id, text: nameOf(a.id) }));
+  sel.value = nostrId;
+  host.append(el("label", {}, el("span", { class: "fl", text: "account" }), sel));
 }
 
 // ---------------------------------------------------------------------------
@@ -185,8 +214,13 @@ function syncApply(direction) {
 let relaySyncOn = true;
 export function relaySyncOff() { relaySyncOn = false; }
 
-export function loadTools() {
+export async function loadTools() {
   if (!relaySyncOn) { showNoRelaySync(); return; }
+  try { await loadAccounts(); } catch { /* relaysPath says so */ }
+  if (accountsLoaded() && !nostrAccounts().length) { showNoRelaySync(); return; }
+  showRelaySync();
+  await relaysPath().catch(() => {});
+  renderPicker();
   loadSyncRelays();
 }
 
@@ -194,7 +228,12 @@ export function loadTools() {
 function showNoRelaySync() {
   const c = $("#syncrelays");
   if (c) c.replaceChildren(el("div", { class: "muted", text: "Relay sync needs a connected Nostr account (set NSEC_HEX)." }));
-  for (const id of ["#reconcile-head", "#syncscan", "#syncpull", "#syncpush", "#syncout"]) { const e = $(id); if (e) e.hidden = true; }
+  for (const id of ["#syncacct", "#reconcile-head", "#syncscan", "#syncpull", "#syncpush", "#syncout"]) { const e = $(id); if (e) e.hidden = true; }
+}
+
+// showRelaySync shows the controls again (a Nostr account came back).
+function showRelaySync() {
+  for (const id of ["#reconcile-head", "#syncscan", "#syncpull", "#syncpush", "#syncout"]) { const e = $(id); if (e) e.hidden = false; }
 }
 
 export function toolsInit() {

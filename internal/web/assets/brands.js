@@ -2,7 +2,7 @@
 // brands.js — platform brand marks + the UI icon set, ported from the design
 // handoff (pub-data.jsx). Everything builds real DOM via the SVG namespace so it
 // drops straight into the vanilla-JS views. Exports:
-//   PLATFORM_META  — tint + handle + glyph scale per platform
+//   PLATFORM_META  — tint + glyph scale per platform
 //   brandGlyph()   — the white brand mark (Bluesky/Mastodon = inline SVG; Threads/Nostr = PNG)
 //   brandTile()    — the rounded, tinted tile with the mark centered
 //   icon()         — a stroke UI glyph (compose, history, calendar, thread, …)
@@ -23,13 +23,13 @@ function svgEl(tag, attrs = {}, ...kids) {
   return n;
 }
 
-// Real platform brand colors + handles + glyph scale inside the tile. Limits come
-// from common.js META so there is a single source of truth.
+// Real platform brand colors + glyph scale inside the tile. Names and limits
+// come from common.js META; handles from the accounts (accounts.js).
 export const PLATFORM_META = {
-  bluesky:  { tint: "#1185fe", handle: "geoffrey.one",           glyph: 0.58 },
-  mastodon: { tint: "#6364ff", handle: "@geoffrey@geoffrey.one", glyph: 0.60 },
-  threads:  { tint: "#1c1c1e", handle: "@geoffrey",              glyph: 0.66 },
-  nostr:    { tint: "#8e44ec", handle: "npub1g4…7q",             glyph: 0.74 },
+  bluesky:  { tint: "#1185fe", glyph: 0.58 },
+  mastodon: { tint: "#6364ff", glyph: 0.60 },
+  threads:  { tint: "#1c1c1e", glyph: 0.66 },
+  nostr:    { tint: "#8e44ec", glyph: 0.74 },
 };
 
 export function tintOf(id) { return (PLATFORM_META[id] || {}).tint || "#5a6373"; }

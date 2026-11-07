@@ -44,7 +44,7 @@ test("the composer's post counts are the server's", async ({ page }) => {
   await openApp(page);
   await page.locator("#master").fill([para, para, para].join("\n\n"));
   await expect(page.locator("#chips .target-row.p-bluesky .tb-txt")).toHaveText("3 posts");
-  await expect(page.locator("#threadnotice")).toContainText("Bluesky (3)");
+  await expect(page.locator("#threadnotice")).toContainText("Bluesky me.bsky.e2e.invalid (3)");
 });
 
 test("auto-threads a long post per platform limits", async ({ page, fakes }) => {
@@ -162,7 +162,7 @@ test("a failed platform can be retried from History", async ({ page, fakes }) =>
   // The retry answers at once; the detail follows the post's events until
   // the engine has sent it.
   await row.getByRole("button", { name: "Retry" }).click();
-  await expect(page.getByText("Mastodon: retrying")).toBeVisible();
+  await expect(page.getByText("Mastodon @me@one.e2e.invalid: retrying")).toBeVisible();
   await expect(detail.locator(".lbl", { hasText: "result · published" })).toBeVisible();
   const masto = (await fakes.calls()).filter(c => c.platform === "mastodon");
   expect(masto).toHaveLength(1);

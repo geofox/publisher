@@ -1,11 +1,16 @@
-import { test, expect, openApp, marker, type Call } from "./fixtures";
+import { test, expect, ACCOUNT_ROWS, openApp, harnessIds, marker, type Call } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 // The thread editor (internal/web/assets/editor.js): the shared text as a
 // stack of cards, and a tab per platform that shows and shapes its thread.
 
 const shared = (page: Page) => page.locator("#editor .ed-shared textarea.ec-text");
-const tab = (page: Page, name: string) => page.locator(`#editor .ed-tab[data-tab="${name}"]`);
+// Tabs and rows by network ("bluesky": the account a new post selects
+// there) or by label ("Mastodon (long posts)").
+let ids: Record<string, string> = {};
+test.beforeEach(async ({ request }) => { if (!Object.keys(ids).length) ids = await harnessIds(request); });
+const tab = (page: Page, name: string) => page.locator(`#editor .ed-tab[data-tab="${name === "shared" ? "shared" : ids[name]}"]`);
+const row = (page: Page, name: string) => page.locator(`#chips .target-row[data-account="${ids[name]}"]`);
 const posts = (page: Page) => page.locator("#editor .ed-platform .pp-post");
 
 function chainOf(calls: Call[], platform: Call["platform"], m: string) {
@@ -173,7 +178,7 @@ test("a draft keeps a platform's own breaks and wording", async ({ page }) => {
   await expect(page.locator("#draft-list .draft-row", { hasText: m })).toBeVisible();
 
   await page.reload();
-  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
   await page.locator("#draft-list .draft-row", { hasText: m }).click();
   await expect(page.locator("#master")).toHaveValue(`${m} one. Two three.`);
   await tab(page, "bluesky").click();
@@ -223,7 +228,7 @@ test("unsaved work from the old composer comes back with its breaks", async ({ p
     images: [], anchors: {}, number: true,
   })));
   await page.reload();
-  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
   await page.locator("#draft-recovery-restore").click();
   await expect(shared(page)).toHaveCount(2);
   await expect(shared(page).nth(0)).toHaveValue("Before the line");
@@ -245,9 +250,9 @@ test("Alt+number switches tabs, and Compare lines the threads up", async ({ page
   await page.locator("#editor .ed-compare").click();
   const cmp = page.locator(".modal.cmp");
   await expect(cmp.locator(".cmp-head")).toHaveCount(4);
-  await expect(cmp.locator(".cmp-head.p-bluesky")).toContainText("2 posts");
-  await expect(cmp.locator(".cmp-cell.p-bluesky.brk-auto")).toHaveCount(1);
-  await cmp.locator(".cmp-head.p-nostr").click();
+  await expect(cmp.locator(`.cmp-head[data-account="${ids.bluesky}"]`)).toContainText("2 posts");
+  await expect(cmp.locator(`.cmp-cell[data-account="${ids.bluesky}"].brk-auto`)).toHaveCount(1);
+  await cmp.locator(`.cmp-head[data-account="${ids.nostr}"]`).click();
   await expect(cmp).toHaveCount(0);
   await expect(tab(page, "nostr")).toHaveClass(/\bon\b/);
 });
@@ -255,9 +260,9 @@ test("Alt+number switches tabs, and Compare lines the threads up", async ({ page
 test("History marks where each part of a thread came from", async ({ page }) => {
   const m = marker("ranges");
   await openApp(page);
-  await page.locator("#chips .target-row.p-mastodon").click();
-  await page.locator("#chips .target-row.p-threads").click();
-  await page.locator("#chips .target-row.p-nostr").click();
+  await row(page, "mastodon").click();
+  await row(page, "threads").click();
+  await row(page, "nostr").click();
   await page.locator("#master").fill(`${m} first.\n---\nsecond.`);
   await page.locator("#submit").click();
   await expect(page.locator(".pmodal .pm-title")).toHaveText("✓ Posted");

@@ -1,14 +1,15 @@
 "use strict";
-import { ORDER } from "./common.js";
-import { accountFor } from "./accounts.js";
+import { typeOf, inOrder } from "./accounts.js";
+import { VERSION } from "./snapshot.js";
 import { u16ToCp, cleanBreaks } from "./textpos.js";
 
+// defaultOv is a new target's settings for an account of network type p.
 export function defaultOv(p) {
   // Read state.userLanguages at call time so callers (initial module load,
   // post-/v1/instance init, startInteraction reset) all pick up the operator's
   // first configured language as the default. Falls back to "en" pre-fetch.
   const lang = (state.userLanguages && state.userLanguages[0]) || "en";
-  // text: the platform's own wording (null: the shared text). breaks: its
+  // text: the account's own wording (null: the shared text). breaks: its
   // own breaks in the text it posts (null: the shared ones, or none with its
   // own text). mediaAt: with its own text, each attachment's position in it
   // (by attachment id). Positions are UTF-16 offsets.
@@ -23,12 +24,18 @@ export function defaultOv(p) {
 export const state = {
   master: "",
   breaks: [],          // shared breaks: UTF-16 offsets into master, ascending
-  tab: "shared",       // the thread editor's tab: "shared" or a platform
-  platforms: new Set(ORDER),
-  ov: {},
+  tab: "shared",       // the thread editor's tab: "shared" or an account id
+  targets: new Set(),  // the selected accounts (ids); setTargets changes it
+  // Whether the selection was set (by hand, a draft, a reply…): once it
+  // is, the accounts' defaults (main.js selectDefaults) no longer apply.
+  chosen: false,
+  ov: Object.create(null), // account id → its settings (ovOf; see byKey)
   images: [],
-  focus: "bluesky", // platform shown in the live preview
-  interaction: null, // null = normal compose; else {action, platform, ref, sourcePreview, sourceURL, sourceAuthor, caps, force}
+  focus: "",           // the account shown in the live preview
+  // null = normal compose; else {action, account (the one that replies or
+  // quotes), platform (its type), ref, sourcePreview, sourceURL,
+  // sourceAuthor, sourceInput, caps, prevTargets}
+  interaction: null,
   // Operator-configured ISO 639-1 codes (USER_LANGUAGES env). Empty until
   // /v1/instance resolves on boot; defaultOv falls back to "en" until then.
   userLanguages: [],
@@ -46,24 +53,54 @@ export const state = {
   edits: 0,            // counts edits (markDirty), so a save knows if more came meanwhile
   anchors: {},         // image id → its position in master (UTF-16); it goes with the post holding it
 };
-ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
 
-// layoutBreaks is the breaks platform p's text is cut at: its own, else the
+// byKey is an empty object for values keyed by account id: no prototype,
+// so no id ("__proto__", "constructor") can read or replace Object's.
+export function byKey() { return Object.create(null); }
+
+// ovOf is account id's settings, made from its network's defaults the first
+// time they are asked for. Asked before the accounts were read (a reply
+// started after a failed read), the network isn't known yet: its defaults
+// (languages, proof of work…) are added once it is.
+const untyped = new WeakSet();
+export function ovOf(id) {
+  const type = typeOf(id);
+  let ov = state.ov[id];
+  if (!ov) {
+    ov = state.ov[id] = defaultOv(type);
+    if (!type) untyped.add(ov);
+  } else if (type && untyped.has(ov)) {
+    for (const [k, v] of Object.entries(defaultOv(type))) if (!(k in ov)) ov[k] = v;
+    untyped.delete(ov);
+  }
+  return ov;
+}
+
+// selected is the selected accounts in the app's order.
+export function selected() { return inOrder(state.targets); }
+
+// setTargets selects exactly ids (account ids).
+export function setTargets(ids) {
+  state.targets = new Set(ids);
+  state.chosen = true;
+}
+
+// layoutBreaks is the breaks account id's text is cut at: its own, else the
 // shared ones when it posts the shared text, else none.
-export function layoutBreaks(p) {
-  const ov = state.ov[p];
+export function layoutBreaks(id) {
+  const ov = ovOf(id);
   if (ov.breaks) return ov.breaks;
   return ov.text != null ? [] : state.breaks;
 }
 
-// mediaPosFor is attachment img's position in platform p's text.
-export function mediaPosFor(p, img) {
-  const ov = state.ov[p];
+// mediaPosFor is attachment img's position in account id's text.
+export function mediaPosFor(id, img) {
+  const ov = ovOf(id);
   if (ov.text != null) return (ov.mediaAt && ov.mediaAt[img.id]) || 0;
   return state.anchors[img.id] || 0;
 }
 
-export function effectiveText(p) { return state.ov[p].text != null ? state.ov[p].text : state.master; }
+export function effectiveText(id) { const ov = ovOf(id); return ov.text != null ? ov.text : state.master; }
 
 // The original's text and author as a link-quote copies them; these mirror Go
 // dispatch.quotedText / quotedAuthor: controls and bidi characters dropped, a
@@ -96,33 +133,33 @@ export function assembleReproduction(commentary, sp, sourceURL) {
   return parts.join("\n\n");
 }
 
-// postedText returns the full text platform p will actually post — the single
-// source of truth shared by the live preview AND the per-platform counts so they
+// postedText returns the full text account id will actually post — the single
+// source of truth shared by the live preview AND the per-account counts so they
 // always agree. Normal compose → your commentary (effectiveText). Interaction
-// mode → the source platform posts your commentary (native reply/quote), while a
-// fan-out platform posts the assembled reproduction. Mirrors Go interactText/Post:
-// an empty per-platform override ("") falls back to master (effectiveText treats
-// "" as a real override, so we don't reuse it here).
-export function postedText(p) {
+// mode → the acting account posts your commentary (native reply/quote), while
+// an account on another network posts the assembled reproduction. Mirrors Go
+// interactText/Post: an empty own text ("") falls back to master
+// (effectiveText treats "" as a real override, so we don't reuse it here).
+export function postedText(id) {
   const it = state.interaction;
-  if (!it) return effectiveText(p);
-  const ovText = state.ov[p] && state.ov[p].text;
+  if (!it) return effectiveText(id);
+  const ovText = ovOf(id).text;
   const commentary = ovText != null && ovText !== "" ? ovText : state.master;
-  if (p === it.platform) return commentary; // source: native reply/quote, commentary only
+  if (id === it.account) return commentary; // the acting account: native reply/quote, commentary only
   return assembleReproduction(commentary, it.sourcePreview, it.sourceURL); // fan-out reproduction
 }
 
-// focusedPlatform returns state.focus if still selected, else the first selected
-// platform (in ORDER), else null.
-export function focusedPlatform() {
-  if (state.platforms.has(state.focus)) return state.focus;
-  for (const p of ORDER) if (state.platforms.has(p)) return p;
-  return null;
+// focusedTarget returns state.focus if still selected, else the first
+// selected account (in order), else null.
+export function focusedTarget() {
+  if (state.targets.has(state.focus)) return state.focus;
+  return selected()[0] || null;
 }
 
-// ovFor returns a draft's override object for one platform (buildSpec).
-function ovFor(p) {
-  const ov = state.ov[p], o = {};
+// ovFor returns a snapshot's settings for one account (buildSpec).
+function ovFor(id) {
+  const p = typeOf(id);
+  const ov = ovOf(id), o = {};
   if (ov.text != null) o.text = ov.text;
   if (ov.breaks) o.breaks = [...ov.breaks];
   if (ov.mediaAt) o.mediaAt = { ...ov.mediaAt };
@@ -163,15 +200,15 @@ export function imageSpecs() {
 }
 
 export function buildSpec() {
+  const ids = selected();
   const overrides = {};
-  for (const p of state.platforms) overrides[p] = ovFor(p);
+  for (const id of ids) overrides[id] = ovFor(id);
   const spec = {
-    // 2: breaks and anchors are positions (UTF-16); before, "---" lines in
-    // the text and part numbers (loadDraft converts those).
-    v: 2,
+    // 3: targets and settings by account id (snapshot.js reads older ones).
+    v: VERSION,
     master_text: state.master,
     breaks: [...state.breaks],
-    platforms: [...state.platforms],
+    targets: ids,
     delay_seconds: 0,
     overrides,
     images: imageSpecs(),
@@ -184,7 +221,7 @@ export function buildSpec() {
   if (state.activeDraftId) { spec.draft_id = state.activeDraftId; spec.etag = state.draftETag || ""; }
   // A reply or quote in progress: what the restore resolves again.
   const it = state.interaction;
-  if (it) spec.interaction = { action: it.action, platform: it.platform, sourceInput: it.sourceInput, prevPlatforms: [...(it.prevPlatforms || [])] };
+  if (it) spec.interaction = { action: it.action, account: it.account, platform: it.platform, sourceInput: it.sourceInput, prevTargets: [...(it.prevTargets || [])] };
   return spec;
 }
 
@@ -226,14 +263,14 @@ function langList(v) {
   return str.split(",").map(s => s.trim()).filter(Boolean);
 }
 
-// v1Target is platform p's target: its account, the options its card sets and
-// the content it overrides (text, content warning, sensitivity, languages).
-// A repost carries nothing but the account.
-export function v1Target(p, { repost = false } = {}) {
-  const acct = accountFor(p);
-  const t = { account: acct ? acct.id : "" };
+// v1Target is account id's target: the account, the options its card sets
+// and the content it overrides (text, content warning, sensitivity,
+// languages). A repost carries nothing but the account.
+export function v1Target(id, { repost = false } = {}) {
+  const t = { account: id };
   if (repost) return t;
-  const ov = state.ov[p], options = {}, content = {};
+  const p = typeOf(id);
+  const ov = ovOf(id), options = {}, content = {};
   // The server refuses a blank override; the composer treats one as "use the
   // shared text".
   // In a reply or a quote only the shared breaks apply (to the native
@@ -290,7 +327,7 @@ function cpBreaks(text, breaks) {
 }
 
 // v1PostBody is the composer as a POST /v1/posts body: shared text and
-// media, one target per selected platform, numbering, and the schedule or
+// media, one target per selected account, numbering, and the schedule or
 // the reply/quote it makes.
 export function v1PostBody() {
   const it = state.interaction;
@@ -306,7 +343,7 @@ export function v1PostBody() {
   if (breaks.length) content.breaks = breaks;
   const body = {
     content,
-    targets: ORDER.filter(p => state.platforms.has(p)).map(p => v1Target(p)),
+    targets: selected().map(id => v1Target(id)),
     threading: { numbering: document.getElementById("threadnum")?.checked ?? true },
   };
   if (it) {

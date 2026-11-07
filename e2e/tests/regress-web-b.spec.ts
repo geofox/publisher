@@ -1,13 +1,9 @@
-import { test, expect, openApp, switchTab, marker } from "./fixtures";
+import { test, expect, openApp, switchTab, marker, mastodonSource } from "./fixtures";
 import type { Page } from "@playwright/test";
 
-const SRC = {
-  platform: "mastodon", url: "https://mastodon.example/@a/1", text: "source post",
-  author: { name: "A", handle: "@a@mastodon.example" }, media: [],
-  actions: { reply: { allowed: true }, repost: { allowed: true }, quote: { allowed: true } },
-};
 
 test("clearing the Interact input while a lookup is in flight leaves no stale card", async ({ page }) => {
+  const SRC = await mastodonSource(page.request);
   await page.route("**/v1/resolve", async r => {
     await new Promise(res => setTimeout(res, 1200));
     await r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(SRC) });
@@ -23,6 +19,7 @@ test("clearing the Interact input while a lookup is in flight leaves no stale ca
 });
 
 test("leaving a reply restores the Schedule label when a time is set", async ({ page }) => {
+  const SRC = await mastodonSource(page.request);
   await page.route("**/v1/resolve", r => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(SRC) }));
   await openApp(page);
   const later = await page.evaluate(() => {

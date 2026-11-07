@@ -24,9 +24,21 @@ the `edge` image.
 
 ### Changed
 
-- The web app edits a thread per network: shared cards, a tab per
-  network with its own text and breaks, and a side-by-side comparison
+- The web app edits a thread per account: shared cards, a tab per
+  account with its own text and breaks, and a side-by-side comparison
   (Alt+C).
+- The web app picks accounts, not networks. The composer lists each
+  account (grouped by network, with its avatar and handle, and why one
+  can't be used); tabs, Compare columns, counts, limits and the preview
+  are per account; History names each post's accounts and filters by
+  account; Interact picks the account that replies when a network has
+  several; Tools shows the relays of the Nostr account you pick. Alt+1 is
+  Shared and Alt+2…Alt+9 the account tabs, and the arrow keys move along
+  the tab row. A new post selects the connected accounts with
+  `default_selected`. Unsaved work the browser kept from before is
+  restored onto the account that stands for each network; one whose
+  account can't post now comes back selected and says why (a network
+  where you have no account is left out, saying so).
 - An OIDC email allowlist (`OIDC_ALLOWED_EMAILS`) matches only an email
   the identity provider says is verified. Stored emails are cleared once,
   so an unverified one stops passing; a refused sign-in logs the subject

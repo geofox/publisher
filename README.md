@@ -307,8 +307,21 @@ served from the root path. It talks to the publisher through `/v1` like any
 other client. Without OIDC it is unauthenticated by the service itself; see
 [Security](#security).
 
+The composer picks **accounts**, not networks. They are grouped by
+network, each with its avatar and handle; a network with several
+accounts has **Select all**. An account that can't be posted to says why
+under its name (not configured, turned off, …) and can't be ticked. A new
+post selects the connected accounts marked as selected by default
+(`default_selected`, set with `PATCH /v1/accounts/{id}`). The
+environment sets one account per network today; several accounts of a
+network (two Mastodon accounts, say) come with the account settings of a
+later release, and the composer, History and Interact already handle
+them: each account gets its own tab, limit, wording and post.
+
 The composer's **thread editor** has a tab for the shared text and one
-per selected account. The shared text is a stack of cards, one per post
+per selected account. A tab is named by its network when that is your
+only account there, else by the account's short handle (`@me`), or its
+full handle when two of the same network would read the same. The shared text is a stack of cards, one per post
 you break by hand: Ctrl/⌘+Enter (or ✂ split) starts a new post at the
 cursor, Backspace at the start of a card joins it to the one above, and a
 line of `---` becomes a break as soon as you start the next line. An
@@ -319,17 +332,22 @@ and ↓ (a sentence; Shift: a word) or by dragging it onto a word, and that
 account gets its own breaks while its wording still follows the shared
 text (**Reset to shared** undoes it). **Edit wording** gives it its own
 text. Images go with the post they sit on: drag them between cards, or
-use **Move to…**. Alt+1…5 switch tabs; on a wide screen **Compare**
-(Alt+C) lines every account's thread up side by side. In History, hovering
-a part of a thread marks where it came from in the text.
+use **Move to…**. Alt+1 opens Shared and Alt+2…Alt+9 the account tabs
+in order; on the tab row, ← and →, Home and End move between tabs. On a
+wide screen **Compare** (Alt+C) lines every account's thread up side by
+side, each against its own limit. In History, hovering a part of a thread
+marks where it came from in the text, each post shows the accounts it went
+to, and with two or more accounts a menu shows one account's posts.
 
 The **Interact** tab accepts a pasted post URL or Nostr identifier, previews
 the source post, and reports which of reply/quote/repost the post allows.
 **Repost** is one-click. **Reply** and **Quote** open the **Compose** tab in
 interaction mode: a source banner over the full composer, so your reply or
 quote gets the live preview, auto-threading, media, and per-account
-overrides. A reply goes to the source post's network only; a quote also
-goes to your other selected accounts as a link-quote.
+overrides. A reply goes to the source post's network only, from one
+account: when you have several connected there, pick which one looks the
+post up and answers it. A quote also goes to your other selected accounts
+as a link-quote.
 
 ### `GET /healthz`
 

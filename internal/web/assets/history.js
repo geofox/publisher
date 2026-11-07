@@ -5,6 +5,7 @@ import { loadDraft } from "./compose.js";
 import { brandTile } from "./brands.js";
 import { cpIndex } from "./textpos.js";
 import { followPost as followPostEvents } from "./follow.js";
+import { accounts, byId, loadAccounts, nameOf } from "./accounts.js";
 
 // The History tab, on /v1/posts. A post has one target per account; a
 // target has its items (one, or one per thread part), and a Nostr item its
@@ -40,6 +41,9 @@ const classWords = {
 function classLine(c) { return c && classWords[c] ? classWords[c] : ""; }
 
 const typeName = t => (META[t] && META[t].label) || t;
+// targetName names a target's account ("Mastodon @me@host"; the network
+// alone when it is the owner's only account there, or gone).
+const targetName = t => (byId(t.account) ? nameOf(t.account) : typeName(t.type));
 
 // ---------------------------------------------------------------------------
 // Live updates after a retry or a resolve
@@ -75,7 +79,7 @@ function followPost(id, until) {
 function patchRow(p) {
   const i = hposts.findIndex(x => x.id === p.id);
   if (i >= 0) hposts[i] = p;
-  const node = $(`.hitem[data-id="${p.id}"]`);
+  const node = $(`.hitem[data-id="${CSS.escape(p.id)}"]`);
   if (node) node.replaceWith(historyItem(p, node.classList.contains("active")));
 }
 
@@ -114,7 +118,7 @@ const FILTERS = {
   sent: "published",
 };
 
-let hfilter = "all", hquery = "", hcursor = null, hdone = false, hposts = [];
+let hfilter = "all", hquery = "", haccount = "", hcursor = null, hdone = false, hposts = [];
 let hloading = false, hgen = 0;
 const hlimit = 50;
 
@@ -137,6 +141,7 @@ export async function loadHistory(reset = true) {
     const qs = new URLSearchParams({ limit: String(hlimit) });
     if (FILTERS[hfilter]) qs.set("status", FILTERS[hfilter]);
     if (hquery) qs.set("q", hquery);
+    if (haccount) qs.set("account", haccount);
     if (!reset && hcursor) qs.set("cursor", hcursor);
     let page;
     try { page = await v1("/v1/posts?" + qs); }
@@ -181,7 +186,7 @@ function confirmHide(p) {
     onConfirm: async () => {
       try {
         await v1(postPath(p.id), { method: "PATCH", body: { hidden: true } });
-        const node = $(`.hitem[data-id="${p.id}"]`);
+        const node = $(`.hitem[data-id="${CSS.escape(p.id)}"]`);
         if (node) node.remove();
         hposts = hposts.filter(x => x.id !== p.id);
         const det = $("#hdetail");
@@ -217,28 +222,25 @@ function interactionBadge(post) {
 }
 
 function historyItem(p, active) {
-  // One pill per type, colored by its targets' outcome; grey for the types
-  // this post didn't go to.
-  const byType = {};
+  // One pill per target (its account), colored by its outcome; grey for the
+  // owner's networks this post didn't go to.
   let ok = 0, fail = 0, pend = 0;
+  const badges = el("div", { class: "badges" });
+  const went = new Set();
   for (const t of p.targets) {
-    byType[t.type] = t.status;
+    went.add(t.type);
     if (t.status === "published") ok++;
     else if (pendingStatus(t.status)) pend++;
     else fail++;
+    let cls = "pill p", mark = "";
+    if (t.status === "published") { cls = "pill s"; mark = " ✓"; }
+    else if (t.status === "failed") { cls = "pill f"; mark = " ✗"; }
+    else if (pendingStatus(t.status)) { cls = "pill q"; mark = t.status === "missed" ? " ⏰" : " ⏳"; }
+    badges.append(el("span", { class: cls, "data-account": t.account, text: targetName(t) + mark }));
   }
-  const badges = el("div", { class: "badges" });
-  const types = [...ORDER, ...Object.keys(byType).filter(t => !ORDER.includes(t))];
-  for (const type of types) {
-    let cls = "pill off", mark = "";
-    if (type in byType) {
-      const st = byType[type];
-      if (st === "published") { cls = "pill s"; mark = " ✓"; }
-      else if (st === "failed") { cls = "pill f"; mark = " ✗"; }
-      else if (pendingStatus(st)) { cls = "pill q"; mark = st === "missed" ? " ⏰" : " ⏳"; }
-      else { cls = "pill p"; }
-    }
-    badges.append(el("span", { class: cls, text: typeName(type) + mark }));
+  const mine = accounts().length ? [...new Set(accounts().map(a => a.type))] : ORDER;
+  for (const type of mine) {
+    if (!went.has(type)) badges.append(el("span", { class: "pill off", text: typeName(type) }));
   }
   // A scheduled post that has fired is dated by its time; others by when
   // they were made.
@@ -343,7 +345,7 @@ function resolveControls(post, t, it) {
         body: { target: t.id, ordinal: it.ordinal, outcome: "not_published" } }), "sending again");
     } });
   return el("div", { class: "resolve" },
-    el("span", { class: "muted", text: `Check ${typeName(t.type)}: did this part go out?` }), yes, no);
+    el("span", { class: "muted", text: `Check ${targetName(t)}: did this part go out?` }), yes, no);
 }
 
 // itemChain lists a target's items: each part of a thread, and any item
@@ -468,16 +470,16 @@ function targetRow(post, t) {
     text: (attempts.length ? `${attempts.length}×` : "") + (last && last.latency_ms ? ` · ${last.latency_ms}ms` : "") +
       (last ? ` · ${new Date(last.attempted_at).toLocaleTimeString()}` : "") });
   const b = badge(t.status);
-  const row = el("div", { class: "res" },
+  const row = el("div", { class: "res", "data-account": t.account },
     brandTile(t.type, { size: 22, r: 6 }),
-    el("span", { class: "bdg " + b.cls, text: `${typeName(t.type)} ${b.mark}` }),
+    el("span", { class: "bdg " + b.cls, text: `${targetName(t)} ${b.mark}` }),
     mid, meta);
   if (retryable(t) && !items.some(it => it.status === "unknown")) {
     const btn = el("button", { class: "retry", type: "button", text: t.status === "partial" ? "Resume" : "Retry",
       onclick: ev => {
         ev.stopPropagation();
         act(btn, "Retrying…", () => v1(postPath(post.id) + ":retry", { method: "POST", body: { targets: [t.id] } }),
-          typeName(t.type) + ": retrying");
+          targetName(t) + ": retrying");
       } });
     row.append(btn);
   }
@@ -570,6 +572,21 @@ export function historyInit() {
       document.querySelectorAll("#hseg button").forEach(x => x.classList.toggle("on", x === b));
       loadHistory(true);
     }));
+  // The account filter, once the accounts are known (with two or more).
+  const pick = $("#hacct");
+  const fill = () => {
+    if (!pick) return;
+    const list = accounts();
+    pick.hidden = list.length < 2;
+    const cur = haccount;
+    pick.replaceChildren(el("option", { value: "", text: "all accounts" }));
+    for (const a of list) pick.append(el("option", { value: a.id, text: nameOf(a.id) }));
+    pick.value = list.some(a => a.id === cur) ? cur : "";
+    haccount = pick.value;
+  };
+  document.addEventListener("accounts", fill);
+  loadAccounts().then(fill, () => {});
+  if (pick) pick.addEventListener("change", () => { haccount = pick.value; loadHistory(true); });
   const search = $("#hsearch");
   let t;
   search.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => { hquery = search.value.trim(); loadHistory(true); }, 250); });

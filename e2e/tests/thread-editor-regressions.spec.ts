@@ -1,11 +1,16 @@
 import path from "node:path";
-import { test, expect, openApp, marker } from "./fixtures";
+import { test, expect, ACCOUNT_ROWS, openApp, harnessIds, marker } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 // Regressions found reviewing the thread editor (editor.js).
 
 const shared = (page: Page) => page.locator("#editor .ed-shared textarea.ec-text");
-const tab = (page: Page, name: string) => page.locator(`#editor .ed-tab[data-tab="${name}"]`);
+// Tabs and rows by network ("bluesky": the account a new post selects
+// there) or by label ("Mastodon (long posts)").
+let ids: Record<string, string> = {};
+test.beforeEach(async ({ request }) => { if (!Object.keys(ids).length) ids = await harnessIds(request); });
+const tab = (page: Page, name: string) => page.locator(`#editor .ed-tab[data-tab="${name === "shared" ? "shared" : ids[name]}"]`);
+const row = (page: Page, name: string) => page.locator(`#chips .target-row[data-account="${ids[name]}"]`);
 const posts = (page: Page) => page.locator("#editor .ed-platform .pp-post");
 
 test("text typed at the end of a card stays in it (split at the end)", async ({ page }) => {
@@ -50,7 +55,7 @@ test("a draft with CRLF line breaks edits without drift", async ({ page }) => {
   const res = await page.request.post("/v1/drafts", { data: { post: { content: { text }, targets: [{ account: acct.id }] } } });
   expect(res.status(), await res.text()).toBeLessThan(300);
   await page.reload();
-  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
   await page.locator("#draft-list .draft-row", { hasText: m }).click();
   await expect(page.locator("#master")).toHaveValue(`${m} line one\nline two\nline three`); // loaded, as LF
   await page.locator("#master").press("Control+End");
@@ -63,7 +68,7 @@ test("a draft with CRLF line breaks edits without drift", async ({ page }) => {
 test("an image moved to a card that starts with a blank line posts with it", async ({ page, fakes }) => {
   const m = marker("mediablank");
   await openApp(page);
-  for (const p of ["mastodon", "threads", "nostr"]) await page.locator(`#chips .target-row.p-${p}`).click();
+  for (const p of ["mastodon", "threads", "nostr"]) await row(page, p).click();
   await page.locator("#master").fill(`${m} one`);
   await page.locator("#master").press("End");
   await page.keyboard.type("\n---\n\ntwo");

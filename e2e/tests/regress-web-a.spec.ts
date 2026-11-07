@@ -1,12 +1,9 @@
-import { test, expect, openApp, switchTab, marker } from "./fixtures";
+import { test, expect, ACCOUNT_ROWS, openApp, switchTab, marker, mastodonSource } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 async function mockResolve(page: Page) {
-  await page.route("**/v1/resolve", r => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
-    platform: "mastodon", url: "https://mastodon.example/@a/1", text: "source post",
-    author: { name: "A", handle: "@a@mastodon.example" }, media: [],
-    actions: { reply: { allowed: true }, repost: { allowed: true }, quote: { allowed: true } },
-  }) }));
+  const src = await mastodonSource(page.request);
+  await page.route("**/v1/resolve", r => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(src) }));
 }
 
 test("a reply started while a saved draft is open doesn't use up that draft", async ({ page }) => {
@@ -47,7 +44,7 @@ test("restoring the unsaved-work snapshot keeps Bluesky/Threads reply settings",
   await page.locator("#cards .ocard.p-threads select").selectOption("followers_only");
   await page.waitForTimeout(600); // autosave debounce
   await page.reload();
-  await expect(page.locator("#chips .target-row")).toHaveCount(4);
+  await expect(page.locator("#chips .target-row")).toHaveCount(ACCOUNT_ROWS);
   await expect(page.locator("#draft-recovery-banner")).toBeVisible();
   await page.locator("#draft-recovery-restore").click();
   await expect(page.locator("#master")).toHaveValue(`Recover ${m}`);

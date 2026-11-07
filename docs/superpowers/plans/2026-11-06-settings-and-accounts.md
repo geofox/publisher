@@ -967,6 +967,114 @@ Spec §2.7, §11 (composer e2e). No migration.
   one each until C). CHANGELOG.
 - [ ] Open PR A3; 2 QA + 1 security reviews; fix; hand over.
 
+### As built (A3)
+
+- **Modules.** `accounts.js` holds the list (sorted by `order`, then
+  `ORDER` for `order -1`, then `created_at`), fires a `document`
+  `accounts` event on each successful read, and names accounts:
+  `labelsFor` (short handle, the full handle when two of a network
+  collide, else the owner's label or the network), `nameOf` ("Mastodon
+  @me@host", the network alone when the owner has one account there),
+  `accessibleName` ("Mastodon, @me@host"). The new pure `snapshot.js`
+  (`primaryIn`, `cleanOv`, `upgrade`) converts snapshots; unit tests in
+  `e2e/unit/*.test.mjs` run with `node --test` (no dependency; a CI step
+  in the e2e job, `npm run unit`).
+- **Snapshot v3** (recovery and `specFromDraft`): `targets` (account
+  ids), `overrides` by account id, `interaction.{account, platform,
+  prevTargets}`. v1/v2 map each network to `primaryIn`: the first
+  connected account with `default_selected`, else the first connected
+  one (deviation: the plan said "first connected"; the default-selected
+  one is what the composer posted from before). A network with no
+  connected account is dropped and counted (`dropped`), and the restore
+  says how many were left out. Renamed option keys (`bluesky_reply` →
+  `reply`, …) are renamed on the way.
+- **Restore** waits for `loadAccounts()`; a failed read flashes and
+  doesn't restore (try again). A reply or quote is resolved again by its
+  acting account.
+- **Boot.** `main.js readAccounts` retries a failed first read (2 s,
+  doubling to 60 s) while no read ever succeeded; the composer shows
+  "Reading your accounts…", the error with **Try again**, or the empty
+  state ("No accounts yet: set them in the server's environment").
+  `#chips[data-state]` says which. Post with nothing selected before any
+  read, or with an unavailable account selected, reads again first.
+- **Selection.** `state.targets` (ids) + `state.chosen`: defaults
+  (`defaultTargets()`) apply once, when the accounts first load, unless
+  the owner already chose. Toggling a row now fires `change` on `#chips`,
+  so autosave and the dirty mark follow (they didn't before: a small fix).
+  An unavailable selected account can still be unticked.
+- **Rows.** Grouped by network (`role=group`), a header with **Select
+  all/Clear** when a network has several; reason as visible text linked
+  by `aria-describedby`; avatar with a 14 px network mark. Layout fix:
+  `.compose-left/.compose-right/.composer-card/.editor{min-width:0}`
+  (the tab row used to widen the page on a phone).
+- **Tabs.** WAI-ARIA tabs with automatic activation, roving `tabindex`,
+  arrows/Home/End; the row scrolls (`nowrap`, `overflow-x:auto`) and
+  scrolls the active tab into view. Alt+1 Shared, Alt+2…9 accounts.
+- **History** pills are one per target (`data-account`) plus grey pills
+  for the owner's networks the post didn't go to; detail rows carry
+  `data-account`; `#hacct` filters by account (hidden under two
+  accounts).
+- **Interact** shows `#srcacct` when the source's network has several
+  connected accounts; changing it resolves again with `account`.
+- **Tools** relays: `#syncacct` picks the Nostr account (hidden with
+  one); none connected shows the "needs a connected Nostr account" note.
+- **e2e:** `accounts.spec.ts` (11 tests: two Mastodon accounts with own
+  tabs, limits 500/1000, own wording and posts; retry of one account;
+  v2 snapshot and v2 reply restore; a two-account draft; grouped rows
+  with a reason and Select all; the Interact picker; tab keys; History
+  filter; `@mobile` tab row), `regress-web-acc.spec.ts` (Post and Try
+  again after a failed boot read). The harness gives each account a
+  handle; "Mastodon (long posts)" is not selected by default. Mutation
+  checks: removing the collision label, the per-account limit, the
+  History filter, the resolve `account`, the detail row's account, the
+  v2 mapping, the return to the previous selection, Try again, and
+  Post's read each fail a test.
+
+### As built (A3): review fixes
+
+Two QA reviews and one security review on PR #39; all findings fixed:
+
+- **Restore keeps unavailable networks** (`snapshot.js standIn`): a v1/v2
+  network maps to its primary account, else its first account in any
+  state but deleted (ticked, unavailable, Post refuses until it is
+  unticked), and is dropped only when the owner has no account there.
+  `loadDraft` falls back to the default accounts only when the input
+  named none (`dropped` says which it named and lost); otherwise nothing
+  is selected.
+- **A pending recovery snapshot survives** (`drafts_recovery.js
+  setRecoveryPending`): while the banner offers it, an empty composer or
+  an open draft doesn't remove it; Restore, Discard and explicit clears
+  end that. Ticking accounts on an empty composer isn't unsaved work
+  (`toggled` fires `change` only with text, media, a draft or a reply).
+- **Interact picker:** the card's actions wait while another account
+  looks the post up (`setActionsWaiting`); if it can't, the picker goes
+  back and the status names the account; the picker keeps the keyboard.
+- **Settings made before the accounts load** get their network's
+  defaults once the type is known (`ovOf`, a WeakSet of untyped entries).
+- **Restore fallback** leaves the failed acting account out of the
+  candidates. **Header** uses connected accounts only.
+- **No page jump:** the tab row keeps its sideways scroll and brings the
+  active tab into view by scrolling itself, only when the tab changes
+  (no `scrollIntoView`, which also scrolled the page to the editor).
+  **Compare** sits beside the `tablist` (`.ed-tabbar`), not in it.
+- **Labels:** an account that is the owner's only one on its network is
+  labelled by the network (or the owner's label), as before accounts;
+  colliding long handles are cut in the user name (`fitHandle`).
+  `accessibleName` includes the owner's label ("Mastodon (long posts),
+  @me@two…"); Compare headers carry it; tabpanels are labelled by their
+  tab.
+- **States:** a live region (`#chips-status`) says loading/error/empty;
+  Try again keeps the keyboard; "no accounts selected" waits for the
+  accounts. Pickers (`#srcacct`, Tools) styled like `#hacct` (36 px);
+  History pills keep handle case; "per-account options".
+- **Tools:** switching the Nostr account while relay work runs is
+  refused (it would show one account's result under the other).
+- **Security (low, defence in depth):** maps keyed by account id are
+  null-prototype (`byKey`); `cleanOv` drops `__proto__`, `constructor`,
+  `prototype`; History selectors use `CSS.escape`.
+- **Tests:** 11 more e2e tests and 5 unit tests for the above, each
+  mutation-checked; the `@mobile` overflow check now measures `main`.
+
 ---
 # PR B — Sign-in without OIDC
 

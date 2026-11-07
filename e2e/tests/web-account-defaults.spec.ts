@@ -1,34 +1,40 @@
-import { test, expect, openApp, switchTab } from "./fixtures";
+import { test, expect, openApp, rowOf, switchTab } from "./fixtures";
 
 // What the web app shows from the accounts and the instance: a new post
-// selects the networks with a connected account that new posts select, and
-// controls the server can't serve stay hidden. The answers are altered in
+// selects the connected accounts that new posts select, and controls the
+// server can't serve stay hidden. The answers are altered in
 // the browser, so nothing changes on the server.
 
-type Acct = { type: string; status: string; default_selected: boolean };
+type Acct = { type: string; status: string; status_reason?: string; default_selected: boolean };
 
-test("a new post selects only networks with a connected account that new posts select", async ({ page }) => {
+test("a new post selects the connected accounts that new posts select; one that isn't connected says why", async ({ page }) => {
   await page.route("**/v1/accounts?*", async r => {
     const res = await r.fetch();
     const body = await res.json();
     for (const a of body.data as Acct[]) {
       if (a.type === "bluesky") a.default_selected = false; // the owner unselected both
-      if (a.type === "threads") a.status = "not_configured";
+      if (a.type === "threads") { a.status = "not_configured"; a.status_reason = "set THREADS_ACCESS_TOKEN to use it again"; }
     }
     await r.fulfill({ response: res, json: body });
   });
   await openApp(page);
-  const row = (p: string) => page.locator(`#chips .target-row.p-${p}`);
-  await expect(row("bluesky")).toHaveClass(/\boff\b/);
-  await expect(row("threads")).toHaveClass(/\boff\b/);
-  await expect(row("mastodon")).not.toHaveClass(/\boff\b/);
-  await expect(row("nostr")).not.toHaveClass(/\boff\b/);
+  await expect(await rowOf(page, "Bluesky")).toHaveClass(/\boff\b/);
+  await expect(await rowOf(page, "Bluesky (alt)")).toHaveClass(/\boff\b/);
+  await expect(await rowOf(page, "Mastodon")).not.toHaveClass(/\boff\b/);
+  await expect(await rowOf(page, "Mastodon (long posts)")).toHaveClass(/\boff\b/); // not selected by default
+  await expect(await rowOf(page, "Nostr")).not.toHaveClass(/\boff\b/);
+  await expect(page.locator("#targets-meta")).toHaveText("2 selected");
 
-  // Ticking a network with no connected account is refused at Post, saying so.
-  await row("threads").click();
-  await page.locator("#master").fill("hello");
-  await page.locator("#submit").click();
-  await expect(page.locator(".toast").last()).toContainText("Threads has no connected account");
+  // An account that isn't connected shows why, as text, and can't be ticked.
+  const threads = await rowOf(page, "Threads");
+  await expect(threads).toHaveClass(/\bunavailable\b/);
+  await expect(threads.locator(".t-reason")).toHaveText("set THREADS_ACCESS_TOKEN to use it again");
+  await expect(threads).toHaveAttribute("aria-disabled", "true");
+  await expect(threads).toHaveAccessibleDescription("set THREADS_ACCESS_TOKEN to use it again");
+  await threads.click({ force: true }); // Playwright waits for aria-disabled ones otherwise
+  await threads.press("Space");
+  await expect(threads).toHaveAttribute("aria-checked", "false");
+  await expect(page.locator("#targets-meta")).toHaveText("2 selected");
 });
 
 test("without a media store or relay sync, their controls are hidden", async ({ page }) => {

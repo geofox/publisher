@@ -1,8 +1,10 @@
 "use strict";
-import { el, $, gcount, graphemes, META } from "./common.js";
-import { state, focusedPlatform, postedText } from "./state.js";
+import { el, $, gcount, graphemes } from "./common.js";
+import { state, focusedTarget, postedText, ovOf, selected } from "./state.js";
 import { brandTile, icon } from "./brands.js";
 import { requestPlan, planFor, lastPlanFor } from "./plan.js";
+import { typeOf, nameOf } from "./accounts.js";
+import { limitOf } from "./count.js";
 
 // threadBadgeStatic → the indigo "{N}-post thread" pill shown in a threaded
 // preview header (non-interactive; the row/banner badges open the review sheet).
@@ -13,21 +15,22 @@ function threadBadgeStatic(count) {
   return b;
 }
 
-// mediaMax mirrors Go thread.MaxImagesFor (per-platform attachment cap; 0 = none).
+// mediaMax mirrors Go thread.MaxImagesFor (a network's attachment cap; 0 = none).
 export function mediaMax(p) {
   if (p === "mastodon") return 4;
   return p === "bluesky" || p === "threads" ? 10 : 0;
 }
 
-// previewMedia returns the {url,alt} images the preview should show for platform p:
-// your attached images, plus — on a fan-out platform — the original's media to be
-// re-hosted, capped per platform (matching dispatch.capMedia: user first).
-export function previewMedia(p) {
+// previewMedia returns the {url,alt} images the preview should show for account
+// id: your attached images, plus — on an account that posts a copy — the
+// original's media to be re-hosted, capped per network (matching
+// dispatch.capMedia: user first).
+export function previewMedia(id) {
   const user = state.images.map((i) => ({ url: i.url, alt: i.alt, video: !!i.video, poster_url: i.poster_url }));
   const it = state.interaction;
-  if (!it || p === it.platform) return user;
+  if (!it || id === it.account) return user;
   const src = ((it.sourcePreview && it.sourcePreview.media) || []).map((m) => ({ url: m.url, alt: m.alt || "" }));
-  const max = mediaMax(p);
+  const max = mediaMax(typeOf(id));
   const out = user.slice();
   for (const m of src) {
     if (max > 0 && out.length >= max) break;
@@ -66,9 +69,9 @@ function mediaGridFrom(media) {
   return g;
 }
 
-// mediaGrid keeps the per-platform signature used by the single-post card.
-function mediaGrid(p) {
-  return mediaGridFrom(previewMedia(p));
+// mediaGrid keeps the per-account signature used by the single-post card.
+function mediaGrid(id) {
+  return mediaGridFrom(previewMedia(id));
 }
 
 // linkCardEl renders the bluesky external-embed mock the server planned for
@@ -111,45 +114,46 @@ function quotedCard() {
   return card;
 }
 
-// maybeAppendQuotedCard adds the source card after the platform preview when the
-// focused platform is the interaction's source (native reply/quote embeds it).
-function maybeAppendQuotedCard(host, p) {
+// maybeAppendQuotedCard adds the source card after the preview when the
+// focused account is the one replying or quoting (native reply/quote embeds it).
+function maybeAppendQuotedCard(host, id) {
   if (host.querySelector(".pv-quoted")) return;
   const it = state.interaction;
-  if (it && p === it.platform) host.append(quotedCard());
+  if (it && id === it.account) host.append(quotedCard());
 }
 
-// platformSwitch builds the <select> that changes which platform the preview
+// targetSwitch builds the <select> that changes which account the preview
 // shows. Shared by the single-post card and the threaded view so the operator
-// can always switch the previewed platform — including when the draft renders
+// can always switch the previewed account — including when the draft renders
 // as a multi-segment thread.
-function platformSwitch(p) {
-  const sel = el("select", { class: "pv-switch", onchange: e => { state.focus = e.target.value; renderPreview(); } });
-  for (const q of [...state.platforms]) sel.append(el("option", { value: q, text: META[q].label }));
-  sel.value = p;
+function targetSwitch(id) {
+  const sel = el("select", { class: "pv-switch", "aria-label": "account to preview",
+    onchange: e => { state.focus = e.target.value; renderPreview(); } });
+  for (const q of selected()) sel.append(el("option", { value: q, text: nameOf(q) }));
+  sel.value = id;
   return sel;
 }
 
 // appendFitNotes renders the planned platform-fit conversions ("image 2
 // → JPEG (over 1.9 MB)") under a preview card. Server-planned (PlanMediaFit),
 // so the badge and the dispatch-time re-encode share one predicate.
-// media (optional) is the previewMedia list for the platform, used to label
+// media (optional) is the previewMedia list for the account, used to label
 // video entries as "video" instead of "image N".
-function appendFitNotes(host, platform, notes, media) {
+function appendFitNotes(host, id, notes, media) {
   for (const n of notes || []) {
     const label = (media && media[n.ordinal] && media[n.ordinal].video)
       ? "video"
       : "image " + (n.ordinal + 1);
     host.appendChild(el("div", { class: "pv-fitnote",
-      text: `${label} ${n.note} for ${META[platform].label}` }));
+      text: `${label} ${n.note} for ${nameOf(id)}` }));
   }
 }
 
-// threadPreview renders platform's thread, as the server's plan has it
+// threadPreview renders account id's thread, as the server's plan has it
 // (plan.js), into container. Returns false when the post is one post with
 // nothing the plan adds (the single-post card stands). stale marks a plan
 // for an earlier state of the composer, shown until the new one comes.
-function threadPreview(container, platform, vt, stale) {
+function threadPreview(container, id, vt, stale) {
   if (!vt || !vt.items || !vt.items.length) return false;
   // Plan media indices are the attachments the body sent (state.js
   // postMedia); the preview's are all attachments (previewMedia).
@@ -168,36 +172,36 @@ function threadPreview(container, platform, vt, stale) {
     fit_notes: (vt.media_notes || []).map(n => ({ ordinal: sent[n.media], note: n.note })).filter(n => n.ordinal !== undefined),
     warnings: vt.warnings || [],
   };
-  if (state.interaction && platform !== state.interaction.platform && pv.imgs.length) {
+  if (state.interaction && id !== state.interaction.account && pv.imgs.length) {
     // The re-hosted originals go after yours, on the first post.
-    const n = state.images.length, extra = previewMedia(platform).length - n;
+    const n = state.images.length, extra = previewMedia(id).length - n;
     for (let i = 0; i < extra; i++) pv.imgs[0].push(n + i);
   }
   const fitNotes = pv.fit_notes;
-  const pvMedia = previewMedia(platform);
+  const pvMedia = previewMedia(id);
   if (pv.count < 2) {
     // A stale one-post plan has an old text: the composer's card stands.
     if (stale || (!pv.card && !fitNotes.length)) return false;
     // Single post with a link card or fit notes: re-render with the authoritative
     // (possibly URL-stripped) text and the planned card attached.
     container.innerHTML = "";
-    _renderSinglePost(container, platform, { text: pv.segments[0], card: pv.card });
-    // Append fit notes inside the platform card that _renderSinglePost created.
-    appendFitNotes(container.querySelector(".pv-card") || container, platform, fitNotes, pvMedia);
+    _renderSinglePost(container, id, { text: pv.segments[0], card: pv.card });
+    // Append fit notes inside the card that _renderSinglePost created.
+    appendFitNotes(container.querySelector(".pv-card") || container, id, fitNotes, pvMedia);
     return true;
   }
 
   container.innerHTML = "";
-  // The whole thread view is wrapped in a p-{platform} card so .pv-tok token
-  // highlighting picks up the platform tint, and the left border is tinted too.
-  const wrap = el("div", { class: "pv-card pv-thread p-" + platform + (stale ? " stale" : "") });
+  // The whole thread view is wrapped in a p-{network} card so .pv-tok token
+  // highlighting picks up the network's tint, and the left border is tinted too.
+  const wrap = el("div", { class: "pv-card pv-thread p-" + typeOf(id) + (stale ? " stale" : "") });
   const limit = vt.limit;
-  // Header mirrors the single-post card: brand tile + platform switcher (so the
-  // operator can change the previewed platform even while viewing a thread) +
+  // Header mirrors the single-post card: brand tile + account switcher (so the
+  // operator can change the previewed account even while viewing a thread) +
   // the "{N}-post thread" badge.
   wrap.appendChild(el("div", { class: "pv-head" },
-    brandTile(platform, { size: 22, r: 6 }),
-    platformSwitch(platform),
+    brandTile(typeOf(id), { size: 22, r: 6 }),
+    targetSwitch(id),
     el("span", { class: "grow" }),
     threadBadgeStatic(pv.count),
   ));
@@ -224,7 +228,7 @@ function threadPreview(container, platform, vt, stale) {
   (pv.warnings || []).forEach((wmsg) => {
     wrap.appendChild(el("div", { class: "pv-warn", text: wmsg }));
   });
-  appendFitNotes(wrap, platform, fitNotes, media);
+  appendFitNotes(wrap, id, fitNotes, media);
   container.appendChild(wrap);
   return true;
 }
@@ -258,21 +262,21 @@ function truncate(text, limit) {
 // _renderSinglePost renders the existing single-post preview card into host.
 // opts.text overrides the local draft text (server-stripped trailing URL) and
 // opts.card appends the planned bluesky link card.
-function _renderSinglePost(host, p, opts = {}) {
-  const meta = META[p], ov = state.ov[p];
-  const text = opts.text != null ? opts.text : postedText(p), n = gcount(text);
+function _renderSinglePost(host, id, opts = {}) {
+  const p = typeOf(id), ov = ovOf(id), limit = limitOf(id);
+  const text = opts.text != null ? opts.text : postedText(id), n = gcount(text);
   const cwText = p === "mastodon" ? ov.spoiler_text : p === "nostr" ? ov.content_warning : "";
 
   const card = el("div", { class: "pv-card p-" + p });
 
-  // header: brand tile + platform selector + state-colored count
-  const sel = platformSwitch(p);
-  const overCls = !meta.limit ? "inf" : n > meta.limit ? "over" : n > meta.limit * 0.9 ? "near" : "ok";
+  // header: brand tile + account selector + state-colored count
+  const sel = targetSwitch(id);
+  const overCls = !limit ? "inf" : n > limit ? "over" : n > limit * 0.9 ? "near" : "ok";
   card.append(el("div", { class: "pv-head" },
     brandTile(p, { size: 22, r: 6 }),
     sel,
     el("span", { class: "grow" }),
-    el("span", { class: "pv-count " + overCls, text: meta.limit ? `${n}/${meta.limit}${n > meta.limit ? ` · +${n - meta.limit} over` : " ✓"}` : "∞" }),
+    el("span", { class: "pv-count " + overCls, text: limit ? `${n}/${limit}${n > limit ? ` · +${n - limit} over` : " ✓"}` : "∞" }),
   ));
 
   // optional content-warning fold
@@ -280,12 +284,12 @@ function _renderSinglePost(host, p, opts = {}) {
     const body = el("div", { class: "pv-text", hidden: true });
     const reveal = el("button", { class: "pv-cw", type: "button", text: `⚠ CW: ${cwText} — show`,
       onclick: () => { body.hidden = !body.hidden; reveal.textContent = (body.hidden ? "⚠ CW: " + cwText + " — show" : "⚠ CW: " + cwText + " — hide"); } });
-    const t = truncate(text, meta.limit);
+    const t = truncate(text, limit);
     body.append(...highlight(t.head));
     if (t.tail) body.append(el("span", { class: "pv-over", text: t.tail }));
     card.append(reveal, body);
   } else {
-    const t = truncate(text, meta.limit);
+    const t = truncate(text, limit);
     const body = el("div", { class: "pv-text" });
     body.append(...(text ? highlight(t.head) : [el("span", { class: "muted", text: "—" })]));
     if (t.tail) body.append(el("span", { class: "pv-over", text: t.tail }));
@@ -294,12 +298,12 @@ function _renderSinglePost(host, p, opts = {}) {
 
   // media grid — your attached images, plus (on a fan-out platform) the original's
   // re-hosted media, capped per platform exactly like dispatch does on send.
-  const g = mediaGrid(p);
+  const g = mediaGrid(id);
   if (g) card.append(g);
 
   if (opts.card) card.append(linkCardEl(opts.card));
 
-  // settings line (platform-specific)
+  // settings line (the network's options)
   const bits = [];
   if (p === "bluesky")  { bits.push(`replies: ${ov.reply || "anyone"}`, `quotes: ${ov.disable_quotes ? "off" : "on"}`); }
   if (p === "mastodon") { bits.push(`visibility: ${ov.visibility || "default"}`, ov.sensitive ? "sensitive" : null); }
@@ -309,10 +313,10 @@ function _renderSinglePost(host, p, opts = {}) {
   if (line) card.append(el("div", { class: "pv-settings", text: line }));
 
   host.append(card);
-  maybeAppendQuotedCard(host, p);
+  maybeAppendQuotedCard(host, id);
 }
 
-// renderPreview paints the focused platform's preview into #preview.
+// renderPreview paints the focused account's preview into #preview.
 // The single-post card renders at once from the composer; a thread (or a
 // link card, or media notes) replaces it from the server's plan.
 export function renderPreview() {
@@ -321,18 +325,18 @@ export function renderPreview() {
   const host = $("#preview");
   if (!host) return;
   host.innerHTML = "";
-  const p = focusedPlatform();
-  if (!p) { host.append(el("p", { class: "muted", text: "no targets selected" })); return; }
+  const id = focusedTarget();
+  if (!id) { host.append(el("p", { class: "muted", text: "no accounts selected" })); return; }
 
   // Render the single-post preview immediately (synchronous, no flicker).
-  _renderSinglePost(host, p);
+  _renderSinglePost(host, id);
 
   // The thread, link card and media notes come from the server's plan
   // (plan.js; a new one fires a "plan" event, which renders again). Until
   // the plan for the composer as it is arrives, the last one shows, dimmed,
   // rather than flicking back to a single post.
-  const fresh = planFor(p);
-  const vt = fresh || lastPlanFor(p);
-  if (!vt || !threadPreview(host, p, vt, !fresh)) return;
-  maybeAppendQuotedCard(host, p);
+  const fresh = planFor(id);
+  const vt = fresh || lastPlanFor(id);
+  if (!vt || !threadPreview(host, id, vt, !fresh)) return;
+  maybeAppendQuotedCard(host, id);
 }

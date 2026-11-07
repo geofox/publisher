@@ -1,11 +1,12 @@
 "use strict";
-import { el, $, wcount, flash, confirmModal, META, ORDER, v1, problemError, TZ, whenText, localInput, pressable, asDialog } from "./common.js";
-import { state, postedText, v1PostBody, defaultOv, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen } from "./state.js";
-import { renderPreview, mediaMax, previewMedia } from "./preview.js";
+import { el, $, wcount, flash, confirmModal, v1, problemError, TZ, whenText, localInput, pressable, asDialog } from "./common.js";
+import { state, byKey, postedText, v1PostBody, ovOf, selected, setTargets, setInflight, getInflight, clearInflight, clearImages, imagesGen, bumpImagesGen } from "./state.js";
+import { renderPreview } from "./preview.js";
 import { openDetail } from "./history.js";
-import { accountFor, defaultPlatforms } from "./accounts.js";
+import { accounts, byId, typeOf, isConnected, defaultTargets, accountsLoaded, networkName, nameOf, accessibleName,
+  handleOf, customLabel, isOpaque, shortId, fitHandle } from "./accounts.js";
 import { followPost } from "./follow.js";
-import { brandTile, icon, PLATFORM_META } from "./brands.js";
+import { brandTile, icon } from "./brands.js";
 import { planFor, lastPlanFor, planError } from "./plan.js";
 import { editorInit, renderEditor, setTab } from "./editor.js";
 import { fromMarkers, toLF } from "./textpos.js";
@@ -57,109 +58,262 @@ function bskyCardText(text) {
   return stripped.trim() === "" ? text : stripped; // URL-only post: keep as-is
 }
 
-// effectivePostedText returns the text the platform will actually post: for
+// effectivePostedText returns the text account id will actually post: on
 // Bluesky, a trailing card URL is stripped (server attaches it as a link card).
-function effectivePostedText(p) {
-  const t = postedText(p);
-  return p === "bluesky" ? bskyCardText(t) : t;
+function effectivePostedText(id) {
+  const t = postedText(id);
+  return typeOf(id) === "bluesky" ? bskyCardText(t) : t;
 }
 
-// threadInfoFor is platform p's post count from the server's plan (the last
+// threadInfoFor is account id's post count from the server's plan (the last
 // one while a newer is on its way).
-function threadInfoFor(p) {
-  const pl = planFor(p) || lastPlanFor(p);
+function threadInfoFor(id) {
+  const pl = planFor(id) || lastPlanFor(id);
   const posts = pl && pl.items.length ? pl.items.length : 1;
   return { posts, threaded: posts > 1 };
 }
 
-// cwOf is platform p's content warning, which Mastodon counts in.
-function cwOf(p) {
-  const ov = state.ov[p];
+// cwOf is account id's content warning, which Mastodon counts in.
+function cwOf(id) {
+  const p = typeOf(id), ov = ovOf(id);
   return p === "mastodon" ? ov.spoiler_text || "" : p === "nostr" ? ov.content_warning || "" : "";
 }
 
-// targetCount → {text, cls} for a platform's live count. State colors mirror the
+// targetCount → {text, cls} for an account's live count. State colors mirror the
 // design: under 90% → ink2 (no class), >90% → amber, over → indigo (will thread,
 // informational), no-limit → teal ∞.
-function targetCount(p) {
-  const limit = limitFor(p, cwOf(p)), n = countFor(p, effectivePostedText(p));
+function targetCount(id) {
+  const limit = limitFor(id, cwOf(id)), n = countFor(id, effectivePostedText(id));
   if (!limit) return { text: "∞", cls: "inf", n };
   const pct = n / limit;
   return { text: `${n}/${limit}`, cls: n > limit ? "over" : pct > 0.9 ? "near" : "", n };
 }
 
 // ---------------------------------------------------------------------------
-// Targets — selectable rows with brand tile, live count, switch, thread badge
+// Targets — the accounts, grouped by network: selectable rows with avatar,
+// handle, live count, switch and thread badge
 // ---------------------------------------------------------------------------
 
 function iosSwitch(on) { return el("div", { class: "ios-switch" + (on ? " on" : "") }, el("div", { class: "knob" })); }
 
-function threadBadge(p) {
-  const ti = threadInfoFor(p);
+function threadBadge(id) {
+  const ti = threadInfoFor(id);
   const badge = pressable(el("span", { class: "thread-badge", title: "See and shape the thread",
-    onclick: e => { e.stopPropagation(); showThread(p); } }));
+    onclick: e => { e.stopPropagation(); showThread(id); } }));
   const ic = icon("thread", { size: 12, sw: 1.9 }); if (ic) badge.append(ic);
   badge.append(el("span", { class: "tb-txt", text: `${ti.posts} posts` }));
   return badge;
 }
 
-function renderChips() {
-  const c = $("#chips"); c.innerHTML = "";
+// What the accounts list is doing (main.js reports it): "loading", "error"
+// (with the message) or "ready".
+let accountsPhase = { phase: "loading", error: "" };
+export function setAccountsPhase(phase, error = "") {
+  accountsPhase = { phase, error };
+  renderChips();
+}
+
+const STATUS_TEXT = {
+  disabled: "turned off",
+  not_configured: "not configured",
+  locked: "locked",
+  needs_reconnect: "needs reconnecting",
+  deleted: "deleted",
+};
+
+// unavailableWhy is why account a can't be posted to, or "" when it can.
+function unavailableWhy(a) {
+  if (isConnected(a)) return "";
+  return a.status_reason || STATUS_TEXT[a.status] || a.status || "not available";
+}
+
+// barredWhy is why a reply or quote in progress keeps account a out, or "".
+// One account of the source's network replies or quotes (the server
+// refuses a second); a reply goes only to that network.
+function barredWhy(a) {
   const it = state.interaction;
-  for (const p of ORDER) {
-    const on = state.platforms.has(p);
-    const locked = it != null && p === it.platform;
-    // A reply goes only to the source's network.
-    const barred = it != null && it.action === "reply" && !locked;
-    const meta = PLATFORM_META[p] || {};
-    const tc = targetCount(p);
-    const ti = threadInfoFor(p);
+  if (!it || a.id === it.account) return "";
+  if (a.type === it.platform) return "One " + networkName(a.type) + " account " + (it.action === "quote" ? "quotes" : "replies") + ": pick it in Interact";
+  if (it.action === "reply") return "A reply goes only to " + networkName(it.platform);
+  return "";
+}
 
-    const top = el("div", { class: "target-top" }, el("span", { class: "t-name", text: META[p].label }));
-    if (it) top.append(el("span", { class: "t-tag" + (locked ? " native" : ""), text: locked ? "native" : "copy" }));
-    if (on && ti.threaded) top.append(threadBadge(p));
+// accountTile is the account's avatar with its network's mark, or the
+// network's tile when it has no avatar.
+function accountTile(a, size = 29) {
+  if (!a.avatar) return brandTile(a.type, { size });
+  const tile = el("span", { class: "acct-tile" });
+  const img = el("img", { class: "acct-av", src: a.avatar, alt: "", width: String(size), height: String(size),
+    referrerpolicy: "no-referrer", loading: "lazy" });
+  img.addEventListener("error", () => tile.replaceWith(brandTile(a.type, { size })));
+  const mark = brandTile(a.type, { size: 14, r: 4 });
+  mark.classList.add("acct-mark");
+  tile.append(img, mark);
+  return tile;
+}
 
-    const row = el("div", {
-      class: "target-row p-" + p + (on ? "" : " off") + (locked ? " locked" : "") + (barred ? " barred" : ""),
-      title: barred ? "A reply goes only to " + META[it.platform].label : null,
-      onclick: () => {
-        if (locked || barred) return; // source platform stays selected in interaction mode
-        on ? state.platforms.delete(p) : state.platforms.add(p);
-        if (!state.platforms.has(state.focus)) state.focus = p;
-        renderChips(); renderCards(); renderEditor(); renderPreview();
-        // The row was drawn again: keep the keyboard where it was.
-        const again = document.querySelector("#chips .target-row.p-" + p); if (again) again.focus({ preventScroll: true });
-      },
-    },
-      brandTile(p, { size: 29 }),
-      el("div", { class: "target-main" }, top, el("div", { class: "t-handle", text: meta.handle || "" })),
-      el("span", { class: "t-count" + (tc.cls ? " " + tc.cls : ""), text: tc.text }),
-      iosSwitch(on),
-    );
-    pressable(row, "switch");
-    row.setAttribute("aria-checked", on ? "true" : "false");
-    row.setAttribute("aria-label", META[p].label);
-    if (locked || barred) row.setAttribute("aria-disabled", "true");
-    c.append(row);
+// toggled redraws what a change of selection touches and tells the drafts
+// autosave (it listens for change events in the composer).
+function toggled(focusId) {
+  renderChips(); renderCards(); renderEditor(); renderPreview();
+  // A change to something worth keeping (text, attachments, an open draft,
+  // a reply): autosave and the unsaved mark follow. Ticking accounts on an
+  // empty composer is not unsaved work.
+  const c = $("#chips");
+  const worth = state.master || state.images.length || state.activeDraftId || state.interaction;
+  if (c && worth) c.dispatchEvent(new Event("change", { bubbles: true }));
+  // The row was drawn again: keep the keyboard where it was.
+  if (focusId) document.querySelector(`#chips [data-account="${CSS.escape(focusId)}"]`)?.focus({ preventScroll: true });
+}
+
+function targetRow(a) {
+  const id = a.id;
+  const on = state.targets.has(id);
+  const it = state.interaction;
+  const locked = it != null && id === it.account;
+  const why = unavailableWhy(a);
+  const bar = barredWhy(a);
+  // An account that can't be posted to can only be unticked (a draft may
+  // name one); the account replying or quoting stays ticked.
+  const fixed = locked || (bar && !on) || (why && !on);
+  const tc = on || !why ? targetCount(id) : null;
+  const ti = threadInfoFor(id);
+
+  // The network's name, and the owner's label for the account: in its place
+  // when it names the network already ("Mastodon (work)"), else beside it.
+  const label = customLabel(a);
+  const named = label && label.toLowerCase().includes(networkName(a.type).toLowerCase());
+  const top = el("div", { class: "target-top" }, el("span", { class: "t-name", text: named ? label : networkName(a.type) }));
+  if (label && !named) top.append(el("span", { class: "t-label", text: label }));
+  if (it && !why && !bar) top.append(el("span", { class: "t-tag" + (locked ? " native" : ""), text: locked ? "native" : "copy" }));
+  if (on && ti.threaded) top.append(threadBadge(id));
+  const main = el("div", { class: "target-main" }, top);
+  const handle = handleOf(a);
+  // A long one is cut in the user name, keeping the server.
+  if (handle) main.append(el("div", { class: "t-handle", text: fitHandle(handle, 36), title: a.handle }));
+  let reason = null;
+  if (why) {
+    reason = el("div", { class: "t-reason", id: "why-" + id, text: why });
+    main.append(reason);
   }
+
+  const row = el("div", {
+    class: "target-row p-" + a.type + (on ? "" : " off") + (locked ? " locked" : "") + (bar ? " barred" : "") + (why ? " unavailable" : ""),
+    "data-account": id, "data-type": a.type,
+    title: bar || null,
+    onclick: () => {
+      if (fixed) return;
+      on ? state.targets.delete(id) : state.targets.add(id);
+      state.chosen = true;
+      if (!state.targets.has(state.focus)) state.focus = state.targets.has(id) ? id : (selected()[0] || "");
+      toggled(id);
+    },
+  },
+    accountTile(a),
+    main,
+    tc ? el("span", { class: "t-count" + (tc.cls ? " " + tc.cls : ""), text: tc.text }) : null,
+    iosSwitch(on),
+  );
+  pressable(row, "switch");
+  row.setAttribute("aria-checked", on ? "true" : "false");
+  row.setAttribute("aria-label", accessibleName(id));
+  if (reason) row.setAttribute("aria-describedby", reason.id);
+  else if (bar) row.setAttribute("aria-description", bar);
+  if (fixed) row.setAttribute("aria-disabled", "true");
+  return row;
+}
+
+function renderChips() {
+  const c = $("#chips"); if (!c) return;
+  const hadFocus = c.contains(document.activeElement);
+  c.replaceChildren();
+  const list = accounts();
+  // What the empty states say, also told to assistive technology (a live
+  // region that outlives the redraws).
+  let live = $("#chips-status");
+  if (!live) { live = el("span", { id: "chips-status", class: "sr-only", role: "status" }); c.after(live); }
+  if (!list.length) {
+    const phase = accountsPhase.phase === "ready" ? "empty" : accountsPhase.phase;
+    c.dataset.state = phase;
+    let say;
+    if (phase === "loading") c.append(el("p", { class: "targets-empty muted", text: say = "Reading your accounts…" }));
+    else if (phase === "error") {
+      const again = el("button", { class: "ghost sm", type: "button", text: "Try again",
+        onclick: () => {
+          if (!reloadAccounts) return;
+          setAccountsPhase("loading");
+          reloadAccounts().catch(() => {}); // a failure shows the error again
+        } });
+      c.append(el("div", { class: "targets-empty" },
+        el("span", { class: "bad", text: say = "Couldn't read your accounts: " + accountsPhase.error }), again));
+      if (hadFocus) again.focus({ preventScroll: true }); // the keyboard stays on Try again
+    } else {
+      c.append(el("p", { class: "targets-empty muted",
+        text: say = "No accounts yet: set them in the server's environment (see the README), then restart it." }));
+    }
+    if (hadFocus && !c.contains(document.activeElement)) { c.tabIndex = -1; c.focus({ preventScroll: true }); }
+    live.textContent = say;
+    renderTargetsMeta();
+    renderThreadNotice();
+    return;
+  }
+  c.dataset.state = "ready";
+  // One group per network, in the accounts' order.
+  const groups = [];
+  for (const a of list) {
+    let g = groups.find(x => x.type === a.type);
+    if (!g) groups.push(g = { type: a.type, accts: [] });
+    g.accts.push(a);
+  }
+  for (const g of groups) {
+    const box = el("div", { class: "target-group p-" + g.type, role: "group", "aria-label": networkName(g.type) + " accounts" });
+    if (g.accts.length > 1) {
+      const head = el("div", { class: "tg-head" },
+        el("span", { class: "tg-name", text: networkName(g.type) }),
+        el("span", { class: "tg-n muted", text: `${g.accts.length} accounts` }));
+      // Select all: the accounts of the network that can be ticked.
+      const pickable = g.accts.filter(a => !unavailableWhy(a) && !barredWhy(a) && !(state.interaction && a.id === state.interaction.account));
+      if (pickable.length > 1) {
+        const allOn = pickable.every(a => state.targets.has(a.id));
+        head.append(el("button", { class: "ghost xs tg-all", type: "button",
+          text: allOn ? "Clear" : "Select all",
+          "aria-label": (allOn ? "Clear all " : "Select all ") + networkName(g.type) + " accounts",
+          onclick: () => {
+            for (const a of pickable) allOn ? state.targets.delete(a.id) : state.targets.add(a.id);
+            state.chosen = true;
+            if (!state.targets.has(state.focus)) state.focus = selected()[0] || "";
+            toggled(null);
+            document.querySelector(`#chips .target-group.p-${CSS.escape(g.type)} .tg-all`)?.focus({ preventScroll: true });
+          } }));
+      }
+      box.append(head);
+    }
+    for (const a of g.accts) box.append(targetRow(a));
+    c.append(box);
+  }
+  live.textContent = "";
+  // The keyboard was on Try again (or the loading line): on to the first row.
+  if (hadFocus && !c.contains(document.activeElement)) c.querySelector(".target-row")?.focus({ preventScroll: true });
   renderTargetsMeta();
   renderThreadNotice();
 }
 
 // refreshTargets updates each row's count + thread badge in place on every
-// keystroke (rebuilding rows would re-create the brand-mark <img>s and flicker).
+// keystroke (rebuilding rows would re-create the avatars and flicker).
 function refreshTargets() {
-  for (const p of ORDER) {
-    const row = $(`#chips .target-row.p-${p}`); if (!row) continue;
-    const on = state.platforms.has(p);
-    const tc = targetCount(p);
+  for (const row of document.querySelectorAll("#chips .target-row")) {
+    const id = row.dataset.account;
+    const on = state.targets.has(id);
     const cnt = row.querySelector(".t-count");
-    if (cnt) { cnt.textContent = tc.text; cnt.className = "t-count" + (tc.cls ? " " + tc.cls : ""); }
+    if (cnt) {
+      const tc = targetCount(id);
+      cnt.textContent = tc.text; cnt.className = "t-count" + (tc.cls ? " " + tc.cls : "");
+    }
     const top = row.querySelector(".target-top");
-    const ti = threadInfoFor(p);
+    const ti = threadInfoFor(id);
     let badge = top.querySelector(".thread-badge");
     if (on && ti.threaded) {
-      if (!badge) { badge = threadBadge(p); top.append(badge); }
+      if (!badge) { badge = threadBadge(id); top.append(badge); }
       else badge.querySelector(".tb-txt").textContent = `${ti.posts} posts`;
     } else if (badge) { badge.remove(); }
   }
@@ -168,35 +322,19 @@ function refreshTargets() {
 }
 
 function renderTargetsMeta() {
-  const m = $("#targets-meta"); if (m) m.textContent = `${state.platforms.size} selected`;
+  const n = state.targets.size;
+  const m = $("#targets-meta"); if (m) m.textContent = `${n} selected`;
   const aud = $("#compose-audience");
-  if (aud) aud.textContent = state.platforms.size ? `Public · mirror to ${state.platforms.size}` : "Public";
+  if (aud) aud.textContent = n ? `Public · mirror to ${n}` : "Public";
 }
 
-// shortId middle-truncates a long opaque identifier (a Nostr npub, hex key, …)
-// to "head…tail" so it stays glanceable instead of overflowing the row.
-function shortId(s, head = 10, tail = 5) {
-  return s && s.length > head + tail + 3 ? s.slice(0, head) + "…" + s.slice(-tail) : s;
-}
-// isOpaqueId reports whether s is an identifier (npub/nprofile/long hex) rather
-// than a human handle/name — those are the ones worth middle-truncating.
-function isOpaqueId(s) { return /^(npub1|nprofile1)/i.test(s) || /^[0-9a-f]{32,}$/i.test(s); }
-
-// applyIdentity swaps the placeholder author + per-platform handles for the
-// operator's real profile (from the accounts, GET /v1/accounts). Called once after boot;
-// failures leave the placeholders untouched.
+// applyIdentity swaps the placeholder author for the owner's profile (the
+// first account with a display name, accounts.js identity). Failures leave
+// the placeholder untouched.
 export function applyIdentity(id) {
   if (!id) return;
-  const acc = id.accounts || {};
-  for (const p of ORDER) {
-    const a = acc[p];
-    if (a && a.handle && PLATFORM_META[p]) {
-      // The Nostr npub is ~63 chars — truncate it (and any other opaque id) for display.
-      PLATFORM_META[p].handle = (p === "nostr" || isOpaqueId(a.handle)) ? shortId(a.handle) : a.handle;
-    }
-  }
   const nameEl = $("#compose-author");
-  if (nameEl && id.name) nameEl.textContent = isOpaqueId(id.name) ? shortId(id.name) : id.name;
+  if (nameEl && id.name) nameEl.textContent = isOpaque(id.name) ? shortId(id.name) : id.name;
   const av = $("#compose-avatar");
   if (av) {
     if (id.avatar) {
@@ -207,34 +345,33 @@ export function applyIdentity(id) {
       av.textContent = id.monogram;
     }
   }
-  renderChips(); // re-render target rows so the real handles show
 }
 
 // rerenderComposer redraws every composer view, after something they all
-// read changed (the accounts' limits arrived).
+// read changed (the accounts arrived: limits, handles, statuses).
 export function rerenderComposer() {
   renderChips(); renderCards(); renderMeta(); renderEditor(); renderPreview();
 }
 
-// showThread opens platform p's tab in the thread editor.
-function showThread(p) {
-  setTab(p);
+// showThread opens account id's tab in the thread editor.
+function showThread(id) {
+  setTab(id);
   document.getElementById("editor")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 // renderThreadNotice shows the calm informational banner above POST TO whenever
-// ≥1 selected target is a thread; tapping it opens that platform's tab.
+// ≥1 selected target is a thread; tapping it opens that account's tab.
 function renderThreadNotice() {
   const host = $("#threadnotice"); if (!host) return;
   host.innerHTML = "";
-  const threaded = ORDER.filter(p => state.platforms.has(p) && threadInfoFor(p).threaded);
+  const threaded = selected().filter(id => threadInfoFor(id).threaded);
   if (!threaded.length) return;
-  const names = threaded.map(p => `${META[p].label} (${threadInfoFor(p).posts})`).join(", ");
+  const names = threaded.map(id => `${nameOf(id)} (${threadInfoFor(id).posts})`).join(", ");
   const banner = pressable(el("div", { class: "thread-notice", onclick: () => showThread(threaded[0]) }));
   const ic = icon("thread", { size: 20, sw: 1.8 }); if (ic) banner.append(ic);
   banner.append(el("div", { class: "tn-body" },
     el("div", { class: "tn-title", text: `Auto-threading on ${names}` }),
-    el("div", { class: "tn-sub", text: "Each platform gets a thread that fits its limit: tap to see and shape it." }),
+    el("div", { class: "tn-sub", text: "Each account gets a thread that fits its limit: tap to see and shape it." }),
   ));
   const ch = icon("chevron", { size: 16 }); if (ch) banner.append(ch);
   host.append(banner);
@@ -245,27 +382,28 @@ function renderThreadNotice() {
 // ---------------------------------------------------------------------------
 
 // startInteraction puts Compose into interaction mode for a resolved source post
-// (src is a resolved source, see interact.js) and switches to the Compose tab.
-// action is "reply" | "quote".
+// (src is a resolved source, see interact.js: src.account is the account that
+// replies or quotes) and switches to the Compose tab. action is "reply" | "quote".
 export function startInteraction(src, action) {
+  if (!src.account) { flash("No " + networkName(src.platform) + " account is connected to " + action + " from"); return; }
   const begin = () => {
     state.interaction = {
-      action, platform: src.platform, ref: src.ref,
+      action, account: src.account, platform: src.platform, ref: src.ref,
       sourcePreview: src.preview, sourceURL: src.preview.web_url, sourceAuthor: src.preview.author_handle,
       sourceInput: src.input || src.preview.web_url, // what POST /v1/posts resolves again
       caps: src.caps,
       // restored on exit; preserve the pre-interaction selection across a nested
       // re-entry (starting a new interaction while already in one).
-      prevPlatforms: state.interaction && state.interaction.prevPlatforms
-        ? state.interaction.prevPlatforms : new Set(state.platforms),
+      prevTargets: state.interaction && state.interaction.prevTargets
+        ? state.interaction.prevTargets : new Set(state.targets),
     };
     state.master = "";
     state.breaks = [];
     state.tab = "shared";
     clearImages();
-    ORDER.forEach((p) => { state.ov[p] = defaultOv(p); }); // drop stale per-platform overrides
-    state.platforms = new Set([src.platform]);
-    state.focus = src.platform;
+    state.ov = byKey(); // drop stale per-account settings
+    setTargets([src.account]);
+    state.focus = src.account;
     detachDraft(); // the reply is a new post: it must not save over, or use up, the draft that was open
     const tab = document.querySelector('.tab[data-view="compose"]');
     if (tab) tab.click();
@@ -288,14 +426,14 @@ export function startInteraction(src, action) {
 
 // exitInteraction returns Compose to a normal new post.
 export function exitInteraction() {
-  const prev = state.interaction && state.interaction.prevPlatforms;
+  const prev = state.interaction && state.interaction.prevTargets;
   state.interaction = null;
   state.master = "";
   state.breaks = [];
   state.tab = "shared";
   clearImages();
-  state.platforms = prev && prev.size ? new Set(prev) : defaultPlatforms(ORDER);
-  if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
+  setTargets(prev && prev.size ? [...prev].filter(id => byId(id)) : defaultTargets());
+  if (!state.targets.has(state.focus)) state.focus = selected()[0] || "";
   detachDraft(); // what follows is a new post, not the draft the reply came from
   renderImages();
   renderInteractionUI();
@@ -313,10 +451,11 @@ export function detachDraft() {
   document.dispatchEvent(new Event("draft-detached"));
 }
 
-// loadDraft hydrates Compose from a saved draft spec (the server's draftSpecJSON
-// shape — master_text, platforms, overrides, interaction, plus a media[] array
-// of already-uploaded blossom_url references). Passing { text, lang } is
-// supported as a legacy shape for the History translate-to-Compose flow.
+// loadDraft hydrates Compose from a version-3 spec (snapshot.js: master_text,
+// breaks, targets, overrides and anchors by account id, a resolved
+// interaction, plus a media[] array of already-uploaded references): a draft
+// read back (drafts.js specFromDraft) or a recovery snapshot upgraded first.
+// { text, lang } is the History translate-to-Compose shape.
 export function loadDraft(input) {
   if (!input) return;
 
@@ -332,15 +471,17 @@ export function loadDraft(input) {
       state.tab = "shared";
       // The settings, schedule and tags were made for the post it replaces:
       // a translation starts from the defaults, like a new post.
-      ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
+      state.ov = byKey();
       clearImages();
       const sched = $("#schedat"); if (sched) sched.value = "";
       if (input.lang) {
-        state.ov.bluesky.langs = input.lang;
-        state.ov.mastodon.language = input.lang;
+        for (const a of accounts()) {
+          if (a.type === "bluesky") ovOf(a.id).langs = input.lang;
+          if (a.type === "mastodon") ovOf(a.id).language = input.lang;
+        }
       }
-      state.platforms = defaultPlatforms(ORDER);
-      if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
+      setTargets(defaultTargets());
+      if (!state.targets.has(state.focus)) state.focus = selected()[0] || "";
       detachDraft();
       state.dirty = true;
       const tab = document.querySelector('.tab[data-view="compose"]');
@@ -353,44 +494,28 @@ export function loadDraft(input) {
       return;
     }
 
-    // full spec shape
+    // full spec shape (version 3; snapshot.js upgrades older ones)
     state.interaction = input.interaction || null;
-    // Before v2 (a recovered snapshot from an older app) breaks were lines
-    // of "---" in the text and media went by part number.
-    const old = input.v !== 2;
-    const conv = old ? fromMarkers(input.master_text || "") : null;
-    state.master = old ? conv.text : input.master_text || "";
-    state.breaks = old ? conv.breaks : (input.breaks || []).filter(Number.isInteger);
+    state.master = input.master_text || "";
+    state.breaks = (input.breaks || []).filter(Number.isInteger);
     state.tab = "shared";
     clearImages();
-    state.platforms = input.platforms && input.platforms.length ? new Set(input.platforms) : defaultPlatforms(ORDER);
-    if (!state.platforms.has(state.focus)) state.focus = [...state.platforms][0] || "bluesky";
-    // reset overrides to defaults, then apply saved overrides
-    ORDER.forEach(p => { state.ov[p] = defaultOv(p); });
-    if (input.overrides) {
-      for (const p of Object.keys(input.overrides)) {
-        if (!state.ov[p]) continue;
-        Object.assign(state.ov[p], input.overrides[p]);
-        const ov = state.ov[p];
-        // Snapshots written before the keys matched state.ov.
-        for (const [old, key] of [["bluesky_reply", "reply"], ["bluesky_disable_quotes", "disable_quotes"], ["threads_reply_control", "reply_control"]]) {
-          if (old in ov) { if (!(key in input.overrides[p])) ov[key] = ov[old]; delete ov[old]; }
-        }
-        if (old && typeof ov.text === "string") {
-          const own = fromMarkers(ov.text);
-          ov.text = own.text;
-          ov.breaks = own.breaks.length ? own.breaks : null;
-        }
-        if (ov.text != null && typeof ov.text !== "string") ov.text = null;
-        if (!Array.isArray(ov.breaks)) ov.breaks = null;
-        if (!ov.mediaAt || typeof ov.mediaAt !== "object" || ov.text == null) ov.mediaAt = null;
-      }
-      // buildSpec serializes bluesky.langs as a JSON array; the editor input
-      // holds it as a comma-separated string. Convert back so the field round-
-      // trips cleanly through save → load → save.
-      if (state.ov.bluesky && Array.isArray(state.ov.bluesky.langs)) {
-        state.ov.bluesky.langs = state.ov.bluesky.langs.join(",");
-      }
+    // The accounts it names that are still here (the caller said which
+    // weren't: `dropped`). The defaults only when it named none: when every
+    // one it named is gone, nothing is selected, so Post can't go somewhere
+    // the owner didn't pick. A reply or quote keeps its acting account.
+    let named = (input.targets || []).filter(id => byId(id));
+    const actor = input.interaction && input.interaction.account;
+    if (actor) named = [actor, ...named.filter(id => id !== actor)];
+    const hadTargets = (input.targets || []).length > 0 || (input.dropped || []).length > 0;
+    setTargets(named.length || hadTargets ? named : defaultTargets());
+    if (!state.targets.has(state.focus)) state.focus = selected()[0] || "";
+    // Each account's network defaults, then its saved settings (checked by
+    // snapshot.js cleanOv).
+    state.ov = byKey();
+    for (const [id, ov] of Object.entries(input.overrides || {})) {
+      if (!byId(id) || !ov || typeof ov !== "object") continue;
+      Object.assign(ovOf(id), ov);
     }
     // images come from input.media (hydrated draft) — already-uploaded references
     state.images = (input.media || []).map(m => ({
@@ -407,11 +532,10 @@ export function loadDraft(input) {
       id: m.client_id || m.id || newKey(),
     }));
     bumpImagesGen();
-    // Media positions, by attachment id (before v2: part numbers).
+    // Media positions, by attachment id.
     state.anchors = {};
     for (const [id, v] of Object.entries(input.anchors || {})) {
-      if (!Number.isInteger(v) || v <= 0) continue;
-      state.anchors[id] = old ? conv.parts[Math.min(v, conv.parts.length - 1)] : v;
+      if (Number.isInteger(v) && v > 0) state.anchors[id] = v;
     }
     normalizeLines();
     state.activeDraftId = input.id || null;
@@ -450,8 +574,7 @@ function normalizeLines() {
   state.master = sh.text;
   state.breaks = state.breaks.map(sh.move);
   for (const k of Object.keys(state.anchors)) state.anchors[k] = sh.move(state.anchors[k]);
-  for (const p of ORDER) {
-    const ov = state.ov[p];
+  for (const ov of Object.values(state.ov)) {
     if (ov.text == null) {
       if (ov.breaks) ov.breaks = ov.breaks.map(sh.move);
       continue;
@@ -482,7 +605,7 @@ function renderSrcBanner() {
   const verb = it.action === "quote" ? "Quoting" : "Replying to";
   host.append(el("div", { class: "srcb-head" },
     el("span", { class: "srcb-verb", text: verb + " " }),
-    el("span", { class: "srcb-author", text: it.sourceAuthor || it.platform }),
+    el("span", { class: "srcb-author", text: it.sourceAuthor || networkName(it.platform) }),
     el("button", { class: "srcb-x", type: "button", text: "← cancel", onclick: exitInteraction }),
   ));
   host.append(el("div", { class: "srcb-text", text: (it.sourcePreview && it.sourcePreview.text) || "" }));
@@ -493,11 +616,11 @@ function renderSrcBanner() {
     host.append(g);
   }
   const foot = el("div", { class: "srcb-foot" });
-  const plat = (META[it.platform] && META[it.platform].label) || it.platform;
+  const actor = nameOf(it.account);
   foot.append(el("span", { class: "srcb-hint muted",
     text: it.action === "quote"
-      ? plat + " gets a native quote; toggle other targets to also post a copy there."
-      : "A reply goes only to " + plat + "; quote the post to share it elsewhere." }));
+      ? actor + " quotes it; tick accounts on other networks to also post a copy there."
+      : actor + " replies; a reply goes only to " + networkName(it.platform) + ": quote the post to share it elsewhere." }));
   if (it.sourceURL) foot.append(el("a", { class: "srcb-link", href: it.sourceURL, target: "_blank", rel: "noopener", text: "open original ↗" }));
   host.append(foot);
   // The action is offered only when allowed (interact.js); a note it came
@@ -512,45 +635,41 @@ function renderSrcBanner() {
 
 function renderCards() {
   const c = $("#cards"); c.innerHTML = "";
-  for (const p of ORDER) {
-    if (!state.platforms.has(p)) continue;
-    c.append(overrideCard(p));
-  }
+  for (const id of selected()) c.append(overrideCard(id));
   renderMeta();
 }
 
-// refreshCounts updates the per-platform counts (and any open mirroring card's
+// refreshCounts updates the per-account counts (and any open mirroring card's
 // textarea) in place on every master keystroke, instead of rebuilding all the
 // override cards — which is expensive and would collapse expanded cards as you
 // type. Edited cards track their own text, so they're left untouched.
 function refreshCounts() {
-  for (const p of ORDER) {
-    if (!state.platforms.has(p)) continue;
-    const card = $(`#cards .ocard.p-${p}`);
-    if (!card) continue;
-    const limit = limitFor(p, cwOf(p));
-    const n = countFor(p, effectivePostedText(p)); // full posted text (reproduction on fan-out) — matches the preview
+  for (const card of document.querySelectorAll("#cards .ocard")) {
+    const id = card.dataset.account;
+    if (!state.targets.has(id)) continue;
+    const limit = limitFor(id, cwOf(id));
+    const n = countFor(id, effectivePostedText(id)); // full posted text (reproduction on fan-out) — matches the preview
     const span = card.querySelector(".cnt");
     if (span) { span.textContent = limit ? `${n}/${limit}` : "∞"; span.className = counterClass(n, limit); }
     const snip = card.querySelector(".ocard-snip");
-    if (snip) snip.textContent = wordingNote(p);
+    if (snip) snip.textContent = wordingNote(id);
   }
 }
 
-// wordingNote says where platform p's text comes from.
-function wordingNote(p) {
-  const ov = state.ov[p];
+// wordingNote says where account id's text comes from.
+function wordingNote(id) {
+  const ov = ovOf(id);
   if (ov.text != null) return `own text: "${ov.text.slice(0, 40)}"`;
   return ov.breaks ? "shared text · own breaks" : "mirrors the shared text";
 }
 
-// overrideCard is platform p's options. Its wording and breaks are edited in
-// the thread editor (its tab there).
-function overrideCard(p) {
-  const ov = state.ov[p], meta = META[p];
+// overrideCard is account id's options (its network's). Its wording and
+// breaks are edited in the thread editor (its tab there).
+function overrideCard(id) {
+  const p = typeOf(id), ov = ovOf(id);
   const edited = ov.text != null || ov.breaks != null;
-  const limit = limitFor(p, cwOf(p)), n = countFor(p, effectivePostedText(p));
-  const card = el("div", { class: "ocard p-" + p + (edited ? " edited" : "") });
+  const limit = limitFor(id, cwOf(id)), n = countFor(id, effectivePostedText(id));
+  const card = el("div", { class: "ocard p-" + p + (edited ? " edited" : ""), "data-account": id });
 
   // collapsed summary row (always visible, clickable to expand)
   const cnt = el("span", { class: counterClass(n, limit), text: limit ? `${n}/${limit}` : "∞" });
@@ -559,15 +678,16 @@ function overrideCard(p) {
   const summary = el("button", { class: "ocard-summary", type: "button",
     onclick: () => {
       const open = body.hidden; body.hidden = !open; caret.textContent = open ? "▾" : "▸";
-      if (open) { state.focus = p; renderPreview(); }
+      if (open) { state.focus = id; renderPreview(); }
     } },
     caret,
-    el("span", { class: "ocard-name", text: meta.label }),
+    el("span", { class: "ocard-name", text: nameOf(id) }),
     cnt,
-    el("span", { class: "ocard-snip muted", text: wordingNote(p) }),
+    el("span", { class: "ocard-snip muted", text: wordingNote(id) }),
   );
-  const wording = el("button", { class: "ghost xs", type: "button", text: `${meta.label}'s thread and wording →`,
-    onclick: () => showThread(p) });
+  summary.setAttribute("aria-label", accessibleName(id) + " options");
+  const wording = el("button", { class: "ghost xs", type: "button", text: `${nameOf(id)}'s thread and wording →`,
+    onclick: () => showThread(id) });
   body.append(fieldsFor(p, ov, () => { refreshCounts(); refreshTargets(); renderMeta(); renderPreview(); }), wording);
 
   card.append(summary, body);
@@ -915,8 +1035,12 @@ function renderMeta() {
   const sum = $("#summary");
   if (!sum) return;
   sum.innerHTML = "";
-  const plats = [...state.platforms];
-  if (plats.length === 0) { sum.append(el("span", { class: "bad", text: "⚠ no targets selected" })); return; }
+  const plats = selected();
+  if (plats.length === 0) {
+    // Before the accounts are read, the rows say so (loading or the error).
+    if (accountsLoaded()) sum.append(el("span", { class: "bad", text: "⚠ no accounts selected" }));
+    return;
+  }
   sum.append(el("span", { text: `→ ${plats.length} target${plats.length > 1 ? "s" : ""} · ${state.images.length} image${state.images.length === 1 ? "" : "s"}` }));
   // A refusal the server would give on Post (a 422), from the last plan.
   const err = planError();
@@ -971,7 +1095,7 @@ export function resetComposer() {
   state.anchors = {};
   state.tab = "shared";
   state.interaction = null;
-  for (const p of Object.keys(state.ov)) state.ov[p] = defaultOv(p);
+  state.ov = byKey();
   const sched = $("#schedat"); if (sched) { sched.value = ""; updateSched(); }
   // A posted draft's tags don't carry over to the next one.
   const tags = document.querySelector("#draft-tags-input .tag-chips"); if (tags) tags.replaceChildren();
@@ -1010,9 +1134,9 @@ export async function sendPost(body, slot = "compose") {
   return post;
 }
 
-// missingAccounts names the selected platforms with no account to post from.
-function missingAccounts() {
-  return ORDER.filter(p => state.platforms.has(p) && !accountFor(p)).map(p => META[p].label);
+// unavailable names the selected accounts that can't be posted to now.
+function unavailable() {
+  return selected().filter(id => !isConnected(byId(id))).map(id => nameOf(id));
 }
 
 // mediaReady waits for the attachments' uploads; false (with a note) when
@@ -1083,8 +1207,9 @@ async function doPost() {
 }
 
 // submit checks what the server would refuse before posting: a video still
-// processing, a platform with no account. Text over a platform's limit is
-// not one: the server threads it (the preview shows how).
+// processing, no account selected, an account that can't be posted to. Text
+// over an account's limit is not one: the server threads it (the preview
+// shows how).
 async function submit() {
   if (state.images.some(i => i.video && i.phase !== "ready")) {
     flash(state.images.some(i => i.video && i.phase === "failed")
@@ -1092,21 +1217,23 @@ async function submit() {
       : "Wait for the video to finish processing");
     return;
   }
-  if (state.platforms.size === 0) { flash("Select at least one platform."); return; }
-  let missing = missingAccounts();
-  if (missing.length && reloadAccounts) {
-    // The accounts may have failed to load (a blip at start), or one was
-    // added since: ask again. The button waits, so a second tap can't post.
+  let missing = unavailable();
+  if ((!state.targets.size && !accountsLoaded()) || missing.length) {
+    // The accounts may have failed to load (a blip at start: nothing could
+    // be selected), or one came back since: ask again (main.js then selects
+    // the defaults if nothing was chosen). The button waits, so a second tap
+    // can't post.
     const btn = $("#submit");
-    if (btn.disabled) return;
+    if (btn.disabled || !reloadAccounts) return;
     btn.disabled = true;
     try { await reloadAccounts(); } catch (e) { flash("Couldn't read your accounts: " + e.message); return; }
     finally { btn.disabled = false; }
-    missing = missingAccounts();
+    missing = unavailable();
   }
+  if (!state.targets.size) { flash("Select at least one account."); return; }
   if (missing.length) {
     const many = missing.length > 1;
-    flash(missing.join(", ") + (many ? " have" : " has") + " no connected account: untick " + (many ? "them" : "it") + " to post to the rest");
+    flash(missing.join(", ") + (many ? " aren't" : " isn't") + " connected: untick " + (many ? "them" : "it") + " to post to the rest");
     return;
   }
   doPost();
@@ -1178,7 +1305,7 @@ export function openProgressModal(postId, first) {
     for (const t of (post.targets || [])) {
       tree.append(el("div", { class: "trow lvl1 st-" + progressClass(t.status) },
         el("span", { class: "ic" }),
-        el("span", { text: (META[t.type] && META[t.type].label) || t.type }),
+        el("span", { text: byId(t.account) ? nameOf(t.account) : networkName(t.type) }),
         el("span", { class: "meta", text: targetDetail(t) })));
       const ds = (t.items && t.items[0] && t.items[0].deliveries) || [];
       for (const d of ds) {
