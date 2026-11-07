@@ -9,6 +9,7 @@ import (
 
 	"github.com/geofox/publisher/internal/config"
 	"github.com/geofox/publisher/internal/localauth"
+	"github.com/geofox/publisher/internal/secrets"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -17,6 +18,8 @@ import (
 // database. Whoever can run them already controls the instance.
 
 const cliUsage = `usage:
+  publisher keygen                            print a new master key (PUBLISHER_MASTER_KEY)
+                                              and how to give it to the container
   publisher setup-url                         print a new first-run setup link
   publisher owner reset-login [--revoke-tokens]
                                               remove every passkey, the password and
@@ -29,6 +32,9 @@ const cliUsage = `usage:
 // args name none (the server starts).
 func runCLI(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) (code int, handled bool) {
 	switch {
+	case len(args) == 1 && args[0] == "keygen":
+		cliKeygen(stdout)
+		return 0, true
 	case len(args) == 1 && args[0] == "setup-url":
 		return cliSetupURL(ctx, getenv, stdout, stderr), true
 	case len(args) >= 2 && args[0] == "owner" && args[1] == "reset-login":
@@ -41,11 +47,39 @@ func runCLI(ctx context.Context, args []string, getenv func(string) string, stdo
 			revoke = true
 		}
 		return cliResetLogin(ctx, getenv, revoke, stdout, stderr), true
-	case len(args) >= 1 && (args[0] == "setup-url" || args[0] == "owner" || args[0] == "help" || args[0] == "-h" || args[0] == "--help"):
+	case len(args) >= 1 && (args[0] == "keygen" || args[0] == "setup-url" || args[0] == "owner" || args[0] == "help" || args[0] == "-h" || args[0] == "--help"):
 		fmt.Fprint(stderr, cliUsage)
 		return 2, true
 	}
 	return 0, false
+}
+
+// cliKeygen prints a new master key and how to set it. It needs no
+// configuration or database: run it anywhere (docker run --rm <image>
+// /publisher keygen).
+func cliKeygen(stdout io.Writer) {
+	key := secrets.Generate()
+	fmt.Fprintf(stdout, `A new master key. Keep it secret, and keep a copy somewhere safe: without
+it, the credentials saved in the app can't be read (a backup of the
+database needs the key that was set when it was taken).
+
+  %s
+
+Recommended, as a Docker secret file (not shown by docker inspect):
+
+  printf '%%s' '%s' > publisher_master_key && chmod 600 publisher_master_key
+
+  services:
+    publisher:
+      environment:
+        PUBLISHER_MASTER_KEY_FILE: /run/secrets/publisher_master_key
+      secrets: [publisher_master_key]
+  secrets:
+    publisher_master_key:
+      file: ./publisher_master_key
+
+Or as a variable: PUBLISHER_MASTER_KEY=%s
+`, key, key, key)
 }
 
 // cliOpen loads the configuration and opens the database for a command

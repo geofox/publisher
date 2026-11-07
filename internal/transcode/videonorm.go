@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -79,6 +80,7 @@ func (t *tailWriter) Write(p []byte) (int, error) {
 // fractions in (0,1] parsed from ffmpeg's -progress stream.
 func Normalize(ctx context.Context, ffmpegPath, in, out string, p NormParams, progress func(float64)) error {
 	cmd := exec.CommandContext(ctx, ffmpegPath, normalizeArgs(in, out, p)...)
+	cmd.Env = subprocessEnv(os.Environ())
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err

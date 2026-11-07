@@ -264,6 +264,9 @@ type EnvVar struct {
 	Name string `json:"name"`
 	// Required: an account from the environment needs it.
 	Required bool `json:"required,omitempty"`
+	// Secret: the variable holds a credential. The server removes it from
+	// its environment once read, so no subprocess inherits it.
+	Secret bool `json:"secret,omitempty"`
 }
 
 // EnvAccount is one account the environment configures.

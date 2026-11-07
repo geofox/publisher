@@ -104,6 +104,13 @@ type Config struct {
 	SetupTokenFile string
 }
 
+// SecretVars are the configuration's credential variables (a webhook URL
+// can carry its secret in the path). The server removes them, and every
+// other credential variable, from its environment once read, so no
+// subprocess inherits them.
+var SecretVars = []string{"OIDC_CLIENT_SECRET", "DEEPL_API_KEY", "PUBLIC_FEED_TOKEN",
+	"FEED_WEBHOOK_URL", "FEED_WEBHOOK_TOKEN", "ALERT_WEBHOOK_URL", "ALERT_WEBHOOK_PASS"}
+
 // Auth modes (AUTH_MODE).
 const (
 	AuthOIDC  = "oidc"

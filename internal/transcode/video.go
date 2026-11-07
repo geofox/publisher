@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -43,6 +44,7 @@ type VideoMeta struct {
 func Probe(ctx context.Context, ffprobePath, file string) (VideoMeta, error) {
 	cmd := exec.CommandContext(ctx, ffprobePath,
 		"-v", "error", "-print_format", "json", "-show_streams", "-show_format", file)
+	cmd.Env = subprocessEnv(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() != nil {

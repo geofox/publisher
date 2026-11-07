@@ -20,7 +20,7 @@ var _ destination.EnvSource = Driver{}
 
 // EnvVars implements destination.EnvSource.
 func (Driver) EnvVars() []destination.EnvVar {
-	vars := []destination.EnvVar{{Name: "NSEC_HEX", Required: true}}
+	vars := []destination.EnvVar{{Name: "NSEC_HEX", Required: true, Secret: true}}
 	for _, n := range []string{"OWNER_PUBKEY", "NIP65_BOOTSTRAP_RELAY", "FALLBACK_RELAYS", "PRIMARY_RELAYS",
 		"NOSTR_PRIMARY_FANOUT", "POW_DIFFICULTY_DEFAULT", "POW_DIFFICULTY_MAX", "SYNC_RELAYS"} {
 		vars = append(vars, destination.EnvVar{Name: n})

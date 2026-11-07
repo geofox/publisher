@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,7 @@ import (
 	"github.com/geofox/publisher/internal/metrics"
 	"github.com/geofox/publisher/internal/notify"
 	"github.com/geofox/publisher/internal/relaysync"
+	"github.com/geofox/publisher/internal/secrets"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/transcode"
 	"github.com/geofox/publisher/internal/translate"
@@ -64,13 +66,16 @@ func main() {
 	// the process.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
-	os.Exit(run(ctx, runOptions{Getenv: os.Getenv, Stopping: stop}))
+	os.Exit(run(ctx, runOptions{Getenv: os.Getenv, Unsetenv: os.Unsetenv, Stopping: stop}))
 }
 
 // runOptions are run's inputs besides its context.
 type runOptions struct {
 	// Getenv reads the configuration (os.Getenv; a test's map).
 	Getenv func(string) string
+	// Unsetenv, if set, removes a credential variable once it is read
+	// (os.Unsetenv), so no subprocess inherits it.
+	Unsetenv func(string) error
 	// Started, if set, is told the address the server listens on.
 	Started func(addr string)
 	// Stopping, if set, is called when the context ends, before the
@@ -87,7 +92,16 @@ func run(ctx context.Context, o runOptions) int {
 	// config and the drivers, is reported at once.
 	cfg, cfgErr := config.LoadFrom(getenv)
 	env, envErr := drivers.EnvAccounts(getenv)
-	startErrs := []error{cfgErr, envErr}
+	keys, keyWarnings, keyErr := secrets.FromEnv(getenv)
+	startErrs := []error{cfgErr, envErr, keyErr}
+	// Every credential is in memory now: take them out of the environment.
+	// (The kernel's copy, /proc/<pid>/environ, keeps the values it started
+	// with; only the same user or root can read it.)
+	if o.Unsetenv != nil {
+		for _, n := range slices.Concat(secrets.EnvVars(), config.SecretVars, drivers.SecretEnvVars()) {
+			_ = o.Unsetenv(n)
+		}
+	}
 	// Media uploads are signed with the environment's Nostr key until the
 	// media store gets a key of its own (part D).
 	mediaKey, mediaPub, haveSigner := drivers.EnvMediaSigner(env)
@@ -100,6 +114,10 @@ func run(ctx context.Context, o runOptions) int {
 	}
 	setupLogger(cfg.LogLevel)
 	metrics.SetBuildInfo(version, commit)
+	for _, w := range keyWarnings {
+		slog.Warn("master key: " + w)
+	}
+	_ = keys // used by the account store (part C)
 
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {

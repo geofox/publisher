@@ -40,6 +40,24 @@ func EnvAccounts(getenv func(string) string) ([]EnvAccount, error) {
 	return out, errors.Join(errs...)
 }
 
+// SecretEnvVars are the credential variables every registered driver
+// reads (EnvVar.Secret).
+func SecretEnvVars() []string {
+	Register()
+	var out []string
+	for _, typ := range destination.TypesInOrder() {
+		d, _ := destination.Lookup(typ)
+		if src, ok := d.(destination.EnvSource); ok {
+			for _, v := range src.EnvVars() {
+				if v.Secret {
+					out = append(out, v.Name)
+				}
+			}
+		}
+	}
+	return out
+}
+
 // EnvMediaSigner returns the key that signs Blossom uploads in an
 // env-configured deployment: the env Nostr account's (part D gives the
 // media store a key of its own).

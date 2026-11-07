@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/geofox/publisher/internal/secrets"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -192,5 +194,58 @@ func TestCLIRefusesAnIPPublicURL(t *testing.T) {
 	env := cliEnv{"DB_PATH": filepath.Join(t.TempDir(), "p.db"), "PUBLIC_URL": "https://192.0.2.7"}
 	if code, out, errs := env.run(t, "setup-url"); code != 2 || out != "" || !strings.Contains(errs, "PUBLIC_URL") {
 		t.Errorf("setup-url = %d %q %q", code, out, errs)
+	}
+}
+
+func TestCLIKeygen(t *testing.T) {
+	code, out, _ := cliEnv{}.run(t, "keygen")
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	m := regexp.MustCompile(`(?m)^  ([A-Za-z0-9+/]{43}=)$`).FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("no key in:\n%s", out)
+	}
+	if _, err := secrets.ParseMasterKey(m[1]); err != nil {
+		t.Errorf("key doesn't parse: %v", err)
+	}
+	if !strings.Contains(out, "PUBLISHER_MASTER_KEY_FILE: /run/secrets/publisher_master_key") {
+		t.Errorf("no compose snippet:\n%s", out)
+	}
+	_, out2, _ := cliEnv{}.run(t, "keygen")
+	if out2 == out {
+		t.Error("two keygens printed the same key")
+	}
+}
+
+// The server takes every credential variable out of its environment once
+// read, and a malformed master key stops it.
+func TestRunUnsetsCredentialVariables(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	env := map[string]string{"PORT": "0", "DB_PATH": filepath.Join(t.TempDir(), "p.db"), "AUTH_MODE": "proxy",
+		"PUBLISHER_MASTER_KEY": secrets.Generate(), "MASTODON_TOKEN": "tok", "MASTODON_BASE_URL": "https://m.example",
+		"DEEPL_API_KEY": "deepl", "ALERT_WEBHOOK_URL": "https://hooks.example/secret-path"}
+	var mu sync.Mutex
+	unset := map[string]bool{}
+	done := make(chan int)
+	go func() {
+		done <- run(ctx, runOptions{Getenv: func(k string) string { return env[k] },
+			Unsetenv: func(k string) error { mu.Lock(); unset[k] = true; mu.Unlock(); return nil },
+			Started:  func(string) { cancel() }})
+	}()
+	if code := <-done; code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	for _, k := range []string{"PUBLISHER_MASTER_KEY", "PUBLISHER_MASTER_KEY_FILE", "MASTODON_TOKEN", "DEEPL_API_KEY", "ALERT_WEBHOOK_URL", "NSEC_HEX", "BLUESKY_APP_PASSWORD", "THREADS_ACCESS_TOKEN", "OIDC_CLIENT_SECRET"} {
+		if !unset[k] {
+			t.Errorf("%s not unset", k)
+		}
+	}
+	if unset["MASTODON_BASE_URL"] || unset["PORT"] {
+		t.Error("a non-secret variable was unset")
+	}
+	bad := map[string]string{"PORT": "0", "DB_PATH": filepath.Join(t.TempDir(), "p.db"), "AUTH_MODE": "proxy", "PUBLISHER_MASTER_KEY": "short"}
+	if code := run(context.Background(), runOptions{Getenv: func(k string) string { return bad[k] }}); code != 2 {
+		t.Errorf("malformed key: exit %d, want 2", code)
 	}
 }
