@@ -105,3 +105,18 @@ func TestCeremonyBeginsAndFailuresAreLimited(t *testing.T) {
 		t.Fatalf("another address: %v", err)
 	}
 }
+
+// A ceremony too large for the cookie is refused, whether its plain form
+// already is or only the sealed one would be.
+func TestCeremonyTooLargeIsRefused(t *testing.T) {
+	c := NewCeremonies()
+	for name, n := range map[string]int{"plain": maxSealedLen + 1, "sealed": maxSealedLen * 3 / 4} {
+		cer := ceremony{Purpose: PurposeLogin, Data: webauthn.SessionData{Challenge: strings.Repeat("c", n)}}
+		if _, err := c.start(fmt.Sprintf("192.0.2.%d", len(name)), cer); !errors.Is(err, errCeremonyTooLarge) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := c.start("192.0.2.9", ceremony{Purpose: PurposeLogin, Data: webauthn.SessionData{Challenge: "ch"}}); err != nil {
+		t.Fatal(err)
+	}
+}

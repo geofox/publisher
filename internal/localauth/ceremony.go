@@ -98,16 +98,23 @@ func (c *Ceremonies) start(addr string, cer ceremony) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	nonce := make([]byte, c.aead.NonceSize(), c.aead.NonceSize()+len(plain)+c.aead.Overhead())
+	// Sealing only adds to the length: a ceremony longer than the cookie
+	// can hold is refused before it is sealed.
+	if len(plain) > maxSealedLen {
+		return "", errCeremonyTooLarge
+	}
+	nonce := make([]byte, c.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
 	sealed := base64.RawURLEncoding.EncodeToString(c.aead.Seal(nonce, nonce, plain, nil))
 	if len(sealed) > maxSealedLen {
-		return "", errors.New("passkey request too large for a cookie")
+		return "", errCeremonyTooLarge
 	}
 	return sealed, nil
 }
+
+var errCeremonyTooLarge = errors.New("passkey request too large for a cookie")
 
 // open returns the sealed ceremony, if it is alive, unused, and was begun
 // for purpose with this binding (and operation, for reauth). It doesn't
