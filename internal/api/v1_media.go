@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/transcode"
 	"github.com/geofox/publisher/internal/videojob"
@@ -381,6 +382,9 @@ func (a *API) v1UploadMedia(w http.ResponseWriter, r *http.Request) {
 	res, err := a.media.Process(r.Context(), file.data, file.mime)
 	if err != nil {
 		slog.WarnContext(r.Context(), "v1: store image", "err", err)
+		if a.mediaStoreProblem(w, r, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "heic convert") {
 			invalid(w, r, []fieldError{{Pointer: "/file", Code: "unreadable", Detail: "the HEIC image could not be converted"}})
 			return
@@ -407,7 +411,7 @@ func (a *API) receiveUpload(w http.ResponseWriter, r *http.Request, declared str
 	br := bufio.NewReaderSize(body, 512)
 	head, _ := br.Peek(512)
 	mt := sniffType(declared, head)
-	if a.media == nil && (uploadImageTypes[mt] || strings.HasPrefix(mt, "video/")) {
+	if !a.media.Enabled() && (uploadImageTypes[mt] || strings.HasPrefix(mt, "video/")) {
 		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, noMediaStore)
 		return nil
 	}
@@ -525,15 +529,35 @@ func (a *API) uploadReadProblem(w http.ResponseWriter, r *http.Request, err erro
 	problem(w, r, http.StatusBadRequest, codeUnreadableUpload, "the upload could not be read: "+err.Error())
 }
 
+// mediaStoreProblem answers an upload refused because no media store is
+// set, the one set can't be used, or this server's disk has no room (the
+// reasons are Publisher's own words, never the store's); false for any
+// other error.
+func (a *API) mediaStoreProblem(w http.ResponseWriter, r *http.Request, err error) bool {
+	var ue *media.UnusableError
+	var ns *media.NoSpaceError
+	switch {
+	case errors.Is(err, media.ErrNoStore):
+		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, noMediaStore)
+	case errors.As(err, &ue):
+		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "media can't be uploaded now: "+ue.Reason)
+	case errors.As(err, &ns):
+		problem(w, r, http.StatusInsufficientStorage, codeNoSpace, ns.Error())
+	default:
+		return false
+	}
+	return true
+}
+
+// noMediaStore answers a media request on a server without a media store.
+const noMediaStore = "no media store is set: choose one in Settings, Media (or set BLOSSOM_URL)"
+
 // v1CompressMedia re-encodes an image with a preset and answers the bytes;
 // nothing is stored. "convert" turns HEIC into JPEG.
-// noMediaStore answers a media request on a server without a media store.
-const noMediaStore = "no media store is configured (set BLOSSOM_URL)"
-
 func (a *API) v1CompressMedia(w http.ResponseWriter, r *http.Request) {
 	const limit = "images are at most 64 MiB"
 	// It stores nothing, but an image made smaller here is one to upload.
-	if a.media == nil {
+	if !a.media.Enabled() {
 		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, noMediaStore)
 		return
 	}

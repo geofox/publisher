@@ -75,7 +75,7 @@ func run() error {
 	// https Blossom server.
 	blossom := newFakeBlossom(base + "/__blossom")
 	sk := gonostr.Generate()
-	mp := media.New(base+"/__blossom", sk, gonostr.GetPublicKey(sk))
+	mp := media.New(media.Static(&media.Blossom{URL: base + "/__blossom", Key: sk, HTTP: media.NewStreamClient()}))
 	mp.Lookup = st.LookupMediaURL
 
 	rec := newRecorder()

@@ -164,9 +164,16 @@ type API struct {
 	// the languages, the translation key and the feed token are read from
 	// it at each request (in place of the three fields above).
 	Settings *settings.Service
+	// DiskMedia is this server's disk media store: its media are served
+	// at /media/ and checked for URL-transport accounts, whatever store is
+	// set now. nil: none.
+	DiskMedia *media.Local
 	// TestSettings sends a settings group's test (POST
 	// /v1/settings/{group}:test); nil: no tests.
 	TestSettings SettingsTester
+	// System is the bootstrap and tuning variables Settings, System
+	// shows (GET /v1/instance/system), secrets only as set; nil: none.
+	System func() []SystemValue
 	// NewTranslator makes a translator for a key (nil: DeepL).
 	NewTranslator func(key string) Translator
 	deepl         atomic.Pointer[deeplFor]
@@ -278,6 +285,7 @@ func (a *API) Routes() http.Handler {
 		a.mountLocal(mux)
 	}
 	a.mountV1(mux)
+	mux.HandleFunc("/media/", a.serveMedia)
 	mux.Handle("/", web.Handler())
 	return withSecurityHeaders(a.withHostGuard(a.withCSRFGuard(a.withGates(mux))))
 }

@@ -73,6 +73,9 @@ type Config struct {
 	FFmpegPath   string
 	FFprobePath  string
 	VideoWorkdir string
+	// MediaDir is where media on this server's disk are kept (MEDIA_DIR;
+	// default: media beside the database).
+	MediaDir string
 
 	// OIDC Relying-Party auth. When OIDCIssuer is empty, auth is dormant and all
 	// gates are off (behaves exactly as before — relies on the reverse proxy).
@@ -219,6 +222,7 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	c.FFmpegPath = getEnv("FFMPEG_PATH", "/usr/local/bin/ffmpeg")
 	c.FFprobePath = getEnv("FFPROBE_PATH", "/usr/local/bin/ffprobe")
 	c.VideoWorkdir = getEnv("VIDEO_WORKDIR", "")
+	c.MediaDir = getEnv("MEDIA_DIR", filepath.Join(filepath.Dir(c.DBPath), "media"))
 
 	// Kept as given: the issuer must match the provider's exactly, and
 	// some end in "/" (auth.New also tries the other form).

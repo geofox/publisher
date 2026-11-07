@@ -404,6 +404,16 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 			sharedEmpty = true
 			add("/content/text", "required", "a post needs text or media")
 		}
+		// A network that fetches media by address (Threads, Nostr) can't
+		// reach this server's disk unless it is served publicly.
+		if caps.Media.Transport == destination.TransportURL && a.DiskMedia != nil {
+			for j, m := range plan.media {
+				if _, local := a.DiskMedia.Owns(m.URL); local && !a.DiskMedia.Reachable(m.URL) {
+					add("/content/media/"+strconv.Itoa(plan.mediaReq[j]), "media_unsupported", "for "+ac.ID+": "+name+
+						" fetches media by address, and this server's disk doesn't serve them publicly (Settings, Media)")
+				}
+			}
+		}
 		for j, m := range plan.media {
 			mptr := "/content/media/" + strconv.Itoa(plan.mediaReq[j])
 			if max := caps.Media.AltMaxLength; max > 0 && utf8.RuneCountInString(plan.spec.MediaRecords[j].Alt) > max {
@@ -821,7 +831,7 @@ func (a *API) v1PreviewPost(w http.ResponseWriter, r *http.Request) {
 			vt.Role = ix.Action
 			if pt.account.Type != ix.SourcePlatform {
 				vt.Role = "link_quote"
-				if n := sourceImagesWanted(plan); n > 0 && a.media != nil && pt.caps.Media.Images.Supported {
+				if n := sourceImagesWanted(plan); n > 0 && a.media.Enabled() && pt.caps.Media.Images.Supported {
 					if c := pt.caps.Media.Images.MaxCount; c > 0 {
 						n = max(0, min(n, c-len(plan.media)))
 					}

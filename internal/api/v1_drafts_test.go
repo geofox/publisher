@@ -277,7 +277,6 @@ func TestV1TranslateDraft(t *testing.T) {
 func TestConvertOldDrafts(t *testing.T) {
 	e := newV1Env(t, true)
 	e.withEngine()
-	e.api.media.BlossomURL = "https://blossom.test"
 	sha := strings.Repeat("ab", 32)
 	spec := map[string]any{
 		"master_text": "one\n---\ntwo",

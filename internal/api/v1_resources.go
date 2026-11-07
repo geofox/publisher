@@ -78,7 +78,7 @@ func (a *API) v1Instance(w http.ResponseWriter, r *http.Request) {
 		Version:           version,
 		Auth:              authMode,
 		SignInRecommended: authMode == ModeProxy,
-		Features: v1Features{Media: a.media != nil, Translate: tr != nil, Video: a.media != nil && a.VideoJobs != nil,
+		Features: v1Features{Media: a.media.Enabled(), Translate: tr != nil, Video: a.media.Enabled() && a.VideoJobs != nil,
 			PublicFeed: a.feedToken() != "",
 			RelaySync:  a.relaySyncAvailable(r.Context())},
 		UserLanguages:    langs,

@@ -264,14 +264,18 @@ func TestAssembleReproduction(t *testing.T) {
 
 func TestReproductionMediaCaps(t *testing.T) {
 	spec := InteractSpec{SourceMediaRecords: []store.Media{{BlossomURL: "s1"}, {BlossomURL: "s2"}, {BlossomURL: "s3"}}}
-	out := reproductionMedia(2, spec, 4)
+	out := reproductionMedia(2, spec, TargetSpec{}, 4)
 	if len(out) != 4 || out[0].attach != nil || out[1].post != 1 || out[2].attach.BlossomURL != "s1" || out[3].attach.BlossomURL != "s2" ||
 		out[3].attach.Ordinal != 1 {
 		t.Fatalf("cap should keep user media first then fill from source up to max: %+v", out)
 	}
 	// max<=0 → no cap (nostr)
-	if all := reproductionMedia(2, spec, 0); len(all) != 5 {
+	if all := reproductionMedia(2, spec, TargetSpec{}, 0); len(all) != 5 {
 		t.Errorf("max<=0 means no cap, got %d", len(all))
+	}
+	// A copy that can't reach them goes without the original's media.
+	if own := reproductionMedia(2, spec, TargetSpec{NoSourceMedia: true}, 0); len(own) != 2 || own[0].attach != nil || own[1].attach != nil {
+		t.Errorf("without the source's media: %+v", own)
 	}
 }
 

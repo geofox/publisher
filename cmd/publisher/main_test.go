@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/png"
 	"io"
 	"log/slog"
 	"net/http"
@@ -119,7 +121,7 @@ func TestRunWithOnlyBluesky(t *testing.T) {
 	}
 	b, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != 503 || !strings.Contains(string(b), "no media store is configured") {
+	if resp.StatusCode != 503 || !strings.Contains(string(b), "no media store is set") {
 		t.Fatalf("upload = %d %s", resp.StatusCode, b)
 	}
 	if code := stop(); code != 0 {
@@ -135,13 +137,29 @@ func TestRunWithNothingConfigured(t *testing.T) {
 	}
 }
 
-// A media store needs the key that signs uploads to it.
+// A Blossom server set without a key to sign uploads with: the server
+// starts, says it has media, and an upload says to make a key.
 func TestRunBlossomWithoutNostrKey(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	env := map[string]string{"BLOSSOM_URL": "https://blossom.example", "DB_PATH": filepath.Join(t.TempDir(), "p.db")}
-	if code := run(ctx, runOptions{Getenv: func(k string) string { return env[k] }}); code != 2 {
-		t.Fatalf("exit code %d, want 2 (configuration error)", code)
+	url, stop := startRun(t, map[string]string{"AUTH_MODE": "proxy", "BLOSSOM_URL": "https://blossom.example"})
+	var inst struct {
+		Features struct {
+			Media bool `json:"media"`
+		} `json:"features"`
+	}
+	if code := get(t, url+"/v1/instance", &inst); code != 200 || !inst.Features.Media {
+		t.Fatalf("/v1/instance = %d %+v", code, inst)
+	}
+	resp, err := http.Post(url+"/v1/media", "image/png", strings.NewReader(string(tinyPNG(t))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 503 || !strings.Contains(string(b), "make a signing key in Settings, Media") {
+		t.Fatalf("upload = %d %s", resp.StatusCode, b)
+	}
+	if code := stop(); code != 0 {
+		t.Fatalf("exit code %d after a graceful stop", code)
 	}
 }
 
@@ -220,4 +238,14 @@ func TestLoggerScrubs(t *testing.T) {
 	if out := buf.String(); strings.Contains(out, "THAATOKEN123") || strings.Contains(out, "vl029mgpspedva04") || !strings.Contains(out, "timeout") {
 		t.Errorf("log: %s", out)
 	}
+}
+
+// tinyPNG is a 2×2 PNG.
+func tinyPNG(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }

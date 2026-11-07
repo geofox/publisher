@@ -16,6 +16,7 @@ import (
 
 	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/media"
 	pubnostr "github.com/geofox/publisher/internal/nostr"
 	"github.com/geofox/publisher/internal/redact"
 	"github.com/geofox/publisher/internal/settings"
@@ -179,6 +180,10 @@ func (a *API) patchSettings(w http.ResponseWriter, r *http.Request, scope settin
 		return
 	}
 	if !a.mayWriteSettings(w, r, svc, scope, keysOf(values)) {
+		return
+	}
+	if on, _ := values[settings.MediaPublic].(bool); on && scope == settings.Instance && !svc.Current().Bool(settings.MediaPublic) &&
+		!a.checkMediaPublic(w, r) {
 		return
 	}
 	p, _ := principalFrom(r.Context())
@@ -437,6 +442,44 @@ func (a *API) testSettings(w http.ResponseWriter, r *http.Request, scope setting
 			"err", redact.URLError(err))
 	}
 	writeV1(w, http.StatusOK, out)
+}
+
+// checkMediaPublic runs the self-test turning media.public on needs
+// (spec §7.6): this server's disk media fetched at PUBLIC_URL/media/, as
+// a network fetching them would. On false it has answered.
+func (a *API) checkMediaPublic(w http.ResponseWriter, r *http.Request) bool {
+	const ptr = "/media/public"
+	if a.DiskMedia == nil {
+		invalid(w, r, []fieldError{{Pointer: ptr, Code: "not_reachable", Detail: "this server keeps no media on its disk"}})
+		return false
+	}
+	p, _ := principalFrom(r.Context())
+	if wait := a.limits().tests.Take(p.OwnerID + ":" + string(settings.Instance) + ":media"); wait > 0 {
+		rateLimited(w, r, wait, "the self-test runs once every 10 seconds")
+		return false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	err := a.DiskMedia.CheckPublic(ctx, media.NoRedirects())
+	if err == nil {
+		return true
+	}
+	slog.InfoContext(r.Context(), "v1: the public media self-test failed", "err", redact.URLError(err))
+	invalid(w, r, []fieldError{{Pointer: ptr, Code: "not_reachable", Detail: mediaPublicDetail(err)}})
+	return false
+}
+
+// mediaPublicDetail says why the public self-test failed, in Publisher's
+// words (what PUBLIC_URL answered, or the class of a transport error).
+func mediaPublicDetail(err error) string {
+	var pe *media.ProbeError
+	switch {
+	case errors.Is(err, media.ErrNoPublicURL):
+		return err.Error()
+	case errors.As(err, &pe):
+		return pe.Error()
+	}
+	return "PUBLIC_URL/media/ couldn't be reached from this server (" + testErrorClass(err) + "): is PUBLIC_URL its public address?"
 }
 
 // testErrorClass is a failed test's class: unreachable, refused,

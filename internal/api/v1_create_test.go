@@ -26,7 +26,8 @@ func (e *v1Env) withEngine() *dispatch.Dispatcher {
 	e.t.Helper()
 	d := &dispatch.Dispatcher{Store: e.st}
 	e.api.Dispatch = d
-	e.api.media = &media.Pipeline{Lookup: func(sha string) (string, bool, error) {
+	// A Blossom store nothing reaches: every upload is one Lookup knows.
+	e.api.media = &media.Pipeline{Store: media.Static(&media.Blossom{URL: "https://blossom.test"}), Lookup: func(sha string) (string, bool, error) {
 		return "https://blossom.test/" + sha, true, nil
 	}}
 	return d

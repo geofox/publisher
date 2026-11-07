@@ -77,6 +77,10 @@ func EnvMediaSigner(accts []EnvAccount) (gonostr.SecretKey, gonostr.PubKey, bool
 	return gonostr.SecretKey{}, gonostr.PubKey{}, false
 }
 
+// MediaSigningKey reads the media store's own signing key
+// (media.blossom_key: nsec1… or hex).
+func MediaSigningKey(s string) (gonostr.SecretKey, error) { return nostr.ParseKey(s) }
+
 // StillSet is an account the environment still configures although its
 // variables no longer apply: it was adopted into the app (or adopted,
 // then deleted there).

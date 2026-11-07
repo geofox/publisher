@@ -59,7 +59,7 @@ func TestProcessUploadsGPSToBlossom(t *testing.T) {
 	srv := qaBlossom(t, &got)
 	defer srv.Close()
 	sk := nostr.Generate()
-	p := New(srv.URL, sk, nostr.GetPublicKey(sk))
+	p := blossomPipeline(srv.URL, sk)
 	if _, err := p.Process(context.Background(), qaOrientedGPSJPEG(64, 32), "image/jpeg"); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestProcessDimIgnoresOrientation(t *testing.T) {
 	srv := qaBlossom(t, &got)
 	defer srv.Close()
 	sk := nostr.Generate()
-	p := New(srv.URL, sk, nostr.GetPublicKey(sk))
+	p := blossomPipeline(srv.URL, sk)
 	res, err := p.Process(context.Background(), qaOrientedGPSJPEG(64, 32), "image/jpeg")
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +103,7 @@ func TestFetchOutlastsTheSmallObjectTimeout(t *testing.T) {
 	}))
 	defer srv.Close()
 	sk := nostr.Generate()
-	p := New("http://unused", sk, nostr.GetPublicKey(sk))
+	p := blossomPipeline("http://unused", sk)
 	p.HTTP.Timeout = time.Second // stands in for the 30 s budget
 	if _, _, err := p.Fetch(context.Background(), srv.URL+"/v.mp4"); err != nil {
 		t.Errorf("a slow video fetch hit the small-object timeout: %v", err)

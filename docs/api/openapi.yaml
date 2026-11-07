@@ -984,7 +984,12 @@ paths:
         Needs `instance:admin`; as `PATCH /v1/settings`. Changing a secret
         (the media store's key) needs a signed-in browser session,
         re-authenticated for `instance.secrets`. Behind the reverse proxy
-        alone, `403 sign_in_required`.
+        alone, `403 sign_in_required`. Turning `media.public` on first
+        fetches a probe from `PUBLIC_URL/media/`, following no redirect,
+        and needs it back whole with a `200`; otherwise nothing changes and
+        the answer is `422` with `not_reachable` at `/media/public`, saying
+        what was answered. It runs as a test does, once every 10 seconds
+        (`429`).
       security:
         - bearer: ["instance:admin"]
         - session: []
@@ -1108,9 +1113,14 @@ paths:
       tags: [settings]
       summary: Test the media store
       description: |
-        Needs `instance:admin`. For `media`: the store in effect is asked
-        to take and give back a small probe; answered as for
-        `POST /v1/settings/{id}:test`.
+        Needs `instance:admin`. For `media`, the store in effect: a
+        Blossom server is asked whether it would take an upload signed
+        with the key (BUD-06 `HEAD /upload`; one without BUD-06 answering
+        `404` or `405` is only known reachable, and passes); this server's
+        disk takes a small probe and gives it back, fetched at
+        `PUBLIC_URL/media/` when served publicly. Answered as for
+        `POST /v1/settings/{id}:test`; a store set but unusable (no
+        signing key) fails as `unreachable`.
       security:
         - bearer: ["instance:admin"]
         - session: []
@@ -1131,6 +1141,34 @@ paths:
           $ref: "#/components/responses/InvalidState"
         "429":
           $ref: "#/components/responses/RateLimited"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/instance/system:
+    get:
+      operationId: getSystem
+      tags: [settings]
+      summary: What the server started with
+      description: |
+        Needs `instance:admin`. The version, how the owner signs in, and
+        the bootstrap and tuning variables the server read at start (the
+        settings' own and the accounts' show in their places): each with
+        its value, a secret only as set, an address without the user and
+        password it may carry. Behind the reverse proxy alone, `403
+        sign_in_required`.
+      security:
+        - bearer: ["instance:admin"]
+        - session: []
+      responses:
+        "200":
+          description: The server's version, sign-in mode and variables.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/System"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InsufficientScope"
         default:
           $ref: "#/components/responses/Problem"
   /v1/me:
@@ -2469,7 +2507,10 @@ paths:
         `GET /v1/media/{id}` until it is `ready` or `failed`. Images are at
         most 64 MiB, videos 1 GiB. Not idempotent: a repeat stores the
         same file again under a new id. A server without a media store
-        (`features.media` false) answers `503 unavailable`.
+        (`features.media` false), or whose store can't be used now (a
+        Blossom server without a signing key), answers `503 unavailable`;
+        this server's disk without room for it (the quota set, or the
+        free-space floor), `507 insufficient_storage`.
       security:
         - bearer: ["media:write"]
         - session: []
@@ -4607,6 +4648,34 @@ components:
         value:
           type: string
           description: The new value (or, for a key, its public half), shown this once.
+    System:
+      type: object
+      additionalProperties: false
+      required: [version, auth, values]
+      properties:
+        version:
+          type: string
+        auth:
+          type: string
+          enum: [oidc, local, proxy]
+        values:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [env, set]
+            properties:
+              env:
+                type: string
+                description: The variable's name.
+              set:
+                type: boolean
+              secret:
+                type: boolean
+                description: Its value is never shown.
+              value:
+                type: string
+                description: The value, when set and not secret.
     SettingsTest:
       type: object
       additionalProperties: false

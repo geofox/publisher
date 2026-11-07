@@ -162,7 +162,10 @@ func (a *API) withGates(next http.Handler) http.Handler {
 		case p == "/healthz" || p == "/readyz" || p == "/metrics" ||
 			strings.HasPrefix(p, "/auth/") ||
 			p == "/v1" || strings.HasPrefix(p, "/v1/") || isOldAPIPath(p) ||
-			publicAssets[p]:
+			publicAssets[p] ||
+			// Media on this server's disk, like a Blossom server's (the mux
+			// sends all of /media/ to serveMedia, never the web app).
+			p == "/media" || strings.HasPrefix(p, "/media/"):
 			next.ServeHTTP(w, r) // always-open / separately-gated (/v1 authenticates per route; old paths answer 410)
 		case local && (p == "/setup" || strings.HasPrefix(p, "/setup/") ||
 			signInAssets[p] || strings.HasPrefix(p, "/fonts/")):

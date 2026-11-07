@@ -376,13 +376,13 @@ func TestV1NoMediaStore(t *testing.T) {
 	img := map[string]string{"Content-Type": "image/png"}
 	for _, path := range []string{"/v1/media", "/v1/media:compress?preset=small"} {
 		p := wantProblem(t, e.do(req{method: "POST", path: path, body: png, header: img}), 503, codeUnavailable)
-		if !strings.Contains(p.Detail, "no media store is configured") {
+		if !strings.Contains(p.Detail, "no media store is set") {
 			t.Errorf("%s: detail = %q", path, p.Detail)
 		}
 	}
 	vid := map[string]string{"Content-Type": "video/mp4"}
 	p := wantProblem(t, e.do(req{method: "POST", path: "/v1/media", body: "\x00\x00\x00\x18ftypmp42", header: vid}), 503, codeUnavailable)
-	if !strings.Contains(p.Detail, "no media store is configured") {
+	if !strings.Contains(p.Detail, "no media store is set") {
 		t.Errorf("video: detail = %q", p.Detail)
 	}
 	e.withEngine() // a media store

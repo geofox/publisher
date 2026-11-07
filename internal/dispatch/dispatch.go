@@ -131,6 +131,9 @@ type TargetSpec struct {
 	// Text; without any, the text is split automatically with every media
 	// on its first post.
 	Layout thread.Layout
+	// NoSourceMedia: a link-quote copy goes without the original's
+	// re-hosted media (this network can't reach where they were copied).
+	NoSourceMedia bool
 }
 
 // PostSpec is a post to plan: its shared content and the accounts it goes

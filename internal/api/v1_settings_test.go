@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -127,7 +128,43 @@ func settingsConformance(t *testing.T) map[string]bool {
 	call("POST /v1/instance/settings/{id}:generate", req{method: "POST", path: "/v1/instance/settings/media.blossom_key:generate",
 		header: e.reauth(opInstanceSecrets)}, 200)
 	call("POST /v1/instance/settings/{id}:test", req{method: "POST", path: "/v1/instance/settings/media:test"}, 200)
+	e.api.System = func() []SystemValue {
+		return SystemValues(envMap{"PUBLIC_URL": "https://pub.example"}.get, []SystemVar{{Env: "PUBLIC_URL"}})
+	}
+	call("GET /v1/instance/system", req{method: "GET", path: "/v1/instance/system"}, 200)
 	return seen
+}
+
+type envMap map[string]string
+
+func (m envMap) get(k string) string { return m[k] }
+
+// System lists the variables the server started with: a secret only as
+// set, an address without its user and password.
+func TestV1System(t *testing.T) {
+	e := newSettingsEnv(t, true, nil)
+	env := envMap{"PUBLIC_URL": " https://pub.example ", "OIDC_CLIENT_SECRET": "hunter2", "PLC_DIRECTORY_URL": "https://u:p@plc.example/x",
+		"ALLOWED_HOSTS": "a.example,b.example"}
+	e.api.System = func() []SystemValue {
+		return SystemValues(env.get, []SystemVar{{Env: "PUBLIC_URL"}, {Env: "LOG_LEVEL"}, {Env: "PLC_DIRECTORY_URL"},
+			{Env: "ALLOWED_HOSTS"}, {Env: "OIDC_CLIENT_SECRET", Secret: true}, {Env: "PUBLISHER_MASTER_KEY", Secret: true}})
+	}
+	r := e.do(req{method: "GET", path: "/v1/instance/system"})
+	wantStatus(t, r, 200)
+	if strings.Contains(r.Body.String(), "hunter2") || strings.Contains(r.Body.String(), "u:p@") {
+		t.Fatalf("a secret shown: %s", r.Body.String())
+	}
+	var got v1SystemBody
+	r.json(&got)
+	want := []SystemValue{{Env: "PUBLIC_URL", Set: true, Value: "https://pub.example"}, {Env: "LOG_LEVEL"},
+		{Env: "PLC_DIRECTORY_URL", Set: true, Value: "https://plc.example/x"}, {Env: "ALLOWED_HOSTS", Set: true, Value: "a.example,b.example"},
+		{Env: "OIDC_CLIENT_SECRET", Set: true, Secret: true}, {Env: "PUBLISHER_MASTER_KEY", Secret: true}}
+	if got.Version == "" || got.Auth == "" || !reflect.DeepEqual(got.Values, want) {
+		t.Fatalf("system = %+v", got)
+	}
+	// Behind the reverse proxy alone, the server's own aren't shown.
+	p := newSettingsEnv(t, false, nil)
+	wantProblem(t, p.do(req{method: "GET", path: "/v1/instance/system", auth: "none"}), 403, codeSignInRequired)
 }
 
 // A read is the settings by group, each with its value, where it comes

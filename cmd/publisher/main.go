@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	gonostr "fiatjaf.com/nostr"
 	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/api"
 	"github.com/geofox/publisher/internal/auth"
@@ -110,12 +111,10 @@ func run(ctx context.Context, o runOptions) int {
 			_ = o.Unsetenv(n)
 		}
 	}
-	// Media uploads are signed with the environment's Nostr key until the
-	// media store gets a key of its own (part D).
-	mediaKey, mediaPub, haveSigner := drivers.EnvMediaSigner(env)
-	if cfg.BlossomURL != "" && !haveSigner {
-		startErrs = append(startErrs, errors.New("BLOSSOM_URL is set, but uploads to it are signed with the Nostr key: set NSEC_HEX too, or unset BLOSSOM_URL to run without media"))
-	}
+	// Media uploads to a Blossom server are signed with the store's own
+	// key once one is made in the app, else with the environment's Nostr
+	// key, as before.
+	mediaKey, _, haveSigner := drivers.EnvMediaSigner(env)
 	if err := errors.Join(startErrs...); err != nil {
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		return 2
@@ -132,13 +131,6 @@ func run(ctx context.Context, o runOptions) int {
 		return 1
 	}
 	defer st.Close()
-	// Without a media store posts carry no media; a retry still fetches
-	// the media of posts made while one was configured.
-	var mp *media.Pipeline
-	if cfg.BlossomURL != "" {
-		mp = media.New(cfg.BlossomURL, mediaKey, mediaPub)
-		mp.Lookup = st.LookupMediaURL
-	}
 
 	uf := unfurl.New()
 	// Every account the environment configures has a stored row with a
@@ -185,6 +177,14 @@ func run(ctx context.Context, o runOptions) int {
 		slog.Error("loading the settings failed", "err", err)
 		return 1
 	}
+	// The media store follows the settings (spec §7.6). Without one posts
+	// carry no media; a retry still fetches the media of posts made while
+	// one was set.
+	disk := &media.Local{Dir: cfg.MediaDir, BaseURL: cfg.PublicURL,
+		Quota:    func() int64 { return int64(svc.Current().Int(settings.MediaLocalQuota)) << 20 },
+		IsPublic: func() bool { return svc.Current().Bool(settings.MediaPublic) }}
+	mp := media.New(liveMediaStore(svc, guard, mediaKey, haveSigner, disk))
+	mp.Lookup = reuseStored(st.LookupMediaURL, disk, func() bool { return svc.Current().String(settings.MediaStore) == settings.StoreLocal })
 	// Webhooks set in the app reach what owner-set addresses may; those
 	// from the environment are the operator's, reached as before.
 	trustedHTTP := &http.Client{Timeout: 10 * time.Second}
@@ -242,7 +242,8 @@ func run(ctx context.Context, o runOptions) int {
 		Registry: reg,
 		Store:    st,
 		// A plain fetcher, never a nil *Pipeline inside the interface.
-		Fetcher:  media.NewFetcher(),
+		// Media on this server's disk are read from it, never over HTTP.
+		Fetcher:  media.LocalFirst{Local: disk, Next: media.NewFetcher()},
 		Notify:   feed.Live{Webhook: feedWebhook},
 		Unfurler: uf,
 		Alerter:  notifier,
@@ -290,16 +291,20 @@ func run(ctx context.Context, o runOptions) int {
 				status, err := w.Test(ctx)
 				return status, true, err
 			}
+		case "media":
+			return testMediaStore(ctx, mp)
 		}
 		return 0, false, nil
 	}
+	a.DiskMedia = disk
+	a.System = func() []api.SystemValue { return api.SystemValues(os.Getenv, systemVars) }
 	a.Version = version
 	// Drafts saved before /v1 get their /v1 shape, once, before requests.
 	a.ConvertOldDrafts(context.Background())
-	// Video pipeline: enabled only with a media store and both ffmpeg and
-	// ffprobe present (dev hosts without them run image-only; the
-	// endpoints 503 with a clear message).
-	if mp != nil {
+	// Video pipeline: enabled with both ffmpeg and ffprobe present (dev
+	// hosts without them run image-only; the endpoints 503 with a clear
+	// message); it stores into the media store set at the time.
+	{
 		_, ffmpegErr := os.Stat(cfg.FFmpegPath)
 		_, ffprobeErr := os.Stat(cfg.FFprobePath)
 		switch {
@@ -446,10 +451,13 @@ func logStart(cfg config.Config, reg *accounts.Registry, mp *media.Pipeline) {
 		byStatus[string(e.Status)] = append(byStatus[string(e.Status)], e.Row.Type+":"+e.Row.ID)
 	}
 	args := []any{"port", cfg.Port, "accounts", byStatus}
-	if mp != nil {
-		args = append(args, "blossom", cfg.BlossomURL, "blossom_signer", mp.OwnerPub.Hex())
-	} else {
-		args = append(args, "media", "none (BLOSSOM_URL is unset: posts carry no media)")
+	switch err := mp.Check(); {
+	case errors.Is(err, media.ErrNoStore):
+		args = append(args, "media", "none (set a store in Settings, Media, or BLOSSOM_URL: posts carry no media)")
+	case err != nil:
+		args = append(args, "media", err.Error())
+	default:
+		args = append(args, "media", mp.Describe())
 	}
 	slog.Info("publisher starting", args...)
 	if len(byStatus) == 0 {
@@ -676,4 +684,116 @@ func appBaseURL(redirect string) string {
 		return u.Scheme + "://" + u.Host
 	}
 	return ""
+}
+
+// liveMediaStore is the media store the settings set now: none, or a
+// Blossom server, signed with the store's own key once one is set (and
+// then named in each authorization), else with the environment's Nostr
+// key. A server set in the app is reached as owner-set addresses are.
+func liveMediaStore(svc *settings.Service, guard netguard.Policy, envKey gonostr.SecretKey, haveEnvKey bool, disk *media.Local) func() (media.Store, error) {
+	trusted := media.NewStreamClient()
+	guarded := &http.Client{Transport: destination.GuardedNet(guard.Allow).Transport(destination.TransportOptions{
+		ResponseHeaderTimeout: 60 * time.Second}), CheckRedirect: destination.GuardedRedirect}
+	return func() (media.Store, error) {
+		s := svc.Current()
+		switch s.String(settings.MediaStore) {
+		case settings.StoreBlossom:
+			u := strings.TrimRight(s.String(settings.MediaBlossomURL), "/")
+			if u == "" {
+				return nil, &media.UnusableError{Reason: "no Blossom server is set (Settings, Media)"}
+			}
+			cl := trusted
+			if v, _ := s.Get(settings.MediaBlossomURL); v.Source == settings.SourceSaved {
+				cl = guarded
+			}
+			if k := s.Secret(settings.MediaBlossomKey); k != "" {
+				sk, err := drivers.MediaSigningKey(k)
+				if err != nil {
+					return nil, &media.UnusableError{Reason: "the Blossom signing key isn't a Nostr key: make a new one in Settings, Media"}
+				}
+				return &media.Blossom{URL: u, Key: sk, Own: true, HTTP: cl}, nil
+			}
+			if haveEnvKey {
+				return &media.Blossom{URL: u, Key: envKey, HTTP: cl}, nil
+			}
+			return nil, &media.UnusableError{Reason: "uploads to a Blossom server are signed: make a signing key in Settings, Media (or set NSEC_HEX)"}
+		case settings.StoreLocal:
+			return disk, nil
+		}
+		return nil, media.ErrNoStore
+	}
+}
+
+// systemVars are the bootstrap and tuning variables Settings, System
+// shows (the settings' own, and the accounts', show in their sections).
+var systemVars = func() []api.SystemVar {
+	var out []api.SystemVar
+	for _, e := range []string{"PUBLIC_URL", "AUTH_MODE", "ALLOWED_HOSTS", "TRUSTED_PROXIES", "PORT", "LOG_LEVEL",
+		"DB_PATH", "MEDIA_DIR", "VIDEO_WORKDIR", "FFMPEG_PATH", "FFPROBE_PATH", "PLC_DIRECTORY_URL", "PRIVATE_DESTINATIONS",
+		"SESSION_TTL", "SETUP_TOKEN_FILE", "PUBLISHER_MASTER_KEY_FILE", "PUBLISHER_MASTER_KEY_PREVIOUS_FILE",
+		"OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_REDIRECT_URL", "OIDC_SCOPES", "OIDC_END_SESSION",
+		"OIDC_ALLOWED_SUBJECTS", "OIDC_ALLOWED_EMAILS",
+		"PUBLISH_WORKERS", "PUBLISH_TIMEOUT", "FANOUT_TICK", "RETRIER_TICK", "AUTO_RETRY_BASE_DELAY",
+		"AUTO_RETRY_MAX_DELAY", "POW_TIMEOUT", "RELAY_CACHE_TTL", "VERIFY_HTTP_TIMEOUT"} {
+		out = append(out, api.SystemVar{Env: e})
+	}
+	for _, e := range []string{"OIDC_CLIENT_SECRET", "PUBLISHER_MASTER_KEY", "PUBLISHER_MASTER_KEY_PREVIOUS"} {
+		out = append(out, api.SystemVar{Env: e, Secret: true})
+	}
+	return out
+}()
+
+// reuseStored is the media pipeline's Lookup: an upload of bytes stored
+// before keeps their address, unless that is on this server's disk and
+// the store is another now (the owner moved to one others can reach), its
+// file is gone, or it was given before PUBLIC_URL was set.
+func reuseStored(lookup func(string) (string, bool, error), disk *media.Local, local func() bool) func(string) (string, bool, error) {
+	return func(sha string) (string, bool, error) {
+		u, ok, err := lookup(sha)
+		if err != nil || !ok {
+			return u, ok, err
+		}
+		if name, mine := disk.Owns(u); mine && (!local() || !disk.Has(name) || (disk.BaseURL != "" && strings.HasPrefix(u, "/"))) {
+			return "", false, nil
+		}
+		return u, true, nil
+	}
+}
+
+// testMediaStore is Settings' media test: a Blossom server asked whether
+// it would take an upload signed with the key (BUD-06; one without it
+// answering 404 or 405 is reachable, which is all it says); this
+// server's disk written and read back, and fetched at PUBLIC_URL/media/
+// when served publicly.
+func testMediaStore(ctx context.Context, mp *media.Pipeline) (int, bool, error) {
+	s, err := mp.Store()
+	switch {
+	case errors.Is(err, media.ErrNoStore):
+		return 0, false, nil
+	case err != nil:
+		return 0, true, err
+	}
+	switch s := s.(type) {
+	case *media.Blossom:
+		status, err := s.Check(ctx)
+		if status == http.StatusNotFound || status == http.StatusMethodNotAllowed {
+			status = http.StatusNoContent
+		}
+		return status, true, err
+	case *media.Local:
+		if !s.Public() {
+			if err := s.CheckWritable(ctx); err != nil {
+				return 0, true, err
+			}
+			return http.StatusNoContent, true, nil
+		}
+		var pe *media.ProbeError
+		if err := s.CheckPublic(ctx, media.NoRedirects()); errors.As(err, &pe) && pe.Store == nil {
+			return pe.Status, true, nil
+		} else if err != nil {
+			return 0, true, err
+		}
+		return http.StatusOK, true, nil
+	}
+	return 0, true, errors.New("this store has no test")
 }

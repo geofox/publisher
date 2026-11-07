@@ -183,7 +183,12 @@ break that would cut a character in two), `too_many`, `length_mismatch`
 (`thread.media_at` doesn't have one position per media) and `replaced`
 (`media[].part`, which `at` replaced). A text a platform can't take even
 when split, such as more distinct links than Threads allows in one post,
-is `refused_by_destination`.
+is `refused_by_destination`. Media a network can't take are
+`media_unsupported`, including media on this server's disk for a network
+that fetches media by address (Nostr, Threads) while the disk doesn't
+serve them publicly. Turning `media.public` on adds `not_reachable` at
+`/media/public` when the probe at `PUBLIC_URL/media/` didn't come back
+whole; `detail` says what was answered.
 
 ## invalid_parameter
 
@@ -294,8 +299,11 @@ keys). Set the master key they were saved with (or keep it as
 
 ## insufficient_storage
 
-**507.** The server ran out of disk space while receiving an upload. Try
-again later; the server's owner needs to free space.
+**507.** The server ran out of disk space while receiving an upload, or
+media kept on its disk would pass the quota set in Settings, Media or
+the free space it always leaves (1 GiB, or 5 % of the volume). `detail`
+says which. Try again later; the server's owner needs to free space or
+raise the quota.
 
 ## internal
 
