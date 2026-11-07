@@ -45,7 +45,8 @@ func (a *API) v1Translate(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if a.Translator == nil {
+	tr := a.translator()
+	if tr == nil {
 		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "translation is not configured on this server (DEEPL_API_KEY)")
 		return
 	}
@@ -64,7 +65,7 @@ func (a *API) v1Translate(w http.ResponseWriter, r *http.Request) {
 		invalid(w, r, errs)
 		return
 	}
-	text, src, err := a.Translator.Translate(r.Context(), req.Text, strings.ToLower(req.TargetLang))
+	text, src, err := tr.Translate(r.Context(), req.Text, strings.ToLower(req.TargetLang))
 	if err != nil {
 		slog.WarnContext(r.Context(), "v1: translate", "err", store.Scrub(err.Error()))
 		problem(w, r, http.StatusBadGateway, codeUpstream, "the translation service failed or could not be reached; try again")
@@ -531,8 +532,9 @@ func (a *API) v1RelaysAction(action string) http.HandlerFunc {
 // server, which should hold nothing that can post. Not found while no
 // token is configured.
 func (a *API) v1PublicFeed(w http.ResponseWriter, r *http.Request) {
-	if a.PublicFeedToken == "" {
-		problem(w, r, http.StatusNotFound, codeNotFound, "the public feed is off on this server (set PUBLIC_FEED_TOKEN)")
+	token := a.feedToken()
+	if token == "" {
+		problem(w, r, http.StatusNotFound, codeNotFound, "the public feed is off on this server (set its token in Settings, or PUBLIC_FEED_TOKEN)")
 		return
 	}
 	if a.Store == nil {
@@ -542,7 +544,7 @@ func (a *API) v1PublicFeed(w http.ResponseWriter, r *http.Request) {
 	const prefix = "Bearer "
 	h := r.Header.Get("Authorization")
 	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) ||
-		subtle.ConstantTimeCompare([]byte(h[len(prefix):]), []byte(a.PublicFeedToken)) != 1 {
+		subtle.ConstantTimeCompare([]byte(h[len(prefix):]), []byte(token)) != 1 {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="public-feed"`)
 		problem(w, r, http.StatusUnauthorized, codeUnauthenticated, "send Authorization: Bearer with the public feed token")
 		return

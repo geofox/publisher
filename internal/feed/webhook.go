@@ -84,3 +84,17 @@ func (w *Webhook) deliver(body []byte, postID string) {
 	}
 	slog.Warn("feed webhook delivery failed", "post_id", postID, "err", lastErr)
 }
+
+// Live pings the webhook set at that moment (the owner's settings).
+type Live struct {
+	// Webhook returns the webhook now; nil or an empty URL: none.
+	Webhook func() *Webhook
+}
+
+// PostPublished implements the dispatcher's PostNotifier.
+func (l Live) PostPublished(ctx context.Context, p *store.Post) {
+	if l.Webhook == nil {
+		return
+	}
+	l.Webhook().PostPublished(ctx, p)
+}

@@ -18,6 +18,7 @@ import (
 	"github.com/geofox/publisher/internal/metrics"
 	"github.com/geofox/publisher/internal/netguard"
 	"github.com/geofox/publisher/internal/relaysync"
+	"github.com/geofox/publisher/internal/settings"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/unfurl"
 	"github.com/geofox/publisher/internal/verify"
@@ -158,6 +159,14 @@ type API struct {
 	// PublicFeedToken gates GET /v1/public/feed. Empty → the endpoint is
 	// disabled (404). Set → callers must send Authorization: Bearer <it>.
 	PublicFeedToken string
+
+	// Settings, when set, holds the owner's and the instance's settings;
+	// the languages, the translation key and the feed token are read from
+	// it at each request (in place of the three fields above).
+	Settings *settings.Service
+	// NewTranslator makes a translator for a key (nil: DeepL).
+	NewTranslator func(key string) Translator
+	deepl         atomic.Pointer[deeplFor]
 
 	// Caps returns an account's effective capabilities (the dispatcher's
 	// Caps). nil → the registered drivers' defaults.

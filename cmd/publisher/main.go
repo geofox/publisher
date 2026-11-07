@@ -35,12 +35,13 @@ import (
 	"github.com/geofox/publisher/internal/logging"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
+	"github.com/geofox/publisher/internal/netguard"
 	"github.com/geofox/publisher/internal/notify"
 	"github.com/geofox/publisher/internal/relaysync"
 	"github.com/geofox/publisher/internal/secrets"
+	"github.com/geofox/publisher/internal/settings"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/transcode"
-	"github.com/geofox/publisher/internal/translate"
 	"github.com/geofox/publisher/internal/unfurl"
 	"github.com/geofox/publisher/internal/verify"
 	"github.com/geofox/publisher/internal/videojob"
@@ -94,6 +95,12 @@ func run(ctx context.Context, o runOptions) int {
 	cfg, cfgErr := config.LoadFrom(getenv)
 	env, envErr := drivers.EnvAccounts(getenv)
 	keys, keyWarnings, keyErr := secrets.FromEnv(getenv)
+	// The settings' variables, read before the credential ones are
+	// removed: each one set locks its setting (settings.Defs).
+	settingsEnv := map[string]string{}
+	for _, n := range settings.EnvNames(settings.Defs()) {
+		settingsEnv[n] = getenv(n)
+	}
 	startErrs := []error{cfgErr, envErr, keyErr}
 	// Every credential is in memory now: take them out of the environment.
 	// (The kernel's copy, /proc/<pid>/environ, keeps the values it started
@@ -134,7 +141,6 @@ func run(ctx context.Context, o runOptions) int {
 	}
 
 	uf := unfurl.New()
-	notifier := notify.NewWebhook(cfg.AlertWebhookURL, cfg.AlertWebhookUser, cfg.AlertWebhookPass)
 	// Every account the environment configures has a stored row with a
 	// stable id; state 2.x kept for "the" account of a type moves to it;
 	// then the registry opens what it can (without network I/O).
@@ -168,6 +174,36 @@ func run(ctx context.Context, o runOptions) int {
 	// reach public addresses and those PRIVATE_DESTINATIONS lists, never
 	// the server's own.
 	guard := cfg.PrivateDestinations.WithOwn()
+	// The owner's settings (env, then saved in the app, then defaults).
+	svc, err := settings.New(context.Background(), settings.Options{
+		Store: st, Keys: keys, CanSeal: keyState.WriteError, Env: settingsEnv,
+		URL: func(raw string, rule destination.URLRule) (string, error) {
+			return guard.OwnerURL(raw, netguard.URLOptions{Secure: rule.Secure, Plain: rule.Plain, Path: rule.Path, Query: rule.Query})
+		},
+	})
+	if err != nil {
+		slog.Error("loading the settings failed", "err", err)
+		return 1
+	}
+	// Webhooks set in the app reach what owner-set addresses may; those
+	// from the environment are the operator's, reached as before.
+	trustedHTTP := &http.Client{Timeout: 10 * time.Second}
+	guardedHTTP := destination.GuardedNet(guard.Allow).Client(10 * time.Second)
+	webhookHTTP := func(s *settings.Snapshot, key string) *http.Client {
+		if v, _ := s.Get(key); v.Source == settings.SourceSaved {
+			return guardedHTTP
+		}
+		return trustedHTTP
+	}
+	notifier := &notify.Live{Webhook: func() *notify.Webhook {
+		s := svc.Current()
+		u := s.Secret(settings.AlertsWebhookURL)
+		if u == "" {
+			return nil
+		}
+		return &notify.Webhook{URL: u, User: s.String(settings.AlertsWebhookUser), Pass: s.Secret(settings.AlertsWebhookPass),
+			HTTP: webhookHTTP(s, settings.AlertsWebhookURL)}
+	}}
 	reg := accounts.New(accounts.Options{
 		Store:    st,
 		Env:      regEnv,
@@ -200,14 +236,23 @@ func run(ctx context.Context, o runOptions) int {
 		Registry: reg,
 		Store:    st,
 		// A plain fetcher, never a nil *Pipeline inside the interface.
-		Fetcher:  media.NewFetcher(),
-		Notify:   feed.NewWebhook(cfg.FeedWebhookURL, cfg.FeedWebhookToken),
+		Fetcher: media.NewFetcher(),
+		Notify: feed.Live{Webhook: func() *feed.Webhook {
+			s := svc.Current()
+			return &feed.Webhook{URL: s.Secret(settings.FeedWebhookURL), Token: s.Secret(settings.FeedWebhookToken),
+				HTTP: webhookHTTP(s, settings.FeedWebhookURL)}
+		}},
 		Unfurler: uf,
 		Alerter:  notifier,
 		Policy: dispatch.RetryPolicy{Enabled: cfg.AutoRetryEnabled, MaxAttempts: cfg.AutoRetryMaxAttempts,
 			Base: cfg.AutoRetryBaseDelay, Max: cfg.AutoRetryMaxDelay},
 		Workers:       cfg.PublishWorkers,
 		ScheduleGrace: cfg.ScheduleGrace,
+		Live: func() dispatch.Live {
+			s := svc.Current()
+			return dispatch.Live{AutoRetry: s.Bool(settings.PublishingAutoRetry), MaxAttempts: s.Int(settings.PublishingMaxAttempts),
+				ScheduleGrace: s.Duration(settings.PublishingGrace)}
+		},
 	}
 	if mp != nil {
 		// Re-encoded variants for URL-transport destinations (Threads) are
@@ -228,8 +273,7 @@ func run(ctx context.Context, o runOptions) int {
 	a.Accounts = reg
 	a.Locator = d
 	a.Unfurl = uf
-	a.UserLanguages = cfg.UserLanguages
-	a.PublicFeedToken = cfg.PublicFeedToken
+	a.Settings = svc
 	a.Version = version
 	// Drafts saved before /v1 get their /v1 shape, once, before requests.
 	a.ConvertOldDrafts(context.Background())
@@ -258,9 +302,6 @@ func run(ctx context.Context, o runOptions) int {
 				a.VideoWorkdir = work
 			}
 		}
-	}
-	if cfg.DeepLAPIKey != "" {
-		a.Translator = translate.NewDeepL(cfg.DeepLAPIKey)
 	}
 	// Relay sync works on the Nostr account a request names (its own
 	// home relay, key and list).
@@ -327,14 +368,21 @@ func run(ctx context.Context, o runOptions) int {
 	go d.Run(ctx)
 	// Relay-level retries and the Nostr fan-out queue re-send already
 	// signed events (relays dedupe them), so stopping mid-pass is safe.
-	go dispatch.NewRetrier(d, notifier,
+	retrier := dispatch.NewRetrier(d, notifier,
 		cfg.AutoRetryEnabled, cfg.AutoRetryMaxAttempts,
 		cfg.AutoRetryBaseDelay, cfg.AutoRetryMaxDelay, cfg.RetrierTick,
-	).Start(ctx)
-	go dispatch.NewFanout(d,
+	)
+	retrier.Live = func() (bool, int) {
+		s := svc.Current()
+		return s.Bool(settings.PublishingAutoRetry), s.Int(settings.PublishingMaxAttempts)
+	}
+	go retrier.Start(ctx)
+	fanout := dispatch.NewFanout(d,
 		cfg.AutoRetryMaxAttempts, cfg.AutoRetryBaseDelay, cfg.AutoRetryMaxDelay,
 		cfg.FanoutTick,
-	).Start(ctx)
+	)
+	fanout.MaxAttempts = func() int { return svc.Current().Int(settings.PublishingMaxAttempts) }
+	go fanout.Start(ctx)
 	srv := &http.Server{
 		Handler:      a.Routes(),
 		ReadTimeout:  60 * time.Second,

@@ -615,7 +615,8 @@ func (a *API) v1TranslateDraft(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if a.Translator == nil {
+	tr := a.translator()
+	if tr == nil {
 		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "translation is not configured on this server (DEEPL_API_KEY)")
 		return
 	}
@@ -637,7 +638,7 @@ func (a *API) v1TranslateDraft(w http.ResponseWriter, r *http.Request) {
 	// Each hand-made part is translated on its own, so the thread keeps its
 	// breaks (now at the translated parts' starts) and media stay with
 	// their posts. Positions in the source text mean nothing in the new one.
-	text, breaks, starts, err := translateParts(r.Context(), a.Translator, src.Text, validBreaks(src.Text, p.Content.Breaks), lang)
+	text, breaks, starts, err := translateParts(r.Context(), tr, src.Text, validBreaks(src.Text, p.Content.Breaks), lang)
 	if err != nil {
 		slog.WarnContext(r.Context(), "v1: translate draft", "err", store.Scrub(err.Error()))
 		problem(w, r, http.StatusBadGateway, codeUpstream, "the translation service failed or could not be reached; try again")

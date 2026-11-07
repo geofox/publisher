@@ -298,3 +298,40 @@ func TestMarkDueLeavesFinishedTargets(t *testing.T) {
 		t.Errorf("finished post moved to %q / %q", got.Status, got.Targets[0].Status)
 	}
 }
+
+// With automatic retries off, a failure waiting for one isn't claimed;
+// first attempts and what the owner retried by hand are.
+func TestClaimHoldsAutoRetriesButNotManualOnes(t *testing.T) {
+	ctx := context.Background()
+	s := openEngineStore(t)
+	now := time.Now().UTC()
+	p := plannedPost(t, s, "held", now, 1, "mastodon")
+	c := claim(t, s, now, ClaimFilter{HoldAutoRetries: true})
+	if c == nil {
+		t.Fatal("a first attempt was held")
+	}
+	retry := now.Add(-time.Second)
+	if _, err := s.RecordItemResult(ctx, ItemResult{Claim: *c, Status: ItemFailed, ErrorClass: "transient", NextAttemptAt: &retry, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	if c := claim(t, s, now, ClaimFilter{HoldAutoRetries: true}); c != nil {
+		t.Fatal("an automatic retry was claimed with retries off")
+	}
+	if n, err := s.MarkDue(ctx, "held", []int64{p.Targets[0].ID}, now); err != nil || n != 1 {
+		t.Fatalf("mark due %d %v", n, err)
+	}
+	c = claim(t, s, now, ClaimFilter{HoldAutoRetries: true})
+	if c == nil {
+		t.Fatal("a retry by hand was held")
+	}
+	// The claim spends the mark: failing again, it waits like any other.
+	if _, err := s.RecordItemResult(ctx, ItemResult{Claim: *c, Status: ItemFailed, ErrorClass: "transient", NextAttemptAt: &retry, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	if c := claim(t, s, now, ClaimFilter{HoldAutoRetries: true}); c != nil {
+		t.Fatal("the manual mark outlived its claim")
+	}
+	if c := claim(t, s, now, ClaimFilter{}); c == nil {
+		t.Fatal("retries on again: the waiting failure wasn't claimed")
+	}
+}

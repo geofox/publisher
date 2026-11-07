@@ -63,12 +63,10 @@ type v1PaginationInfo struct {
 }
 
 func (a *API) v1Instance(w http.ResponseWriter, r *http.Request) {
-	langs := a.UserLanguages
-	if langs == nil {
-		langs = []string{}
-	}
+	langs := a.userLanguages()
+	tr := a.translator()
 	targets := []string{}
-	if a.Translator != nil {
+	if tr != nil {
 		targets = translate.Intersect(langs)
 	}
 	authMode := a.mode()
@@ -80,8 +78,8 @@ func (a *API) v1Instance(w http.ResponseWriter, r *http.Request) {
 		Version:           version,
 		Auth:              authMode,
 		SignInRecommended: authMode == ModeProxy,
-		Features: v1Features{Media: a.media != nil, Translate: a.Translator != nil, Video: a.media != nil && a.VideoJobs != nil,
-			PublicFeed: a.PublicFeedToken != "",
+		Features: v1Features{Media: a.media != nil, Translate: tr != nil, Video: a.media != nil && a.VideoJobs != nil,
+			PublicFeed: a.feedToken() != "",
 			RelaySync:  a.relaySyncAvailable(r.Context())},
 		UserLanguages:    langs,
 		TranslateTargets: targets,
