@@ -1846,8 +1846,9 @@ Spec §1 (precedence), §7, §8.5 step 4, §12 (D).
 
 **Files:** new `internal/settings/{defs,service,patch}.go`, tests.
 
-- [x] Definitions (spec §7.2), including driver `InstanceConfig` fields
-  as `<type>.<key>` read from manifests.
+- [x] Definitions (spec §7.2). Driver `InstanceConfig` fields
+  (`<type>.<key>` read from manifests) moved to E5: Threads' app is the
+  first type that has any.
 - [x] Precedence env → saved → default with `source` and locks; env values
   parsed as config does today.
 - [x] `Current()` immutable snapshot; `OnChange`; writes serialized.
@@ -1971,8 +1972,9 @@ onto `main`.
   pipeline's `Lookup` (`reuseStored`) reuses a stored address unless it
   is on this server's disk and the store is another now, its file is
   gone, or it was made before `PUBLIC_URL`. Blossom with its own key
-  adds the BUD-11 server tag and `X-SHA-256`, and encodes the
-  authorization in standard base64 (BUD-11 asks for base64url; servers
+  adds the BUD-11 server tag; every upload, with the env key too, sends
+  `X-SHA-256` (the body's hash, which the authorization names already),
+  and encodes the authorization in standard base64 (BUD-11 asks for base64url; servers
   from before it read standard). A server set in the app is reached
   through the guard, and an address it answers on another origin is
   replaced by its own for the hash. `BLOSSOM_URL` without `NSEC_HEX`
@@ -2013,6 +2015,71 @@ onto `main`.
   self-test's message on its field), a feed token shown once, System
   never showing a secret, and proxy mode. The self-test's real failures
   are Go tests (`TestV1MediaPublicSelfTest`).
+
+### As built (D): review fixes
+
+Two QA reviews (backend, web) and a security review; every finding
+fixed except the decisions at the end.
+
+- **Security:** a Blossom server set in the app is confined even when it
+  signs with the env key (the address it answers must be on its own
+  origin), and the dispatcher fetches media from any origin but the env
+  Blossom server's through the guarded stream client
+  (`Fetcher.TrustedOrigin`). A secret from the environment
+  (`ALERT_WEBHOOK_PASS`, `FEED_WEBHOOK_TOKEN`) goes only with an address
+  from the environment (`pairedSecret`), and saving an address in the
+  app while its secret is env-set is refused (`locked`). System reads
+  its values before the environment's secrets are unset, and drops an
+  address's query and fragment as well as its user. The session gate
+  checks the escaped path too (`%2F`). `MEDIA_DIR`: files open with
+  `O_NOFOLLOW`, `Has` and `Upload` take regular files only (`Lstat`),
+  and leftover `.upload-*` files go at start. Account set names
+  (unique whatever their case) and the cap of 50 are checked inside the
+  write's transaction.
+- **API and services:** `:copy-from-env` validates the value (`422`
+  with the field's problem), copies what goes with it (a webhook's
+  secret; `media.store` with `media.blossom_url` and back), and answers
+  `409` when the setting isn't from the environment; a leaf says
+  `also_saved` when a value saved in the app is behind the
+  environment's (part of the version). Blossom chosen needs its address
+  (`required`). `PATCH {}` checks `If-Match`; an empty unknown group is
+  refused; a reload that fails after a commit is `ErrSavedNotRead`. The
+  media test answers `store_refused` and `wrong_answer`. The preview
+  warns when a link-quote copy goes without the original's images.
+  `/readyz` follows the media setting (`media_disk` free space, the
+  app's Blossom server). The old default set's `updated_at` moves when
+  another becomes the default. Old drafts convert with the Blossom
+  address as set. Go tests for D3's wiring (`Dispatcher.Live`, the
+  policy fallback, `Retrier.Live`, `Fanout.MaxAttempts`, a translator
+  per key).
+- **Web:** a default cleared on a post stays cleared (each card value is
+  sent, an empty one too, so the server's default doesn't fill it in).
+  What was typed and not saved survives a redraw (another form saved, a
+  key made, a `412`, a section shown again) where the saved value under
+  it didn't change. A value made is shown until "Done, I copied it". A
+  card shows a default outside the owner's languages or a select's
+  options as it is. A new post nobody has touched follows Settings at
+  once (the languages, an account's defaults, a new default set). A
+  default set with no usable account falls back to each account's
+  "Picked for new posts". Behind the proxy alone, secret fields show
+  locked, saying why. "Copy into the app" leaves a lasting "also saved
+  in the app" line. Focus keys on the new buttons; `aria-describedby`
+  for the source and state lines and the dialogs' errors; button names
+  that say which setting or account; one live status line per form;
+  "Clear all" on an account's defaults asks first. Found on the way: the
+  tabs ignored a click until the app had read the instance and the
+  accounts (an e2e test that clicked right after signing in failed now
+  and then); a tab picked meanwhile now opens once the app has started.
+- **e2e:** `settings.spec.ts` adds the lasting "also saved" line, the
+  languages, defaults and default set reaching the open composer, a
+  cleared default sent empty with no `defaults_applied`, Blossom needing
+  its address, its key made and cleared (each asking who you are)
+  keeping what was typed, the feed token surviving another form's save
+  and a section switch, and proxy mode's locked secrets.
+- **Not changed:** no hash check of media fetched for a post (they are
+  the owner's own uploads, and servers may re-encode them); a Blossom
+  server set in the app may still sign with `NSEC_HEX` until a key is
+  made, now confined to its origin.
 
 ---
 

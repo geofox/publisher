@@ -373,6 +373,25 @@ func (s *Service) Apply(ctx context.Context, c Change) (*Snapshot, error) {
 		}
 		ch.Put[k] = string(b)
 	}
+	// Blossom chosen, it needs its address.
+	if c.Scope == Instance {
+		store, url := cur.String(MediaStore), cur.String(MediaBlossomURL)
+		if v, ok := ch.Put[MediaStore]; ok {
+			_ = json.Unmarshal([]byte(v), &store)
+		} else if slices.Contains(ch.Clear, MediaStore) {
+			store = StoreNone
+		}
+		if v, ok := ch.Put[MediaBlossomURL]; ok {
+			_ = json.Unmarshal([]byte(v), &url)
+		} else if slices.Contains(ch.Clear, MediaBlossomURL) && !cur.vals[MediaBlossomURL].Locked {
+			url = ""
+		}
+		if hasKey(c.Values, MediaStore) || hasKey(c.Values, MediaBlossomURL) {
+			if store == StoreBlossom && strings.TrimSpace(url) == "" {
+				bad(MediaBlossomURL, "required", "a Blossom server's address is needed to use one")
+			}
+		}
+	}
 	// A secret bound to an address: a new origin needs it again, and an
 	// address cleared takes it along.
 	for _, d := range s.defs {
@@ -471,6 +490,8 @@ func (s *Service) reload(ctx context.Context) (*Snapshot, error) {
 	}
 	return snap, nil
 }
+
+func hasKey(m map[string]any, k string) bool { _, ok := m[k]; return ok }
 
 // ErrSavedNotRead: a change was saved, but reading the settings back
 // failed; the one in effect is the last read until the next succeeds.

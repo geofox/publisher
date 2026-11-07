@@ -323,26 +323,28 @@ export function v1Target(id, { repost = false } = {}) {
     // Absent breaks already mean the shared ones (or none with own text).
     if (th.media_at || (th.breaks && (th.breaks.length || !own))) t.thread = th;
   }
+  // Each value the card holds is sent, an empty one too: the card already
+  // holds the account's defaults, and one the owner cleared must not come
+  // back from the server's (which fills in only what a target leaves out).
   if (p === "bluesky") {
     options.reply_gate = ov.reply || "";
     options.disable_quotes = !!ov.disable_quotes;
-    const langs = langList(ov.langs);
-    if (langs.length) content.languages = langs;
+    content.languages = langList(ov.langs);
   }
   if (p === "mastodon") {
-    if (ov.visibility) options.visibility = ov.visibility;
-    if (ov.spoiler_text) content.content_warning = ov.spoiler_text;
+    options.visibility = ov.visibility || "";
+    content.content_warning = ov.spoiler_text || "";
     if (ov.sensitive) content.sensitive = true;
-    if (ov.language) content.languages = [ov.language];
+    content.languages = ov.language ? [ov.language] : [];
   }
   if (p === "threads") {
-    if (ov.topic_tag) options.topic_tag = ov.topic_tag;
-    if (ov.reply_control) options.reply_control = ov.reply_control;
+    options.topic_tag = ov.topic_tag || "";
+    options.reply_control = ov.reply_control || "";
   }
   if (p === "nostr") {
     const pow = parseInt(ov.pow, 10);
     options.pow = Number.isFinite(pow) && pow > 0 ? pow : 0;
-    if (ov.content_warning) content.content_warning = ov.content_warning;
+    content.content_warning = ov.content_warning || "";
   }
   if (Object.keys(options).length) t.options = options;
   if (Object.keys(content).length) t.content = content;

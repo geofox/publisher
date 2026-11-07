@@ -77,13 +77,20 @@ export function connected() { return all.filter(isConnected); }
 export function primaryOf(type) { return primaryIn(all, type); }
 
 // defaultTargets is what a new post selects: the default account set's
-// connected accounts when there is one, else the connected accounts that
-// new posts select, in order. Empty until the accounts load.
+// connected accounts when there is one (and one of them can be posted to
+// now), else the connected accounts that new posts select, in order.
+// Empty until the accounts load.
 export function defaultTargets() {
   const d = sets.find(x => x.is_default);
-  if (d) return inOrder(setTargetsOf(d));
-  return all.filter(a => isConnected(a) && a.default_selected).map(a => a.id);
+  const fromSet = d ? setTargetsOf(d) : [];
+  lastDefault = fromSet.length ? inOrder(fromSet) : all.filter(a => isConnected(a) && a.default_selected).map(a => a.id);
+  return [...lastDefault];
 }
+
+// lastDefaultTargets is what defaultTargets answered last: a selection
+// still on it follows a new default (main.js applyAccounts).
+let lastDefault = [];
+export function lastDefaultTargets() { return [...lastDefault]; }
 
 // The owner's account sets (GET /v1/account-sets), read with the accounts.
 let sets = [];

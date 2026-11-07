@@ -1,5 +1,5 @@
 "use strict";
-import { el, v1, flash, confirmModal, asDialog } from "./common.js";
+import { el, v1, flash, confirmModal, asDialog, restoreFocus } from "./common.js";
 import { accounts, accountSets, reloadAccounts, byId, nameOf, isConnected, loadDestinations, networkName } from "./accounts.js";
 import { showProblems } from "./fields.js";
 
@@ -35,17 +35,19 @@ export function setsSection() {
     const sets = accountSets();
     const list = el("ul", { class: "set-list" });
     for (const s of sets) {
-      const names = (s.accounts || []).map(id => nameOf(id));
-      const off = (s.accounts || []).filter(id => !isConnected(byId(id))).length;
+      const names = (s.accounts || []).map(id => nameOf(id) + (isConnected(byId(id)) ? "" : " (can't be posted to now)"));
       list.append(el("li", { class: "set-item" },
         el("div", { class: "set-item-main" },
           el("p", { class: "set-item-name" }, s.name, s.is_default ? el("span", { class: "set-badge", text: "new posts" }) : null),
-          el("p", { class: "set-item-sub", text: names.join(", ") + (off ? " (" + off + " can't be posted to now)" : "") })),
+          el("p", { class: "set-item-sub", text: names.join(", ") })),
         el("div", { class: "set-item-actions" },
           s.is_default ? null : el("button", { class: "ghost xs", type: "button", text: "Start new posts with it",
-            onclick: e => patchSet(s, { is_default: true }, e.target) }),
-          el("button", { class: "ghost xs", type: "button", text: "Change", "aria-label": "Change " + s.name, onclick: () => editSet(s) }),
+            "aria-label": "Start new posts with " + s.name, "data-focus-key": "set-default-" + s.id, "data-focus-fallback": "set-change-" + s.id,
+            onclick: e => patchSet(s, { is_default: true }, e.currentTarget) }),
+          el("button", { class: "ghost xs", type: "button", text: "Change", "aria-label": "Change " + s.name,
+            "data-focus-key": "set-change-" + s.id, onclick: () => editSet(s) }),
           el("button", { class: "ghost xs danger-text", type: "button", text: "Remove", "aria-label": "Remove " + s.name,
+            "data-focus-key": "set-remove-" + s.id, "data-focus-fallback": "set-new",
             onclick: () => confirmModal({ title: "Remove " + s.name + "?", body: "Its accounts stay as they are.",
               confirmText: "Remove", onConfirm: () => removeSet(s) }) }))));
     }
@@ -56,9 +58,10 @@ export function setsSection() {
       sets.length ? list : el("p", { class: "set-status", text: "No sets yet." }),
       el("div", { class: "set-actions" },
         el("button", { class: "ghost sm", type: "button", text: "New set", disabled: live.length ? false : "",
-          onclick: () => editSet(null) }),
-        accountSets().some(s => s.is_default) ? el("button", { class: "ghost sm", type: "button", text: "Start new posts with each account's flag",
-          onclick: e => { const d = accountSets().find(s => s.is_default); if (d) patchSet(d, { is_default: false }, e.target); } }) : null));
+          "data-focus-key": "set-new", onclick: () => editSet(null) }),
+        accountSets().some(s => s.is_default) ? el("button", { class: "ghost sm", type: "button",
+          text: "Start new posts with each account's “Picked for new posts”", "data-focus-key": "set-flags", "data-focus-fallback": "set-new",
+          onclick: e => { const d = accountSets().find(s => s.is_default); if (d) patchSet(d, { is_default: false }, e.currentTarget); } }) : null));
   };
   document.addEventListener("accounts", draw);
   draw();
@@ -75,6 +78,8 @@ async function patchSet(s, body, b) {
     flash(e.message);
   } finally {
     if (b) b.disabled = false;
+    // The list was drawn again: the keyboard goes to the same set.
+    restoreFocus(b);
   }
 }
 
@@ -94,11 +99,12 @@ async function removeSet(s) {
 // whether new posts start with it.
 function editSet(s) {
   const d = dialog(s ? "Change " + s.name : "New account set");
-  const name = el("input", { id: "set-name", type: "text", maxlength: "64", value: s ? s.name : "", autocomplete: "off", required: "" });
-  const nameErr = el("p", { class: "fld-err" });
+  const name = el("input", { id: "set-name", type: "text", maxlength: "64", value: s ? s.name : "", autocomplete: "off", required: "",
+    "aria-describedby": "set-name-err" });
+  const nameErr = el("p", { class: "fld-err", id: "set-name-err" });
   const picked = new Set(s ? s.accounts : []);
   const boxes = [];
-  const group = el("fieldset", { class: "set-pick" }, el("legend", { text: "Accounts" }));
+  const group = el("fieldset", { class: "set-pick", "aria-describedby": "set-accts-err" }, el("legend", { text: "Accounts" }));
   for (const a of accounts().filter(x => x.status !== "deleted")) {
     const id = "set-acct-" + a.id;
     const cb = el("input", { type: "checkbox", id, checked: picked.has(a.id) ? "" : false });
@@ -106,7 +112,7 @@ function editSet(s) {
     group.append(el("div", { class: "fld-check" }, cb,
       el("label", { for: id, text: nameOf(a.id) + (isConnected(a) ? "" : " (can't be posted to now)") })));
   }
-  const accErr = el("p", { class: "fld-err" });
+  const accErr = el("p", { class: "fld-err", id: "set-accts-err" });
   const isDef = el("input", { type: "checkbox", id: "set-default", checked: s && s.is_default ? "" : false });
   const ok = el("button", { class: "primary sm", type: "submit", text: s ? "Save" : "Add" });
   d.form.append(
@@ -170,7 +176,7 @@ export function defaultsSection() {
           el("p", { class: "set-item-sub", text: summary(a) })),
         el("div", { class: "set-item-actions" },
           el("button", { class: "ghost xs", type: "button", text: "Change", "aria-label": "Change " + nameOf(a.id) + "'s defaults",
-            onclick: () => editDefaults(a) }))));
+            "data-focus-key": "def-change-" + a.id, onclick: () => editDefaults(a) }))));
     }
     node.replaceChildren(
       el("h2", { id: "set-defaults-title", class: "set-sect-title", text: "Each account's defaults" }),
@@ -204,13 +210,14 @@ async function editDefaults(a) {
   const reads = [];
   let first = null;
   const row = (ptr, label, input, help) => {
-    const err = el("p", { class: "fld-err" });
     const id = "def-" + ptr.replace(/\W+/g, "-");
+    const err = el("p", { class: "fld-err", id: id + "-err" });
     input.id = id;
+    input.setAttribute("aria-describedby", (help ? id + "-help " : "") + id + "-err");
     fields.set(ptr, ctl(input, err));
     first = first || input;
     return el("div", { class: "fld" }, el("label", { for: id, class: "fld-label", text: label }), input,
-      help ? el("p", { class: "fld-help", text: help }) : null, err);
+      help ? el("p", { class: "fld-help", id: id + "-help", text: help }) : null, err);
   };
   const parts = [];
   if (caps.content_warning) {
@@ -243,11 +250,16 @@ async function editDefaults(a) {
           el("option", { value: "false", text: "Off", selected: cur === false ? "" : false }));
         read = o => { if (input.value) o[spec.key] = input.value === "true"; };
         break;
-      case "enum":
+      case "enum": {
+        // A value labelled as the empty one (Threads' "everyone") is the
+        // network's own: offered once.
+        const same = ((spec.enum || []).find(e => e.value === "") || {}).label;
         input = el("select", {}, el("option", { value: "", text: "The network's own" }),
-          ...(spec.enum || []).filter(e => e.value !== "").map(e => el("option", { value: e.value, text: e.label || e.value, selected: cur === e.value ? "" : false })));
+          ...(spec.enum || []).filter(e => e.value !== "" && (e.label !== same || cur === e.value))
+            .map(e => el("option", { value: e.value, text: e.label || e.value, selected: cur === e.value ? "" : false })));
         read = o => { if (input.value) o[spec.key] = input.value; };
         break;
+      }
       case "int":
         input = el("input", { type: "number", step: "1", inputmode: "numeric", value: cur != null ? String(cur) : "",
           min: spec.min != null ? String(spec.min) : false, max: spec.max != null ? String(spec.max) : false });
@@ -263,11 +275,12 @@ async function editDefaults(a) {
   if (!parts.length) parts.push(el("p", { class: "set-status", text: networkName(a.type) + " has nothing to set by default." }));
   const ok = el("button", { class: "primary sm", type: "submit", text: "Save" });
   const clear = el("button", { class: "ghost sm", type: "button", text: "Clear all" });
-  clear.addEventListener("click", () => send({}));
+  clear.addEventListener("click", () => confirmModal({ title: "Clear " + nameOf(a.id) + "'s defaults?",
+    body: "New posts on it start with the network's own settings.", confirmText: "Clear all", onConfirm: () => send({}) }));
   dlg.form.append(...parts, dlg.status,
     el("div", { class: "confirm-actions" }, clear, el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: () => dlg.close() }), ok));
   async function send(body) {
-    if (ok.disabled) return;
+    if (ok.disabled) return false;
     ok.disabled = clear.disabled = true;
     dlg.status.textContent = "";
     try {
@@ -275,8 +288,10 @@ async function editDefaults(a) {
       await reloadAccounts();
       dlg.close();
       flash("Saved: new posts on " + nameOf(a.id) + " start with them");
+      return true;
     } catch (e) {
       dlg.status.textContent = showProblems(e, fields).join(" ");
+      return true; // the confirmation closes; the dialog says what's wrong
     } finally {
       ok.disabled = clear.disabled = false;
     }

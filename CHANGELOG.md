@@ -343,3 +343,9 @@ the `edge` image.
   with an HTTP/2 ping and closed if the server doesn't answer, so one dead
   connection can't stall every post to that server. Connecting to a server
   times out after 10 seconds (30 before, for some requests).
+- The web app's tabs answer as soon as they show: one picked while the
+  app is still reading the server opens once it has (the click used to
+  be lost).
+- The composer sends each value its cards hold, an empty one too, so a
+  default cleared on a post (a content warning, a visibility) isn't
+  filled in again by the account's defaults.

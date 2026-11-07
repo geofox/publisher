@@ -72,8 +72,9 @@ test("a reply started before the accounts could be read gets its network's setti
   reads.ok();
   await page.locator("#submit").click();
   await expect.poll(() => sent).not.toBeNull();
-  // Mastodon's language, as for any reply (the operator's first language).
-  expect(sent.targets).toEqual([expect.objectContaining({ content: { languages: ["en"] } })]);
+  // Mastodon's language, as for any reply (the operator's first language),
+  // and its card's empty values, sent as they are.
+  expect(sent.targets).toEqual([expect.objectContaining({ content: { languages: ["en"], content_warning: "" }, options: { visibility: "" } })]);
   consoleErrors.splice(0, consoleErrors.length, ...consoleErrors.filter(e => !/ERR_CONNECTION_RESET|status of 4(00|22)/.test(e)));
 });
 
@@ -87,4 +88,19 @@ test("Try again keeps the keyboard when the read fails again", async ({ page, co
   await expect(again).toBeFocused();
   await expect(page.locator("#chips-status")).toContainText("Couldn't read your accounts");
   consoleErrors.splice(0, consoleErrors.length, ...consoleErrors.filter(e => !/ERR_CONNECTION_RESET|status of 422/.test(e)));
+});
+
+test("a tab picked while the app is still starting opens once it has", async ({ page }) => {
+  // The instance answers late: the app is still starting when the owner
+  // picks History.
+  let release = () => {};
+  const held = new Promise<void>(r => { release = r; });
+  await page.route("**/v1/instance", async r => { await held; await r.continue(); });
+  await page.goto("/");
+  const tab = page.locator('.tab[data-view="history"]');
+  await tab.click();
+  await expect(tab).toHaveClass(/\bon\b/);
+  release();
+  await expect(page.locator("#history")).toBeVisible();
+  await expect(page.locator("#compose")).toBeHidden();
 });

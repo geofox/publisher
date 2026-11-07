@@ -732,10 +732,21 @@ function langField(value, onChange) {
   if (langs.length > 1) {
     const sel = el("select", { onchange: e => { onChange(e.target.value); renderPreview(); } });
     for (const code of langs) sel.append(el("option", { value: code, text: code }));
-    sel.value = langs.includes(value) ? value : langs[0];
+    // A value that isn't one of the owner's languages (an account's
+    // default, a draft's) shows as it is, since it is what the post sends.
+    if (value) ensureOption(sel, value, String(value).split(",").join(", "));
+    else sel.value = langs[0];
     return sel;
   }
-  return el("span", { class: "lang-static muted", text: value });
+  return el("span", { class: "lang-static muted", text: String(value || "").split(",").join(", ") });
+}
+
+// ensureOption selects value in sel, adding it (shown as text) when none
+// of the options is it: the card shows what the post sends.
+function ensureOption(sel, value, text) {
+  value = value == null ? "" : String(value);
+  if (![...sel.options].some(o => o.value === value)) sel.append(el("option", { value, text: text || value }));
+  sel.value = value;
 }
 
 function fieldsFor(p, ov, onText = renderPreview) {
@@ -745,7 +756,7 @@ function fieldsFor(p, ov, onText = renderPreview) {
     const rsel = el("select", { onchange: e => { ov.reply = e.target.value; renderPreview(); } });
     [["", "anyone"], ["nobody", "nobody"], ["following", "following"], ["follower", "followers"], ["mention", "mentioned"]]
       .forEach(([v, t]) => rsel.append(el("option", { value: v, text: t })));
-    rsel.value = ov.reply;
+    ensureOption(rsel, ov.reply, String(ov.reply || "").split(",").map(x => ({ follower: "followers", mention: "mentioned" }[x.trim()] || x.trim())).join(" + "));
     f.append(lbl("replies", rsel));
     f.append(lbl("disable quotes", el("input", { type: "checkbox", checked: ov.disable_quotes, onchange: e => { ov.disable_quotes = e.target.checked; renderPreview(); } })));
   }
@@ -755,16 +766,16 @@ function fieldsFor(p, ov, onText = renderPreview) {
     const sel = el("select", { onchange: e => { ov.visibility = e.target.value; renderPreview(); } });
     [["", "default"], ["public", "public"], ["unlisted", "unlisted"], ["private", "private"], ["direct", "direct"]]
       .forEach(([v, t]) => sel.append(el("option", { value: v, text: t })));
-    sel.value = ov.visibility;
+    ensureOption(sel, ov.visibility);
     f.append(lbl("visibility", sel));
     f.append(lbl("lang (ISO 639-1)", langField(ov.language, v => { ov.language = v; })));
   }
   if (p === "threads") {
     f.append(lbl("topic", el("input", { type: "text", value: ov.topic_tag, oninput: e => { ov.topic_tag = e.target.value; renderPreview(); } })));
     const tsel = el("select", { onchange: e => { ov.reply_control = e.target.value; renderPreview(); } });
-    [["", "anyone"], ["accounts_you_follow", "following"], ["followers_only", "followers"], ["mentioned_only", "mentioned"], ["parent_post_author_only", "author only"]]
-      .forEach(([v, t]) => tsel.append(el("option", { value: v, text: t })));
-    tsel.value = ov.reply_control;
+    [["", "anyone"], ["everyone", "anyone"], ["accounts_you_follow", "following"], ["followers_only", "followers"], ["mentioned_only", "mentioned"], ["parent_post_author_only", "author only"]]
+      .forEach(([v, t]) => { if (v !== "everyone" || ov.reply_control === "everyone") tsel.append(el("option", { value: v, text: t })); });
+    ensureOption(tsel, ov.reply_control);
     f.append(lbl("replies", tsel));
   }
   if (p === "nostr") {

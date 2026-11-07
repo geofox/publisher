@@ -58,8 +58,9 @@ base.describe("settings, signed in", () => {
     // What the specs changed, put back.
     const sets = await api("GET", "/v1/account-sets");
     for (const s of (sets.body && sets.body.data) || []) if (String(s.name).includes(RUN)) await api("DELETE", "/v1/account-sets/" + s.id);
-    await api("PATCH", "/v1/instance/settings", { media: { store: null, public: null } });
-    await api("PATCH", "/v1/settings", { composing: { languages: ["en", "fr"] }, feed: { token: null }, publishing: { max_attempts: null } });
+    await api("PATCH", "/v1/instance/settings", { media: { store: null, public: null, blossom_url: null } });
+    await api("PATCH", "/v1/settings", { composing: { languages: ["en", "fr"] }, feed: { token: null }, publishing: { max_attempts: null },
+      alerts: { webhook_user: null } });
     const accts = await api("GET", "/v1/accounts?limit=100");
     for (const a of (accts.body && accts.body.data) || []) if (a.defaults && Object.keys(a.defaults).length) await api("PATCH", "/v1/accounts/" + a.id, { defaults: {} });
     baseExpect(errors).toEqual([]);
@@ -86,9 +87,18 @@ base.describe("settings, signed in", () => {
     await baseExpect(grace).toBeDisabled();
     await baseExpect(grace).toHaveValue("3h");
     const row = panel.locator('.fld[data-key="publishing.schedule_grace"]');
-    await baseExpect(row.locator(".fld-src")).toContainText("Set by SCHEDULE_GRACE in the server's environment.");
-    await row.getByRole("button", { name: "Copy into the app" }).click();
-    await baseExpect(status(panel)).toContainText("You can now remove SCHEDULE_GRACE");
+    const src = row.locator(".fld-src");
+    await baseExpect(src).toContainText("Set by SCHEDULE_GRACE in the server's environment");
+    // A reused server has it copied already (a value saved under the
+    // environment's can't be cleared while the variable is set).
+    if (!/also saved in the app/.test((await src.textContent()) || "")) {
+      await row.getByRole("button", { name: "Copy late scheduled posts into the app", exact: true }).click();
+      await baseExpect(status(panel)).toContainText("You can now remove SCHEDULE_GRACE from the server's environment");
+    }
+    // Copied, it says so for good, with nothing more to copy.
+    await baseExpect(src).toContainText("and also saved in the app: remove SCHEDULE_GRACE from the environment to use what the app keeps.");
+    await baseExpect(row.getByRole("button", { name: /into the app/ })).toHaveCount(0);
+    await baseExpect(grace).toBeDisabled();
     // A plain one is saved, and says so.
     const tries = panel.getByLabel("Tries before giving up", { exact: true });
     await tries.fill("4");
@@ -104,7 +114,19 @@ base.describe("settings, signed in", () => {
     await baseExpect(status(panel)).toHaveText("Saved.");
   });
 
-  base("languages saved in the app are the composer's", async () => {
+  // The Mastodon account's card in the composer, opened.
+  async function mastodonCard() {
+    const accts = await api("GET", "/v1/accounts?limit=100");
+    const id = accts.body.data.find((a: { type: string; handle?: string }) => a.type === "mastodon" && a.handle === "@me@one.e2e.invalid").id;
+    await page.locator('.tab[data-view="compose"]').click();
+    const card = page.locator(`#cards .ocard[data-account="${id}"]`);
+    const body = card.locator(".ocard-body");
+    if (await body.isHidden()) await card.locator(".ocard-summary").click();
+    await baseExpect(body).toBeVisible();
+    return { id, card };
+  }
+
+  base("languages saved in the app are the composer's at once", async () => {
     const form = sect(await section("Composing"), "Languages");
     const langs = form.getByLabel(/^Languages you write in/);
     await langs.fill("de\nen");
@@ -112,9 +134,18 @@ base.describe("settings, signed in", () => {
     await baseExpect(status(form)).toHaveText("Saved.");
     const inst = await api("GET", "/v1/instance");
     baseExpect(inst.body.user_languages).toEqual(["de", "en"]);
+    // A new post nobody has touched starts from them, without a reload.
+    let { card } = await mastodonCard();
+    const lang = card.getByLabel("lang (ISO 639-1)");
+    await baseExpect(lang).toHaveValue("de");
+    await baseExpect(lang.locator("option")).toHaveText(["de", "en"]);
+
+    await section("Composing");
     await langs.fill("en\nfr");
     await form.getByRole("button", { name: "Save" }).click();
     await baseExpect(status(form)).toHaveText("Saved.");
+    ({ card } = await mastodonCard());
+    await baseExpect(card.getByLabel("lang (ISO 639-1)")).toHaveValue("en");
   });
 
   base("an account set picks its accounts in the composer, and the default one starts new posts", async () => {
@@ -140,11 +171,15 @@ base.describe("settings, signed in", () => {
     await dlg.getByRole("button", { name: "Add" }).click();
     await baseExpect(dlg).toHaveCount(0);
 
-    // A new post starts with the default set; the other set picks its own.
+    // A new post nobody has touched takes the default set at once, and
+    // starts with it after a reload; the other set picks its own.
+    const on = page.locator('#chips .target-row[aria-checked="true"]');
+    await page.locator('.tab[data-view="compose"]').click();
+    await baseExpect(on).toHaveCount(2);
+    await baseExpect(page.locator("#chips .ts-set", { hasText: "Work " + RUN })).toHaveAttribute("aria-pressed", "true");
     await page.goto("/");
     const rows = page.locator("#chips .target-row");
     await baseExpect(rows.first()).toBeVisible();
-    const on = page.locator('#chips .target-row[aria-checked="true"]');
     await baseExpect(on).toHaveCount(2);
     await baseExpect(page.locator("#chips .ts-set", { hasText: "Work " + RUN })).toHaveAttribute("aria-pressed", "true");
     await page.locator("#chips .ts-set", { hasText: "Threads only " + RUN }).click();
@@ -166,16 +201,34 @@ base.describe("settings, signed in", () => {
     await baseExpect(item).toContainText("content warning “spoilers " + RUN + "”");
     await baseExpect(item).toContainText("visibility unlisted");
 
-    await page.goto("/");
-    await baseExpect(page.locator("#chips .target-row").first()).toBeVisible();
-    const accts = await api("GET", "/v1/accounts?limit=100");
-    const id = accts.body.data.find((a: { type: string; handle?: string }) => a.type === "mastodon" && a.handle === "@me@one.e2e.invalid").id;
-    const preview = page.waitForRequest(r => r.url().endsWith("/v1/posts:preview") && r.method() === "POST" && (r.postData() || "").includes("hello " + RUN));
+    // The post on screen (nobody touched it) takes them without a reload.
+    await page.locator('.tab[data-view="compose"]').click();
+    await page.locator("#chips .ts-set", { hasText: "Work " + RUN }).click();
+    const { id, card } = await mastodonCard();
+    await baseExpect(card.getByLabel("CW")).toHaveValue("spoilers " + RUN);
+    await baseExpect(card.getByLabel("visibility")).toHaveValue("unlisted");
+    const previewOf = (want: (t: { options?: Record<string, unknown>; content?: Record<string, unknown> }) => boolean) =>
+      page.waitForRequest(r => {
+        if (!r.url().endsWith("/v1/posts:preview") || r.method() !== "POST") return false;
+        const b = JSON.parse(r.postData() || "{}");
+        const t = (b.targets || []).find((t: { account: string }) => t.account === id);
+        return !!t && (r.postData() || "").includes("hello " + RUN) && want(t);
+      });
+    let preview = previewOf(() => true);
     await page.locator("#master").fill("hello " + RUN);
-    const body = JSON.parse((await preview).postData() || "{}");
-    const masto = body.targets.find((t: { account: string }) => t.account === id);
+    const masto = JSON.parse((await preview).postData() || "{}").targets.find((t: { account: string }) => t.account === id);
     baseExpect(masto.options.visibility).toBe("unlisted");
     baseExpect(masto.content.content_warning).toBe("spoilers " + RUN);
+
+    // Cleared on the post, a default stays cleared: the post sends the
+    // empty value, so the server's default doesn't fill it in again.
+    preview = previewOf(t => !!t.options && t.options.visibility === "" && !!t.content && t.content.content_warning === "");
+    await card.getByLabel("CW").fill("");
+    await card.getByLabel("visibility").selectOption("");
+    const res = await (await (await preview).response())!.json();
+    const applied = res.targets.find((t: { account: string }) => t.account === id).defaults_applied;
+    baseExpect(applied.content_warning).toBeUndefined();
+    baseExpect((applied.options || {}).visibility).toBeUndefined();
   });
 
   base("media kept on this server's disk are served with their own policy, and publicly only once reachable", async () => {
@@ -224,17 +277,77 @@ base.describe("settings, signed in", () => {
     await anon.dispose();
   });
 
+  const confirmIt = async () => {
+    const dlg = page.getByRole("dialog", { name: "Confirm it's you" });
+    await dlg.getByRole("button", { name: "Use your passkey" }).click();
+    await baseExpect(dlg).toBeHidden();
+  };
+
+  base("a Blossom server needs its address; making its key keeps what was typed", async () => {
+    const panel = await section("Media");
+    const where = panel.getByLabel("Where media go");
+    const url = panel.getByLabel("Blossom server", { exact: true });
+    await where.selectOption("blossom");
+    await baseExpect(url).toBeVisible();
+    await url.fill("");
+    await panel.getByRole("button", { name: "Save" }).click();
+    await baseExpect(panel.locator('.fld[data-key="media.blossom_url"] .fld-err')).not.toBeEmpty();
+    baseExpect((await api("GET", "/v1/instance/settings")).body.media.store.value).toBe("local");
+
+    // A key made (it asks who you are first) leaves the unsaved choice and
+    // address as they were typed.
+    await url.fill("https://blossom.e2e.invalid");
+    await panel.getByRole("button", { name: "Make a Blossom signing key", exact: true }).click();
+    await confirmIt();
+    await baseExpect(panel.getByLabel("Its public key", { exact: true })).toHaveValue(/^npub1/);
+    await baseExpect(where).toHaveValue("blossom");
+    await baseExpect(url).toHaveValue("https://blossom.e2e.invalid");
+    await baseExpect(panel.locator('.fld[data-key="media.blossom_key"] .fld-state')).toContainText("Set");
+    await panel.getByRole("button", { name: "Save" }).click();
+    await baseExpect(status(panel)).toHaveText("Saved.");
+    const saved = (await api("GET", "/v1/instance/settings")).body.media;
+    baseExpect([saved.store.value, saved.blossom_url.value]).toEqual(["blossom", "https://blossom.e2e.invalid"]);
+
+    // Cleared again (it asks again: each confirmation is good once).
+    await panel.getByRole("button", { name: "Clear Blossom signing key", exact: true }).click();
+    await page.locator(".modal").getByRole("button", { name: "Clear", exact: true }).click();
+    await confirmIt();
+    await baseExpect(panel.locator('.fld[data-key="media.blossom_key"] .fld-state')).toContainText("Not set.");
+    await baseExpect(panel.getByLabel("Its public key", { exact: true })).toHaveCount(0);
+    // The keyboard goes to the field, to type one in.
+    await baseExpect(panel.getByRole("textbox", { name: /^Blossom signing key/ })).toBeFocused();
+  });
+
   base("a feed token is made and shown once; what the server started with is listed", async () => {
     const panel = await section("Integrations");
     const row = panel.locator('.fld[data-key="feed.token"]');
-    await row.getByRole("button", { name: "Make one" }).click();
-    const shown = row.locator(".set-note input");
+    await row.getByRole("button", { name: "Make a public feed token", exact: true }).click();
+    const shown = row.getByLabel("The new public feed token", { exact: true });
     await baseExpect(shown).toHaveValue(/^[A-Za-z0-9_-]{40,}$/);
+    const token = await shown.inputValue();
     await baseExpect(row.locator(".fld-state")).toContainText("Set");
+    // It stays until the owner says they copied it: another form saved
+    // (what was typed and not saved in this one stays too), another
+    // section shown.
+    const hook = panel.getByRole("textbox", { name: "Feed webhook (optional)", exact: true });
+    await hook.fill("https://hook.e2e.invalid/feed");
+    const alerts = sect(panel, "Alerts");
+    await alerts.getByLabel("Alert webhook user", { exact: true }).fill("bot-" + RUN);
+    await alerts.getByRole("button", { name: "Save" }).click();
+    await baseExpect(status(alerts)).toHaveText("Saved.");
+    await baseExpect(shown).toHaveValue(token);
+    await baseExpect(hook).toHaveValue("https://hook.e2e.invalid/feed");
+    await section("System");
+    await section("Integrations");
+    await baseExpect(shown).toHaveValue(token);
+    await hook.fill("");
+    await row.getByRole("button", { name: "Done, I copied it" }).click();
+    await baseExpect(shown).toHaveCount(0);
+    await baseExpect(row.getByRole("button", { name: "Make a new public feed token", exact: true })).toBeFocused();
     // Read again, it isn't shown.
     await section("System");
-    const again = await section("Integrations");
-    await baseExpect(again.locator('.fld[data-key="feed.token"] .set-note input')).toHaveCount(0);
+    await section("Integrations");
+    await baseExpect(row.locator(".set-note input")).toHaveCount(0);
 
     const sys = await section("System");
     await baseExpect(sys.locator(".sys-facts")).toContainText("Version");
@@ -252,6 +365,12 @@ test("behind the reverse proxy alone, the server's settings say to set up sign-i
   await page.locator('.tab[data-view="settings"]').click();
   await page.locator(".set-nav").getByRole("button", { name: "Media", exact: true }).click();
   await expect(page.locator("#set-media .set-note.warn")).toContainText("set up sign-in first");
+  // The app's secrets show locked, saying why, rather than refused on Save.
+  await page.locator(".set-nav").getByRole("button", { name: "Integrations", exact: true }).click();
+  const token = page.locator('#set-integrations .fld[data-key="feed.token"]');
+  await expect(token.locator(".fld-state")).toContainText("Behind the reverse proxy alone, secrets can't be set in the app: set up sign-in first.");
+  await expect(token.getByRole("textbox", { name: /^Public feed token/ })).toBeDisabled();
+  await expect(token.getByRole("button", { name: /^Make a/ })).toHaveCount(0);
   await page.locator(".set-nav").getByRole("button", { name: "Publishing", exact: true }).click();
   await expect(page.locator("#set-publishing").getByLabel("Retry failed posts by themselves")).toBeVisible();
   // The server's settings answered 403 (sign_in_required), as they should.

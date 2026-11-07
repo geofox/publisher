@@ -2,7 +2,7 @@
 import { $ } from "./common.js";
 import { state, byKey, selected } from "./state.js";
 import { composeInit, applyIdentity, rerenderComposer, setAccountsReloader, setAccountsPhase } from "./compose.js";
-import { loadAccounts, reloadAccounts, accounts, accountsLoaded, byId, identity, loadInstance, defaultTargets } from "./accounts.js";
+import { loadAccounts, reloadAccounts, accounts, accountsLoaded, byId, identity, loadInstance, defaultTargets, lastDefaultTargets } from "./accounts.js";
 import { historyInit, loadHistory } from "./history.js";
 import { toolsInit, loadTools, relaySyncOff } from "./tools.js";
 import { verifyInit } from "./verify.js";
@@ -74,27 +74,55 @@ function mediaStore(on) {
 }
 
 // settingsSaved follows what Settings saves that the composer shows: the
-// media store, the languages and translation.
+// media store, the languages and translation. A new post nobody has
+// worked on yet starts again from the new languages; one in progress
+// keeps what it holds, its cards offering the new ones.
 function settingsSaved(e) {
   const { scope, body } = e.detail || {};
   const leaf = (g, n) => body && body[g] && body[g][n];
   if (scope === "instance" && leaf("media", "store")) mediaStore(leaf("media", "store").value !== "none");
   if (scope === "owner") {
     loadInstance().then(data => {
-      if (Array.isArray(data.user_languages) && data.user_languages.length) state.userLanguages = data.user_languages;
+      if (Array.isArray(data.user_languages) && data.user_languages.length) {
+        const changed = data.user_languages.join(",") !== state.userLanguages.join(",");
+        state.userLanguages = data.user_languages;
+        if (changed && untouched()) state.ov = byKey();
+      }
       if (Array.isArray(data.translate_targets)) state.translateTargets = data.translate_targets;
       populateTranslateMenu();
+      if (composed) rerenderComposer();
     }, () => { /* the next reload has them */ });
   }
 }
+
+// untouched: the composer holds a new post nobody has worked on yet (no
+// edit, text, media, reply or draft), so what Settings changes (the
+// languages, an account's defaults, the default set) applies to it at once.
+function untouched() {
+  return !state.dirty && !state.master && !state.images.length && !state.interaction && !state.activeDraftId;
+}
+
+const sameIds = (a, b) => a.length === b.length && a.every(x => b.includes(x));
 
 // applyAccounts runs after each successful read of the accounts (the
 // "accounts" event): the selection keeps only accounts that still exist, a
 // new post gets the default selection, and the composer redraws with each
 // account's limits, handle and status, under the owner's profile.
 function applyAccounts() {
+  // The selection the defaults gave last, before these accounts: a post
+  // still on it follows a new default set.
+  const wasDefault = lastDefaultTargets();
   for (const id of [...state.targets]) if (!byId(id)) state.targets.delete(id);
   selectDefaults();
+  // Settings changed an account's defaults or the default set: an
+  // untouched new post takes them now.
+  if (composed && untouched()) {
+    if (sameIds([...state.targets], wasDefault.filter(id => byId(id)))) {
+      state.targets = new Set(defaultTargets());
+      if (!state.targets.has(state.focus)) state.focus = selected()[0] || "";
+    }
+    state.ov = byKey();
+  }
   setAccountsPhase("ready");
   if (!composed) return; // composeInit draws with them
   applyIdentity(identity());
@@ -158,6 +186,14 @@ function firstRun(list) {
 // ---------------------------------------------------------------------------
 
 async function init() {
+  // The tabs answer at once: one picked while the app is still starting
+  // (reading the instance and the accounts) opens as soon as it has.
+  let started = false, picked = "";
+  document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => {
+    if (started) { switchTab(b.dataset.view); return; }
+    picked = b.dataset.view;
+    document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x === b));
+  }));
   // An operation that needs the owner to confirm it's them asks here.
   setReauthHandler(reauth);
   await loadConfig();
@@ -185,8 +221,8 @@ async function init() {
   installRecoveryAutosave();
   installDraftsSidebar();
   populateTranslateMenu(); // re-populate after the instance resolves (idempotent)
-  document.querySelectorAll(".tab").forEach(b =>
-    b.addEventListener("click", () => switchTab(b.dataset.view)));
+  started = true;
+  if (picked) switchTab(picked);
   // The composer's "no accounts" and the master key banner lead to them.
   document.addEventListener("open-settings", e => switchTab("settings", e.detail));
   document.addEventListener("settings-saved", settingsSaved);

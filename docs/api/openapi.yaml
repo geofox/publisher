@@ -844,7 +844,13 @@ paths:
       description: |
         Needs `settings:write`. Saves the value the setting's variable
         sets, so the variable can be removed without the setting going
-        back to its default. It stays locked while the variable is set. A
+        back to its default. It stays locked while the variable is set,
+        and reports `also_saved` until it is removed. What one variable
+        sets together is copied together (`BLOSSOM_URL` sets
+        `media.store` and `media.blossom_url`), and so is an address with
+        the secret that goes to it, when the environment sets both. Each
+        value is checked as one typed in the app is: one the app would
+        refuse is `422 validation_failed`, naming the variable. A
         setting no variable sets now is `409 invalid_state`; a secret is
         refused behind the reverse proxy alone, as for `PATCH`. Answers
         the settings.
@@ -869,6 +875,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
         default:
           $ref: "#/components/responses/Problem"
   /v1/settings/{id}:generate:
@@ -4619,6 +4627,9 @@ components:
         problem:
           type: string
           description: Why a saved secret can't be used now (type it again).
+        also_saved:
+          type: boolean
+          description: The environment sets it, and a value saved in the app (copied into it) applies once the variable is removed.
         generate:
           type: boolean
           description: The server can make a value for it (`:generate`).

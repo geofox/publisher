@@ -31,6 +31,7 @@ test("translating a History post into Compose doesn't inherit the old schedule /
   const mt = body.targets.find((t: any) => t.account === masto.id);
   console.log(JSON.stringify({ schedule: body.schedule, masto: mt }));
   expect(body.schedule, "old schedule carried over").toBeUndefined();
-  expect(mt.options?.visibility, "old visibility carried over").toBeUndefined();
-  expect(mt.content?.content_warning, "old CW carried over").toBeUndefined();
+  // The composer sends what its card holds, empty values too.
+  expect(mt.options?.visibility || "", "old visibility carried over").toBe("");
+  expect(mt.content?.content_warning || "", "old CW carried over").toBe("");
 });

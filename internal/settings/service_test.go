@@ -367,3 +367,28 @@ func TestEnvSecretStaysWithEnvAddress(t *testing.T) {
 		t.Fatalf("address set beside the operator's password: %v", err)
 	}
 }
+
+// Blossom chosen, its address is needed.
+func TestBlossomNeedsItsAddress(t *testing.T) {
+	ctx := context.Background()
+	s := newService(t, openStore(t), nil)
+	_, err := s.Apply(ctx, Change{Scope: Instance, Values: map[string]any{MediaStore: StoreBlossom}})
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Fields[0].Key != MediaBlossomURL || ve.Fields[0].Code != "required" {
+		t.Fatalf("blossom without an address: %v", err)
+	}
+	if _, err := s.Apply(ctx, Change{Scope: Instance, Values: map[string]any{MediaStore: StoreBlossom, MediaBlossomURL: "https://b.example.com"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Apply(ctx, Change{Scope: Instance, Values: map[string]any{MediaBlossomURL: nil}}); !errors.As(err, &ve) {
+		t.Fatalf("address cleared under blossom: %v", err)
+	}
+	if _, err := s.Apply(ctx, Change{Scope: Instance, Values: map[string]any{MediaStore: StoreLocal, MediaBlossomURL: nil}}); err != nil {
+		t.Fatalf("another store, address cleared: %v", err)
+	}
+	// The environment's address counts.
+	s2 := newService(t, openStore(t), map[string]string{"BLOSSOM_URL": "https://env.example.com"})
+	if _, err := s2.Apply(ctx, Change{Scope: Instance, Values: map[string]any{MediaPublic: true}}); err != nil {
+		t.Fatal(err)
+	}
+}
