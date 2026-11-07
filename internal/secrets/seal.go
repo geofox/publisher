@@ -112,14 +112,18 @@ func split(sealed string) (kid string, body []byte, err error) {
 }
 
 // Open decrypts a sealed value for b with the key it names (current or
-// previous).
+// previous). With no key at all it says so (ErrNoKey) rather than that the
+// key is another one.
 func (kr Keyring) Open(b Binding, sealed string) (string, error) {
 	kid, body, err := split(sealed)
 	if err != nil {
 		return "", err
 	}
 	k := kr.key(kid)
-	if k == nil {
+	switch {
+	case k == nil && kr.Current == nil && kr.Previous == nil:
+		return "", ErrNoKey
+	case k == nil:
 		return "", ErrUnknownKey
 	}
 	aad, err := b.aad(kid)

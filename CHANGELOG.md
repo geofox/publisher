@@ -202,6 +202,24 @@ the `edge` image.
   name resolved to ("dial tcp: refused to connect to a private or local
   address"): the error can reach the owner, and the server's internal
   addresses are not theirs to learn.
+- **Credentials encrypted at rest** (`PUBLISHER_MASTER_KEY`, or
+  `PUBLISHER_MASTER_KEY_FILE`; `publisher keygen` makes one). With a key
+  set, the Threads token Publisher renews moves at the first start from
+  its plaintext row into the encrypted secret store, the old row is
+  overwritten, and the write-ahead log is truncated; the log then warns
+  that the `.pre-v*.bak` backups made by earlier upgrades still hold it
+  in plaintext. Each value is bound to its account and to the server it
+  is sent to: a value copied to another row, or an account whose server
+  address is edited in the database, fails to open, and the account is
+  locked with a reason rather than send its credentials elsewhere. A
+  renewed token saved for an account from the environment applies only
+  while the environment's credentials and server are the ones it came
+  from. `PUBLISHER_MASTER_KEY_PREVIOUS` rotates every stored value to the
+  new key in one transaction at startup (all or nothing). Without a key,
+  or with a key that doesn't match what is stored, accounts from the
+  environment work as before; `GET /v1/instance` reports `secrets.status`
+  (`none`, `ok`, `missing`, `mismatch`) and `/readyz` a non-critical
+  `secrets` check.
 
 ### Other changes
 

@@ -162,6 +162,12 @@ func TestUnknownKeyAndPrevious(t *testing.T) {
 	if _, err := (Keyring{}).Seal(bind, "x"); !errors.Is(err, ErrNoKey) {
 		t.Errorf("no key: %v", err)
 	}
+	if _, err := (Keyring{}).Open(bind, out); !errors.Is(err, ErrNoKey) {
+		t.Errorf("open with no key: %v", err)
+	}
+	if _, err := (Keyring{Previous: old.Current}).Open(bind, out); !errors.Is(err, ErrUnknownKey) {
+		t.Errorf("open with another previous key: %v", err)
+	}
 }
 
 func TestParseMasterKeyForms(t *testing.T) {

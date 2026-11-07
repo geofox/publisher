@@ -30,8 +30,9 @@ type LegacyState struct {
 	Now   func() time.Time // nil: time.Now
 }
 
-// ErrStateUnsupported: the account can't keep state before part C.
-var ErrStateUnsupported = errors.New("this account can't save state in this version")
+// ErrStateUnsupported: without a master key, only 2.x's Threads account
+// keeps state.
+var ErrStateUnsupported = destination.ErrStateUnsupported
 
 func (l LegacyState) now() time.Time {
 	if l.Now != nil {
@@ -87,7 +88,7 @@ func (l LegacyState) Restore(_ context.Context, row store.Account, secrets map[s
 // Save writes a Threads account's token and times in one upsert, keeping
 // the seed hash (the environment's token they descend from). Values the
 // update leaves out keep their saved ones.
-func (l LegacyState) Save(_ context.Context, row store.Account, u destination.StateUpdate) error {
+func (l LegacyState) Save(_ context.Context, row store.Account, _ string, u destination.StateUpdate) error {
 	if !legacyThreads(row) {
 		return ErrStateUnsupported
 	}
@@ -162,4 +163,65 @@ func AdoptLegacy(ctx context.Context, st LegacyStore, rows []store.Account, env 
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ThreadsMoveStore is what moving 2.x's Threads token needs.
+type ThreadsMoveStore interface {
+	GetThreadsToken() (*store.ThreadsToken, error)
+	MoveThreadsToken(ctx context.Context, owner, id string, patch map[string]any, put []store.SealedSecret) error
+	Checkpoint(ctx context.Context) error
+}
+
+// StatePreparer seals state for an account from the environment without
+// writing it (accounts.SealedState.Prepare).
+type StatePreparer func(row store.Account, env map[string]string, config map[string]any, u destination.StateUpdate) ([]store.SealedSecret, map[string]any, error)
+
+// MoveThreadsToken moves the Threads token 2.x kept in plaintext (the
+// threads_token row) into the sealed state of the account it belongs to,
+// once a master key is set: while the environment's token is the one it
+// descends from, it becomes that account's saved state; otherwise it
+// belongs to no account and is only removed. Then the write-ahead log is
+// checkpointed, so no plaintext copy stays in it. It reports where the
+// token went: the account it moved to ("" when it was only removed), and
+// done when the old row is gone (an error with done set is the checkpoint
+// only). rows are the env rows, env the accounts the environment
+// configures.
+func MoveThreadsToken(ctx context.Context, st ThreadsMoveStore, prepare StatePreparer, rows []store.Account, env []EnvAccount) (to string, done bool, err error) {
+	tok, err := st.GetThreadsToken()
+	if err != nil || tok == nil {
+		return "", tok == nil && err == nil, err
+	}
+	var owner, id string
+	var put []store.SealedSecret
+	var patch map[string]any
+	for _, row := range rows {
+		if !legacyThreads(row) {
+			continue
+		}
+		for _, e := range env {
+			if e.Type != threads.Type || e.Key != destination.EnvKeyDefault || threads.SeedHash(e.Secrets[threads.SecretAccessToken]) != tok.SeedHash {
+				continue
+			}
+			put, patch, err = prepare(row, e.Secrets, e.Config, destination.StateUpdate{
+				Secrets: map[string]string{threads.SecretAccessToken: tok.Token},
+				Config: map[string]any{
+					threads.ConfigExpiresAt:   tok.ExpiresAt.UTC().Format(time.RFC3339Nano),
+					threads.ConfigRefreshedAt: tok.RefreshedAt.UTC().Format(time.RFC3339Nano),
+				},
+			})
+			if err != nil {
+				return "", false, fmt.Errorf("sealing the Threads token: %w", err)
+			}
+			owner, id = row.OwnerID, row.ID
+		}
+	}
+	if err := st.MoveThreadsToken(ctx, owner, id, patch, put); err != nil {
+		return "", false, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := st.Checkpoint(cctx); err != nil {
+		return id, true, fmt.Errorf("the token moved, but the write-ahead log may hold a copy until the next checkpoint: %w", err)
+	}
+	return id, true, nil
 }

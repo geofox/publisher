@@ -5,6 +5,9 @@ package accounts
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -14,6 +17,7 @@ import (
 
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/netguard"
+	"github.com/geofox/publisher/internal/secrets"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -23,14 +27,21 @@ type Store interface {
 	SetAccountIdentity(ctx context.Context, id, handle, remoteID string) error
 }
 
-// StateStore keeps state an account saves (a refreshed token) and hands it
-// back when the account opens.
+// StateStore keeps state an account from the environment saves (a
+// refreshed token) and hands it back when the account opens.
 type StateStore interface {
 	// Restore returns the secrets and config the account opens with: those
 	// given (from the environment) with its saved state applied.
 	Restore(ctx context.Context, row store.Account, secrets map[string]string, config map[string]any) (map[string]string, map[string]any, error)
-	// Save merges an update into the account's saved state.
-	Save(ctx context.Context, row store.Account, u destination.StateUpdate) error
+	// Save merges an update into the account's saved state. audience is
+	// where the account's credentials are sent (destination.AudienceOf).
+	Save(ctx context.Context, row store.Account, audience string, u destination.StateUpdate) error
+}
+
+// SecretStore keeps the sealed credentials of accounts (store.Store).
+type SecretStore interface {
+	Secrets(ctx context.Context, owner, scope, ref string) ([]store.SealedSecret, error)
+	SaveAccountState(ctx context.Context, owner, id string, patch map[string]any, put []store.SealedSecret, del []string) error
 }
 
 // Alerter sends an operator alert (notify.Webhook).
@@ -71,9 +82,16 @@ type Options struct {
 	Alerter Alerter
 	// Guard is where accounts added in the app may connect
 	// (PRIVATE_DESTINATIONS and the server's own addresses).
-	Guard  netguard.Policy
-	Now    func() time.Time // nil: time.Now
-	Logger *slog.Logger     // nil: slog.Default()
+	Guard netguard.Policy
+	// Secrets holds the sealed credentials of accounts added in the app
+	// (nil: they stay locked).
+	Secrets SecretStore
+	// Keys opens and seals credentials; KeyState is what PrepareKeys
+	// found (the zero value: no key).
+	Keys     secrets.Keyring
+	KeyState KeyState
+	Now      func() time.Time // nil: time.Now
+	Logger   *slog.Logger     // nil: slog.Default()
 }
 
 // Entry is an account as the registry sees it.
@@ -101,6 +119,10 @@ const (
 	ChangeReopened ChangeKind = "reopened"
 	// ChangeStatus: a check changed its status.
 	ChangeStatus ChangeKind = "status"
+	// ChangeAdded: an account was added in the app.
+	ChangeAdded ChangeKind = "added"
+	// ChangeRemoved: an account was deleted; Entry is its last state.
+	ChangeRemoved ChangeKind = "removed"
 )
 
 // Change is sent to OnChange subscribers.
@@ -153,6 +175,9 @@ type entry struct {
 
 	refresh refreshState
 	profile profileState
+	// duplicateOf is the account this one is the same network account as
+	// (warned about once).
+	duplicateOf string
 }
 
 func (e *entry) status() (Status, string) {
@@ -277,8 +302,12 @@ func (r *Registry) build(ctx context.Context, row store.Account) (*lease, Status
 	if !ok {
 		return nil, NotConfigured, "this version of Publisher has no driver for " + row.Type
 	}
-	if row.Source != "env" {
-		return nil, Locked, "added in the app; this version of Publisher can't open it yet"
+	switch row.Source {
+	case store.SourceEnv:
+	case store.SourceDB:
+		return r.buildDB(ctx, d, row)
+	default:
+		return nil, Locked, "this version of Publisher can't open an account from " + row.Source
 	}
 	env := r.envFor(row)
 	if env == nil {
@@ -298,12 +327,132 @@ func (r *Registry) build(ctx context.Context, row store.Account) (*lease, Status
 		Config:    config,
 		Secrets:   secrets,
 		Tuning:    r.opt.Tuning,
-		Host:      &host{r: r, id: row.ID, row: row},
+		Host:      &host{r: r, id: row.ID, row: row, audience: destination.AudienceOf(d.Manifest(), config)},
 	})
 	if err != nil {
 		return nil, NotConfigured, openProblem(err)
 	}
 	return &lease{acct: acct}, Connected, ""
+}
+
+// buildDB opens an account added in the app: its configuration from its
+// row, its credentials opened with the master key for the server its
+// configuration names (so a credential copied to another account, or an
+// address edited in the database, doesn't open).
+func (r *Registry) buildDB(ctx context.Context, d destination.Driver, row store.Account) (*lease, Status, string) {
+	config := map[string]any{}
+	if row.Config != "" {
+		if err := json.Unmarshal([]byte(row.Config), &config); err != nil {
+			r.log.Error("account configuration could not be read", "account", row.ID, "type", row.Type, "err", err)
+			return nil, Locked, "its stored configuration can't be read"
+		}
+	}
+	if r.opt.Secrets == nil {
+		return nil, Locked, "this server can't open accounts added in the app"
+	}
+	sealed, err := r.opt.Secrets.Secrets(ctx, row.OwnerID, store.SecretScopeAccount, row.ID)
+	if err != nil {
+		r.log.Error("account credentials could not be read", "account", row.ID, "type", row.Type, "err", err)
+		return nil, Locked, "its credentials can't be read now; it is tried again at the next start"
+	}
+	audience := destination.AudienceOf(d.Manifest(), config)
+	plain := make(map[string]string, len(sealed))
+	for _, s := range sealed {
+		b := Binding(s)
+		b.Audience = audience
+		v, err := r.opt.Keys.Open(b, s.Sealed)
+		if err != nil {
+			r.log.Error("account credential could not be opened", "account", row.ID, "type", row.Type, "secret", s.Name, "err", err)
+			return nil, Locked, lockedReason(err)
+		}
+		plain[s.Name] = v
+	}
+	acct, err := r.opt.Open(ctx, row.Type, destination.OpenRequest{
+		AccountID: row.ID,
+		Method:    row.AuthMethod,
+		Config:    config,
+		Secrets:   plain,
+		Tuning:    r.opt.Tuning,
+		Host:      &host{r: r, id: row.ID, row: row, audience: audience},
+	})
+	if err != nil {
+		return nil, NotConfigured, openProblem(err)
+	}
+	return &lease{acct: acct}, Connected, ""
+}
+
+// lockedReason says why an account's credentials didn't open, and what to
+// do; its posts wait meanwhile.
+func lockedReason(err error) string {
+	switch {
+	case errors.Is(err, secrets.ErrNoKey):
+		return "its credentials need the master key: set PUBLISHER_MASTER_KEY; its posts wait until then"
+	case errors.Is(err, secrets.ErrUnknownKey):
+		return "its credentials were saved with another master key: set that key (or rotate to a new one); its posts wait until then"
+	default:
+		return "its credentials can't be opened (changed or moved in the database, or its server address was edited there): connect it again"
+	}
+}
+
+// KeyState is the master key's status.
+func (r *Registry) KeyState() KeyState { return r.opt.KeyState }
+
+// Keys is the master key ring, for the account API's writes.
+func (r *Registry) Keys() secrets.Keyring { return r.opt.Keys }
+
+// Add opens an account just added in the app and lists it.
+func (r *Registry) Add(ctx context.Context, row store.Account) (Entry, error) {
+	r.reopenMu.Lock()
+	defer r.reopenMu.Unlock()
+	r.mu.RLock()
+	_, exists := r.entries[row.ID]
+	closed := r.closed
+	r.mu.RUnlock()
+	switch {
+	case closed:
+		return Entry{}, ErrClosed
+	case exists:
+		return Entry{}, fmt.Errorf("account %s is already listed", row.ID)
+	}
+	e := &entry{row: row, nextCheck: r.now().Add(time.Minute)}
+	e.live, e.base, e.baseReason = r.build(ctx, row)
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		if e.live != nil {
+			e.live.retire()
+		}
+		return Entry{}, ErrClosed
+	}
+	r.entries[row.ID] = e
+	r.reorderLocked()
+	snap := e.snapshot()
+	r.mu.Unlock()
+	r.emit(Change{ID: row.ID, Kind: ChangeAdded, Entry: snap})
+	return snap, nil
+}
+
+// Remove drops a deleted account. Its live object is closed when its last
+// lease is released; new leases are refused at once.
+func (r *Registry) Remove(id string) error {
+	r.reopenMu.Lock()
+	defer r.reopenMu.Unlock()
+	r.mu.Lock()
+	e, ok := r.entries[id]
+	if !ok {
+		r.mu.Unlock()
+		return ErrNoAccount
+	}
+	delete(r.entries, id)
+	r.reorderLocked()
+	e.base, e.baseReason = Deleted, "you deleted it"
+	snap := e.snapshot()
+	r.mu.Unlock()
+	if e.live != nil {
+		e.live.retire()
+	}
+	r.emit(Change{ID: id, Kind: ChangeRemoved, Entry: snap})
+	return nil
 }
 
 // envFor is the environment's account for an env row. The environment's

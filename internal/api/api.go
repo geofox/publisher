@@ -120,6 +120,9 @@ type API struct {
 	// Sync scans and syncs a Nostr account's relays (relaysync.Sync); the
 	// account comes from Accounts. nil: relay sync is off.
 	Sync Syncer
+	// MasterKey is the master key's status at startup (accounts.PrepareKeys):
+	// whether credentials can be saved. The zero value: no key.
+	MasterKey accounts.KeyState
 	// Guard is who owner-set addresses may reach (PRIVATE_DESTINATIONS
 	// and the server's own addresses): relay sync's targets go through
 	// it. The zero value allows public addresses only.

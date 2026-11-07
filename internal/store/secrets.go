@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -332,12 +333,13 @@ func (s *Store) replaceCredentials(ctx context.Context, owner, id string, c Cred
 	return a, nil
 }
 
-// SaveAccountState keeps state an app-added account saved itself (a
-// refreshed token and its expiry): config replaces the stored
-// configuration when non-nil, put upserts secrets and del removes them,
-// in one transaction. It is not the owner's change: no event, and
-// updated_at stays.
-func (s *Store) SaveAccountState(ctx context.Context, owner, id string, config map[string]any, put []SealedSecret, del []string) error {
+// SaveAccountState keeps state an account saved itself (a refreshed
+// token and its expiry), for an account added in the app or one from the
+// environment (whose saved state lives beside it): patch is merged into
+// the stored configuration key by key (a nil value deletes the key), put
+// upserts secrets and del removes them, in one transaction. It is not the
+// owner's change: no event, and updated_at stays.
+func (s *Store) SaveAccountState(ctx context.Context, owner, id string, patch map[string]any, put []SealedSecret, del []string) error {
 	if err := checkSecrets(owner, id, put); err != nil {
 		return err
 	}
@@ -346,20 +348,37 @@ func (s *Store) SaveAccountState(ctx context.Context, owner, id string, config m
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := saveStateTx(ctx, tx, owner, id, patch, put, del); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func saveStateTx(ctx context.Context, tx *sql.Tx, owner, id string, patch map[string]any, put []SealedSecret, del []string) error {
 	cur, err := liveAccountTx(ctx, tx, owner, id)
 	if err != nil {
 		return err
 	}
-	if cur.Source != SourceDB {
-		return ErrNotDBAccount
-	}
 	now := time.Now().UTC()
-	if config != nil {
-		cfg, err := configJSON(config)
+	if len(patch) > 0 {
+		cfg := map[string]any{}
+		if cur.Config != "" {
+			if err := json.Unmarshal([]byte(cur.Config), &cfg); err != nil {
+				return fmt.Errorf("account %s: stored configuration: %w", id, err)
+			}
+		}
+		for k, v := range patch {
+			if v == nil {
+				delete(cfg, k)
+			} else {
+				cfg[k] = v
+			}
+		}
+		js, err := configJSON(cfg)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET config_json = ? WHERE id = ?`, cfg, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET config_json = ? WHERE id = ?`, js, id); err != nil {
 			return err
 		}
 	}
@@ -372,7 +391,76 @@ func (s *Store) SaveAccountState(ctx context.Context, owner, id string, config m
 			return err
 		}
 	}
+	return nil
+}
+
+// MoveThreadsToken moves 2.x's Threads token (the threads_token row) into
+// the account's sealed state, in one transaction: the sealed secrets (put)
+// and patch are saved like SaveAccountState, and the old row is deleted
+// (the store's secure_delete overwrites its bytes). With put nil the old
+// row is only deleted (it belongs to no account any more). Checkpoint
+// afterwards, so the plaintext leaves the WAL file too.
+func (s *Store) MoveThreadsToken(ctx context.Context, owner, id string, patch map[string]any, put []SealedSecret) error {
+	tx, err := s.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if put != nil {
+		if err := checkSecrets(owner, id, put); err != nil {
+			return err
+		}
+		if err := saveStateTx(ctx, tx, owner, id, patch, put, nil); err != nil {
+			return err
+		}
+	}
+	// secure_delete(ON) zeroes the deleted row's bytes in the page.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM threads_token WHERE id = 1`); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+// Checkpoint copies the write-ahead log into the database file and
+// truncates it (wal_checkpoint(TRUNCATE)), so pages a change replaced
+// (a plaintext token) are gone from the WAL file too. It retries while
+// readers keep the log busy, up to ctx's end.
+func (s *Store) Checkpoint(ctx context.Context) error {
+	conn, err := s.sql.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	// A TRUNCATE checkpoint waits for readers in the busy handler, which
+	// ctx can't cut short: with the pool's busy_timeout each attempt would
+	// hold 15 s. Short attempts on this connection, and the pool's timeout
+	// back before it is returned (or the connection is dropped).
+	if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout = 100`); err != nil {
+		return err
+	}
+	defer func() {
+		if _, err := conn.ExecContext(context.Background(), fmt.Sprintf(`PRAGMA busy_timeout = %d`, busyTimeoutMS)); err != nil {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+	}()
+	stayedBusy := func() error { return fmt.Errorf("the write-ahead log stayed busy: %w", ctx.Err()) }
+	for wait := 50 * time.Millisecond; ; wait = min(2*wait, time.Second) {
+		var busy, logFrames, done int
+		if err := conn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &done); err != nil {
+			if ctx.Err() != nil {
+				return stayedBusy()
+			}
+			return err
+		}
+		if busy == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return stayedBusy()
+		case <-time.After(wait):
+		}
+	}
 }
 
 // AccountDeleteReason is the error an account's canceled items carry.

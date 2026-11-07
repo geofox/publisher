@@ -3624,7 +3624,7 @@ components:
     Instance:
       type: object
       additionalProperties: false
-      required: [version, auth, features, user_languages, translate_targets, limits, idempotency, scopes, destinations, pagination]
+      required: [version, auth, features, user_languages, translate_targets, limits, idempotency, scopes, destinations, pagination, secrets]
       properties:
         version:
           type: string
@@ -3716,6 +3716,23 @@ components:
               type: integer
             max_limit:
               type: integer
+        secrets:
+          type: object
+          description: |
+            The master key's status. `none`: no key, so accounts come from the
+            environment only; `ok`: credentials can be saved; `missing`: saved
+            credentials need the key; `mismatch`: they were saved with another key
+            (or a rotation failed). Until it is `ok`, accounts added in the app
+            that can't be opened are `locked` and saving a credential is refused.
+          additionalProperties: false
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [none, ok, missing, mismatch]
+            detail:
+              type: string
+              description: What to do, for the operator.
     Manifest:
       type: object
       description: A destination type, the same for every account of it.

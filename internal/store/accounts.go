@@ -273,9 +273,30 @@ func (s *Store) UpdateAccountMeta(ctx context.Context, owner, id string, m Accou
 }
 
 // SetAccountIdentity records the handle and remote id an account's network
-// reported. It is not an owner's change, so updated_at stays.
+// reported. It is not an owner's change, so updated_at stays. When another
+// live account of the owner already has that remote id (the environment
+// configures the same network account twice, or one added in the app),
+// only the handle is recorded and a *DuplicateAccountError names the
+// other account.
 func (s *Store) SetAccountIdentity(ctx context.Context, id, handle, remoteID string) error {
 	_, err := s.sql.ExecContext(ctx, `UPDATE accounts SET handle = ?, remote_id = ? WHERE id = ?`,
 		nullStr(handle), nullStr(remoteID), id)
-	return err
+	if !isUniqueRemote(err) {
+		return err
+	}
+	var owner, typ string
+	if err := s.sql.QueryRowContext(ctx, `SELECT owner_id, type FROM accounts WHERE id = ?`, id).Scan(&owner, &typ); err != nil {
+		return err
+	}
+	dup, derr := liveDuplicate(ctx, s.sql, owner, typ, remoteID, id)
+	if derr != nil {
+		return derr
+	}
+	if _, err := s.sql.ExecContext(ctx, `UPDATE accounts SET handle = ? WHERE id = ?`, nullStr(handle), id); err != nil {
+		return err
+	}
+	if dup == nil {
+		return err
+	}
+	return dup
 }

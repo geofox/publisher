@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/geofox/publisher/internal/secrets"
+	"github.com/geofox/publisher/internal/store"
 )
 
 // startRun runs the server with env (plus a temporary database, any free
@@ -135,5 +138,68 @@ func TestRunBlossomWithoutNostrKey(t *testing.T) {
 	env := map[string]string{"BLOSSOM_URL": "https://blossom.example", "DB_PATH": filepath.Join(t.TempDir(), "p.db")}
 	if code := run(ctx, runOptions{Getenv: func(k string) string { return env[k] }}); code != 2 {
 		t.Fatalf("exit code %d, want 2 (configuration error)", code)
+	}
+}
+
+// The master key's status is reported at /v1/instance and in /readyz (not
+// critical: accounts from the environment work): an account saved under
+// one key is locked under another key or none, and opens under its own.
+func TestRunMasterKeyStatus(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "p.db")
+	keyA, keyB := secrets.Generate(), secrets.Generate()
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := secrets.ParseMasterKey(keyA)
+	k, _ := secrets.NewKey(raw)
+	id := store.NewAccountID()
+	b := secrets.Binding{Owner: store.DefaultOwner, Scope: store.SecretScopeAccount, Ref: id, Name: "access_token", Audience: "https://m.example"}
+	sealed, err := secrets.Keyring{Current: k}.Seal(b, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateAccountWithSecrets(context.Background(), store.NewAccount{ID: id, OwnerID: store.DefaultOwner, Type: "mastodon",
+		Label: "Work", AuthMethod: "token", Config: map[string]any{"instance_url": "https://m.example"}, Actor: "test",
+		Secrets: []store.SealedSecret{{Owner: b.Owner, Scope: b.Scope, Ref: id, Name: b.Name, Audience: b.Audience, Sealed: sealed, KeyID: k.ID()}}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	for _, c := range []struct {
+		key, status, check, account string
+	}{
+		{keyB, "mismatch", "master key mismatch", "locked"},
+		{"", "missing", "master key missing", "locked"},
+		{keyA, "ok", "", "connected"},
+	} {
+		url, stop := startRun(t, map[string]string{"AUTH_MODE": "proxy", "DB_PATH": dbPath, "PUBLISHER_MASTER_KEY": c.key})
+		var ready struct {
+			Status string
+			Checks map[string]struct{ Status, Error string }
+		}
+		if code := get(t, url+"/readyz", &ready); code != 200 || ready.Checks["secrets"].Error != c.check {
+			t.Errorf("%s: /readyz = %d %+v", c.status, code, ready)
+		}
+		var inst struct {
+			Secrets struct{ Status, Detail string }
+		}
+		if code := get(t, url+"/v1/instance", &inst); code != 200 || inst.Secrets.Status != c.status || (c.status != "ok") != (inst.Secrets.Detail != "") {
+			t.Errorf("%s: /v1/instance = %d %+v", c.status, code, inst.Secrets)
+		}
+		for _, v := range []string{keyA, keyB, "tok"} {
+			if strings.Contains(inst.Secrets.Detail, v) {
+				t.Errorf("%s: the detail holds a secret", c.status)
+			}
+		}
+		var accts struct {
+			Data []struct{ ID, Status string }
+		}
+		if code := get(t, url+"/v1/accounts", &accts); code != 200 || len(accts.Data) != 1 || accts.Data[0].Status != c.account {
+			t.Errorf("%s: /v1/accounts = %d %+v", c.status, code, accts)
+		}
+		if code := stop(); code != 0 {
+			t.Fatalf("exit code %d", code)
+		}
 	}
 }

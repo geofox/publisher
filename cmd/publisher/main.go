@@ -117,7 +117,6 @@ func run(ctx context.Context, o runOptions) int {
 	for _, w := range keyWarnings {
 		slog.Warn("master key: " + w)
 	}
-	_ = keys // used by the account store (part C)
 
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
@@ -151,6 +150,14 @@ func run(ctx context.Context, o runOptions) int {
 	if err := drivers.AdoptLegacy(context.Background(), st, envRows, env); err != nil {
 		slog.Error("adopting 2.x account state failed; it is tried again at the next start", "err", err)
 	}
+	// The master key: values sealed with the previous key move to the
+	// current one, then the key is checked against what is stored. Saved
+	// account state goes in the secret store once a usable key is set.
+	keyState, state, err := prepareSecrets(context.Background(), st, keys, envRows, env, cfg.DBPath)
+	if err != nil {
+		slog.Error("reading the stored credentials failed", "err", err)
+		return 1
+	}
 	regEnv := make([]accounts.EnvAccount, 0, len(env))
 	for _, e := range env {
 		regEnv = append(regEnv, accounts.EnvAccount{Type: e.Type, EnvAccount: e.EnvAccount})
@@ -160,9 +167,12 @@ func run(ctx context.Context, o runOptions) int {
 	// the server's own.
 	guard := cfg.PrivateDestinations.WithOwn()
 	reg := accounts.New(accounts.Options{
-		Store: st,
-		Env:   regEnv,
-		State: drivers.LegacyState{Store: st},
+		Store:    st,
+		Env:      regEnv,
+		State:    state,
+		Secrets:  st,
+		Keys:     keys,
+		KeyState: keyState,
 		Tuning: destination.Tuning{
 			PublishTimeout:  cfg.PublishTimeout,
 			POWTimeout:      cfg.POWTimeout,
@@ -251,6 +261,7 @@ func run(ctx context.Context, o runOptions) int {
 	// home relay, key and list).
 	a.Sync = relaysync.New(relaysync.NewLiveIO())
 	a.Guard = guard
+	a.MasterKey = keyState
 	a.Verify = &verify.Service{
 		Nostr:    verify.NewNostrVerifier(cfg.VerifyHTTPTimeout),
 		Bluesky:  verify.NewBlueskyVerifier(cfg.PLCDirectoryURL, cfg.VerifyHTTPTimeout),
@@ -438,6 +449,17 @@ func readinessChecks(cfg config.Config, st *store.Store, videoWorkdir string, re
 		hc := &http.Client{Timeout: 5 * time.Second}
 		c.External = append(c.External, health.HTTPReachable("blossom", hc, http.MethodHead, cfg.BlossomURL, nil))
 	}
+	// The master key: not critical (accounts from the environment work),
+	// but accounts added in the app are locked until it is fixed.
+	c.Local = append(c.Local, health.Check{Name: "secrets", Run: func(context.Context) error {
+		switch reg.KeyState().Status {
+		case accounts.KeyMissing:
+			return health.Fail("master key missing", nil)
+		case accounts.KeyMismatch:
+			return health.Fail("master key mismatch", nil)
+		}
+		return nil
+	}})
 	// One check per open account (account:<id>), asked again at each
 	// refresh so an account turned off or reopened is followed.
 	c.MoreExternal = func() []health.Check { return reg.Readiness(store.DefaultOwner) }

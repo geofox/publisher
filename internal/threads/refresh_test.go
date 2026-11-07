@@ -3,6 +3,7 @@ package threads
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -164,3 +165,53 @@ func TestOpenRefusesBadExpiry(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// A token whose expiry isn't known is given a provisional one at Open,
+// saved at once so a restart doesn't move the first refresh; a known
+// expiry is left alone. An account with nowhere to save says nothing.
+func TestOpenSavesProvisionalExpiry(t *testing.T) {
+	host := destinationtest.NewHost(t)
+	before := time.Now().UTC()
+	a := openWithState(t, host, "", tokenState{}, before)
+	saved := host.Saved()
+	if len(saved) != 1 {
+		t.Fatalf("%d saves", len(saved))
+	}
+	exp, ok, err := destination.ConfigTime(saved[0].Config, ConfigExpiresAt)
+	if !ok || err != nil || exp.Before(before.Add(SeedProvisional-time.Minute)) || exp.After(time.Now().Add(SeedProvisional)) {
+		t.Errorf("provisional expiry %v %v %v", exp, ok, err)
+	}
+	if !a.tokens.expiresAt.Equal(exp) || len(saved[0].Secrets) != 0 {
+		t.Errorf("tokens %+v, saved %+v", a.tokens, saved[0])
+	}
+	// Known: no save.
+	host = destinationtest.NewHost(t)
+	openWithState(t, host, "", tokenState{expiresAt: before.Add(30 * 24 * time.Hour), refreshedAt: before}, before)
+	if n := len(host.Saved()); n != 0 {
+		t.Errorf("a known expiry was saved again (%d)", n)
+	}
+	// Nowhere to save: quiet; another failure is logged.
+	for _, c := range []struct {
+		err  error
+		logs bool
+	}{{destination.ErrStateUnsupported, false}, {errors.New("disk full"), true}} {
+		h := &refusingHost{Host: destinationtest.NewHost(t), err: c.err}
+		if _, err := (Driver{}).Open(context.Background(), destination.OpenRequest{Config: map[string]any{ConfigUserID: "me"},
+			Secrets: map[string]string{SecretAccessToken: "cur"}, Host: h}); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(h.log.String(), "provisional expiry was not saved"); got != c.logs {
+			t.Errorf("%v: logged %v: %s", c.err, got, h.log.String())
+		}
+	}
+}
+
+// refusingHost answers every Save with err and keeps what is logged.
+type refusingHost struct {
+	*destinationtest.Host
+	err error
+	log strings.Builder
+}
+
+func (h *refusingHost) Save(context.Context, destination.StateUpdate) error { return h.err }
+func (h *refusingHost) Logger() *slog.Logger                                { return slog.New(slog.NewTextHandler(&h.log, nil)) }

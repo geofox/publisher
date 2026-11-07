@@ -110,7 +110,7 @@ func TestLegacyStateSaveMerges(t *testing.T) {
 	now := time.Unix(6_000_000, 0).UTC()
 	st := &tokenStore{tk: &store.ThreadsToken{Token: "cur", ExpiresAt: now, SeedHash: "h", RefreshedAt: now.Add(-time.Hour)}}
 	l := LegacyState{Store: st}
-	err := l.Save(context.Background(), threadsRow, destination.StateUpdate{
+	err := l.Save(context.Background(), threadsRow, "", destination.StateUpdate{
 		Secrets: map[string]string{threads.SecretAccessToken: "fresh"},
 		Config:  map[string]any{threads.ConfigExpiresAt: now.Add(60 * 24 * time.Hour).Format(time.RFC3339)},
 	})
@@ -120,7 +120,7 @@ func TestLegacyStateSaveMerges(t *testing.T) {
 	if st.tk.Token != "fresh" || !st.tk.ExpiresAt.Equal(now.Add(60*24*time.Hour)) || !st.tk.RefreshedAt.Equal(now.Add(-time.Hour)) || st.tk.SeedHash != "h" {
 		t.Errorf("saved %+v", st.tk)
 	}
-	if err := l.Save(context.Background(), threadsRow, destination.StateUpdate{Secrets: map[string]string{threads.SecretAccessToken: ""}}); err == nil {
+	if err := l.Save(context.Background(), threadsRow, "", destination.StateUpdate{Secrets: map[string]string{threads.SecretAccessToken: ""}}); err == nil {
 		t.Error("the token was dropped")
 	}
 }
@@ -133,7 +133,7 @@ func TestLegacyStateOtherTypes(t *testing.T) {
 	if err != nil || s["access_token"] != "x" || c["instance_url"] != "u" {
 		t.Errorf("restore = %v, %v, %v", s, c, err)
 	}
-	if err := l.Save(context.Background(), row, destination.StateUpdate{}); !errors.Is(err, ErrStateUnsupported) {
+	if err := l.Save(context.Background(), row, "", destination.StateUpdate{}); !errors.Is(err, ErrStateUnsupported) {
 		t.Errorf("save = %v", err)
 	}
 }
@@ -157,7 +157,7 @@ func TestLegacyStateOnlyTheEnvThreadsAccount(t *testing.T) {
 		if err != nil || s[threads.SecretAccessToken] != "tokA" {
 			t.Errorf("%s: restore = %v, %v; want its own token, not the saved one", row.ID, s, err)
 		}
-		if err := l.Save(context.Background(), row, destination.StateUpdate{Secrets: map[string]string{threads.SecretAccessToken: "tokB"}}); !errors.Is(err, ErrStateUnsupported) {
+		if err := l.Save(context.Background(), row, "", destination.StateUpdate{Secrets: map[string]string{threads.SecretAccessToken: "tokB"}}); !errors.Is(err, ErrStateUnsupported) {
 			t.Errorf("%s: save = %v, want ErrStateUnsupported", row.ID, err)
 		}
 		if st.writes != 0 || st.tk.Token != "tokA-refreshed" {

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/translate"
@@ -24,6 +25,14 @@ type v1InstanceBody struct {
 	Scopes            []string         `json:"scopes"`
 	Destinations      []string         `json:"destinations"`
 	Pagination        v1PaginationInfo `json:"pagination"`
+	// Secrets is the master key's status: whether credentials can be
+	// saved in the app, and what to do when they can't.
+	Secrets v1SecretsInfo `json:"secrets"`
+}
+
+type v1SecretsInfo struct {
+	Status string `json:"status"` // none | ok | missing | mismatch
+	Detail string `json:"detail,omitempty"`
 }
 
 type v1Features struct {
@@ -84,6 +93,7 @@ func (a *API) v1Instance(w http.ResponseWriter, r *http.Request) {
 		Scopes:       v1Scopes,
 		Destinations: destination.Types(),
 		Pagination:   v1PaginationInfo{DefaultLimit: defaultPageLimit, MaxLimit: maxPageLimit},
+		Secrets:      a.secretsInfo(),
 	})
 }
 
@@ -129,4 +139,13 @@ func (a *API) v1Me(w http.ResponseWriter, r *http.Request) {
 		body.Token = &t
 	}
 	writeV1(w, http.StatusOK, body)
+}
+
+// secretsInfo is the master key's status for /v1/instance.
+func (a *API) secretsInfo() v1SecretsInfo {
+	ks := a.MasterKey
+	if ks.Status == "" {
+		ks.Status = accounts.KeyNone
+	}
+	return v1SecretsInfo{Status: string(ks.Status), Detail: ks.Detail}
 }

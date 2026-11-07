@@ -85,10 +85,16 @@ func MergeState(secrets map[string]string, config map[string]any, u StateUpdate)
 	return outS, outC
 }
 
+// ErrStateUnsupported is Save's answer for an account that has nowhere to
+// keep state (an account from the environment without a master key, other
+// than 2.x's one Threads account).
+var ErrStateUnsupported = errors.New("this account can't save state without a master key (PUBLISHER_MASTER_KEY)")
+
 // AccountHost is the core's side of an open account.
 type AccountHost interface {
 	// Save merges new secrets and config into the stored state (see
-	// StateUpdate), atomically and durably.
+	// StateUpdate), atomically and durably. ErrStateUnsupported: nowhere
+	// to keep it.
 	Save(ctx context.Context, u StateUpdate) error
 	// Net is how the account reaches the network for one kind of address.
 	// Drivers build every HTTP client, transport and WebSocket dial from

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -217,17 +218,20 @@ func TestAdoptAccount(t *testing.T) {
 	}
 }
 
+// An account's own save merges its configuration key by key, upserts and
+// removes secrets, makes no event and keeps updated_at; an account from the
+// environment keeps its saved state the same way.
 func TestSaveAccountState(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	a := newDBAccount(t, s, "threads", "123", "access_token", "old")
-	err := s.SaveAccountState(ctx, DefaultOwner, a.ID, map[string]any{"token_expires_at": "2027-01-01T00:00:00Z"},
+	err := s.SaveAccountState(ctx, DefaultOwner, a.ID, map[string]any{"token_expires_at": "2027-01-01T00:00:00Z", "instance_url": nil},
 		[]SealedSecret{sealedFor(DefaultOwner, a.ID, "access_token", "REFRESHED")}, []string{"old"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, _ := s.Account(ctx, DefaultOwner, a.ID)
-	if !b.UpdatedAt.Equal(a.UpdatedAt) || !strings.Contains(b.Config, "2027") {
+	if !b.UpdatedAt.Equal(a.UpdatedAt) || b.Config != `{"token_expires_at":"2027-01-01T00:00:00Z"}` {
 		t.Errorf("after %+v", b)
 	}
 	got, _ := s.Secrets(ctx, DefaultOwner, SecretScopeAccount, a.ID)
@@ -238,6 +242,160 @@ func TestSaveAccountState(t *testing.T) {
 	_ = s.sql.QueryRow(`SELECT COUNT(*) FROM events WHERE type = 'account.updated'`).Scan(&n)
 	if n != 0 {
 		t.Error("an account's own save made an event")
+	}
+	env, err := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{Type: "threads", Label: "Threads"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveAccountState(ctx, DefaultOwner, env[0].ID, map[string]any{"state_seed": "x"},
+		[]SealedSecret{sealedFor(DefaultOwner, env[0].ID, "access_token", "T")}, nil); err != nil {
+		t.Fatalf("env account: %v", err)
+	}
+	if got, _ := s.Secrets(ctx, DefaultOwner, SecretScopeAccount, env[0].ID); len(got) != 1 {
+		t.Errorf("env secrets %+v", got)
+	}
+	// A secret bound to another account is refused.
+	if err := s.SaveAccountState(ctx, DefaultOwner, a.ID, nil, []SealedSecret{sealedFor(DefaultOwner, env[0].ID, "x", "y")}, nil); err == nil {
+		t.Error("a secret of another account was saved")
+	}
+}
+
+// The 2.x Threads token moves into the account's sealed state in one step,
+// and after the checkpoint neither the database nor its WAL holds it.
+func TestMoveThreadsToken(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "p.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	const plain = "THAAplaintexttoken0123456789"
+	if err := s.SaveThreadsToken(plain, time.Now().Add(time.Hour), "seed", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	env, _ := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{Type: "threads", Label: "Threads"}})
+	// A secret bound to another account is refused, and the token stays.
+	if err := s.MoveThreadsToken(ctx, DefaultOwner, env[0].ID, nil, []SealedSecret{sealedFor(DefaultOwner, "acc_other", "access_token", "S")}); err == nil {
+		t.Error("a secret of another account was saved")
+	}
+	if tok, _ := s.GetThreadsToken(); tok == nil {
+		t.Error("a refused move removed the token")
+	}
+	sealed := sealedFor(DefaultOwner, env[0].ID, "access_token", "SEALED")
+	if err := s.MoveThreadsToken(ctx, DefaultOwner, env[0].ID, map[string]any{"expires_at": "2027-01-01T00:00:00Z"}, []SealedSecret{sealed}); err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := s.GetThreadsToken(); err != nil || tok != nil {
+		t.Errorf("the old row is still there: %v %v", tok, err)
+	}
+	if got, _ := s.Secrets(ctx, DefaultOwner, SecretScopeAccount, env[0].ID); len(got) != 1 {
+		t.Errorf("secrets %+v", got)
+	}
+	if err := s.Checkpoint(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{path, path + "-wal"} {
+		b, err := os.ReadFile(f)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if bytes.Contains(b, []byte(plain)) {
+			t.Errorf("%s still holds the token", filepath.Base(f))
+		}
+	}
+	// With no account to give it to, the old row is only removed.
+	_ = s.SaveThreadsToken(plain, time.Now(), "seed", time.Now())
+	if err := s.MoveThreadsToken(ctx, DefaultOwner, "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if tok, _ := s.GetThreadsToken(); tok != nil {
+		t.Error("not removed")
+	}
+}
+
+// A checkpoint waits for readers to let go of the log, and says so when
+// they don't before its context ends.
+func TestCheckpointWaitsForReaders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "p.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.sql.SetMaxOpenConns(1) // the checkpoint's connection is the one used after it
+	ctx := context.Background()
+	if _, err := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{Type: "threads", Label: "Threads"}}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	conn, err := reader.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// A read transaction holds a snapshot of the log.
+	if _, err := conn.ExecContext(ctx, "BEGIN"); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := conn.QueryRowContext(ctx, "SELECT count(*) FROM accounts").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{Type: "mastodon", Label: "Mastodon"}}); err != nil {
+		t.Fatal(err)
+	}
+	short, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if err := s.Checkpoint(short); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Errorf("checkpoint with a reader: %v", err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("the checkpoint held %v past its context", d)
+	}
+	// The pool's connections wait out locks as before.
+	var timeout int
+	if err := s.sql.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&timeout); err != nil || timeout != busyTimeoutMS {
+		t.Errorf("busy_timeout = %d %v", timeout, err)
+	}
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		_, _ = conn.ExecContext(ctx, "COMMIT")
+	}()
+	long, cancel2 := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel2()
+	if err := s.Checkpoint(long); err != nil {
+		t.Errorf("checkpoint once the reader is done: %v", err)
+	}
+	if fi, err := os.Stat(path + "-wal"); err == nil && fi.Size() != 0 {
+		t.Errorf("the log holds %d bytes", fi.Size())
+	}
+}
+
+// Two live accounts that are the same network account: the second keeps
+// its handle, no remote id, and the error names the first.
+func TestSetAccountIdentityDuplicate(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	a := newDBAccount(t, s, "mastodon", "https://m.example/@me", "access_token")
+	env, _ := s.SeedEnvAccounts(ctx, DefaultOwner, []EnvAccount{{Type: "mastodon", Label: "Mastodon"}})
+	err := s.SetAccountIdentity(ctx, env[0].ID, "@me@m.example", "https://m.example/@me")
+	var dup *DuplicateAccountError
+	if !errors.As(err, &dup) || dup.ID != a.ID {
+		t.Fatalf("err = %v", err)
+	}
+	got, _ := s.Account(ctx, DefaultOwner, env[0].ID)
+	if got.Handle != "@me@m.example" || got.RemoteID != "" {
+		t.Errorf("row %+v", got)
+	}
+	if err := s.SetAccountIdentity(ctx, env[0].ID, "@me@m.example", "https://m.example/@other"); err != nil {
+		t.Errorf("a different remote id: %v", err)
 	}
 }
 

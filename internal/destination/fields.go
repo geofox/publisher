@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"regexp"
 	"slices"
 	"sort"
@@ -478,4 +479,21 @@ func SplitCredentials(m AuthMethod, values map[string]any) (secrets map[string]s
 		config[f.Key] = v
 	}
 	return secrets, config
+}
+
+// AudienceOf is where an account's credentials are sent: the origin
+// (scheme, host and port) of its Audience field in config, or "" when its
+// type has none. It is part of every credential's binding, so a
+// credential opens only for the server it was entered for.
+func AudienceOf(m Manifest, config map[string]any) string {
+	key := m.AudienceKey()
+	if key == "" {
+		return ""
+	}
+	raw, _ := config[key].(string)
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return strings.TrimSpace(raw)
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
 }
