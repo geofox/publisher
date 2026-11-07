@@ -242,6 +242,80 @@ func ContentNet(blocked func(net.IP) bool) Net {
 	return Net{DialContext: d.DialContext, CheckRedirect: SafeRedirect}
 }
 
+// GuardedNet reaches addresses through allow, which judges every
+// connection by the host the caller dialed (a name or an address) and the
+// address actually connected to, on every redirect too: a name that
+// resolves to a refused address later is still refused. No proxy (a proxy
+// would dial for us, past the check); GuardedRedirect. allow's error is
+// returned as ErrBlockedAddress.
+func GuardedNet(allow func(host string, ip net.IP) error) Net {
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second,
+			Control: func(_, address string, _ syscall.RawConn) error {
+				h, _, err := net.SplitHostPort(address)
+				if err != nil {
+					return err
+				}
+				ip := net.ParseIP(h)
+				if ip == nil || allow(host, ip) != nil {
+					return ErrBlockedAddress
+				}
+				return nil
+			}}
+		return d.DialContext(ctx, network, addr)
+	}
+	return Net{DialContext: dial, CheckRedirect: GuardedRedirect}
+}
+
+// maxGuardedRedirects bounds the redirects GuardedRedirect follows.
+const maxGuardedRedirects = 5
+
+// GuardedRedirect is the redirect rule for owner-set and content
+// addresses: at most 5 redirects, never from https to http, never a
+// redirect of a request other than GET or HEAD (its body may hold a
+// password), and a request carrying a credential (Authorization, a
+// cookie, a body) never leaves its origin.
+func GuardedRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxGuardedRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxGuardedRedirects)
+	}
+	first, prev := via[0], via[len(via)-1]
+	if prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return fmt.Errorf("refused a redirect from https to %s", req.URL.Scheme)
+	}
+	if first.Method != http.MethodGet && first.Method != http.MethodHead {
+		return fmt.Errorf("refused to follow a redirect of a %s request", first.Method)
+	}
+	credential := first.Header.Get("Authorization") != "" || first.Header.Get("Cookie") != "" ||
+		first.GetBody != nil || first.ContentLength > 0
+	if credential && !sameOrigin(req.URL, first.URL) {
+		return errors.New("refused to send a credential to another server on a redirect")
+	}
+	return nil
+}
+
+// sameOrigin compares scheme, host and port (the default port spelled out
+// or not).
+func sameOrigin(a, b *url.URL) bool {
+	port := func(u *url.URL) string {
+		if p := u.Port(); p != "" {
+			return p
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "https", "wss":
+			return "443"
+		case "http", "ws":
+			return "80"
+		}
+		return ""
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Hostname(), b.Hostname()) && port(a) == port(b)
+}
+
 // ErrBlockedAddress is the dial error for an address a policy refuses. It
 // names no address: the error can reach the owner, and what a name
 // resolves to inside the server's network is not theirs to learn.

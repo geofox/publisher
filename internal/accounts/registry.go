@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/netguard"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -68,8 +69,11 @@ type Options struct {
 	Open    Opener
 	Tuning  destination.Tuning
 	Alerter Alerter
-	Now     func() time.Time // nil: time.Now
-	Logger  *slog.Logger     // nil: slog.Default()
+	// Guard is where accounts added in the app may connect
+	// (PRIVATE_DESTINATIONS and the server's own addresses).
+	Guard  netguard.Policy
+	Now    func() time.Time // nil: time.Now
+	Logger *slog.Logger     // nil: slog.Default()
 }
 
 // Entry is an account as the registry sees it.

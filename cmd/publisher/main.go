@@ -167,6 +167,7 @@ func run(ctx context.Context, o runOptions) int {
 			PLCDirectoryURL: cfg.PLCDirectoryURL,
 		},
 		Alerter: notifier,
+		Guard:   cfg.PrivateDestinations.WithOwn(),
 	})
 	if err := reg.Load(context.Background()); err != nil {
 		slog.Error("loading accounts failed", "err", err)

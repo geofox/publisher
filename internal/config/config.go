@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/netguard"
 )
 
 const DefaultPort = "8080"
@@ -102,6 +103,9 @@ type Config struct {
 	// SetupTokenFile, when set, receives the first-run setup URL instead
 	// of the log (SETUP_TOKEN_FILE).
 	SetupTokenFile string
+	// PrivateDestinations are the private hosts and ranges that addresses
+	// the owner sets in the app may reach (PRIVATE_DESTINATIONS).
+	PrivateDestinations netguard.Policy
 }
 
 // SecretVars are the configuration's credential variables (a webhook URL
@@ -250,6 +254,11 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		l.fail("OIDC_ISSUER is set but AUTH_MODE=%s: unset OIDC_ISSUER, or set AUTH_MODE=oidc", c.AuthMode)
 	}
 	c.TrustedProxies = l.prefixes("TRUSTED_PROXIES")
+	if pd, err := netguard.ParsePrivateDestinations(getEnv("PRIVATE_DESTINATIONS", "")); err != nil {
+		l.errs = append(l.errs, err)
+	} else {
+		c.PrivateDestinations = pd
+	}
 	c.SetupTokenFile = strings.TrimSpace(getEnv("SETUP_TOKEN_FILE", ""))
 	if c.SetupTokenFile != "" {
 		if fi, err := os.Stat(filepath.Dir(c.SetupTokenFile)); err != nil || !fi.IsDir() {

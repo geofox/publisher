@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	"github.com/geofox/publisher/internal/destination"
-	"github.com/geofox/publisher/internal/netguard"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -40,13 +39,20 @@ func (h *host) Save(ctx context.Context, u destination.StateUpdate) error {
 
 // Net implements destination.AccountHost. The operator set every address
 // of an account from the environment, so its own addresses are reached
-// as Publisher always has; an account added in the app (part C), and any
-// address from content, goes through the network guard.
+// as Publisher always has. An account added in the app reaches its own
+// addresses through the guard (public addresses, and the private ones
+// PRIVATE_DESTINATIONS lists), whatever the driver asks; an address from
+// content reaches public addresses only. Neither reaches the server
+// itself.
 func (h *host) Net(kind destination.NetPolicy) destination.Net {
-	if kind == destination.NetAccount && h.row.Source == "env" {
-		return destination.TrustedNet()
+	g := h.r.opt.Guard
+	if kind == destination.NetAccount {
+		if h.row.Source == store.SourceEnv {
+			return destination.TrustedNet()
+		}
+		return destination.GuardedNet(g.Allow)
 	}
-	return destination.ContentNet(netguard.IsBlockedIP)
+	return destination.GuardedNet(g.AllowContent)
 }
 
 // Logger implements destination.AccountHost.
