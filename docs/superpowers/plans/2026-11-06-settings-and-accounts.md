@@ -1426,9 +1426,38 @@ Spec §3, §4.1, §4.4 (Threads token move), §5, §10.2, §12 (C).
 
 ### Task C1: verify PDS discovery
 
-- [ ] For a custom-domain handle, a `bsky.social` handle and a `did:web`
+- [x] For a custom-domain handle, a `bsky.social` handle and a `did:web`
   account: handle → DID → document → `#atproto_pds`, and `createSession`
   on the discovered PDS with a handle, a DID and an email. Record here.
+
+  Recorded 2026-11-07. The build sandbox can't reach the live network
+  (its proxy refuses bsky.social, plc.directory and DNS-over-HTTPS), so
+  this was checked against the specs and the reference PDS, not live
+  accounts; C7's tests reproduce each rule with fakes.
+  - Handle → DID (atproto.com/specs/handle): DNS TXT at
+    `_atproto.<handle>` with `did=<DID>`; other TXT values are ignored;
+    several valid records with different DIDs fail. Else
+    `https://<handle>/.well-known/atproto-did`, a 2xx with the DID as the
+    body (content type not checked strictly; strip surrounding
+    whitespace; redirects allowed). When both answer and disagree, DNS
+    wins. Handles are case-insensitive and stored lowercase; a leading `@`
+    is display only.
+  - Bidirectional: the DID document must claim the handle (the first
+    syntactically valid `at://` entry in `alsoKnownAs`) and the handle
+    must resolve to the DID; the document's `id` must be the DID.
+  - DID → document (atproto.com/specs/did): `did:plc` from the PLC
+    directory (`<PLC_DIRECTORY_URL>/<did>`, as indigo's `BaseDirectory`
+    builds it) and `did:web` from `https://<host>/.well-known/did.json`,
+    host-level only (no path; ports only for localhost in development).
+  - PDS: the first `service` whose `id` is `#atproto_pds` (or
+    `<did>#atproto_pds`) and whose `type` is `AtprotoPersonalDataServer`;
+    `serviceEndpoint` is a URL of scheme, host and optional port only.
+  - `createSession` `identifier` is "Handle or other identifier supported
+    by the server" (lexicon). The reference PDS lowercases it, then looks
+    up by email when it contains `@` anywhere, else by handle or DID
+    (`account-manager.ts` `login`, `helpers/account.ts` `getAccount`): so
+    `@alice.example.com` is read as an email and fails. C7 sends the
+    handle without the `@`.
 
 ### Task C2: the keyring
 
@@ -1538,11 +1567,11 @@ tests, tests.
 
 **Files:** `internal/bluesky/discover.go`, tests.
 
-- [ ] DNS TXT `_atproto`, else `/.well-known/atproto-did` (guarded); DID
+- [x] DNS TXT `_atproto`, else `/.well-known/atproto-did` (guarded); DID
   document from `PLC_DIRECTORY_URL` or `did:web` (guarded); `#atproto_pds`
   validated with `OwnerURL`. A DID skips the first step; an email needs
   `pds_url`.
-- [ ] Tests with fake DNS and `httptest`, including a PDS on a private
+- [x] Tests with fake DNS and `httptest`, including a PDS on a private
   address (refused).
 
 ### Task C8: log scrubbing at the handler

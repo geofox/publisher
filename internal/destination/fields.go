@@ -1,6 +1,7 @@
 package destination
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -217,6 +218,31 @@ type FieldError struct {
 	Key    string `json:"key"`
 	Code   string `json:"code"`
 	Detail string `json:"detail"`
+}
+
+// Error lets a driver return one field's problem (from DiscoverConfig).
+func (e *FieldError) Error() string { return e.Key + ": " + e.Detail }
+
+// ConfigDiscoverer is implemented by drivers that can find config the
+// owner may leave out from what they did type (Bluesky's PDS from a handle
+// or a DID). The account API calls it when adding an account, after the
+// fields validate and before Open; what it returns is validated again as
+// if typed. An error that is a *FieldError names the field to fix.
+type ConfigDiscoverer interface {
+	DiscoverConfig(ctx context.Context, req DiscoverRequest) (map[string]any, error)
+}
+
+// DiscoverRequest is what a discovery has to work with.
+type DiscoverRequest struct {
+	Method string
+	// Config is the validated config with the credential fields that
+	// aren't secret (a Bluesky identifier).
+	Config map[string]any
+	// Net reaches addresses that come from what the owner typed: the
+	// guard for accounts added in the app.
+	Net Net
+	// Tuning carries the operator's settings (PLC_DIRECTORY_URL).
+	Tuning Tuning
 }
 
 // FieldOptions is what ValidateFields needs from the host.
