@@ -17,6 +17,14 @@ type Manifest struct {
 	// Defaults are the capabilities assumed before (or without) asking a
 	// server.
 	Defaults Capabilities `json:"defaults"`
+	// Auth lists the ways to connect an account, most recommended first.
+	Auth []AuthMethod `json:"auth"`
+	// Config is an account's non-secret configuration (never a Secret
+	// field).
+	Config []FieldSpec `json:"config,omitempty"`
+	// InstanceConfig is configuration the type needs once per server (a
+	// Threads app), set by the operator.
+	InstanceConfig []FieldSpec `json:"instance_config,omitempty"`
 }
 
 // Option returns the option spec with the given key.

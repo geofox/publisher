@@ -57,6 +57,8 @@ func (Driver) Manifest() destination.Manifest {
 			// event id.
 			Idempotent: destination.IdempotentNatural,
 		},
+		Auth:   authMethods(),
+		Config: configFields(),
 	}
 }
 

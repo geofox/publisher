@@ -67,6 +67,8 @@ func (Driver) Manifest() destination.Manifest {
 			Idempotent:   destination.IdempotentNone,
 			CommitMarks:  true,
 		},
+		Auth:   authMethods(),
+		Config: configFields(),
 	}
 }
 

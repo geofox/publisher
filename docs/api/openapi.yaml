@@ -3720,7 +3720,7 @@ components:
       type: object
       description: A destination type, the same for every account of it.
       additionalProperties: false
-      required: [contract, type, name, kinds, defaults]
+      required: [contract, type, name, kinds, defaults, auth]
       properties:
         contract:
           type: integer
@@ -3742,6 +3742,118 @@ components:
             $ref: "#/components/schemas/OptionSpec"
         defaults:
           $ref: "#/components/schemas/Capabilities"
+        auth:
+          type: array
+          description: The ways to connect an account of the type, most recommended first.
+          items:
+            $ref: "#/components/schemas/AuthMethod"
+        config:
+          type: array
+          description: An account's configuration (never a credential).
+          items:
+            $ref: "#/components/schemas/FieldSpec"
+        instance_config:
+          type: array
+          description: Configuration the type needs once per server, set by the operator.
+          items:
+            $ref: "#/components/schemas/FieldSpec"
+    AuthMethod:
+      type: object
+      additionalProperties: false
+      required: [id, flow, label]
+      properties:
+        id:
+          type: string
+          description: The method's id, kept with the account as `auth_method`.
+        flow:
+          type: string
+          enum: [fields, redirect, generate]
+          description: "`fields`: the owner types the credential; `redirect`: they sign in at the network; `generate`: Publisher makes it."
+        label:
+          type: string
+        help:
+          type: string
+        help_url:
+          type: string
+          format: uri
+        fields:
+          type: array
+          description: What the owner types. A `secret` field becomes a credential; the others join the account's config.
+          items:
+            $ref: "#/components/schemas/FieldSpec"
+        needs_instance_config:
+          type: array
+          items:
+            type: string
+        needs_public_url:
+          type: boolean
+    FieldSpec:
+      type: object
+      additionalProperties: false
+      required: [key, label, type]
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        help:
+          type: string
+        type:
+          type: string
+          enum: [string, text, bool, int, enum, string_list, url, url_list]
+        secret:
+          type: boolean
+          description: A credential, stored encrypted and never shown again.
+        revealable:
+          type: boolean
+          description: A credential the owner may see again (`:reveal`), such as a Nostr key.
+        audience:
+          type: boolean
+          description: Where the credentials are sent; changing it needs them again.
+        required:
+          type: boolean
+        pattern:
+          type: string
+          description: An RE2 expression the whole value must match.
+        placeholder:
+          type: string
+        enum:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [value, label]
+            properties:
+              value:
+                type: string
+              label:
+                type: string
+        default:
+          description: The value a new account gets when the field is left out.
+        min:
+          type: integer
+        max:
+          type: integer
+        max_length:
+          type: integer
+          description: In characters; 4096 when absent.
+        max_items:
+          type: integer
+          description: For a list; 64 when absent.
+        url:
+          type: object
+          description: What a `url` or `url_list` field takes. `plain` only for a private host the operator allows (PRIVATE_DESTINATIONS).
+          additionalProperties: false
+          required: [secure]
+          properties:
+            secure:
+              type: string
+            plain:
+              type: string
+            path:
+              type: boolean
+        advanced:
+          type: boolean
     OptionSpec:
       type: object
       additionalProperties: false
