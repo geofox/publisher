@@ -93,6 +93,12 @@ type Options struct {
 	// Writes stores the accounts added, changed, adopted and deleted in
 	// the app (nil: they can't be).
 	Writes AccountWriter
+	// Flows keeps the connect flows and the OAuth clients (nil: accounts
+	// can't be connected by signing in at their network).
+	Flows FlowStore
+	// Instance answers a type's InstanceConfig values and secrets (a
+	// Threads app); nil: none.
+	Instance func(typ string) (map[string]any, map[string]string)
 	// Seed gives an account just added in the app its starting state
 	// beside its row (a Nostr account's relay-sync list); nil: none.
 	Seed func(ctx context.Context, row store.Account) error

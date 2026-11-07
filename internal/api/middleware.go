@@ -167,7 +167,11 @@ func (a *API) withGates(next http.Handler) http.Handler {
 				publicAssets[p] ||
 				// Media on this server's disk, like a Blossom server's (the mux
 				// sends all of /media/ to serveMedia, never the web app).
-				p == "/media" || strings.HasPrefix(p, "/media/")
+				p == "/media" || strings.HasPrefix(p, "/media/") ||
+				// A network sending the owner back from signing in: the
+				// flow's state is the capability (a session, when there is
+				// one, must be the flow's user's).
+				strings.HasPrefix(p, "/oauth/callback/")
 		}
 		signIn := func(p string) bool {
 			return p == "/setup" || strings.HasPrefix(p, "/setup/") || signInAssets[p] || strings.HasPrefix(p, "/fonts/")

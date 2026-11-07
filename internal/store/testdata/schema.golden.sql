@@ -44,6 +44,9 @@ CREATE INDEX idx_media_objects_sha ON media_objects(owner_id, sha256);
 -- index idx_nostr_fanout_due
 CREATE INDEX idx_nostr_fanout_due ON nostr_fanout(status, next_attempt_at);
 
+-- index idx_oauth_flows_expires
+CREATE INDEX idx_oauth_flows_expires ON oauth_flows(expires_at);
+
 -- index idx_posts_created
 CREATE INDEX idx_posts_created ON posts(created_at DESC);
 
@@ -243,6 +246,38 @@ CREATE TABLE nostr_sync_relays (
   url        TEXT NOT NULL,
   added_at   TIMESTAMP NOT NULL,
   PRIMARY KEY (account_id, url)
+);
+
+-- table oauth_clients
+CREATE TABLE oauth_clients (
+  id           TEXT PRIMARY KEY,
+  owner_id     TEXT NOT NULL REFERENCES owners(id),
+  type         TEXT NOT NULL,
+  issuer       TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  client_id    TEXT NOT NULL,
+  scopes       TEXT NOT NULL,
+  created_at   TIMESTAMP NOT NULL,
+  UNIQUE (owner_id, type, issuer, redirect_uri)
+);
+
+-- table oauth_flows
+CREATE TABLE oauth_flows (
+  id                TEXT PRIMARY KEY,
+  owner_id          TEXT NOT NULL REFERENCES owners(id),
+  user_id           TEXT NOT NULL,
+  type              TEXT NOT NULL,
+  method            TEXT NOT NULL,
+  account_id        TEXT,
+  label             TEXT NOT NULL DEFAULT '',
+  redirect_uri      TEXT NOT NULL,
+  state_hash        TEXT NOT NULL UNIQUE,
+  status            TEXT NOT NULL DEFAULT 'pending',
+  result_account_id TEXT,
+  error_code        TEXT NOT NULL DEFAULT '',
+  created_at        TIMESTAMP NOT NULL,
+  expires_at        TIMESTAMP NOT NULL,
+  used_at           TIMESTAMP
 );
 
 -- table owners

@@ -556,6 +556,190 @@ paths:
           $ref: "#/components/responses/Invalid"
         default:
           $ref: "#/components/responses/Problem"
+  /v1/accounts/{id}:reconnect:
+    parameters:
+      - $ref: "#/components/parameters/AccountID"
+    post:
+      operationId: reconnectAccount
+      tags: [accounts]
+      summary: Sign an account in again at its network
+      description: |
+        A signed-in browser session. For an account added in the app with
+        a method that signs in at the network (`flow: redirect`), when its
+        credentials expired or were revoked: starts a connect flow as
+        `POST /v1/accounts:connect` does, keeping the account's settings
+        unless `config` sets some. The network must sign the same account
+        in again (the flow ends with `identity_changed` otherwise). One
+        from the environment is `409 locked_by_env`.
+      security:
+        - session: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                method:
+                  type: string
+                config:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "201":
+          $ref: "#/components/responses/ConnectStarted"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "502":
+          $ref: "#/components/responses/ConnectFailed"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/accounts:connect:
+    post:
+      operationId: connectAccount
+      tags: [accounts]
+      summary: Connect an account by signing in at its network
+      description: |
+        A signed-in browser session and a master key. For a method with
+        `flow: redirect` (`GET /v1/destinations`): Publisher prepares the
+        sign-in (a Mastodon server's discovery and app registration) and
+        answers the address where the owner signs in, to open in a new
+        tab. The network sends them back to
+        `<PUBLIC_URL>/oauth/callback/<type>`, which completes the flow and
+        stores the account; this tab reads the flow
+        (`GET /v1/connect-flows/{id}`) until it ends. The flow lasts 10
+        minutes and its sign-in address works once. Without `PUBLIC_URL`
+        (or, with OIDC, the app's address from `OIDC_REDIRECT_URL`) it is
+        `409 invalid_state`. At most 10 starts a minute. A network that
+        can't be prepared is `502 connect_failed` with a fixed
+        `connect_error` code; its own words are only logged.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [type]
+              properties:
+                type:
+                  type: string
+                method:
+                  type: string
+                  description: The sign-in method's id; may be left out when the type has one.
+                label:
+                  type: string
+                  maxLength: 64
+                config:
+                  type: object
+                  additionalProperties: true
+                  description: The type's settings and the method's fields (a Mastodon server's `instance_url`).
+      responses:
+        "201":
+          $ref: "#/components/responses/ConnectStarted"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "502":
+          $ref: "#/components/responses/ConnectFailed"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/connect-flows/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ConnectFlowID"
+    get:
+      operationId: getConnectFlow
+      tags: [accounts]
+      summary: Where a connect flow stands
+      description: |
+        A signed-in browser session, the user who started the flow.
+        `pending` until the network sends the owner back; then
+        `completed` (with `account`), `failed` (with `error`, one of
+        `denied`, `expired`, `state_invalid`, `session_mismatch`,
+        `identity_changed`, `duplicate_account`, `exchange_failed`,
+        `issuer_mismatch`, `master_key_required`, and `error_detail`
+        saying what it means), or `choose` when the network offered
+        several accounts (`candidates`, picked with `:choose`). A flow is
+        kept an hour after it ends.
+      security:
+        - session: []
+      responses:
+        "200":
+          description: The flow.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectFlow"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/connect-flows/{id}:choose:
+    parameters:
+      - $ref: "#/components/parameters/ConnectFlowID"
+    post:
+      operationId: chooseConnectFlow
+      tags: [accounts]
+      summary: Pick the account to connect
+      description: |
+        For a flow in `choose`: connects the candidate at that index, as
+        the callback would have. A flow in another state answers as it
+        stands.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [candidate]
+              properties:
+                candidate:
+                  type: integer
+                  minimum: 0
+      responses:
+        "200":
+          description: The flow, now ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectFlow"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        default:
+          $ref: "#/components/responses/Problem"
   /v1/account-sets:
     get:
       operationId: listAccountSets
@@ -3140,6 +3324,13 @@ components:
       schema:
         type: string
         examples: [acc_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c]
+    ConnectFlowID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples: [flw_6f1c2b9a0d3e4f5a6b7c8d9e0f1a2b3c]
     DraftID:
       name: id
       in: path
@@ -3301,6 +3492,34 @@ components:
         text/event-stream:
           schema:
             type: string
+    ConnectStarted:
+      description: The flow, started; open `authorize_url` to sign in at the network. It works once.
+      headers:
+        Location:
+          description: The flow, to read until it ends.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [flow, authorize_url, expires_at]
+            properties:
+              flow:
+                type: string
+              authorize_url:
+                type: string
+                format: uri
+              expires_at:
+                type: string
+                format: date-time
+    ConnectFailed:
+      description: The network's sign-in couldn't be prepared, or the account couldn't be made from it (`connect_failed`, with `connect_error`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     Problem:
       description: An error.
       content:
@@ -4571,6 +4790,7 @@ components:
             - identity_changed
             - master_key_required
             - master_key_mismatch
+            - connect_failed
         errors:
           type: array
           items:
@@ -4584,6 +4804,47 @@ components:
         account_id:
           type: string
           description: "`duplicate_account` only: the account you already have."
+        connect_error:
+          type: string
+          description: "`connect_failed` only: why, as a fixed code (spec §6.1): `denied`, `expired`, `state_invalid`, `session_mismatch`, `identity_changed`, `duplicate_account`, `exchange_failed`, `issuer_mismatch`, `master_key_required`."
+    ConnectFlow:
+      type: object
+      additionalProperties: false
+      required: [id, type, status, expires_at]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+          enum: [pending, completed, failed, choose]
+        account:
+          type: string
+          description: "`completed`: the account connected."
+        error:
+          type: string
+          description: "`failed`: why, as a fixed code."
+        error_detail:
+          type: string
+          description: "`failed`: what the code means, in fixed words."
+        expires_at:
+          type: string
+          format: date-time
+        candidates:
+          type: array
+          description: "`choose`: the accounts the network offered, picked by index."
+          items:
+            type: object
+            additionalProperties: false
+            required: [handle]
+            properties:
+              handle:
+                type: string
+              display_name:
+                type: string
+              avatar_url:
+                type: string
     FieldError:
       type: object
       additionalProperties: false

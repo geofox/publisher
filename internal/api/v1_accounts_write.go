@@ -49,6 +49,7 @@ const (
 type accountLimits struct {
 	once                  sync.Once
 	writes, checks, tests localauth.Limiter
+	connects              localauth.Limiter
 }
 
 func (a *API) limits() *accountLimits {
@@ -60,6 +61,7 @@ func (a *API) limits() *accountLimits {
 		}
 		l.checks.N, l.checks.Window = 1, accountCheckEvery
 		l.tests.N, l.tests.Window = 1, settingsTestEvery
+		l.connects.N, l.connects.Window = connectStartsPerMinute, time.Minute
 	})
 	return l
 }
@@ -283,14 +285,14 @@ func (a *API) v1LiveAccount(w http.ResponseWriter, r *http.Request) (store.Accou
 	return cur, ok
 }
 
-// v1AccountAction serves POST /v1/accounts/{id}:check, :reveal and
-// :adopt.
+// v1AccountAction serves POST /v1/accounts/{id}:check, :reveal, :adopt
+// and :reconnect.
 func (a *API) v1AccountAction(w http.ResponseWriter, r *http.Request) {
 	id, action, found := strings.Cut(r.PathValue("id"), ":")
 	if !found {
 		w.Header().Set("Allow", "DELETE, GET, HEAD, PATCH")
 		problem(w, r, http.StatusMethodNotAllowed, codeMethodNotAllowed,
-			"POST is not allowed here; use GET, HEAD, PATCH, DELETE, or POST to :check, :reveal or :adopt")
+			"POST is not allowed here; use GET, HEAD, PATCH, DELETE, or POST to :check, :reveal, :adopt or :reconnect")
 		return
 	}
 	r.SetPathValue("id", id)
@@ -301,8 +303,10 @@ func (a *API) v1AccountAction(w http.ResponseWriter, r *http.Request) {
 		a.v1RevealAccount(w, r)
 	case "adopt":
 		a.v1AdoptAccount(w, r)
+	case "reconnect":
+		a.v1ReconnectAccount(w, r)
 	default:
-		problem(w, r, http.StatusNotFound, codeNotFound, "no such action :"+action+"; accounts take :check, :reveal and :adopt")
+		problem(w, r, http.StatusNotFound, codeNotFound, "no such action :"+action+"; accounts take :check, :reveal, :adopt and :reconnect")
 	}
 }
 

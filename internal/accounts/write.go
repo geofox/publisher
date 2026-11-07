@@ -179,7 +179,7 @@ func methodOf(m destination.Manifest, id string) (destination.AuthMethod, *Inval
 		return a, invalid("/method", code, "use one of: "+strings.Join(ids, ", "))
 	}
 	if a.Flow != destination.FlowFields && a.Flow != destination.FlowGenerate {
-		return a, invalid("/method", "not_allowed", "this way of connecting goes through the network's own sign-in page, which this version can't do yet")
+		return a, invalid("/method", "not_allowed", "this way of connecting signs in at the network: start it with POST /v1/accounts:connect")
 	}
 	return a, nil
 }
@@ -389,6 +389,14 @@ func (r *Registry) Create(ctx context.Context, n NewAccount) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
+	return r.createChecked(ctx, n, d, a, config, secrets)
+}
+
+// createChecked stores a new account once its config and secrets are
+// known: opened and identified first, then stored with its secrets sealed
+// for its server, then opened for use.
+func (r *Registry) createChecked(ctx context.Context, n NewAccount, d destination.Driver, a destination.AuthMethod, config map[string]any, secrets map[string]string) (Entry, error) {
+	m := d.Manifest()
 	row := store.Account{ID: store.NewAccountID(), OwnerID: n.Owner, Type: n.Type, Source: store.SourceDB, AuthMethod: a.ID}
 	ident, secrets, config, err := r.trial(ctx, d, row, config, secrets)
 	if err != nil {
@@ -629,6 +637,19 @@ func (r *Registry) ChangeCredentials(ctx context.Context, u CredentialUpdate) (E
 			}
 		}
 	}
+	if u.Method != "" && u.Method != row.AuthMethod {
+		fields = append(fields, "method")
+	}
+	return r.replaceChecked(ctx, row, d, a, config, secrets, store.CredentialChange{IfUpdatedAt: u.IfUpdatedAt,
+		Fields: fields, Actor: u.Actor, TokenID: u.TokenID})
+}
+
+// replaceChecked gives an app-added account new config and secrets: they
+// are opened and identified first, and must be the same network account
+// (ErrIdentityChanged otherwise). c carries the change's bookkeeping
+// (IfUpdatedAt, Fields, Actor, TokenID).
+func (r *Registry) replaceChecked(ctx context.Context, row store.Account, d destination.Driver, a destination.AuthMethod, config map[string]any, secrets map[string]string, c store.CredentialChange) (Entry, error) {
+	m := d.Manifest()
 	trialRow := row
 	trialRow.AuthMethod = a.ID
 	ident, secrets, config, err := r.trial(ctx, d, trialRow, config, secrets)
@@ -642,12 +663,8 @@ func (r *Registry) ChangeCredentials(ctx context.Context, u CredentialUpdate) (E
 	if err != nil {
 		return Entry{}, err
 	}
-	if u.Method != "" && u.Method != row.AuthMethod {
-		fields = append(fields, "method")
-	}
-	next, err := r.opt.Writes.ReplaceAccountCredentials(ctx, row.OwnerID, row.ID, store.CredentialChange{AuthMethod: a.ID,
-		Config: config, Secrets: put, Handle: ident.Handle, RemoteID: ident.RemoteID, IfUpdatedAt: u.IfUpdatedAt,
-		Fields: fields, Actor: u.Actor, TokenID: u.TokenID})
+	c.AuthMethod, c.Config, c.Secrets, c.Handle, c.RemoteID = a.ID, config, put, ident.Handle, ident.RemoteID
+	next, err := r.opt.Writes.ReplaceAccountCredentials(ctx, row.OwnerID, row.ID, c)
 	if err != nil {
 		return Entry{}, err
 	}

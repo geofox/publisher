@@ -237,6 +237,7 @@ func run(ctx context.Context, o runOptions) int {
 		Alerter: notifier,
 		Guard:   guard,
 		Writes:  st,
+		Flows:   st,
 		Seed:    drivers.NewAccountSeeder(st, getenv),
 		Getenv:  getenv,
 	})
@@ -366,8 +367,8 @@ func run(ctx context.Context, o runOptions) int {
 	if code := setupSignIn(ctx, cfg, st, a); code != 0 {
 		return code
 	}
-	// Expired Idempotency-Key records, old events and settled fan-out jobs
-	// are dead weight: purge them hourly.
+	// Expired Idempotency-Key records, old events, settled fan-out jobs
+	// and connect flows that ended are dead weight: purge them hourly.
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
@@ -391,6 +392,11 @@ func run(ctx context.Context, o runOptions) int {
 				slog.Warn("fan-out purge failed", "err", err)
 			} else if n > 0 {
 				slog.Debug("purged settled fan-out jobs", "count", n)
+			}
+			if n, err := reg.PurgeFlows(ctx); err != nil {
+				slog.Warn("connect flow purge failed", "err", err)
+			} else if n > 0 {
+				slog.Debug("purged ended connect flows", "count", n)
 			}
 		}
 	}()

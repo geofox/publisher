@@ -99,7 +99,7 @@ func newWriteEnv(t *testing.T, signIn, noKey bool) *writeEnv {
 		{Type: "mastodon", EnvAccount: destination.EnvAccount{Key: "default",
 			Config: map[string]any{"instance_url": "https://masto.example"}, Secrets: map[string]string{"access_token": "env-token"}}},
 	}
-	reg := accounts.New(accounts.Options{Store: w.st, Env: env, Secrets: w.st, Writes: w.st, Keys: w.kr, KeyState: ks,
+	reg := accounts.New(accounts.Options{Store: w.st, Env: env, Secrets: w.st, Writes: w.st, Flows: w.st, Keys: w.kr, KeyState: ks,
 		Getenv: func(string) string { return "" },
 		Open: func(_ context.Context, typ string, req destination.OpenRequest) (destination.Account, error) {
 			w.mu.Lock()

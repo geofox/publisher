@@ -297,6 +297,19 @@ the one set now, so new ones aren't saved (the database never mixes
 keys). Set the master key they were saved with (or keep it as
 `PUBLISHER_MASTER_KEY_PREVIOUS` while rotating) and restart.
 
+## connect_failed
+
+**502.** Signing in at a network couldn't be prepared, or the account
+couldn't be made from what it answered (`POST /v1/accounts:connect`,
+`:reconnect`, a connect flow's `:choose`). `connect_error` says why, as
+one of the fixed codes a connect flow's `error` uses: `exchange_failed`
+(the network didn't answer as expected), `issuer_mismatch` (the
+server's sign-in metadata names another address than the server's),
+`denied`, `expired`, `state_invalid`, `session_mismatch`,
+`identity_changed`, `duplicate_account`, `master_key_required`. The
+network's own words are only in the server's log. Check the server's
+address, then try again.
+
 ## insufficient_storage
 
 **507.** The server ran out of disk space while receiving an upload, or

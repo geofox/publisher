@@ -148,7 +148,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	eng, err := newEngine(ctx, func(ctx context.Context) (*accounts.Registry, *dispatch.Dispatcher, error) {
-		reg := accounts.New(accounts.Options{Store: st, Env: env, Secrets: st, Writes: st, Keys: keys, KeyState: keyState,
+		reg := accounts.New(accounts.Options{Store: st, Env: env, Secrets: st, Writes: st, Flows: st, Keys: keys, KeyState: keyState,
 			Open: func(_ context.Context, typ string, req destination.OpenRequest) (destination.Account, error) {
 				return newFake(rec, typ, req)
 			}})

@@ -118,7 +118,7 @@ func newWriteEnv(t *testing.T, noKey bool, env ...EnvAccount) *writeEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.r = New(Options{Store: st, Secrets: st, Writes: st, Keys: w.kr, KeyState: ks, Open: w.o.open, Env: env,
+	w.r = New(Options{Store: st, Secrets: st, Writes: st, Flows: st, Keys: w.kr, KeyState: ks, Open: w.o.open, Env: env,
 		Getenv: func(string) string { return "" },
 		Seed: func(_ context.Context, row store.Account) error {
 			w.seeded = append(w.seeded, row.ID)

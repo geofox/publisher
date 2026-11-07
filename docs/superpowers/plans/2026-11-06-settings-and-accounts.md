@@ -2089,35 +2089,92 @@ Spec §4.3 (`Connector`), §6.1–6.3, §12 (E).
 
 ### Task E1: verify Threads OAuth
 
-- [ ] From Meta's documentation: authorize host and parameters, code
+- [x] From Meta's documentation: authorize host and parameters, code
   exchange, long-lived exchange, redirect URI rules, and whether replies to
   the account's own threads need `threads_manage_replies`. Record here;
   update spec §6.3 where it differs.
 
+Found (2026-11-07, Meta's Threads API pages under
+`developers.facebook.com/documentation/threads/`: get started → access
+tokens and permissions, long-lived tokens, create replies; and the
+`fbsamples/threads_api` sample's README):
+
+- Authorize at `https://threads.com/oauth/authorize` with `client_id`,
+  `redirect_uri`, `scope` (comma-separated), `response_type=code`,
+  `state` (optional there; Publisher always sends it).
+- The code is good for an hour, once; the redirect may end in `#_`,
+  stripped before use.
+- Exchange: `POST https://graph.threads.com/oauth/access_token`
+  (`client_id`, `client_secret`, `code`, `grant_type=authorization_code`,
+  `redirect_uri`) → a short-lived token (an hour) and the user id.
+- Long-lived: `GET https://graph.threads.com/access_token?
+  grant_type=th_exchange_token&client_secret=…&access_token=…` → 60 days,
+  refreshable once 24 hours old (A2.2's refresher). The secret is in the
+  query: every log and error scrubs it.
+- The redirect URI must match exactly what the app lists, https only;
+  Meta refuses `localhost` (the sample's README).
+- Replying (`reply_to_id`) needs `threads_manage_replies`, which spec
+  §6.3 left out: the scopes are `threads_basic,threads_content_publish,
+  threads_manage_replies`.
+- Only the app's Threads testers can grant it until App Review, which a
+  self-hoster's own app doesn't need.
+
 ### Task E2: migration v15 and the flow manager
 
-- [ ] `oauth_flows` (+ `redirect_uri`) and `oauth_clients`; rotation (C6)
+- [x] `oauth_flows` (+ `redirect_uri`) and `oauth_clients`; rotation (C6)
   includes `oauth_flows.data_sealed`, sealed with AAD naming the flow id,
   owner, user and type.
-- [ ] State: 32 random bytes, hashed, single use, 10 minutes; PKCE S256;
+- [x] State: 32 random bytes, hashed, single use, 10 minutes; PKCE S256;
   binding to owner and user; hourly purge; fixed error codes; 10 starts
   per minute per owner.
 
 ### Task E3: connect routes
 
-- [ ] Routes per spec §6.1. **Redirect URI:** `PUBLIC_URL`, else the app
+- [x] Routes per spec §6.1. **Redirect URI:** `PUBLIC_URL`, else the app
   base URL from `OIDC_REDIRECT_URL`, else connect is refused ("set
   PUBLIC_URL"); never from a request header. Stored with the flow and used
   verbatim at the exchange.
-- [ ] The callback completes by state; a present session must be the
+- [x] The callback completes by state; a present session must be the
   flow's user; a second callback (refresh) shows the first outcome without
   redoing the exchange; strict-CSP result page, no upstream text.
-- [ ] Every OAuth request (discovery, registration, token exchange,
+- [x] Every OAuth request (discovery, registration, token exchange,
   identity) goes through the guarded client.
-- [ ] Tests: replayed and expired state, wrong session, no session (the
+- [x] Tests: replayed and expired state, wrong session, no session (the
   home-screen app case), denied consent, double callback, master key lost
   mid-flow, `duplicate_account` and `identity_changed` at completion,
   choosing among candidates.
+
+### As built (E2–E3)
+
+- **Flows (E2):** `oauth_flows` and `oauth_clients` (migration v15); a
+  flow's data (the driver's, the PKCE verifier, the owner's fields) and
+  its candidates are sealed as secrets of scope `oauth_flow`, bound to
+  the flow's id, owner, user and type, and go when the flow ends; a
+  client's secret is sealed for its server. `destination.Connector`
+  (`BeginConnect`, `CompleteConnect`) is what a driver adds; the host
+  owns the state (only its hash stored), PKCE, the redirect URI and
+  storing the account (`createChecked`/`replaceChecked`, the checks of a
+  typed one). A claim is one `UPDATE … WHERE used_at IS NULL AND status =
+  'pending' AND expires_at > now`, so two racing callbacks get one.
+- **Routes (E3):** `POST /v1/accounts:connect`, `POST
+  /v1/accounts/{id}:reconnect`, `GET /v1/connect-flows/{id}`, `POST
+  /v1/connect-flows/{id}:choose`: a signed-in browser session, never
+  behind the proxy alone, `ReturnsSecret` for the starts (the sign-in
+  address holds the state). The redirect base is `AppBaseURL`
+  (`PUBLIC_URL`, else the OIDC app's address), else `409 invalid_state`
+  naming `PUBLIC_URL`. A start the network can't prepare is `502
+  connect_failed` with `connect_error`; a private server is `422` on
+  its field. `GET /oauth/callback/{type}` is open in the session gate
+  (the state is the capability); its page is fixed words, no script, a
+  CSP of its own (`default-src 'none'`, its style by hash), `no-store`,
+  `no-referrer`. The flow answer's `error_detail` and the page say
+  what a code means in the same fixed words. Hourly purge with the
+  others.
+- **Deviation:** the callback page doesn't redirect to the app (spec
+  §6.1 said it would): the tab that started the flow already shows the
+  outcome, and a redirect would open a second copy of the app (or a
+  sign-in page, in a home-screen app's other browser). It links to
+  Publisher instead.
 
 ### Task E4: Mastodon connect
 

@@ -456,6 +456,9 @@ func TestV1Conformance(t *testing.T) {
 	for p := range accountSetConformance(t) {
 		seen[p] = true
 	}
+	for p := range connectConformance(t) {
+		seen[p] = true
+	}
 	for _, rt := range e.api.v1Routes() {
 		patterns := []string{rt.Method + " " + rt.Path}
 		if len(rt.Actions) > 0 {

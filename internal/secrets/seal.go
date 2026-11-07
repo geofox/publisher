@@ -29,7 +29,7 @@ var (
 // value (spec §3.2), so a sealed value opens only for the same binding.
 type Binding struct {
 	Owner string // an owner id, or "instance"
-	Scope string // account | setting | oauth_client | export
+	Scope string // account | setting | oauth_client | oauth_flow | export
 	Ref   string // the account id, setting key or client id
 	Name  string // app_password, access_token, secret_key, …
 	// Audience is the normalized origin the secret is sent to (spec §3.3),
@@ -42,6 +42,7 @@ const (
 	ScopeAccount     = "account"
 	ScopeSetting     = "setting"
 	ScopeOAuthClient = "oauth_client"
+	ScopeOAuthFlow   = "oauth_flow"
 	ScopeExport      = "export"
 )
 

@@ -50,6 +50,7 @@ const (
 	codeIdentityChanged      = "identity_changed"
 	codeMasterKeyRequired    = "master_key_required"
 	codeMasterKeyMismatch    = "master_key_mismatch"
+	codeConnectFailed        = "connect_failed"
 )
 
 // v1Codes maps each code to its problem title, the same for every
@@ -89,6 +90,7 @@ var v1Codes = map[string]string{
 	codeIdentityChanged:      "Another account",
 	codeMasterKeyRequired:    "Master key required",
 	codeMasterKeyMismatch:    "Master key mismatch",
+	codeConnectFailed:        "Connecting the account failed",
 }
 
 // fieldError is one problem with one part of a request: a JSON Pointer
@@ -116,6 +118,9 @@ type problemBody struct {
 	Target string `json:"target,omitempty"`
 	// AccountID names the account a duplicate_account is the same as.
 	AccountID string `json:"account_id,omitempty"`
+	// ConnectError is why signing in at a network failed (connect_failed):
+	// one of the fixed codes of spec §6.1.
+	ConnectError string `json:"connect_error,omitempty"`
 }
 
 // problem answers an error as application/problem+json.

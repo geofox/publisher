@@ -154,11 +154,21 @@ func (a *API) v1Routes() []v1Route {
 		{Method: "PATCH", Path: "/v1/accounts/{id}", Scope: scopeAccountsWrite, Handler: a.v1PatchAccount},
 		// Deleting needs re-authentication, so a signed-in owner.
 		{Method: "DELETE", Path: "/v1/accounts/{id}", Scope: scopeAccountsWrite, SessionOnly: true, Handler: a.v1DeleteAccount},
-		{Method: "POST", Path: "/v1/accounts/{id}", Scope: scopeAccountsWrite, Actions: []string{"check", "reveal", "adopt"},
+		{Method: "POST", Path: "/v1/accounts/{id}", Scope: scopeAccountsWrite, Actions: []string{"check", "reveal", "adopt", "reconnect"},
 			ActionRules: map[string]v1ActionRule{
 				"reveal": {SessionOnly: true, NoProxy: true, ReturnsSecret: true},
 				"adopt":  {SessionOnly: true, NoProxy: true},
+				// The answer's sign-in address holds the flow's state.
+				"reconnect": {SessionOnly: true, NoProxy: true, ReturnsSecret: true},
 			}, Handler: a.v1AccountAction},
+		// Connecting by signing in at the network (spec §6.1): a browser
+		// flow, the owner's own; the sign-in address holds its state.
+		{Method: "POST", Path: "/v1/accounts:connect", Scope: scopeAccountsWrite, SessionOnly: true, NoProxy: true,
+			ReturnsSecret: true, Handler: a.v1ConnectAccount},
+		{Method: "GET", Path: "/v1/connect-flows/{id}", Scope: scopeAccountsWrite, SessionOnly: true, NoProxy: true,
+			Handler: a.v1ConnectFlow},
+		{Method: "POST", Path: "/v1/connect-flows/{id}", Scope: scopeAccountsWrite, SessionOnly: true, NoProxy: true,
+			Actions: []string{"choose"}, Handler: a.v1ConnectFlowAction},
 		// Account sets: selections of accounts the composer starts from.
 		{Method: "GET", Path: "/v1/account-sets", Scope: scopeAccountsRead, Handler: a.v1AccountSets},
 		{Method: "POST", Path: "/v1/account-sets", Scope: scopeAccountsWrite, Handler: a.v1CreateAccountSet},

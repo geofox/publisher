@@ -900,19 +900,19 @@ No out-of-band (code paste) flow: token paste (part C) is the fallback.
   `app_id` and `app_secret` (secret). Settings → Integrations → Threads app
   (an `instance:admin` write, re-authenticated) stores them; the page shows
   the redirect URI to register and links Meta's guide.
-- Authorize at Meta's Threads authorization window with `client_id`,
-  `redirect_uri`, `scope=threads_basic,threads_content_publish`,
-  `response_type=code`, `state`.
-- Callback: exchange the code for a short-lived token and user id, then
-  for a long-lived token (`th_exchange_token`, server side). Secrets in
-  query strings are scrubbed from every log and error (today's
-  `scrubToken`).
-- **To verify at the start of part E** (Meta's access-token page didn't
-  load during the analysis): the authorize host, the code exchange
-  endpoint and parameters, https and exact-match rules for the redirect
-  URI, whether replies to the account's own threads need
-  `threads_manage_replies`. The part E plan records what was found; only
-  this subsection changes.
+- Authorize at `https://threads.com/oauth/authorize` with `client_id`,
+  `redirect_uri`, `scope=threads_basic,threads_content_publish,
+  threads_manage_replies` (replies need the last one), `response_type=code`,
+  `state`.
+- Callback: exchange the code (good once, for an hour; a trailing `#_`
+  stripped) at `POST https://graph.threads.com/oauth/access_token` for a
+  short-lived token and user id, then for a long-lived token (`GET
+  https://graph.threads.com/access_token?grant_type=th_exchange_token`,
+  server side). Secrets in query strings are scrubbed from every log and
+  error (today's `scrubToken`).
+- The redirect URI must match the app's list exactly, over https; Meta
+  refuses `localhost`. Verified 2026-11-07 (the plan's E1 has the
+  sources).
 - Verified (2026-11-06): each integrator needs a Meta app with the Threads
   use case; a Threads tester can grant permissions without App Review;
   short-lived tokens last 1 hour, long-lived 60 days, refreshable once 24

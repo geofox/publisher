@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"sync"
 	"time"
 
@@ -141,4 +142,20 @@ func (e *engine) Details(ctx context.Context, row store.Account) (accounts.Detai
 }
 func (e *engine) CheckNow(ctx context.Context, id string) (destination.Health, bool) {
 	return e.registry().CheckNow(ctx, id)
+}
+
+// The api.AccountConnector methods (connecting by signing in at the
+// network) too.
+
+func (e *engine) BeginConnect(ctx context.Context, q accounts.ConnectStart) (accounts.StartedFlow, error) {
+	return e.registry().BeginConnect(ctx, q)
+}
+func (e *engine) CompleteConnect(ctx context.Context, typ string, callback url.Values, sessionUser string) (accounts.FlowView, error) {
+	return e.registry().CompleteConnect(ctx, typ, callback, sessionUser)
+}
+func (e *engine) Flow(ctx context.Context, owner, user, id string) (accounts.FlowView, error) {
+	return e.registry().Flow(ctx, owner, user, id)
+}
+func (e *engine) Choose(ctx context.Context, owner, user, id string, n int) (accounts.FlowView, error) {
+	return e.registry().Choose(ctx, owner, user, id, n)
 }

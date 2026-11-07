@@ -285,6 +285,8 @@ func (a *API) Routes() http.Handler {
 		a.mountLocal(mux)
 	}
 	a.mountV1(mux)
+	// Where a network sends the owner back after signing in (spec §6.1).
+	mux.HandleFunc("GET /oauth/callback/{type}", a.handleConnectCallback)
 	mux.HandleFunc("/media/", a.serveMedia)
 	mux.Handle("/", web.Handler())
 	return withSecurityHeaders(a.withHostGuard(a.withCSRFGuard(a.withGates(mux))))
