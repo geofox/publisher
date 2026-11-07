@@ -903,3 +903,59 @@ textarea.master,.verify-input{}
 
 /* Read by assistive technology, not shown. */
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* ── Sign-in, setup and re-authentication (local sign-in) ─────────────── */
+body.auth-page{height:auto;min-height:100vh;min-height:100dvh;overflow:auto;display:block;padding:max(24px,var(--safe-t)) 16px calc(24px + var(--safe-b))}
+.auth-card{max-width:400px;margin:6vh auto 0;padding:26px 24px 20px;background:var(--card);border:.5px solid var(--hair);border-radius:20px;box-shadow:0 18px 50px rgba(20,24,50,.10)}
+.auth-brand{margin-bottom:14px}
+.auth-title{margin:0 0 14px;font-size:20px;font-weight:650;letter-spacing:-.02em}
+.auth-card p{font-size:14px;line-height:1.5;margin:0 0 12px;color:var(--ink-2)}
+.auth-card code,.auth-cmd{font-family:var(--mono);font-size:12px}
+.auth-cmd{margin:0 0 12px;padding:10px 12px;background:var(--surface-2);border-radius:10px;white-space:pre-wrap;word-break:break-all;user-select:all}
+.auth-wide{display:block;width:100%;padding:11px 14px;font-size:14px;text-align:center}
+a.auth-link{color:#fff}
+.auth-form{display:flex;flex-direction:column;gap:6px;margin:0}
+.auth-form label,.auth-label{font-size:12px;color:var(--ink-2);margin-top:4px}
+.auth-card input[type=password],.auth-card input[type=text],.reauth input[type=password],.reauth input[type=text]{font:inherit;font-size:15px;padding:9px 11px;border:.5px solid var(--line-2);border-radius:10px;background:var(--surface);color:var(--ink);width:100%;margin-bottom:6px}
+.auth-card input:focus,.reauth input:focus{outline:none;border-color:var(--indigo);box-shadow:0 0 0 3px var(--accent-dim)}
+.auth-form button{margin-top:4px}
+.auth-or{display:flex;align-items:center;gap:10px;margin:14px 0 8px !important;font-size:12px;color:var(--faint) !important}
+.auth-or::before,.auth-or::after{content:"";flex:1;height:.5px;background:var(--line-2)}
+.auth-or[hidden]{display:none}
+.auth-warn{padding:10px 12px;border-radius:12px;background:color-mix(in srgb,var(--amber) 13%,transparent);border:.5px solid color-mix(in srgb,var(--amber) 45%,transparent);color:var(--ink) !important}
+.auth-status{min-height:1.5em;margin-top:12px !important;font-size:13px !important}
+.auth-help{margin-top:14px;font-size:12.5px;color:var(--ink-2)}
+.auth-help summary{cursor:pointer;color:var(--faint)}
+.auth-help p{font-size:12.5px;margin-top:8px}
+
+.reauth{cursor:default}
+.reauth .reauth-why{margin:0 0 14px;font-size:13.5px;color:var(--ink-2);line-height:1.5}
+.reauth form{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.reauth label{font-size:12px;color:var(--ink-2)}
+.reauth .reauth-status{min-height:1.4em;margin:10px 0 0;font-size:13px;color:var(--ink-2)}
+.reauth .auth-or{margin:12px 0 6px !important}
+
+/* ── Access: sign-in methods, sessions, events ────────────────────────── */
+.signin-banner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0;padding:10px 13px;border-radius:14px;font-size:13px;background:color-mix(in srgb,var(--amber) 12%,transparent);border:.5px solid color-mix(in srgb,var(--amber) 40%,transparent)}
+.signin-banner[hidden]{display:none}
+.signin-banner .flex-spacer{flex:1}
+.acc-row{display:flex;align-items:center;gap:12px;padding:11px 14px;background:var(--card);border:.5px solid var(--hair);border-radius:14px;box-shadow:var(--shadow-card);margin:7px 0;flex-wrap:wrap}
+.acc-row .acc-info{flex:1;min-width:0;display:flex;align-items:baseline;gap:4px 10px;flex-wrap:wrap}
+.acc-row .acc-name{font-weight:600;font-size:14px;color:var(--ink);overflow-wrap:anywhere}
+.acc-row .acc-actions{display:flex;gap:6px;flex-wrap:wrap}
+.acc-tag{font-size:11px;padding:1px 7px;border-radius:999px;background:var(--indigo-soft);color:var(--indigo)}
+.acc-actions-row{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 4px}
+.acc-note{font-size:13px;color:var(--ink-2);margin:4px 4px 8px}
+.acc-events{list-style:none;margin:0;padding:0}
+.acc-events li{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;padding:7px 4px;border-bottom:.5px solid var(--line);font-size:13px}
+.acc-events li .bad{font-weight:600}
+.acc-events .when{font-family:var(--mono);font-size:11px;color:var(--faint);min-width:5.5em}
+/* Sign-in fields: 16px on touch screens, so iOS doesn't zoom into them. */
+@media (pointer: coarse){
+  .auth-card input[type=password],.auth-card input[type=text],.reauth input[type=password],.reauth input[type=text]{font-size:16px}
+}
+.acc-tag.warn{background:color-mix(in srgb,var(--amber) 16%,transparent);color:var(--ink-2)}
+.acc-row.acc-unusable .acc-name{color:var(--ink-2)}
+.acc-row button[disabled]{opacity:.5;cursor:not-allowed}
+.tok-scopes label.off{opacity:.55}
+.tok-note{flex-basis:100%;margin:4px 0 0;font-size:12px}

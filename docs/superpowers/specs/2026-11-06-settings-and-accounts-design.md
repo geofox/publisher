@@ -51,6 +51,11 @@ two differ, the plan's "Spec deviations" table wins. In short:
 - OIDC re-authentication has no fallback.
 - The Blossom server tag comes only with the media store's own key.
 - `nostr_relay` readiness is folded into the account checks.
+- Part B as built: every token created from a browser asks to confirm
+  it's the owner; a password change takes the current password instead;
+  passkey ceremonies are sealed in the browser's cookie; a browser the
+  owner signed in with before skips the per-owner delay; setup opens
+  again when no usable way to sign in is left.
 
 ## Decisions (Geoffrey, 2026-11-06)
 

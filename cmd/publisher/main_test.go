@@ -83,6 +83,7 @@ func get(t *testing.T, url string, v any) int {
 // starts, is ready, says it has no media, and stops gracefully.
 func TestRunWithOnlyBluesky(t *testing.T) {
 	url, stop := startRun(t, map[string]string{
+		"AUTH_MODE":            "proxy", // no sign-in: the test calls the API directly
 		"BLUESKY_APP_PASSWORD": "aaaa-bbbb-cccc-dddd",
 		"BLUESKY_IDENTIFIER":   "me.example",
 		"BLUESKY_PDS_URL":      "http://127.0.0.1:1",

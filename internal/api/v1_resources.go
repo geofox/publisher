@@ -11,16 +11,19 @@ import (
 // GET /v1/instance: what this server is and can do.
 
 type v1InstanceBody struct {
-	Version          string           `json:"version"`
-	Auth             string           `json:"auth"` // "oidc" or "proxy"
-	Features         v1Features       `json:"features"`
-	UserLanguages    []string         `json:"user_languages"`
-	TranslateTargets []string         `json:"translate_targets"`
-	Limits           v1Limits         `json:"limits"`
-	Idempotency      v1IdemPolicy     `json:"idempotency"`
-	Scopes           []string         `json:"scopes"`
-	Destinations     []string         `json:"destinations"`
-	Pagination       v1PaginationInfo `json:"pagination"`
+	Version string `json:"version"`
+	Auth    string `json:"auth"` // "oidc", "local" or "proxy"
+	// SignInRecommended: the app has no sign-in of its own (proxy mode);
+	// the web app offers to set it up.
+	SignInRecommended bool             `json:"sign_in_recommended,omitempty"`
+	Features          v1Features       `json:"features"`
+	UserLanguages     []string         `json:"user_languages"`
+	TranslateTargets  []string         `json:"translate_targets"`
+	Limits            v1Limits         `json:"limits"`
+	Idempotency       v1IdemPolicy     `json:"idempotency"`
+	Scopes            []string         `json:"scopes"`
+	Destinations      []string         `json:"destinations"`
+	Pagination        v1PaginationInfo `json:"pagination"`
 }
 
 type v1Features struct {
@@ -59,17 +62,15 @@ func (a *API) v1Instance(w http.ResponseWriter, r *http.Request) {
 	if a.Translator != nil {
 		targets = translate.Intersect(langs)
 	}
-	authMode := "proxy"
-	if a.authEnabled() {
-		authMode = "oidc"
-	}
+	authMode := a.mode()
 	version := a.Version
 	if version == "" {
 		version = "dev"
 	}
 	writeV1(w, http.StatusOK, v1InstanceBody{
-		Version: version,
-		Auth:    authMode,
+		Version:           version,
+		Auth:              authMode,
+		SignInRecommended: authMode == ModeProxy,
 		Features: v1Features{Media: a.media != nil, Translate: a.Translator != nil, Video: a.media != nil && a.VideoJobs != nil,
 			PublicFeed: a.PublicFeedToken != "",
 			RelaySync:  a.relaySyncAvailable(r.Context())},

@@ -30,7 +30,20 @@ const (
 	// EventAccountUpdated: the owner changed an account's settings. It
 	// belongs to no post; its data names the fields, never their values.
 	EventAccountUpdated = "account.updated"
+
+	// Sign-in events: who signed in or failed to, from where, and changes
+	// to the ways of signing in and to tokens. They belong to no post and
+	// are read through GET /v1/me/sign-in-events, never streamed.
+	EventLoginSucceeded = "login.succeeded"
+	EventLoginFailed    = "login.failed"
+	EventSignInAdded    = "signin.added"
+	EventSignInRemoved  = "signin.removed"
+	EventSignInChanged  = "signin.changed" // the password was changed
+	EventTokenCreated   = "token.created"
 )
+
+// signInEventTypes are the sign-in events, kept out of the event stream.
+const signInEventTypes = `('login.succeeded', 'login.failed', 'signin.added', 'signin.removed', 'signin.changed', 'token.created')`
 
 // EventRetention is how long events are kept.
 const EventRetention = 7 * 24 * time.Hour
@@ -64,6 +77,13 @@ type EventData struct {
 	// Actor and TokenID say who made an account change.
 	Actor   string `json:"actor,omitempty"`
 	TokenID string `json:"token_id,omitempty"`
+	// Sign-in events: how (passkey, password, oidc, setup), from which
+	// client address, the passkey's id, a token's scopes. Never a secret.
+	Method   string   `json:"method,omitempty"`
+	Addr     string   `json:"addr,omitempty"`
+	Passkey  string   `json:"passkey,omitempty"`
+	Scopes   []string `json:"scopes,omitempty"`
+	Sessions int      `json:"sessions_ended,omitempty"`
 }
 
 // eventSignal wakes stream readers when events are written. Readers also
@@ -195,11 +215,16 @@ func (s *Store) EventsSince(ctx context.Context, f EventFilter) ([]Event, error)
 		f.Limit = 500
 	}
 	rows, err := s.sql.QueryContext(ctx, `SELECT id, owner_id, COALESCE(post_id, ''), type, data, created_at FROM events
-		WHERE owner_id = ? AND id > ? AND (? = '' OR post_id = ?) AND (? = 0 OR post_id IS NOT NULL) ORDER BY id LIMIT ?`,
+		WHERE owner_id = ? AND id > ? AND (? = '' OR post_id = ?) AND (? = 0 OR post_id IS NOT NULL)
+		  AND type NOT IN `+signInEventTypes+` ORDER BY id LIMIT ?`,
 		f.OwnerID, f.After, f.PostID, f.PostID, f.PostsOnly, f.Limit)
 	if err != nil {
 		return nil, err
 	}
+	return scanEvents(rows)
+}
+
+func scanEvents(rows *sql.Rows) ([]Event, error) {
 	defer rows.Close()
 	var out []Event
 	for rows.Next() {
@@ -213,6 +238,40 @@ func (s *Store) EventsSince(ctx context.Context, f EventFilter) ([]Event, error)
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// maxFailedLoginEvents bounds login.failed events: at most this many in
+// ten minutes are recorded (failures beyond are still logged and
+// throttled), so someone guessing from many addresses can't fill the
+// database.
+const maxFailedLoginEvents = 100
+
+// AddSignInEvent records a sign-in event for the owner.
+func (s *Store) AddSignInEvent(ctx context.Context, owner, typ string, d EventData) error {
+	b, _ := json.Marshal(d)
+	now := time.Now().UTC()
+	_, err := s.sql.ExecContext(ctx, `INSERT INTO events (owner_id, post_id, type, data, created_at)
+		SELECT ?, NULL, ?, ?, ? WHERE ? != 'login.failed'
+		   OR (SELECT COUNT(*) FROM events WHERE type = 'login.failed' AND created_at > ?) < ?`,
+		owner, typ, string(b), now, typ, now.Add(-10*time.Minute), maxFailedLoginEvents)
+	return err
+}
+
+// SignInEvents are the owner's newest sign-in events, newest first: up to
+// limit sign-ins and changes, and apart up to failed login.failed events
+// (so failures, which anyone can cause, can't push the rest out).
+func (s *Store) SignInEvents(ctx context.Context, owner string, limit, failed int) ([]Event, error) {
+	const cols = `id, owner_id, COALESCE(post_id, '') AS post_id, type, data, created_at`
+	rows, err := s.sql.QueryContext(ctx, `SELECT * FROM (
+		SELECT * FROM (SELECT `+cols+` FROM events WHERE owner_id = ? AND type IN `+signInEventTypes+`
+			AND type != 'login.failed' ORDER BY id DESC LIMIT ?)
+		UNION ALL
+		SELECT * FROM (SELECT `+cols+` FROM events WHERE owner_id = ? AND type = 'login.failed' ORDER BY id DESC LIMIT ?)
+	) ORDER BY id DESC`, owner, limit, owner, failed)
+	if err != nil {
+		return nil, err
+	}
+	return scanEvents(rows)
 }
 
 // LastEventID is the newest event's id (0 when there are none).

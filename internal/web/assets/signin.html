@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#eef0f5">
+  <meta name="robots" content="noindex">
+  <title>Sign in · publisher</title>
+  <link rel="stylesheet" href="/app.css">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icon-180.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
+</head>
+<body class="auth-page">
+  <main class="auth-card" aria-labelledby="auth-title">
+    <div class="brand auth-brand"><span class="brand-mark"><span class="caret">▍</span>publisher</span></div>
+    <h1 id="auth-title" class="auth-title">Sign in</h1>
+    <p id="auth-warn" class="auth-warn" role="alert" hidden></p>
+    <div id="auth-loading" class="muted">Checking how you can sign in…</div>
+
+    <div id="auth-methods" hidden>
+      <button id="passkey-btn" class="primary auth-wide" type="button" hidden>Sign in with a passkey</button>
+      <form id="pw-form" class="auth-form" hidden>
+        <p id="pw-or" class="auth-or" hidden><span>or</span></p>
+        <!-- The hidden user name lets password managers file the password under the owner. -->
+        <input type="text" name="username" value="owner" autocomplete="username" hidden>
+        <label for="pw-input">Password</label>
+        <input id="pw-input" name="password" type="password" autocomplete="current-password" required>
+        <button id="pw-btn" class="ghost auth-wide" type="submit">Sign in with your password</button>
+      </form>
+    </div>
+
+    <div id="auth-setup" hidden>
+      <p>Sign-in isn't set up yet.</p>
+      <p class="muted">Open the setup link from the server's log (or from <code>SETUP_TOKEN_FILE</code>, if you set it), or make a new one in the container:</p>
+      <pre class="auth-cmd">docker exec publisher /publisher setup-url</pre>
+    </div>
+
+    <p id="auth-status" class="auth-status" role="status" aria-live="polite"></p>
+    <details class="auth-help">
+      <summary>Locked out?</summary>
+      <p>On the server, run <code>docker exec publisher /publisher owner reset-login</code>. It removes every passkey and the password, signs everyone out, and prints a new setup link.</p>
+    </details>
+  </main>
+  <script type="module" src="/signin.js"></script>
+</body>
+</html>

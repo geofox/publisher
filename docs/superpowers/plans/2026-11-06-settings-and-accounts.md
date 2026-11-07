@@ -1314,6 +1314,110 @@ so a mode that isn't OIDC would be fully open.
   for a fresh OIDC login; OIDC-off stays proxy until `AUTH_MODE=local`).
 - [ ] Open PR B; 2 QA + 1 security reviews; fix; hand over.
 
+### As built (B)
+
+Commits: B3 config (`5a7d111`), B4 migration v12 (`de264ba`), B5 client
+address, throttle, argon2id (`93e7647`), B2/B6/B8/B9 sign-in, setup,
+re-authentication, `/v1/me` (`8eb6233`), B7/B10/B11 pages, dialog,
+Access, CLI, tests (`39b1f8c`); review fixes, server (`c3b2454`) and web
+app (`f36ab57`). Hashes before the rebase onto `main`.
+
+- **Mode wiring** (`cmd/publisher/main.go` `setupSignIn`): the mode is
+  resolved from `instance_meta.created_schema` (recorded inside the v12
+  migration from a context value: the latest version for an empty
+  database, else the version it was at). `a.AppBaseURL` is `PUBLIC_URL`,
+  else the OIDC redirect's origin. Sessions are swept hourly in `oidc` and
+  `local`; failed sign-ins pruned hourly in `local`.
+- **Host guard:** `PUBLIC_URL` is added to `ALLOWED_HOSTS` but does not
+  turn the guard on by itself (scripts reach the container by its docker
+  name). Local mode doesn't need it: everything takes the session cookie,
+  which a rebinding page can't send.
+- **Throttle:** failures form a *run* while each comes within 30 minutes
+  of the one before (a fixed 15-minute window let the delays reset
+  mid-attack). Per address: 5 free, then 1, 2, 4, 8, 15 minutes. Per
+  owner: 20 free, then 1 s doubling to 30 s, never a block. Passkeys are
+  exempt.
+- **Known browsers:** many addresses could keep the owner-wide delay
+  going for good, so a browser the owner signed in with before skips it
+  (only its address's own limit applies). It carries `publisher_device`
+  (`issued.HMAC`, key `device_key` in `instance_meta`, Path=/, Strict,
+  400 days), set at each sign-in; `reset-login` deletes the key, which
+  forgets every browser.
+- **Ceremonies** live in the browser that began them: cookie
+  `publisher_ceremony` (Path=/, Strict) holds the ceremony (purpose,
+  session or setup state, operation, WebAuthn session data, expiry)
+  sealed with AES-GCM under a key made at start, so no address can crowd
+  out another's (a server-side table of 1000 could be filled by one). A
+  restart ends them. A ceremony is spent only once its response checks
+  out (the challenge is remembered until it expires); a failed finish
+  isn't spent but counts against the address's begins (20 a minute,
+  shared).
+- **Re-authentication:** OIDC re-authentication state is kept on the
+  server by `state` (not in a cookie), the callback redirects the popup to
+  `/reauth-done.html`, which posts a message to the opener; the page then
+  claims the nonce. Failed re-authentication answers `422` on the field
+  (never `401`, which the app reads as signed out); an expired ceremony
+  `409 invalid_state`.
+- **Tokens:** creating any token from a browser session (local or OIDC)
+  needs `token.create`, since a token outlives the session that made it.
+  `admin` and `accounts:write` need it from any caller, so a token can't
+  create an `admin` token any more (`403 session_required`; for
+  `accounts:write`, A2's `422 exceeds_caller`), and proxy mode can't at
+  all (`403 sign_in_required`). Proxy mode still creates the others
+  without confirming (there is no session).
+- **Other operations:** `signin.add` is checked at the begin and spent at
+  the finish (the same nonce, so one confirmation adds one passkey);
+  `signin.remove` checks that the removal can happen (exists, not the last
+  way in) before asking; `password.set` is asked only for the first
+  password: a change takes `current_password` (a wrong one is a `422`
+  on it, counted by the throttle).
+- **Passkeys:** at most 20 (`409 invalid_state`); a duplicate
+  credential id is refused. Passkeys keep their `rp_id`; those for
+  another host than `PUBLIC_URL`'s (it changed) are listed with
+  `usable: false` and don't count as a way in, so the last *usable* way
+  can't be removed and, with none left, setup opens again.
+- **Setup:** a newer setup link ends a setup opened with an older one
+  (`SetupTokenCurrent`); a passkey the server rejects at setup is a `422`
+  on `/credential`, and the setup stays open; `GET /setup/state` (`204`,
+  `401`, `410`) lets a reload resume a live setup; a link opened at
+  another address than `PUBLIC_URL` is handed there unused. The "never
+  used" check for an existing database covers every owner table (users,
+  sessions, tokens, accounts, posts, items, drafts, events, media, the
+  Threads token).
+- **`GET /auth/methods`** (open) tells the sign-in and setup pages what
+  they can offer (mode, `PUBLIC_URL`, passkeys possible, password set,
+  setup pending).
+- **Sign-in events** go in `events` but are kept out of the `/v1/events`
+  stream. `login.failed` is capped at 10 per address per 10 minutes (in
+  memory) and 100 in all per 10 minutes, and the listing shows the newest
+  50 others plus the newest 20 failures, so failures can't push real
+  sign-ins out of view.
+- **Sign-out** answers `{"redirect": …}` to `Accept: application/json`;
+  the app signs out with fetch, since a form post from a page with
+  `Referrer-Policy: no-referrer` sends `Origin: null` (the CSRF guard's
+  refusal is what turned the old sign-out chip off).
+- **Raw attestation** isn't stored (the plan's `webauthn_credentials`
+  keeps no attestation object; `attestation_type` only).
+- The setup link is logged (spec §8.3) unless `SETUP_TOKEN_FILE` is set:
+  the one exception to "secrets never in logs", as the spec decided.
+- **Access panel** lives in the renamed Access tab (was Tokens), above the
+  API tokens, not in Tools; C's Settings tab takes it over. Dialogs stack,
+  trap focus, and give focus back to the button they were opened from or
+  its redrawn replacement (`data-focus-key`).
+- **CLI:** `setup-url` and `owner reset-login` refuse to run unless the
+  configuration resolves to local mode with a valid `PUBLIC_URL`;
+  `reset-login` also clears failed attempts and known browsers and lists
+  every active token (`--revoke-tokens` revokes them all), not only the
+  privileged ones.
+- **Tests:** `internal/localauth/webauthntest` is a software P-256
+  authenticator (create and get, origin, relying party, UV, counter);
+  `localenv_test.go` is a local-mode harness; `signin_test.go` covers the
+  plan's matrix; `signin_abuse_test.go` the review findings; e2e
+  `signin.spec.ts` runs on a second harness (`E2E_AUTH=local`) with a CDP
+  virtual authenticator and starts from `POST /__e2e/reset-login`, and
+  `signin-proxy.spec.ts` covers proxy mode. The plan's shared e2e
+  sign-in fixtures weren't built: one serial spec walks the flow.
+
 ---
 
 # PR C — Secret store, credentials and the account API
@@ -1764,6 +1868,16 @@ Made by this plan; the spec is updated to match.
 | §7.6: BUD-11 server tag always | Only with the media store's own key. |
 | §8.4: OIDC fallback when `auth_time` is missing | No fallback; stop and ask if Authelia lacks it. |
 | §8.5: first-run step 2 in D | In C, with step 3. |
+| §8.2: throttle "5 failures in 15 minutes" | A run of failures each within 30 minutes of the last (As built B). |
+| §8.1: `PUBLIC_URL` added to the allowed hosts | Added, but it doesn't turn the host guard on by itself. |
+| §8.4: re-authentication for a token holding `admin` | Also refuses a token caller (`session_required`), so a token can't mint `admin` tokens. |
+| §8.4: re-authentication for a token with `admin`, `accounts:write`, … | Also for any other token created from a browser session (local or OIDC), since it outlives the session; the operation is `token.create`, not plan B8's `token.create_privileged` (As built B). |
+| §8.4: re-authentication for setting or changing the password | Only for the first password; a change takes the current one. |
+| Plan B6: ceremony state on the server under a random id | Sealed in the browser's cookie (As built B). |
+| §8.2: per-owner delay after 20 failures | Skipped by a browser the owner signed in with before (`publisher_device`). |
+| §8.3: setup closes for good once a credential exists | Once a *usable* one exists: a `PUBLIC_URL` host change with no password opens it again. |
+| Plan B9: sign-in events "from events and failures" | From `events` only (each failure is an event, capped); not in the `/v1/events` stream. |
+| Plan B10: Access panel in Tools | In the Access tab (was Tokens), above the API tokens. |
 
 ## Risks and how the plan handles them
 

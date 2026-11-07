@@ -134,13 +134,24 @@ var publicAssets = map[string]bool{
 	"/icon-512.png":  true,
 }
 
-// withGates applies session/token gates per path. When auth is disabled it is a
-// pass-through, preserving the pre-OIDC behavior (and keeping the existing test
-// suite green).
+// signInAssets are the files the sign-in and setup pages load before
+// anyone has signed in (local mode). They hold nothing private.
+var signInAssets = map[string]bool{
+	"/signin.js":   true,
+	"/setup.js":    true,
+	"/webauthn.js": true,
+	"/app.css":     true,
+}
+
+// withGates applies session/token gates per path. Behind a proxy (ModeProxy)
+// it is a pass-through: the reverse proxy in front is the gate. In every
+// other mode the web app needs a session, whatever state the instance is
+// in (setup pending, PUBLIC_URL missing).
 func (a *API) withGates(next http.Handler) http.Handler {
-	if !a.authEnabled() {
+	if a.mode() == ModeProxy {
 		return next
 	}
+	local := a.mode() == ModeLocal
 	session := a.requireSession(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Clean the path before gate selection: net/http does not normalize
@@ -153,6 +164,9 @@ func (a *API) withGates(next http.Handler) http.Handler {
 			p == "/v1" || strings.HasPrefix(p, "/v1/") || isOldAPIPath(p) ||
 			publicAssets[p]:
 			next.ServeHTTP(w, r) // always-open / separately-gated (/v1 authenticates per route; old paths answer 410)
+		case local && (p == "/setup" || strings.HasPrefix(p, "/setup/") ||
+			signInAssets[p] || strings.HasPrefix(p, "/fonts/")):
+			next.ServeHTTP(w, r) // the sign-in and setup pages and what they load
 		default:
 			session.ServeHTTP(w, r) // the web app
 		}

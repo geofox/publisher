@@ -186,7 +186,7 @@ What changed besides the paths:
 
 #### Moving an n8n workflow off `/publish`
 
-1. In the web app, open **Access tokens** and make a token with
+1. In the web app, open **Access** and make a token with
    `posts:write` and `media:write` (or keep the one n8n has).
 2. Find your Nostr account's id once: `GET /v1/accounts` lists it
    (`acc_…`, with `"type": "nostr"`). It needs `accounts:read`, which the
@@ -304,8 +304,15 @@ trigger.
 The container embeds a mobile-first web UI (the crosspost composer with
 drafts, post history, scheduled posts, relay tools, verify, and interact)
 served from the root path. It talks to the publisher through `/v1` like any
-other client. Without OIDC it is unauthenticated by the service itself; see
-[Security](#security).
+other client. It asks you to sign in with a passkey or password, or with
+your identity provider (OIDC); behind a reverse proxy alone it has no
+sign-in of its own. See [Sign-in](#sign-in).
+
+The **Access** tab lists your passkeys and password, the browsers you are
+signed in on (sign any of them out), recent sign-ins and failed attempts,
+and your API tokens. Adding or removing a way to sign in, setting the
+first password, and creating an API token ask you to confirm it's you
+first; changing the password asks for the current one instead.
 
 The composer picks **accounts**, not networks. They are grouped by
 network, each with its avatar and handle; a network with several
@@ -481,16 +488,20 @@ reported at once. Boolean variables take `true/false`, `1/0`, `yes/no` or
 | `LOG_LEVEL` | no | `info` | `debug` / `info` / `warn` / `error` |
 | `PLC_DIRECTORY_URL` | no | `https://plc.directory` | did:plc resolver for Bluesky identity lookups |
 | `VERIFY_HTTP_TIMEOUT` | no | `10s` | Per-request timeout for verification fetches |
-| `OIDC_ISSUER` | no | (empty) | Issuer URL of the OpenID Provider (e.g. `https://auth.example.com`). Empty → app-level auth disabled. Setting it enables OIDC and makes the vars below required |
+| `PUBLIC_URL` | for sign-in | — | The address you open Publisher at, as an origin: `https://post.example.com` (no path), or `http://localhost[:port]`. Passkeys belong to its host name, so it must be a name, not an IP address. Needed for local sign-in; with OIDC it is the default base of `OIDC_REDIRECT_URL` |
+| `AUTH_MODE` | no | (see [Sign-in](#sign-in)) | How you sign in: `local` (passkeys and an optional password kept by Publisher), `oidc` (an identity provider; needs `OIDC_ISSUER`) or `proxy` (no sign-in of its own). Unset: `oidc` when `OIDC_ISSUER` is set, else `local` for a database created by this version and `proxy` for an older one |
+| `TRUSTED_PROXIES` | no | (none) | CSV of addresses or CIDRs (`172.16.0.0/12`) of your reverse proxies. The client's address, used to throttle wrong passwords and shown under Access, is the last `X-Forwarded-For` hop that isn't one of them; without it, the connection's own address |
+| `SETUP_TOKEN_FILE` | no | (log) | Write the first-run setup link to this file (mode 0600, deleted once used) instead of the log. Its directory must exist |
+| `OIDC_ISSUER` | no | (empty) | Issuer URL of the OpenID Provider (e.g. `https://auth.example.com`). Setting it signs you in with OIDC and makes the vars below required |
 | `OIDC_CLIENT_ID` | yes* | — | Confidential client ID registered with the provider |
 | `OIDC_CLIENT_SECRET` | yes* | — | Client secret (**secret**) |
-| `OIDC_REDIRECT_URL` | yes* | — | Callback URL registered with the provider, e.g. `https://publisher.example.com/auth/callback` |
+| `OIDC_REDIRECT_URL` | yes* | `PUBLIC_URL/auth/callback` | Callback URL registered with the provider, e.g. `https://publisher.example.com/auth/callback`. Required when `PUBLIC_URL` is unset |
 | `OIDC_ALLOWED_SUBJECTS` | yes*† | — | CSV of allowed OIDC subjects (`sub`) |
 | `OIDC_ALLOWED_EMAILS` | yes*† | — | CSV of allowed email addresses. Only an email the provider marks verified (`email_verified`) matches; case doesn't matter. A provider that leaves the claim out (e.g. Entra ID) needs `OIDC_ALLOWED_SUBJECTS`; the refused login logs the subject to add |
 | `OIDC_SCOPES` | no | `openid profile email` | Requested scopes (space- or comma-separated) |
 | `OIDC_END_SESSION` | no | `true` | On logout, also end the provider session (RP-initiated logout) when the provider advertises `end_session_endpoint` |
-| `SESSION_TTL` | no | `168h` | Server-side session lifetime. Removing someone from the allowlist ends their sessions at once |
-| `ALLOWED_HOSTS` | no | (empty) | CSV of host names the server answers for (e.g. `post.example.com`); `localhost` and the health probes always pass, and other names get 421. Recommended with OIDC off: it stops DNS rebinding from a web page |
+| `SESSION_TTL` | no | `168h` | Server-side session lifetime (OIDC and local sign-in). Removing someone from the OIDC allowlist ends their sessions at once |
+| `ALLOWED_HOSTS` | no | (empty) | CSV of host names the server answers for (e.g. `post.example.com`); `localhost`, `PUBLIC_URL`'s host and the health probes always pass, and other names get 421. Recommended in `proxy` mode: it stops DNS rebinding from a web page. List the names your scripts use too (`publisher:8080` from another container) |
 
 \* Required only when `OIDC_ISSUER` is set.
 † At least one of `OIDC_ALLOWED_SUBJECTS` / `OIDC_ALLOWED_EMAILS` must be non-empty when OIDC is enabled.
@@ -609,12 +620,21 @@ No environment variable was removed or renamed, and nothing needs to be
 set before starting. Read the [CHANGELOG](CHANGELOG.md) first; the changes
 that need action:
 
-1. **API callers that split threads with `---`** (an n8n flow, say) must
+1. **Sign-in.** An existing install without OIDC keeps running behind your
+   proxy alone (`AUTH_MODE=proxy`), with a "Set up sign-in" banner; to
+   sign in with a passkey, set `AUTH_MODE=local` and `PUBLIC_URL` (see
+   [Sign-in](#sign-in)). In proxy mode a token holding `admin` or
+   `accounts:write` can no longer be created. **With OIDC,** creating a
+   token in the web app (any token: it outlives the session) now sends
+   you through your provider's login again: use Authelia 4.39 or later.
+   A token can no longer create a token holding `admin`.
+
+2. **API callers that split threads with `---`** (an n8n flow, say) must
    send `content.breaks` instead: `---` is plain text now.
-2. **Monitors:** `/readyz?external=1` names its checks `account:<id>`
+3. **Monitors:** `/readyz?external=1` names its checks `account:<id>`
    instead of `nostr_relay`, `bluesky`, `mastodon` and `threads`. Alerts
    name the account ("Mastodon (@me@example.social)").
-3. **Startup is stricter:** a boolean variable that isn't `1/true/yes/on`
+4. **Startup is stricter:** a boolean variable that isn't `1/true/yes/on`
    or `0/false/no/off`, a `NSEC_HEX` that isn't 64 hex characters, a
    negative `POW_*`, or `BLOSSOM_URL` without `NSEC_HEX` now stops startup
    with an error naming the variable.
@@ -648,49 +668,108 @@ docker buildx build --platform linux/amd64,linux/arm64 -t publisher:dev .
 The service holds your `NSEC` and signs events on request. **Do not expose
 it directly to the internet.**
 
-**OIDC disabled (default — `OIDC_ISSUER` unset):** the embedded web UI and
-all `/v1/*` endpoints are **not**
-authenticated by the service itself: every request the proxy lets through
-can do everything, token management included. (On `/v1`, a bearer token,
-when one is sent, is still checked.) Put it behind an authenticating reverse
-proxy (Authelia, oauth2-proxy, Basic Auth) or keep it on a private network /
-VPN, and set `ALLOWED_HOSTS` to the name you reach it by. A Basic Auth
-`Authorization` header the proxy forwards is ignored. The `docker run` and compose examples above bind port 8080 to
-`127.0.0.1` (localhost only), so nothing is exposed until you deliberately
-place a proxy in front of it.
+Publisher signs you in one of three ways (`AUTH_MODE`); see
+[Sign-in](#sign-in). In every mode:
 
-**OIDC enabled (`OIDC_ISSUER` set):** publisher authenticates the web UI as
-an OpenID Connect Relying Party against a standard OIDC provider (Authelia,
-Keycloak, or any spec-compliant issuer). When enabled:
-
-- The web UI requires an authenticated session whose
-  OIDC subject (`sub`) or email is on the allowlist (`OIDC_ALLOWED_SUBJECTS`
-  / `OIDC_ALLOWED_EMAILS`).
-- Every `/v1` route takes either the session or a bearer token, and checks
-  the token's scopes (see [the `/v1` API](#the-v1-api)). Tokens are
-  created and revoked in the UI under **Access tokens**.
+- Every `/v1` route takes either the browser session or a bearer token,
+  and checks the token's scopes (see [the `/v1` API](#the-v1-api)).
+  Tokens are created and revoked in the web app under **Access**.
   `GET /v1/openapi.json` is open.
-- `/healthz`, `/readyz`, `/metrics`, and the feed-token-gated `GET /v1/public/feed` remain
-  open (no session required). `/metrics` is intentionally unauthenticated so
-  a Prometheus scraper can reach it without a session; restrict it at the
-  network or proxy layer if that is a concern in your deployment.
+- `/healthz`, `/readyz`, `/metrics`, and the feed-token-gated `GET
+  /v1/public/feed` remain open (no session required). `/metrics` is
+  intentionally unauthenticated so a Prometheus scraper can reach it
+  without a session; restrict it at the network or proxy layer if that is
+  a concern in your deployment.
+- Some operations need you to confirm it's you, just now, in the browser:
+  adding or removing a passkey, setting the first password or removing
+  it, and creating an API token (a token outlives the session that made
+  it). Changing the password takes the current one instead. A token
+  holding `admin` or `accounts:write` can only be made this way: a token
+  can't (`403 session_required`), and behind the proxy alone it is
+  refused (`403 sign_in_required`).
 
-**Single-tenant caveat:** the app still signs with one operator key and posts
-to the operator's own accounts. The allowlist gates who may operate the UI —
-this is not yet per-user data isolation. OIDC support is a first step toward
-multi-user operation.
+**Single-tenant caveat:** the app signs with one operator key and posts to
+the operator's own accounts. Sign-in gates who may operate it; it is not
+per-user data isolation.
 
-#### Authentication setup
+### Sign-in
+
+| `AUTH_MODE` | Who signs you in | When it is the default |
+|---|---|---|
+| `local` | Publisher: a passkey, and a password if you want one | `OIDC_ISSUER` is unset and the database was created by this version (a new install) |
+| `oidc` | Your identity provider (Authelia, Keycloak, …) | `OIDC_ISSUER` is set |
+| `proxy` | Nobody: the reverse proxy in front is the only gate | `OIDC_ISSUER` is unset and the database is older (an upgrade) |
+
+#### Local sign-in (passkeys)
+
+1. Serve Publisher over https at a host name (`tailscale serve`, Caddy,
+   Traefik, …) and set `PUBLIC_URL` to that address. Passkeys and the
+   sign-in cookie need https (or `http://localhost`), and a passkey
+   belongs to the host name, so open Publisher at that address only.
+2. Start it. Until sign-in is set up, each start logs a one-time setup
+   link, valid for an hour:
+   `setup: open https://post.example.com/setup#… on the address you use
+   for Publisher`. With `SETUP_TOKEN_FILE` the link goes to that file
+   instead, and the log names the file.
+3. Open the link and create a passkey (or a password, at least 12
+   characters). You're signed in; setup is closed for good.
+
+Add more passkeys (one per device, or a synced one; up to 20) and a
+password under **Access**. Wrong passwords are throttled per address: 5
+are free, then you wait 1, 2, 4, 8 and then 15 minutes between tries (a
+passkey still works meanwhile). After 20 wrong passwords in a row from
+anywhere, each try waits a few seconds (at most 30), except in a browser
+you've signed in with before (it keeps a cookie for that, for 400 days).
+Behind a reverse proxy, set `TRUSTED_PROXIES` so the throttle sees your
+visitors' addresses, not the proxy's.
+
+**Changing `PUBLIC_URL` to another host name?** Passkeys belong to the
+old name and can't sign you in at the new one (**Access** marks them).
+With a password, sign in with it and add passkeys; without one, setup
+opens again and the next start logs a setup link.
+
+**Lost the setup link?** In the container: `docker exec publisher
+/publisher setup-url` prints a new one (older ones stop working).
+
+**Locked out?** `docker exec publisher /publisher owner reset-login`
+removes every passkey and the password, signs every browser out,
+forgets the browsers you signed in with and the failed attempts, lists
+every active API token, and prints a new setup link. Add
+`--revoke-tokens` to revoke those tokens too. Whoever can run commands in
+the container already controls Publisher, so these need no password.
+
+#### OIDC
 
 1. Register a **confidential** client (with PKCE `S256`) with your OIDC
    provider and set the redirect URI to
    `https://<your-publisher-host>/auth/callback`.
-2. Set the `OIDC_*` env vars (see the table below). Add your own OIDC
-   subject and/or email to `OIDC_ALLOWED_SUBJECTS` / `OIDC_ALLOWED_EMAILS`.
-3. For machine callers (e.g. an automation workflow), open the UI under
-   **Access tokens**, create a token, and configure the caller to send
+2. Set the `OIDC_*` variables (see [Configuration](#configuration)) and
+   `PUBLIC_URL`. Add your own OIDC subject and/or email to
+   `OIDC_ALLOWED_SUBJECTS` / `OIDC_ALLOWED_EMAILS`.
+3. To confirm it's you, Publisher sends you through your provider's login
+   again (`prompt=login`, `max_age=0`) in a small window, and checks the
+   ID token's `auth_time`. The provider must honour both: **Authelia 4.39
+   or later** does (4.38 accepts `prompt=login` but doesn't ask again, so
+   the confirmation fails).
+4. For machine callers (e.g. an automation workflow), open the web app
+   under **Access**, create a token, and configure the caller to send
    `Authorization: Bearer <token>` on its `/v1` requests (see
    [Migrating from the pre-1.0 API](#migrating-from-the-pre-10-api) for n8n).
+
+#### Behind the proxy alone
+
+With `AUTH_MODE=proxy` the web app and `/v1` are **not** authenticated by
+the service itself: every request the proxy lets through can post,
+manage drafts and accounts' labels, and create ordinary tokens. (On
+`/v1`, a bearer token, when one is sent, is still checked.) Put it behind
+an authenticating reverse proxy (Authelia, oauth2-proxy, Basic Auth) or
+keep it on a private network / VPN, and set `ALLOWED_HOSTS` to the name
+you reach it by. A Basic Auth `Authorization` header the proxy forwards
+is ignored. The `docker run` and compose examples above bind port 8080 to
+`127.0.0.1` (localhost only), so nothing is exposed until you
+deliberately place a proxy in front of it. The web app shows a "Set up
+sign-in" banner in this mode; tokens holding `admin` or `accounts:write`
+can't be created here.
 
 ## Logging
 

@@ -13,6 +13,7 @@ import (
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/health"
 	"github.com/geofox/publisher/internal/httpx"
+	"github.com/geofox/publisher/internal/localauth"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/metrics"
 	"github.com/geofox/publisher/internal/relaysync"
@@ -152,8 +153,24 @@ type API struct {
 	// SSRF-guarded client. Overridable in tests.
 	fetchMedia func(ctx context.Context, rawURL string) ([]byte, string, error)
 
-	// Auth holds the OIDC Relying Party. nil → auth disabled (gates are
-	// pass-through). Set by cmd/publisher when OIDC_ISSUER is configured.
+	// Mode is how callers sign in: ModeOIDC, ModeLocal or ModeProxy (the
+	// reverse proxy in front is the gate). "" (tests): OIDC when Auth is
+	// set, else proxy.
+	Mode string
+	// Local is local sign-in (passkeys, password, setup); required in
+	// ModeLocal.
+	Local *localauth.Service
+	// Clients finds a request's client address (TRUSTED_PROXIES). nil:
+	// the connection's peer.
+	Clients *httpx.ClientAddrs
+	// PublicURL is the origin the owner's browser uses (PUBLIC_URL), "" when
+	// unset. Local sign-in requires requests from exactly this origin.
+	PublicURL string
+	// SetupTokenFile (SETUP_TOKEN_FILE) is removed once setup is done.
+	SetupTokenFile string
+
+	// Auth holds the OIDC Relying Party, in ModeOIDC. Set by cmd/publisher
+	// when OIDC_ISSUER is configured.
 	Auth *auth.Authenticator
 	// Allowlist gates which verified identities may use the app. Non-nil iff Auth is non-nil.
 	Allowlist *auth.Allowlist
@@ -195,6 +212,9 @@ type API struct {
 	Stopping <-chan struct{}
 
 	streams atomic.Int64 // open event streams
+
+	// oidcReauth holds OIDC re-authentication logins in flight.
+	oidcReauth oidcReauths
 }
 
 // New creates a new API with the given media pipeline.
@@ -205,6 +225,7 @@ func New(mp *media.Pipeline) *API {
 // Routes returns the HTTP handler with all API routes registered, wrapped in
 // the security-header and CSRF middleware.
 func (a *API) Routes() http.Handler {
+	a.checkMode()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", a.handleHealthz)
 	mux.HandleFunc("GET /readyz", a.handleReadyz)
@@ -213,11 +234,16 @@ func (a *API) Routes() http.Handler {
 	for _, p := range oldAPIPaths {
 		mux.HandleFunc(p, handleGone)
 	}
-	// Sign-in routes (only when OIDC is enabled).
-	if a.authEnabled() {
+	// Sign-in routes, by mode (none behind a proxy).
+	switch a.mode() {
+	case ModeOIDC:
 		mux.HandleFunc("GET /auth/login", a.handleAuthLogin)
 		mux.HandleFunc("GET /auth/callback", a.handleAuthCallback)
 		mux.HandleFunc("POST /auth/logout", a.handleAuthLogout)
+		mux.HandleFunc("GET /auth/reauth/oidc", a.handleOIDCReauthStart)
+		mux.HandleFunc("POST /auth/reauth/claim", a.handleOIDCReauthClaim)
+	case ModeLocal:
+		a.mountLocal(mux)
 	}
 	a.mountV1(mux)
 	mux.Handle("/", web.Handler())

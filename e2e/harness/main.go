@@ -31,6 +31,8 @@ import (
 	"github.com/geofox/publisher/internal/dispatch"
 	"github.com/geofox/publisher/internal/drivers"
 	"github.com/geofox/publisher/internal/health"
+	"github.com/geofox/publisher/internal/httpx"
+	"github.com/geofox/publisher/internal/localauth"
 	"github.com/geofox/publisher/internal/mastodon"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/nostr"
@@ -111,8 +113,39 @@ func run() error {
 	a.Sync = fakeSyncer{}
 	a.UserLanguages = []string{"en", "fr"}
 	a.Ready = &health.Checker{Local: []health.Check{health.Database(st, store.LatestSchemaVersion())}}
-
+	// E2E_AUTH=local: the owner signs in with passkeys or a password at
+	// http://localhost:<port> (a secure context for Chromium); otherwise
+	// no sign-in, as behind a reverse proxy.
+	a.Mode = api.ModeProxy
 	mux := http.NewServeMux()
+	if os.Getenv("E2E_AUTH") == "local" {
+		publicURL := "http://localhost:" + port
+		svc, err := localauth.New(st, publicURL)
+		if err != nil {
+			return err
+		}
+		a.Mode, a.Local, a.PublicURL, a.AppBaseURL = api.ModeLocal, svc, publicURL, publicURL
+		a.Clients, a.SessionTTL = &httpx.ClientAddrs{}, time.Hour
+		// The setup link a start would log, minted on demand.
+		mux.HandleFunc("POST /__e2e/setup-url", func(w http.ResponseWriter, r *http.Request) {
+			raw, _, err := st.MintSetupToken(r.Context(), localauth.SetupTokenTTL)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write([]byte(localauth.SetupURL(publicURL, raw)))
+		})
+		// What `publisher owner reset-login` does, so a run can start from
+		// "sign-in isn't set up" on a reused server.
+		mux.HandleFunc("POST /__e2e/reset-login", func(w http.ResponseWriter, r *http.Request) {
+			if err := st.ResetLocalLogin(r.Context()); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+	}
+
 	mux.Handle("/__e2e/", rec.handler())
 	mux.Handle("/__blossom/", http.StripPrefix("/__blossom", blossom))
 	mux.Handle("/", a.Routes())

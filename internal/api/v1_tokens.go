@@ -215,12 +215,24 @@ func (a *API) v1CreateToken(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, "no database")
 		return
 	}
+	// A token that can make tokens or change accounts needs the owner to
+	// confirm it's them, just now, in a browser (a token or the proxy
+	// can't); a signed-in browser confirms for any token, since a token
+	// outlives the session that made it.
+	caller, _ := principalFrom(r.Context())
+	privileged := slices.ContainsFunc(scopes, func(s string) bool { return slices.Contains(privilegedScopes, s) })
+	if (privileged || (caller.Kind == "session" && a.mode() != ModeProxy)) && !a.requireReauth(w, r, opTokenCreate, "") {
+		return
+	}
 	t, secret, err := a.Store.CreateScopedToken(name, scopes, expires)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "v1: create token", "err", err)
 		problem(w, r, http.StatusInternalServerError, codeInternal, "creating the token failed")
 		return
 	}
+	p, _ := principalFrom(r.Context())
+	ev := store.EventData{TokenID: t.ID, Scopes: scopes, Actor: p.Kind, Addr: a.clientAddr(r).String()}
+	a.signInEvent(r.Context(), store.EventTokenCreated, ev)
 	body := v1CreatedTokenBody{v1TokenBody: v1Token(t), Secret: secret}
 	w.Header().Set("Location", "/v1/tokens/"+body.ID)
 	writeV1(w, http.StatusCreated, body)

@@ -3,6 +3,8 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"time"
 )
 
 // Problem details (RFC 9457) for /v1. Each error has a stable code; its
@@ -36,6 +38,12 @@ const (
 	codeUpstream             = "upstream_failed"
 	codeNoSpace              = "insufficient_storage"
 	codeInternal             = "internal"
+	codeRateLimited          = "rate_limited"
+	codeReauthRequired       = "reauth_required"
+	codeSessionRequired      = "session_required"
+	codeSignInRequired       = "sign_in_required"
+	codeLastSignInMethod     = "last_sign_in_method"
+	codeGone                 = "gone"
 )
 
 // v1Codes maps each code to its problem title, the same for every
@@ -63,6 +71,12 @@ var v1Codes = map[string]string{
 	codeUpstream:             "Upstream service failed",
 	codeNoSpace:              "Insufficient storage",
 	codeInternal:             "Internal error",
+	codeRateLimited:          "Too many requests",
+	codeReauthRequired:       "Re-authentication required",
+	codeSessionRequired:      "Browser session required",
+	codeSignInRequired:       "Sign-in required",
+	codeLastSignInMethod:     "Last sign-in method",
+	codeGone:                 "Gone",
 }
 
 // fieldError is one problem with one part of a request: a JSON Pointer
@@ -83,23 +97,38 @@ type problemBody struct {
 	Instance string       `json:"instance,omitempty"`
 	Code     string       `json:"code"`
 	Errors   []fieldError `json:"errors,omitempty"`
+	// Operation names what to re-authenticate for (reauth_required).
+	Operation string `json:"operation,omitempty"`
 }
 
 // problem answers an error as application/problem+json.
 func problem(w http.ResponseWriter, r *http.Request, status int, code, detail string, errs ...fieldError) {
-	title, ok := v1Codes[code]
+	writeProblem(w, r, problemBody{Status: status, Code: code, Detail: detail, Errors: errs})
+}
+
+// writeProblem answers p, filling its type, title and instance.
+func writeProblem(w http.ResponseWriter, r *http.Request, p problemBody) {
+	title, ok := v1Codes[p.Code]
 	if !ok {
 		// A code missing from the catalogue is a programming error; answer
 		// it as internal rather than invent a type URI nobody documents.
-		code, title = codeInternal, v1Codes[codeInternal]
+		p.Code, title = codeInternal, v1Codes[codeInternal]
 	}
-	b, _ := json.Marshal(problemBody{
-		Type: problemTypeBase + code, Title: title, Status: status, Detail: detail,
-		Instance: r.URL.Path, Code: code, Errors: errs,
-	})
+	p.Type, p.Title, p.Instance = problemTypeBase+p.Code, title, r.URL.Path
+	b, _ := json.Marshal(p)
 	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(status)
+	w.WriteHeader(p.Status)
 	_, _ = w.Write(b)
+}
+
+// rateLimited answers 429 rate_limited with Retry-After in whole seconds.
+func rateLimited(w http.ResponseWriter, r *http.Request, wait time.Duration, detail string) {
+	secs := int64((wait + time.Second - 1) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
+	problem(w, r, http.StatusTooManyRequests, codeRateLimited, detail)
 }
 
 // invalid answers a 422 listing every field error found.

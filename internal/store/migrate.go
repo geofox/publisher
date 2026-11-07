@@ -119,6 +119,14 @@ func migrateOnce(ctx context.Context, conn *sql.Conn, dbPath string, ms []migrat
 			return err
 		}
 	}
+	// A migration that records the database's birth (v12) learns it here:
+	// created now (latest), or the version it had (0 for a database from
+	// before versioned migrations).
+	born := current
+	if !hasData {
+		born = latest
+	}
+	ctx = context.WithValue(ctx, bornKey{}, born)
 	for _, m := range pending {
 		if err := applyMigration(ctx, conn, m); err != nil {
 			return fmt.Errorf("migration v%d %s: %w", m.version, m.name, err)

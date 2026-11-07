@@ -4,7 +4,8 @@ import { el, v1, v1All, flash, relTime, confirmModal, asDialog } from "./common.
 // API tokens on /v1/tokens: each with scopes and an optional expiry.
 
 // SCOPES are what the form offers, with what each allows. The two checked by
-// default are what an n8n or shell publisher needs.
+// default are what an n8n or shell publisher needs. PRIVILEGED ones need the
+// owner signed in (not behind the proxy alone).
 const SCOPES = [
   ["posts:write", "publish and manage posts", true],
   ["media:write", "upload media", true],
@@ -15,6 +16,12 @@ const SCOPES = [
   ["accounts:write", "change account settings (not part of admin)", false],
   ["admin", "everything else, including tokens and relays", false],
 ];
+const PRIVILEGED = ["admin", "accounts:write"];
+
+let mode = "";
+// setTokensMode tells the form how the owner signs in (GET /v1/instance's
+// auth): behind the proxy alone, the privileged scopes can't be granted.
+export function setTokensMode(m) { mode = m || ""; }
 
 // ---------------------------------------------------------------------------
 // Token list
@@ -106,10 +113,15 @@ function installNewTokenForm() {
   if (!form || !nameInput || !createBtn) return;
   const box = document.getElementById("tok-scopes");
   if (box && !box.querySelector("input")) {
+    const off = mode === "proxy";
     for (const [scope, what, on] of SCOPES) {
-      box.append(el("label", { title: what },
-        el("input", { type: "checkbox", value: scope, checked: on ? "" : false }),
+      const locked = off && PRIVILEGED.includes(scope);
+      box.append(el("label", { title: locked ? what + ": needs sign-in set up (AUTH_MODE=local or OIDC)" : what, class: locked ? "off" : false },
+        el("input", { type: "checkbox", value: scope, checked: on ? "" : false, disabled: locked ? "" : false }),
         el("span", { text: scope })));
+    }
+    if (mode === "local" || mode === "oidc") {
+      box.append(el("p", { class: "muted tok-note", text: "A token outlives this browser's session, so creating one asks you to confirm it's you." }));
     }
   }
 
@@ -131,10 +143,14 @@ function installNewTokenForm() {
       showNewTokenSecret(data.secret, data.name);
       await loadTokens();
     } catch (e) {
-      flash("Create failed: " + e.message);
+      flash(e.cancelled ? "Not created: you didn't confirm it's you."
+        : e.code === "sign_in_required" ? "A token with admin or accounts:write needs sign-in set up (AUTH_MODE=local or OIDC)."
+        : "Create failed: " + e.message);
     } finally {
       createBtn.disabled = false;
       createBtn.textContent = prev;
+      // Disabling the focused button dropped focus to the page: put it back.
+      if (!document.activeElement || document.activeElement === document.body) createBtn.focus();
     }
   });
 }
@@ -195,44 +211,4 @@ export function tokensInit() {
 
 export function tokensShow() {
   loadTokens();
-}
-
-// ---------------------------------------------------------------------------
-// User chip + sign-out (mounted into the app shell header)
-// ---------------------------------------------------------------------------
-
-export async function loadUserChip() {
-  try {
-    const me = await v1("/v1/me");
-    const u = me.user; // a browser session; absent behind the proxy
-    if (!u) return;
-    const display = u.name || u.email || u.subject;
-    if (!display) return;
-    mountUserChip(display);
-  } catch (_) { /* OIDC disabled or network error — stay silent */ }
-}
-
-function mountUserChip(display) {
-  const brand = document.querySelector(".brand");
-  if (!brand) return;
-
-  const signoutBtn = el("button", {
-    class: "ghost sm user-signout",
-    type: "button",
-    text: "Sign out",
-  });
-  signoutBtn.addEventListener("click", () => {
-    // Full-page POST to /auth/logout so the IdP 302 redirect is followed natively.
-    const f = document.createElement("form");
-    f.method = "POST";
-    f.action = "/auth/logout";
-    document.body.append(f);
-    f.submit();
-  });
-
-  const chip = el("div", { class: "user-chip" },
-    el("span", { class: "user-chip-name", text: display }),
-    signoutBtn,
-  );
-  brand.append(chip);
 }

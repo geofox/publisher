@@ -15,7 +15,7 @@ func TestDNSRebindingRefusedWithAllowedHosts(t *testing.T) {
 	e.api.AllowedHosts = []string{"post.example.com"}
 	h := e.api.Routes()
 	send := func(host string) int {
-		r := httptest.NewRequest("POST", "http://"+host+"/v1/tokens", strings.NewReader(`{"name":"x","scopes":["admin"]}`))
+		r := httptest.NewRequest("POST", "http://"+host+"/v1/tokens", strings.NewReader(`{"name":"x","scopes":["posts:read"]}`))
 		r.Host = host
 		r.Header.Set("Origin", "http://"+host)
 		r.Header.Set("Content-Type", "application/json")

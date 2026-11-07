@@ -112,6 +112,20 @@ func newV1Env(t *testing.T, oidc bool) *v1Env {
 	return e
 }
 
+// reauth mints a re-authentication nonce for op in the env's session and
+// returns the header that carries it.
+func (e *v1Env) reauth(op string) map[string]string {
+	e.t.Helper()
+	if e.cookie == nil {
+		e.t.Fatal("reauth needs a session (newV1Env with oidc)")
+	}
+	raw, _, err := e.st.CreateReauthNonce(context.Background(), store.SessionHash(e.cookie.Value), op, "", time.Minute)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return map[string]string{reauthHeader: raw}
+}
+
 // token mints a token with scopes and returns its secret.
 func (e *v1Env) token(scopes ...string) string {
 	e.t.Helper()
@@ -386,7 +400,8 @@ func TestV1Conformance(t *testing.T) {
 			header: map[string]string{"If-Match": "*"}, body: `{"label":"Work","default_selected":false}`}, 200},
 		{"GET /v1/me", req{method: "GET", path: "/v1/me"}, 200},
 		{"GET /v1/tokens", req{method: "GET", path: "/v1/tokens"}, 200},
-		{"POST /v1/tokens", req{method: "POST", path: "/v1/tokens", body: `{"name":"ci","scopes":["posts:read"],"expires_at":"2099-01-01T00:00:00Z"}`}, 201},
+		{"POST /v1/tokens", req{method: "POST", path: "/v1/tokens", body: `{"name":"ci","scopes":["posts:read"],"expires_at":"2099-01-01T00:00:00Z"}`,
+			header: e.reauth(opTokenCreate)}, 201},
 		{"GET /v1/tokens/{id}", req{method: "GET", path: "/v1/tokens/" + tokenID(tok.ID)}, 200},
 		{"DELETE /v1/tokens/{id}", req{method: "DELETE", path: "/v1/tokens/" + tokenID(tok.ID)}, 204},
 		{"GET /v1/posts", req{method: "GET", path: "/v1/posts"}, 200},
@@ -426,6 +441,9 @@ func TestV1Conformance(t *testing.T) {
 			t.Errorf("%s: status %d, want %d; body %s", c.pattern, r.Code, c.status, r.Body.String())
 		}
 		seen[c.pattern] = true
+	}
+	for p := range localConformance(t) {
+		seen[p] = true
 	}
 	for _, rt := range e.api.v1Routes() {
 		patterns := []string{rt.Method + " " + rt.Path}
@@ -657,7 +675,8 @@ func TestV1DestinationsAndAccounts(t *testing.T) {
 
 func TestV1TokenLifecycle(t *testing.T) {
 	e := newV1Env(t, true)
-	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"  n8n  ","scopes":["media:write","posts:write","posts:write"]}`})
+	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"  n8n  ","scopes":["media:write","posts:write","posts:write"]}`,
+		header: e.reauth(opTokenCreate)})
 	wantStatus(t, r, 201)
 	var created v1CreatedTokenBody
 	r.json(&created)
@@ -703,7 +722,8 @@ func TestV1TokenLifecycle(t *testing.T) {
 func TestV1TokenExpiryAndStatus(t *testing.T) {
 	e := newV1Env(t, true)
 	exp := time.Now().Add(2 * time.Second).UTC().Format(time.RFC3339)
-	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"short","scopes":["admin"],"expires_at":"` + exp + `"}`})
+	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"short","scopes":["admin"],"expires_at":"` + exp + `"}`,
+		header: e.reauth(opTokenCreate)})
 	wantStatus(t, r, 201)
 	var c v1CreatedTokenBody
 	r.json(&c)
@@ -748,16 +768,16 @@ func TestV1TokenValidation(t *testing.T) {
 		{"not json", `name=x`, "", 400, codeInvalidJSON},
 		{"form body", `name=x`, "application/x-www-form-urlencoded", 415, codeUnsupportedMediaType},
 		{"no content type", `{"name":"x","scopes":["admin"]}`, "-", 415, codeUnsupportedMediaType},
-		{"json with charset", `{"name":"x","scopes":["admin"]}`, "application/json; charset=utf-8", 201, ""},
+		{"json with charset", `{"name":"x","scopes":["posts:read"]}`, "application/json; charset=utf-8", 201, ""},
 		{"jsonp", `{"name":"x","scopes":["admin"]}`, "application/jsonp", 415, codeUnsupportedMediaType},
 		{"control char", `{"name":"a\u0000b","scopes":["admin"]}`, "", 422, codeValidation},
 		{"bidi override", `{"name":"ci \u202etoor\u202c","scopes":["admin"]}`, "", 422, codeValidation},
-		{"lowercase t and z", `{"name":"x","scopes":["admin"],"expires_at":"2099-01-01t00:00:00z"}`, "", 201, ""},
+		{"lowercase t and z", `{"name":"x","scopes":["posts:read"],"expires_at":"2099-01-01t00:00:00z"}`, "", 201, ""},
 		{"too large", `{"name":"` + strings.Repeat("a", maxV1Body) + `","scopes":["admin"]}`, "", 413, codeTooLarge},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			h := map[string]string{}
+			h := e.reauth(opTokenCreate)
 			switch c.ct {
 			case "":
 			case "-":
@@ -790,9 +810,9 @@ func TestV1TokenCantOutliveItsMaker(t *testing.T) {
 	later := parentExp.Add(time.Minute).Format(time.RFC3339)
 	sooner := parentExp.Add(-time.Minute).Format(time.RFC3339)
 	for body, want := range map[string]int{
-		`{"name":"x","scopes":["admin"]}`:                               422, // never expires
-		`{"name":"x","scopes":["admin"],"expires_at":"` + later + `"}`:  422,
-		`{"name":"x","scopes":["admin"],"expires_at":"` + sooner + `"}`: 201,
+		`{"name":"x","scopes":["posts:read"]}`:                               422, // never expires
+		`{"name":"x","scopes":["posts:read"],"expires_at":"` + later + `"}`:  422,
+		`{"name":"x","scopes":["posts:read"],"expires_at":"` + sooner + `"}`: 201,
 	} {
 		r := e.do(req{method: "POST", path: "/v1/tokens", auth: parent, body: body, badRequest: want != 201})
 		if r.Code != want {
@@ -803,7 +823,8 @@ func TestV1TokenCantOutliveItsMaker(t *testing.T) {
 		}
 	}
 	// A session or a non-expiring token has no such limit.
-	wantStatus(t, e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"x","scopes":["admin"]}`}), 201)
+	wantStatus(t, e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"x","scopes":["admin"]}`,
+		header: e.reauth(opTokenCreate)}), 201)
 }
 
 func TestV1TokenListPages(t *testing.T) {

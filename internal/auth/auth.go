@@ -24,6 +24,9 @@ type Claims struct {
 	// address on their own account.
 	EmailVerified bool   `json:"email_verified"`
 	Name          string `json:"name"`
+	// AuthTime is when the user last actually signed in at the provider
+	// (Unix seconds), 0 when it didn't say.
+	AuthTime int64 `json:"auth_time"`
 }
 
 // UnmarshalJSON also reads email_verified sent as the string "true", as
@@ -34,6 +37,7 @@ func (c *Claims) UnmarshalJSON(p []byte) error {
 		Email         string          `json:"email"`
 		EmailVerified json.RawMessage `json:"email_verified"`
 		Name          string          `json:"name"`
+		AuthTime      json.RawMessage `json:"auth_time"`
 	}
 	if err := json.Unmarshal(p, &raw); err != nil {
 		return err
@@ -41,6 +45,12 @@ func (c *Claims) UnmarshalJSON(p []byte) error {
 	v := strings.TrimSpace(string(raw.EmailVerified))
 	*c = Claims{Subject: raw.Subject, Email: raw.Email, Name: raw.Name,
 		EmailVerified: v == "true" || strings.EqualFold(v, `"true"`)}
+	// A NumericDate may carry a fraction; anything else counts as absent
+	// (and only fails a re-authentication, never a sign-in).
+	var at float64
+	if json.Unmarshal(raw.AuthTime, &at) == nil && at > 0 && at < 1<<40 {
+		c.AuthTime = int64(at)
+	}
 	return nil
 }
 
@@ -106,6 +116,17 @@ func (a *Authenticator) AuthCodeURL(state, nonce, pkceVerifier string) string {
 	return a.oauth2.AuthCodeURL(state,
 		oidc.Nonce(nonce),
 		oauth2.S256ChallengeOption(pkceVerifier))
+}
+
+// AuthCodeURLFresh is AuthCodeURL asking for a fresh login whatever the
+// provider's session: prompt=login and max_age=0 (re-authentication; the
+// ID token's auth_time then says when it happened).
+func (a *Authenticator) AuthCodeURLFresh(state, nonce, pkceVerifier string) string {
+	return a.oauth2.AuthCodeURL(state,
+		oidc.Nonce(nonce),
+		oauth2.S256ChallengeOption(pkceVerifier),
+		oauth2.SetAuthURLParam("prompt", "login"),
+		oauth2.SetAuthURLParam("max_age", "0"))
 }
 
 // Exchange swaps the code for tokens, verifies the ID token signature/claims,

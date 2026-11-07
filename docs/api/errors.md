@@ -55,6 +55,50 @@ scope. `admin` includes every scope except `accounts:write`, which must
 be granted by name; only the signed-in owner (not a token) can create a
 token holding it.
 
+## reauth_required
+
+**403.** The operation needs a fresh sign-in: adding or removing a way to
+sign in, setting the first password, or creating a token from a browser
+session (any token: it outlives the session). Re-authenticate with `POST /auth/reauth`
+(a passkey or the password; with OIDC, a fresh login through
+`/auth/reauth/oidc`), then send the nonce it returns in the
+`Publisher-Reauth` header. The problem's `operation` names what to
+re-authenticate for. A nonce is good once, for five minutes, for that
+operation and that browser session.
+
+## session_required
+
+**403.** Only the owner signed in in a browser can do this: a token
+can't, whatever its scopes. Managing sign-in methods and sessions, and
+re-authenticating, are browser-only.
+
+## sign_in_required
+
+**403.** The server runs behind a reverse proxy without its own sign-in
+(`AUTH_MODE=proxy`), and this operation needs to know it is the owner:
+managing sign-in, and creating a token that holds `admin`. Set up sign-in
+(`AUTH_MODE=local` with `PUBLIC_URL`, or OIDC).
+
+## last_sign_in_method
+
+**409.** Removing this passkey or the password would leave no usable way
+to sign in (a passkey made for another address doesn't count). Add
+another passkey or set a password first.
+
+## gone
+
+**410.** The thing asked for no longer exists and won't come back: the
+first-run setup is done (each `/setup/…` route answers this afterwards;
+the page at `/setup` answers 410 with a short HTML page saying so).
+
+## rate_limited
+
+**429.** Too many requests: wrong passwords from your address (or, from a
+browser that hasn't signed in before, from many places), too many passkey
+requests or failed passkeys, or password checks already running. The
+`Retry-After` header says how many seconds to wait. A passkey is never
+held back by wrong passwords.
+
 ## cross_origin
 
 **403.** A state-changing request came from a web page on another site
@@ -141,8 +185,9 @@ previous page unchanged; cursors are opaque.
 allows it: rescheduling a post that isn't scheduled, hiding one still to be
 sent, canceling a post with nothing left to cancel, retrying one with
 nothing to retry, or a relay operation on a Nostr account that isn't
-connected now (or while a scan or sync of its relays is running). `detail`
-says which.
+connected now (or while a scan or sync of its relays is running), or a
+passkey request that expired, was used, or is another session's.
+`detail` says which.
 
 ## idempotency_key_invalid
 

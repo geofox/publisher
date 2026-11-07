@@ -27,9 +27,9 @@ startup as an env-configured deployment stores its own:
 | Bluesky (alt) | Bluesky | connected | not selected by default |
 | Mastodon (old) | Mastodon | not configured | its variables "were removed" |
 
-The composer shows one row per network (the first connected account) until
-part A3; `tests/api-accounts.spec.ts` covers several accounts of a network
-through `/v1`. A test that changes an account restores it in `afterEach`.
+The composer lists every account, grouped by network
+(`tests/accounts.spec.ts`); `tests/api-accounts.spec.ts` covers several
+accounts of a network through `/v1`. A test that changes an account restores it in `afterEach`.
 
 ## Run
 
@@ -44,6 +44,20 @@ npx playwright test --ui          # interactive
 Go (per `go.mod`) must be on `PATH`. The harness listens on
 `127.0.0.1:4173` (`E2E_PORT` to change). Locally an already-running harness is
 reused; in CI it is always started fresh.
+
+A second harness, `E2E_AUTH=local` on `E2E_PORT + 1` (4174), runs local
+sign-in at `http://localhost:4174` (`PUBLIC_URL`; a secure context, so
+passkeys work). Only `tests/signin.spec.ts` uses it: one browser walks
+setup, Access, confirmations, passkeys, sign-out and the throttle in
+order (serial, no retries), with a Chrome DevTools virtual authenticator.
+It doesn't use `fixtures.ts` (its fakes belong to the first harness) and
+watches for console errors itself. It starts with `POST /__e2e/reset-login` (local harness only), so a
+reused server works too; `POST /__e2e/setup-url` returns a fresh setup
+link. `tests/signin-proxy.spec.ts` covers the proxy-mode banner and
+Access note on the first harness.
+
+Unit tests for the web app's pure modules: `node --test "e2e/unit/*.test.mjs"`
+(from the repository root; the glob must be quoted).
 
 ## Writing tests
 
