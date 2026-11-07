@@ -46,6 +46,20 @@ func newService(t *testing.T, st *store.Store, env map[string]string) *Service {
 	return s
 }
 
+// newServiceKeys is newService with another master key (32 bytes).
+func newServiceKeys(t *testing.T, st *store.Store, env map[string]string, key string) *Service {
+	t.Helper()
+	k, err := secrets.NewKey([]byte(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(context.Background(), Options{Store: st, Keys: secrets.Keyring{Current: k}, Env: env, URL: ownerURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 func TestPrecedenceEnvSavedDefault(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)

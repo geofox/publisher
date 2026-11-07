@@ -132,6 +132,8 @@ type API struct {
 	idemKeyOnce sync.Once
 	// acctLimits rate-limit account writes and checks.
 	acctLimits accountLimits
+	// porting holds export and import's shared state (v1_export.go).
+	porting porting
 	// AccountWritesPerMinute overrides the owner's limit on account
 	// creates and credential changes, and on sign-ins started (0: 10 a
 	// minute each). For tests that add many accounts in a row.

@@ -1133,6 +1133,26 @@ a.auth-link{color:#fff}
 .sys-env td{padding:5px 8px 5px 0;border-bottom:.5px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
 .sys-env td:first-child{width:42%}
 .sys-unset{font-size:12px;line-height:1.7;color:var(--ink-2)}
+/* Settings → System: export and import */
+.port-part{margin-top:6px}
+.port-part+.port-part,.port-import{margin-top:14px;padding-top:10px;border-top:.5px solid var(--line)}
+.port-form input[type=file]{font-size:13px;max-width:100%}
+.port-dlg{max-width:560px}
+.port-words{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:4px 12px;margin:10px 0 12px;padding:12px 14px 12px 34px;
+  border-radius:12px;background:var(--surface-2);font-family:var(--mono);font-size:13px;line-height:1.6;user-select:all}
+.port-words li{padding-left:2px}
+.port-actions{justify-content:flex-start;flex-wrap:wrap}
+.port-h{margin:12px 0 4px;font-size:13px;font-weight:600}
+.port-list{margin:0;padding:0;list-style:none;font-size:13px;line-height:1.45}
+.port-list li{display:flex;flex-wrap:wrap;gap:2px 8px;padding:5px 0;border-bottom:.5px solid var(--line)}
+.port-list li:last-child{border-bottom:0}
+.port-name{font-weight:550;overflow-wrap:anywhere}
+.port-where{color:var(--ink-2);overflow-wrap:anywhere}
+.port-what{flex-basis:100%;color:var(--ink-2)}
+.port-list li.is-skip .port-name{color:var(--ink-2);font-weight:500}
+.port-list li.is-ok .port-what{color:var(--green)}
+.port-list li.is-bad .port-what{color:var(--red)}
+.port-list li.is-warn .port-what{color:var(--amber)}
 @media(max-width:520px){
   .set-sect{padding:14px 14px 10px}
   .set-item{flex-direction:column;gap:6px}

@@ -20,6 +20,8 @@ const WHY = {
   "account.delete": "delete this account",
   "account.reveal": "show this account's key",
   "instance.secrets": "change the server's secret settings",
+  "export": "export your accounts and settings, credentials included",
+  "import": "import accounts and settings into this server",
 };
 
 let mode = "";

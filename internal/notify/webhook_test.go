@@ -16,9 +16,10 @@ func TestWebhookAlert(t *testing.T) {
 	var payload struct {
 		Status string `json:"status"`
 		Alerts []struct {
-			Status      string            `json:"status"`
-			Labels      map[string]string `json:"labels"`
-			Annotations map[string]string `json:"annotations"`
+			Status       string            `json:"status"`
+			Labels       map[string]string `json:"labels"`
+			Annotations  map[string]string `json:"annotations"`
+			GeneratorURL string            `json:"generatorURL"`
 		} `json:"alerts"`
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -29,6 +30,7 @@ func TestWebhookAlert(t *testing.T) {
 	defer srv.Close()
 
 	wh := NewWebhook(srv.URL, "alertmanager", "secret")
+	wh.Source = "https://pub.example"
 	if err := wh.Alert(context.Background(), "Threads token", "expires soon"); err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +46,10 @@ func TestWebhookAlert(t *testing.T) {
 	}
 	if a.Labels["severity"] != "warning" || a.Labels["alertname"] != "publisher-threads-token" {
 		t.Errorf("labels = %v", a.Labels)
+	}
+	// This server's address, never another's.
+	if a.GeneratorURL != "https://pub.example" {
+		t.Errorf("generatorURL = %q", a.GeneratorURL)
 	}
 }
 

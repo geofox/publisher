@@ -64,6 +64,8 @@ async function loadSyncRelays() {
     const d = await v1(await relaysPath());
     syncSecondary = d.secondary || [];
     c.innerHTML = "";
+    const home = $("#synchome");
+    if (home) home.textContent = d.home ? "home: " + d.home.replace(/^wss?:\/\//, "") : "";
 
     const nip65Count = (d.nip65 || []).length;
     const secondaryCount = (d.secondary || []).length;

@@ -406,12 +406,19 @@ func (r *Registry) Create(ctx context.Context, n NewAccount) (Entry, error) {
 // known: opened and identified first, then stored with its secrets sealed
 // for its server, then opened for use.
 func (r *Registry) createChecked(ctx context.Context, n NewAccount, d destination.Driver, a destination.AuthMethod, config map[string]any, secrets map[string]string) (Entry, error) {
-	m := d.Manifest()
 	row := store.Account{ID: store.NewAccountID(), OwnerID: n.Owner, Type: n.Type, Source: store.SourceDB, AuthMethod: a.ID}
 	ident, secrets, config, err := r.trial(ctx, d, row, config, secrets)
 	if err != nil {
 		return Entry{}, err
 	}
+	return r.storeNew(ctx, n, d, a, row.ID, ident, config, secrets)
+}
+
+// storeNew stores a new account as id, its secrets sealed for its
+// server, then opens it for use.
+func (r *Registry) storeNew(ctx context.Context, n NewAccount, d destination.Driver, a destination.AuthMethod, id string, ident destination.Identity, config map[string]any, secrets map[string]string) (Entry, error) {
+	m := d.Manifest()
+	row := store.Account{ID: id}
 	put, _, err := sealUpdate(r.opt.Keys, r.opt.KeyState, n.Owner, row.ID, destination.AudienceOf(m, config), secrets)
 	if err != nil {
 		return Entry{}, err

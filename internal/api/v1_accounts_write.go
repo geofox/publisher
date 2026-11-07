@@ -50,6 +50,9 @@ type accountLimits struct {
 	once                  sync.Once
 	writes, checks, tests localauth.Limiter
 	connects              localauth.Limiter
+	// exports bounds exports and files read for import (each runs the
+	// export file's KDF).
+	exports localauth.Limiter
 }
 
 func (a *API) limits() *accountLimits {
@@ -65,6 +68,7 @@ func (a *API) limits() *accountLimits {
 		if a.AccountWritesPerMinute > 0 {
 			l.connects.N = a.AccountWritesPerMinute
 		}
+		l.exports.N, l.exports.Window = exportsPerMinute, time.Minute
 	})
 	return l
 }

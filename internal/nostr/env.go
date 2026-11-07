@@ -9,10 +9,12 @@ import (
 	"github.com/geofox/publisher/internal/destination"
 )
 
-// Defaults of the Nostr environment variables (unchanged since 1.x).
+// Defaults of the Nostr environment variables: large public relays. The
+// home relay gets every post and holds the relay list (NIP-65), so it is
+// a general relay, not an index of profiles and relay lists only.
 const (
-	defaultBootstrapRelay = "wss://relay.geoffrey.one"
-	defaultFallbackRelays = "wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io"
+	defaultBootstrapRelay = "wss://relay.damus.io"
+	defaultFallbackRelays = "wss://nos.lol,wss://relay.damus.io,wss://relay.primal.net"
 	defaultSyncRelays     = "wss://nos.lol,wss://relay.damus.io,wss://nostr.wine,wss://nostr.land,wss://relay.nostr.band,wss://purplepag.es,wss://relay.snort.social,wss://nostr.mom"
 )
 

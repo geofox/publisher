@@ -3,10 +3,12 @@ import { el, v1, flash, copyText } from "./common.js";
 import { loadDestinations } from "./accounts.js";
 import { settingsForm, readSettings } from "./settings-config.js";
 import { setsSection, defaultsSection } from "./settings-sets.js";
+import { portSection, showPort } from "./settings-export.js";
 
 // Settings → Composing, Media, Publishing, Integrations and System: forms
 // over the settings API (settings-config.js), account sets and defaults
-// (settings-sets.js), and what the server started with.
+// (settings-sets.js), what the server started with, and export and import
+// (settings-export.js).
 
 const code = s => el("code", { text: s });
 
@@ -50,7 +52,7 @@ const SECTIONS = {
       test: { group: "alerts", label: "Send a test alert", what: "The alert webhook" } }).node,
     settingsForm("instance", ["threads.app_id", "threads.app_secret"], { title: "Threads app", intro: threadsIntro() }).node,
   ] },
-  system: { scopes: [], build: () => [systemSection()] },
+  system: { scopes: [], build: () => [systemSection(), portSection()] },
 };
 
 export const CONFIG_SECTIONS = Object.keys(SECTIONS);
@@ -65,7 +67,7 @@ export function showSection(name, panel) {
     built.set(name, true);
   }
   for (const scope of s.scopes) readSettings(scope);
-  if (name === "system") readSystem();
+  if (name === "system") { readSystem(); showPort(); }
 }
 
 // threadsIntro is how to make the Meta app Threads sign-ins go through,

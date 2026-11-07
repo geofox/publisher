@@ -192,6 +192,13 @@ func (a *API) v1Routes() []v1Route {
 				"generate": {NoProxy: true, ReturnsSecret: true},
 			}, Handler: a.v1InstanceSettingAction},
 		{Method: "GET", Path: "/v1/instance/system", Scope: scopeInstanceAdmin, NoProxy: true, Handler: a.v1System},
+		// Export and import (spec §9): the owner's accounts and settings
+		// with every credential, so the owner signed in, re-authenticated.
+		{Method: "POST", Path: "/v1/export", Scope: scopeAdmin, SessionOnly: true, NoProxy: true, ReturnsSecret: true,
+			Handler: a.v1Export},
+		{Method: "POST", Path: "/v1/import", Scope: scopeAdmin, SessionOnly: true, NoProxy: true, Handler: a.v1Import},
+		{Method: "POST", Path: "/v1/import:confirm", Scope: scopeAdmin, SessionOnly: true, NoProxy: true,
+			Handler: a.v1ImportConfirm},
 		{Method: "GET", Path: "/v1/me", Handler: a.v1Me},
 		// The signed-in owner's ways of signing in and sessions.
 		{Method: "GET", Path: "/v1/me/sign-in", SessionOnly: true, Handler: a.v1SignIn},

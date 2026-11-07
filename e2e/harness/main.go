@@ -258,6 +258,20 @@ func run() error {
 		})
 	}
 
+	// Deletes every account added in the app, as the owner would one by
+	// one, so the export spec imports into a server without any.
+	mux.HandleFunc("POST /__e2e/forget-app-accounts", func(w http.ResponseWriter, r *http.Request) {
+		for _, e := range eng.List(store.DefaultOwner) {
+			if e.Row.Source != store.SourceDB {
+				continue
+			}
+			if err := eng.Delete(r.Context(), e.Row.OwnerID, e.Row.ID, "e2e", ""); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	// What the fake sign-in servers were sent, oldest first.
 	mux.HandleFunc("GET /__e2e/sign-ins", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, signIn.calls())

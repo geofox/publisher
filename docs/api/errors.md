@@ -60,8 +60,9 @@ token holding it.
 **403.** The operation needs a fresh sign-in: adding or removing a way to
 sign in, setting the first password, creating a token from a browser
 session (any token: it outlives the session), deleting an account,
-showing an account's key, or changing the server's secret settings
-(`instance.secrets`). Re-authenticate with `POST /auth/reauth`
+showing an account's key, changing the server's secret settings
+(`instance.secrets`), or exporting or importing accounts and settings
+(`export`, `import`). Re-authenticate with `POST /auth/reauth`
 (a passkey or the password; with OIDC, a fresh login through
 `/auth/reauth/oidc`), then send the nonce it returns in the
 `Publisher-Reauth` header. The problem's `operation` names what to
@@ -209,8 +210,10 @@ nothing to retry, or a relay operation on a Nostr account that isn't
 connected now (or while a scan or sync of its relays is running), a
 passkey request that expired, was used, or is another session's,
 checking an account that isn't open, showing a key an account doesn't
-have, or adopting an account already in the app (or one the environment
-no longer configures). `detail` says which.
+have, adopting an account already in the app (or one the environment
+no longer configures), importing into a server that has accounts added
+in the app, or confirming an import that ran already. `detail` says
+which.
 
 ## idempotency_key_invalid
 

@@ -38,7 +38,8 @@ const (
 	opAccountReveal = "account.reveal"
 )
 
-var reauthOps = []string{opSignInAdd, opSignInRemove, opPasswordSet, opTokenCreate, opAccountDelete, opAccountReveal, opInstanceSecrets}
+var reauthOps = []string{opSignInAdd, opSignInRemove, opPasswordSet, opTokenCreate, opAccountDelete, opAccountReveal, opInstanceSecrets,
+	opExport, opImport}
 
 // targetedOps are the operations whose nonce names what it is for (an
 // account id): it can't be spent on another.

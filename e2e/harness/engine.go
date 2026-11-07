@@ -10,6 +10,7 @@ import (
 	"github.com/geofox/publisher/internal/accounts"
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/dispatch"
+	"github.com/geofox/publisher/internal/export"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -158,6 +159,18 @@ func (e *engine) Flow(ctx context.Context, owner, user, id string) (accounts.Flo
 }
 func (e *engine) Choose(ctx context.Context, owner, user, id string, n int) (accounts.FlowView, error) {
 	return e.registry().Choose(ctx, owner, user, id, n)
+}
+func (e *engine) ExportAccounts(ctx context.Context, owner string) ([]export.Account, error) {
+	return e.registry().ExportAccounts(ctx, owner)
+}
+func (e *engine) ImportAccount(ctx context.Context, owner string, x export.Account, actor string) (accounts.Imported, error) {
+	return e.registry().ImportAccount(ctx, owner, x, actor)
+}
+func (e *engine) CheckImport(owner string, x export.Account) string {
+	return e.registry().CheckImport(owner, x)
+}
+func (e *engine) EnvMatch(owner string, x export.Account) (store.Account, bool) {
+	return e.registry().EnvMatch(owner, x)
 }
 func (e *engine) ConnectUnavailable(typ string, a destination.AuthMethod, redirectURI string) string {
 	return e.registry().ConnectUnavailable(typ, a, redirectURI)

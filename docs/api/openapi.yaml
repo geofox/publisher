@@ -1377,6 +1377,153 @@ paths:
           $ref: "#/components/responses/InsufficientScope"
         default:
           $ref: "#/components/responses/Problem"
+  /v1/export:
+    post:
+      operationId: exportAccounts
+      tags: [accounts, settings]
+      summary: Export the accounts and settings, credentials included
+      description: |
+        A signed-in browser session, re-authenticated for `export`. Makes
+        an export file (spec §9) of the accounts added in the app (their
+        configuration and every credential), what you chose for the
+        accounts the environment sets (their label, flags, defaults and
+        relay-sync list: the environment holds the rest), the account
+        sets, and the settings saved in the app, the server's included
+        (secrets too). Not posts, drafts, media or API tokens.
+
+        The file is sealed (AES-256-GCM under a key argon2id derives from
+        the passphrase: t=3, m=64 MiB, p=4) with a passphrase Publisher
+        makes: 24 words of the BIP-39 English list (264 bits), answered
+        this once and never kept. Without the passphrase the file can't be
+        opened; with it, it holds every credential, so keep the two apart.
+        Never stored or cached (`Cache-Control: no-store`); not
+        idempotent. At most 5 exports and imports a minute; while
+        passwords are being checked or another file is sealed, `429`.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Reauth"
+      responses:
+        "200":
+          description: The file and its passphrase.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportFile"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/import:
+    post:
+      operationId: readImport
+      tags: [accounts, settings]
+      summary: Read an export file, to import it
+      description: |
+        A signed-in browser session and a master key. Opens the file with
+        its passphrase (typed or pasted as shown: any case and spacing)
+        and answers what importing it would do, changing nothing: each
+        account (added, an environment account here updated, or skipped
+        and why) with the server its credentials go to, each account set,
+        and each setting with its value (a secret address shows only its
+        origin, another secret nothing). Send the `confirmation` to
+        `POST /v1/import:confirm` within 10 minutes, from this session;
+        the opened file waits in the server's memory until then (one per
+        session), and a restart forgets it.
+
+        An import goes into a server with no accounts added in the app
+        (`409 invalid_state` otherwise), so two setups are never merged.
+        What this server's environment sets wins: its accounts are kept
+        (the file's copy of one is skipped) and its settings stay. A file
+        that isn't an export, is from a newer Publisher, or names other
+        key parameters is `422` at `/file`, before any work; a passphrase
+        that isn't 24 words of the list, or doesn't open the file, `422`
+        at `/passphrase`. Counts toward the 5 a minute.
+      security:
+        - session: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportIn"
+      responses:
+        "200":
+          description: What importing the file would do.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportSummary"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/SessionOnly"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Invalid"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        default:
+          $ref: "#/components/responses/Problem"
+  /v1/import:confirm:
+    post:
+      operationId: confirmImport
+      tags: [accounts, settings]
+      summary: Import a file read just now
+      description: |
+        A signed-in browser session, re-authenticated for `import`. Does
+        what `POST /v1/import` said, once: the settings (the server's,
+        then yours), the accounts, then the account sets. Each account is
+        checked as one added by hand (its network and way of connecting
+        offered here, its addresses allowed here), then opened and asked
+        who it is before it is stored: `connected`; `refused` when its
+        network refuses the credentials, or `unchecked` when it doesn't
+        answer (both are added, with what you set for them, and need a
+        look); or `skipped`. An environment account here is `updated`.
+        Answers what it did, in the same shape. Begun, it finishes even
+        if the caller leaves; a large file can take a few minutes. An
+        unknown, used or expired confirmation, or another session's, is
+        `404`; accounts added in the app since the file was read, `409`.
+      security:
+        - session: []
+      parameters:
+        - $ref: "#/components/parameters/Reauth"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [confirmation]
+              properties:
+                confirmation:
+                  type: string
+                  description: The `confirmation` `POST /v1/import` answered.
+      responses:
+        "200":
+          description: What the import did.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportSummary"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/ReauthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
   /v1/me:
     get:
       operationId: getMe
@@ -4813,7 +4960,7 @@ components:
             $ref: "#/components/schemas/FieldError"
         operation:
           type: string
-          description: "`reauth_required` only: the operation to re-authenticate for (`signin.add`, `signin.remove`, `password.set`, `token.create`, `account.delete`, `account.reveal`, `instance.secrets`)."
+          description: "`reauth_required` only: the operation to re-authenticate for (`signin.add`, `signin.remove`, `password.set`, `token.create`, `account.delete`, `account.reveal`, `instance.secrets`, `export`, `import`)."
         target:
           type: string
           description: "`reauth_required` only, for an operation on one account (`account.delete`, `account.reveal`): its id, to re-authenticate for as `target`."
@@ -4969,6 +5116,128 @@ components:
               value:
                 type: string
                 description: The value, when set and not secret.
+    ExportFile:
+      type: object
+      additionalProperties: false
+      required: [passphrase, filename, file, created_at, accounts, account_sets, settings]
+      properties:
+        passphrase:
+          type: string
+          description: 24 words, separated by spaces; shown this once.
+        filename:
+          type: string
+          description: A name to save it as (`publisher-2026-11-07.export`).
+        file:
+          type: string
+          description: |
+            The file: two lines, a JSON header (`format`
+            `publisher-export`, `version` 1, the key's parameters, `salt`,
+            `nonce`, `created_at`) and the sealed contents in base64url.
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        accounts:
+          type: integer
+        account_sets:
+          type: integer
+        settings:
+          type: integer
+    ImportIn:
+      type: object
+      additionalProperties: false
+      required: [file, passphrase]
+      properties:
+        file:
+          type: string
+          maxLength: 786432
+          description: The export file's text, as `POST /v1/export` made it.
+        passphrase:
+          type: string
+          maxLength: 1024
+    ImportSummary:
+      type: object
+      additionalProperties: false
+      required: [created_at, accounts, account_sets, settings]
+      properties:
+        confirmation:
+          type: string
+          description: "`POST /v1/import` only: what to send to `:confirm`."
+        expires_at:
+          $ref: "#/components/schemas/Timestamp"
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        accounts:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [file_id, type, label, action]
+            properties:
+              file_id:
+                type: string
+                description: Its id in the file.
+              type:
+                type: string
+              label:
+                type: string
+              handle:
+                type: string
+              server:
+                type: string
+                description: Where its credentials are sent (left out for a network with one address).
+              action:
+                type: string
+                enum: [add, update, skip]
+              why:
+                type: string
+              id:
+                type: string
+                description: Its id here (an environment account's, or, after the import, the new one's).
+              status:
+                type: string
+                enum: [connected, refused, unchecked, skipped, updated]
+                description: "`:confirm` only: how it went."
+              detail:
+                type: string
+        account_sets:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, accounts, action]
+            properties:
+              name:
+                type: string
+              accounts:
+                type: integer
+                description: How many of its accounts are (or would be) here.
+              action:
+                type: string
+                enum: [add, skip]
+              why:
+                type: string
+        settings:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [scope, key, label, action]
+            properties:
+              scope:
+                type: string
+                enum: [owner, instance]
+              key:
+                type: string
+              label:
+                type: string
+              value:
+                description: The value it would have; a secret address's origin; nothing for another secret.
+              secret:
+                type: boolean
+              action:
+                type: string
+                enum: [set, skip]
+              why:
+                type: string
     SettingsTest:
       type: object
       additionalProperties: false

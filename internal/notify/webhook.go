@@ -20,9 +20,12 @@ import (
 // relay. An empty URL makes Alert a no-op (logs once) so the feature degrades to
 // log-only rather than failing.
 type Webhook struct {
-	URL      string
-	User     string
-	Pass     string
+	URL  string
+	User string
+	Pass string
+	// Source is this server's address (PUBLIC_URL), sent as the alert's
+	// generatorURL ("" when unset).
+	Source   string
 	HTTP     *http.Client
 	warnOnce sync.Once
 }
@@ -77,7 +80,7 @@ func (w *Webhook) send(ctx context.Context, summary, body string) (int, string, 
 			Status:       "firing",
 			Labels:       map[string]string{"alertname": "publisher-threads-token", "severity": "warning", "host": "publisher"},
 			Annotations:  map[string]string{"summary": summary, "description": body},
-			GeneratorURL: "https://post.geoffrey.one",
+			GeneratorURL: w.Source,
 		}},
 	}
 	b, err := json.Marshal(payload)

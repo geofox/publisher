@@ -2380,41 +2380,88 @@ Spec §9, §12 (F).
 
 ### Task F1: export
 
-- [ ] Passphrase from a 2048-word list with a compatible licence (the
+- [x] Passphrase from a 2048-word list with a compatible licence (the
   BIP-39 English list; licence recorded), shown once; file format per spec
   §9; session + `export` re-authentication; `no-store`; never idempotent.
-- [ ] Tests: round trip; tampered header; pinned parameters.
+- [x] Tests: round trip; tampered header; pinned parameters.
 
 ### Task F2: import
 
-- [ ] `POST /v1/import` → summary (every endpoint it would set, accounts
+- [x] `POST /v1/import` → summary (every endpoint it would set, accounts
   skipped because they match an env account's `remote_id`) and a
   confirmation id; `POST /v1/import:confirm` (with the `import` nonce)
   applies it. The decrypted contents stay in memory, bound to the session,
   for at most 10 minutes. KDF under the hashing semaphore; URLs through
   `OwnerURL`; each account re-identified before it is marked connected.
-- [ ] Tests for each refusal and a round trip between two databases.
+- [x] Tests for each refusal and a round trip between two databases.
 
 ### Task F3: the web app
 
-- [ ] Settings → System: export (passphrase shown once) and import (file,
+- [x] Settings → System: export (passphrase shown once) and import (file,
   passphrase, summary, confirm).
-- [ ] `export.spec.ts`: export, wipe accounts in a second harness
+- [x] `export.spec.ts`: export, wipe accounts in a second harness
   database, import, confirm.
 
 ### Task F4: documentation and release
 
-- [ ] README rewritten around the minimal compose file; adding accounts per
+- [x] README rewritten around the minimal compose file; adding accounts per
   network; configuration by tier; backups (database and key separately,
   keys across rotations); upgrading from env-only; the security model;
   `PRIVATE_DESTINATIONS`, `TRUSTED_PROXIES`, local media and proxy rules;
   the readiness table; feed `links[]`; keyboard shortcuts.
-- [ ] The env defaults that point at this instance's own relay
+- [x] The env defaults that point at this instance's own relay
   (`NIP65_BOOTSTRAP_RELAY`, `FALLBACK_RELAYS`, `PRIMARY_RELAYS`) become
   neutral for new installs, with an upgrade note. **Confirm with Geoffrey
   first** (it changes his relays if he relies on the defaults).
-- [ ] CHANGELOG release section and release notes for a `vX.Y.Z` tag.
+- [x] CHANGELOG release section and release notes for a `vX.Y.Z` tag.
 - [ ] Open PR F; 2 QA + 1 security reviews; fix; hand over.
+
+### As built (F)
+
+- **The file** (`internal/export`): two lines, the header's JSON (its
+  exact bytes are the AAD, so a changed space fails to open) and the
+  AES-256-GCM ciphertext in unpadded base64url. The key is argon2id
+  (t 3, 64 MiB, 4 lanes); any other parameters, an unknown header field
+  or a newer version are refused before the KDF runs. At most 768 KiB
+  (`ErrTooLarge`, both ways). The word list is BIP-39's English list,
+  unchanged (MIT; its SHA-256 is pinned by a test); a passphrase is read
+  in any case and spacing. No error quotes the contents.
+- **The KDF** runs in `localauth.Hasher.Do`: in local mode the password
+  hasher's two slots, with OIDC the export's own; exports and files read
+  share a limit of 5 a minute. Both slots taken answers `429` with
+  `Retry-After: 2`.
+- **Export** (`POST /v1/export`, re-authenticated `export`): accounts
+  added in the app (config, secrets, flags, defaults, sync relays), the
+  owner's choices for environment accounts (matched on import by
+  `remote_id`), account sets by account id, and both settings scopes
+  with their secrets (`Settings.Saved`; a secret another key sealed is
+  left out). `ReturnsSecret`, so never stored for idempotency.
+- **Import** (`POST /v1/import`, a session; then `:confirm` with the
+  `import` nonce): the summary is computed by the same static checks the
+  import runs (`CheckImport`: source, type, method, an account already
+  here by `remote_id`, the owner's config through `ValidateFields` with
+  `OwnerURL`, the required secrets), so it says what will happen except
+  for the network's answer. The read file waits in memory, bound to the
+  session, one per session, 10 minutes. Confirming applies the instance
+  settings, then the owner's (`Settings.Import`: what the environment
+  sets is skipped, and a secret whose address is skipped goes with it),
+  then the accounts (8 at once, each through the trial identify; one the
+  network refuses or that doesn't answer is stored and shows why), then
+  the sets (members remapped, checked as `POST /v1/account-sets`). The
+  answer's write deadline is extended by the 4-minute budget.
+- **Labels** in the file are checked as typed ones; one that isn't
+  valid becomes empty (the network's name shows).
+- **Relay defaults** (Geoffrey, 2026-11-07): home `wss://relay.damus.io`,
+  fallback `wss://nos.lol,wss://relay.damus.io,wss://relay.primal.net`,
+  for every server that leaves them unset (with the upgrade note), not
+  only new ones. purplepag.es was proposed and dropped: the home relay
+  gets every post, and purplepag.es is an index that keeps only
+  profiles, follow lists and relay lists from keys it doesn't know.
+- **Also:** the alerts' `generatorURL` is `PUBLIC_URL` (was a fixed
+  address); the composer's placeholder author is "You" and Tools shows
+  the account's home relay (both named the author). The CHANGELOG's
+  section is `3.0.0 (unreleased)`, and the items that shipped in 2.1.0
+  moved to a section of their own.
 
 ---
 
@@ -2473,6 +2520,8 @@ Made by this plan; the spec is updated to match.
 | §7.6: disk media for a URL-transport account refused | A post is; a quote's link-quote copies go without the original's images, with a warning. |
 | §7.6: BUD-11 authorization | Its server tag, in standard base64 rather than base64url. |
 | §7.4: a test once per 10 s | The `media.public` self-test has its own 10 s window. |
+| §9: `POST /v1/import` re-authenticated | The read needs a session (and the export limit); `:confirm` takes the `import` nonce, so the summary is free to look at. |
+| §9: relays reset "for new installs" (plan F4) | For every server that leaves the variables unset, with an upgrade note naming them (As built F). |
 
 ## Risks and how the plan handles them
 

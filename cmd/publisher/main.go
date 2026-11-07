@@ -215,7 +215,7 @@ func run(ctx context.Context, o runOptions) int {
 			return nil
 		}
 		return &notify.Webhook{URL: u, User: s.String(settings.AlertsWebhookUser), Pass: pairedSecret(s, settings.AlertsWebhookPass, settings.AlertsWebhookURL),
-			HTTP: webhookHTTP(s, settings.AlertsWebhookURL)}
+			Source: cfg.PublicURL, HTTP: webhookHTTP(s, settings.AlertsWebhookURL)}
 	}
 	feedWebhook := func() *feed.Webhook {
 		s := svc.Current()

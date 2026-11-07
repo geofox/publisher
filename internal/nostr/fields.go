@@ -77,7 +77,7 @@ var (
 // ConfigDefaults implements destination.ConfigDefaulter: a new account
 // starts with the relays and proof of work the operator set in the
 // environment, where they are set. The built-in defaults of those
-// variables (this instance's relay among them) are never offered.
+// variables are never offered: the home relay is the owner's choice.
 func (Driver) ConfigDefaults(getenv func(string) string) map[string]any {
 	d := map[string]any{}
 	if v := destination.EnvString(getenv, "NIP65_BOOTSTRAP_RELAY", ""); v != "" {

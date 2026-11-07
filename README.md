@@ -348,8 +348,9 @@ The **Settings** tab has these sections:
   signed in on (sign any of them out), recent sign-ins and failed
   attempts, and your API tokens.
 - **System**: the version, how you sign in, the master key, the health
-  checks, and the variables the server started with (secrets only as
-  set).
+  checks, the variables the server started with (secrets only as set),
+  and [export and import](#export-and-import) of your accounts and
+  settings.
 
 Each setting says where its value comes from: saved in the app, the
 server's environment, or the default. One the environment sets is
@@ -362,9 +363,9 @@ app, and System doesn't list the variables: [set up sign-in](#sign-in)
 first.
 
 Adding or removing a way to sign in, setting the first password, creating
-an API token, deleting an account and showing a Nostr key ask you to
-confirm it's you first; changing the password asks for the current one
-instead.
+an API token, deleting an account, showing a Nostr key, changing the
+server's secret settings, exporting and importing ask you to confirm it's
+you first; changing the password asks for the current one instead.
 
 The composer picks **accounts**, not networks. They are grouped by
 network, each with its avatar and handle; a network with several
@@ -470,105 +471,131 @@ healthcheck:
 
 ## Self-hosting
 
-`publisher` runs as a single container. It holds your Nostr secret key and
-signs events on request, so treat it like a credential store and read
-[Security](#security) before exposing it.
+Publisher runs as a single container with one volume. It keeps your
+accounts' credentials and signs Nostr posts itself, so treat it like a
+password manager: read [Security model](#security-model) before you
+expose it.
 
-### Prerequisites
+### Quick start
 
-- A writable directory for the SQLite archive (mounted at `DB_PATH`).
-- For media (images and videos): a
-  [Blossom](https://github.com/hzrd149/blossom) server, or this server's
-  own disk; choose in **Settings → Media** (or set `BLOSSOM_URL`). See
-  [Media](#media). Without one, posts are text only.
-- To add accounts in the web app: a master key (`publisher keygen` makes
-  one; see [Accounts and the master key](#accounts-and-the-master-key)).
-  Accounts set in the environment need none.
-- Per network you want to post to, its credentials. In the web app
-  (**Settings → Accounts**):
-  - **Nostr:** your `nsec1…` key (or its hex form), or a new key made for
-    you, and a home relay.
-  - **Mastodon:** the server's address and an access token.
-  - **Bluesky:** your handle (or DID, or email) and an
-    [app password](https://bsky.app/settings/app-passwords); the server
-    (PDS) is found from the handle.
-  - **Threads:** a long-lived access token.
+You need Docker, and a host name with https in front of Publisher
+(Caddy, Traefik, `tailscale serve`, …): passkeys and the sign-in cookie
+need it. On your own computer, `http://localhost:8080` works too.
 
-  Or in the environment, one account per network:
-  - **Nostr:** a secret key as 64-char hex (`NSEC_HEX`). Convert your
-    `nsec1…` once with [`nak`](https://github.com/fiatjaf/nak):
-    `nak key decode nsec1…` gives the hex secret. The public key is
-    derived from it.
-  - **Mastodon:** instance URL + access token (both required together).
-  - **Bluesky:** PDS URL, handle/identifier, and an app password (all three
-    required together).
-  - **Threads:** a long-lived access token + user id.
+1. **Make the master key.** It encrypts the credentials you save in the
+   app. Run `docker run --rm ghcr.io/geofox/publisher keygen` and follow
+   what it prints to write the key to a file, `publisher_master_key`.
+   Keep a copy somewhere safe, apart from your backups (see
+   [Backups](#backups)).
+2. **Write `compose.yaml`:**
+
+   ```yaml
+   services:
+     publisher:
+       image: ghcr.io/geofox/publisher:latest
+       restart: unless-stopped
+       # Time to finish what is being published on `docker stop`.
+       stop_grace_period: 30s
+       ports:
+         - "127.0.0.1:8080:8080"
+       environment:
+         # The address you open Publisher at: an origin, no path.
+         - PUBLIC_URL=https://post.example.com
+         - PUBLISHER_MASTER_KEY_FILE=/run/secrets/publisher_master_key
+       secrets: [publisher_master_key]
+       volumes:
+         - ./data:/data
+
+   secrets:
+     publisher_master_key:
+       file: ./publisher_master_key
+   ```
+
+   The port is bound to `127.0.0.1`: only your reverse proxy on the same
+   host reaches it. The database, and media kept on this server's disk,
+   live in `./data`.
+3. **Start it:** `docker compose up -d`, then `docker compose logs
+   publisher`. Until sign-in is set up, each start logs a one-time link:
+   `setup: open https://post.example.com/setup#… on the address you use
+   for Publisher`.
+4. **Open the link** and create a passkey (or a password). You're signed
+   in, and Settings walks you through the rest: adding your accounts, and
+   where photos and videos go.
+
+Everything else is optional: the [configuration](#configuration) lists
+what can be set, and most of it is a setting in the app too.
+
+### Adding accounts
+
+**Settings → Accounts → Add an account**, as many per network as you
+like. Publisher asks the network who the credentials belong to before it
+saves anything, so a wrong token is refused on the spot, with the
+network's own words.
+
+- **Bluesky:** your handle (or DID) and an
+  [app password](https://bsky.app/settings/app-passwords) (in Bluesky:
+  Settings, Privacy and security, App passwords). Your server (PDS) is
+  found from the handle; with an email instead, give the PDS address too.
+- **Mastodon:** **Sign in at your server**: type its address, allow
+  Publisher there, and you're back with the account added. Or paste an
+  access token (Preferences, Development, New application, with the
+  scopes `read:accounts read:search read:statuses write:media
+  write:statuses`).
+- **Threads:** **Sign in at Threads**, once you've made a Meta app,
+  free (see [Connecting by signing in](#connecting-by-signing-in)). Or
+  paste a long-lived access token from such an app.
+- **Nostr:** your `nsec1…` key (or its hex form), or **Make a new key**
+  (you can show it afterwards to keep a copy), and a home relay: your
+  own, or the one you use most. Your relay list (NIP-65) is read there,
+  and every post also goes there.
+
+An account can also come from the environment, one per network (see
+[Accounts from the environment](#accounts-from-the-environment)): the
+way earlier versions worked, and still supported.
 
 ### Configuration
 
 The server is configured by environment variables, and none is required:
 a server with no account starts, and says so in its log. Many settings
-can be set in the web app instead (the ones below marked *app*): it keeps
-them in the database. A variable that is set wins over the app, which
-shows the setting locked with the variable's name; **Copy into the app**
-saves its value there, so you can remove the variable. Settings → System
-lists what the server started with. The
-relay defaults point at the author's own infrastructure and should be
-overridden. An account from the environment is turned on by its credential (`NSEC_HEX`,
-`MASTODON_TOKEN`, `BLUESKY_APP_PASSWORD`, `THREADS_ACCESS_TOKEN`); a
-credential set without the variables that go with it stops startup with an
-error naming them. Every invalid variable is
-reported at once. Boolean variables take `true/false`, `1/0`, `yes/no` or
-`on/off` in any case; any other value is an error, not the default.
+can be set in the web app instead (the ones marked *app*): it keeps them
+in the database. A variable that is set wins over the app, which shows
+the setting locked with the variable's name; **Copy into the app** saves
+its value there, so you can remove the variable. Settings → System lists
+what the server started with. An account from the environment is turned
+on by its credential (`NSEC_HEX`, `MASTODON_TOKEN`,
+`BLUESKY_APP_PASSWORD`, `THREADS_ACCESS_TOKEN`); a credential set
+without the variables that go with it stops startup with an error naming
+them. Every invalid variable is reported at once. Boolean variables take
+`true/false`, `1/0`, `yes/no` or `on/off` in any case; any other value is
+an error, not the default.
+
+#### To start
+
+What a server needs, and where it keeps things.
 
 | Var | Required | Default | Purpose |
 |---|---|---|---|
-| `NSEC_HEX` | for Nostr | — | Secret key as exactly 64 hex characters (**secret**). Convert `nsec1…` via `nak key decode`; if a tool printed it without its leading zeros, add them back |
-| `OWNER_PUBKEY` | no | (derived) | 64-char hex pubkey. Optional: it is derived from `NSEC_HEX`. If set, it must match, or the process refuses to start |
-| `BLOSSOM_URL` | no (*app*) | — | Blossom media server base URL, e.g. `https://blossom.example.com`; setting it chooses Blossom for media. Uploads are signed with the key made in Settings → Media, else with `NSEC_HEX`. Unset, and no store chosen in the app: posts carry no media, and the composer hides the attach button. Posts made while it was set still fetch their media for a retry |
-| `MEDIA_DIR` | no | `media` beside `DB_PATH` | Where media are kept when Settings → Media says this server's disk |
-| `NIP65_BOOTSTRAP_RELAY` | no | `wss://relay.geoffrey.one` | Where to fetch the author's `kind:10002` relay list |
-| `FALLBACK_RELAYS` | no | `wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io` | Used when NIP-65 returns no write-relays. Set it to a single space for none |
-| `SYNC_RELAYS` | no | `wss://nos.lol,wss://relay.damus.io,wss://nostr.wine,wss://nostr.land,wss://relay.nostr.band,wss://purplepag.es,wss://relay.snort.social,wss://nostr.mom` | Default relay set for the relay-sync tool |
-| `RELAY_CACHE_TTL` | no | `1h` | TTL for cached `kind:10002` lookups |
-| `PUBLISH_TIMEOUT` | no | `10s` | Per-relay connect+publish timeout |
-| `POW_DIFFICULTY_DEFAULT` | no | `16` | Default leading-zero-bit PoW target; `0` turns proof of work off (a negative value stops startup) |
-| `POW_DIFFICULTY_MAX` | no | `28` | Hard cap on per-request PoW override (not negative) |
-| `POW_TIMEOUT` | no | `30s` | Per-publish mining timeout |
-| `SCHEDULE_GRACE` | no (*app*) | `2h` | Grace window for firing overdue scheduled posts (must be positive) |
-| `AUTO_RETRY_ENABLED` | no (*app*) | `true` | Master switch for automatic retries (failed parts and relay deliveries). Off, a failed part waits for **Retry** by hand, including one already scheduled for a retry; first tries and retries by hand still go |
-| `AUTO_RETRY_MAX_ATTEMPTS` | no (*app*) | `6` | Attempts per part (and per relay) before giving up (at least 1; turn retries off with `AUTO_RETRY_ENABLED=false`) |
-| `AUTO_RETRY_BASE_DELAY` | no | `2m` | First backoff interval |
-| `AUTO_RETRY_MAX_DELAY` | no | `1h` | Backoff ceiling |
-| `RETRIER_TICK` | no | `60s` | Relay-retry loop cadence |
-| `PUBLISH_WORKERS` | no | `4` | Parts the background engine publishes at once (scheduled posts, retries) |
-| `DB_PATH` | no | `/data/publisher.db` | SQLite archive path (mount a volume here) |
+| `PUBLIC_URL` | for sign-in | — | The address you open Publisher at, as an origin: `https://post.example.com` (no path), or `http://localhost[:port]`. Passkeys belong to its host name, so it must be a name, not an IP address. Needed for local sign-in; with OIDC it is the default base of `OIDC_REDIRECT_URL`. Alerts name it as their source (`generatorURL`) |
 | `PUBLISHER_MASTER_KEY_FILE` | to add accounts in the app | — | A file holding the master key, such as a Docker secret (`/run/secrets/publisher_master_key`). Preferred over the variable, which `docker inspect` shows. See [Accounts and the master key](#accounts-and-the-master-key) |
 | `PUBLISHER_MASTER_KEY` | (or the file) | — | The master key itself (**secret**): 32 bytes in base64, as `publisher keygen` prints it. Set this or `_FILE`, not both |
 | `PUBLISHER_MASTER_KEY_PREVIOUS` | to change the key | — | The old key while you move to a new one (**secret**; or `PUBLISHER_MASTER_KEY_PREVIOUS_FILE`): at startup every saved credential moves to `PUBLISHER_MASTER_KEY`, all or nothing. Remove it afterwards |
-| `MASTODON_TOKEN` | no | — | Mastodon access token (**secret**, enables Mastodon cross-post) |
-| `MASTODON_BASE_URL` | with the token | — | Mastodon instance URL, e.g. `https://mastodon.social` |
-| `BLUESKY_APP_PASSWORD` | no | — | Bluesky app password (**secret**, enables Bluesky cross-post) |
-| `BLUESKY_IDENTIFIER` | with the password | — | Bluesky handle, DID or email |
-| `BLUESKY_PDS_URL` | with the password | — | Bluesky PDS URL, e.g. `https://bsky.social` |
-| `THREADS_ACCESS_TOKEN` | no | — | Threads long-lived token (**secret**, enables Threads cross-post) |
-| `THREADS_USER_ID` | no | `me` | Threads user id |
-| `ALERT_WEBHOOK_URL` | no (*app*) | — | Webhook posted to on scheduled-post failure |
-| `ALERT_WEBHOOK_USER` | no (*app*) | `alertmanager` | Basic-auth user for the alert webhook |
-| `ALERT_WEBHOOK_PASS` | no (*app*) | — | Basic-auth password for the alert webhook (**secret**) |
-| `PUBLIC_FEED_TOKEN` | no (*app*) | — | Bearer token gating `GET /v1/public/feed`; unset disables the endpoint (**secret**) |
-| `FEED_WEBHOOK_URL` | no (*app*) | — | Signal-only webhook POSTed when a feed-eligible post is published |
-| `FEED_WEBHOOK_TOKEN` | no (*app*) | — | Bearer token sent on the feed webhook so the receiver can verify it (**secret**) |
-| `USER_LANGUAGES` | no (*app*) | — | CSV of the two-letter codes of the languages you write in (`en,fr`); the first is a new post's language |
-| `DEEPL_API_KEY` | no (*app*) | — | DeepL API key, for translating a post into your other languages (**secret**) |
+| `DB_PATH` | no | `/data/publisher.db` | SQLite archive path (mount a volume here) |
+| `MEDIA_DIR` | no | `media` beside `DB_PATH` | Where media are kept when Settings → Media says this server's disk |
 | `PORT` | no | `8080` | Listen port |
 | `LOG_LEVEL` | no | `info` | `debug` / `info` / `warn` / `error` |
-| `PLC_DIRECTORY_URL` | no | `https://plc.directory` | did:plc resolver for Bluesky identity lookups |
-| `VERIFY_HTTP_TIMEOUT` | no | `10s` | Per-request timeout for verification fetches |
-| `PUBLIC_URL` | for sign-in | — | The address you open Publisher at, as an origin: `https://post.example.com` (no path), or `http://localhost[:port]`. Passkeys belong to its host name, so it must be a name, not an IP address. Needed for local sign-in; with OIDC it is the default base of `OIDC_REDIRECT_URL` |
+
+#### Sign-in and the network
+
+How you sign in (see [Sign-in](#sign-in)), and what the server may reach.
+
+| Var | Required | Default | Purpose |
+|---|---|---|---|
 | `AUTH_MODE` | no | (see [Sign-in](#sign-in)) | How you sign in: `local` (passkeys and an optional password kept by Publisher), `oidc` (an identity provider; needs `OIDC_ISSUER`) or `proxy` (no sign-in of its own). Unset: `oidc` when `OIDC_ISSUER` is set, else `local` for a database created by this version and `proxy` for an older one |
 | `TRUSTED_PROXIES` | no | (none) | CSV of addresses or CIDRs (`172.16.0.0/12`) of your reverse proxies. The client's address, used to throttle wrong passwords and shown under Settings → Access, is the last `X-Forwarded-For` hop that isn't one of them; without it, the connection's own address |
+| `ALLOWED_HOSTS` | no | (empty) | CSV of host names the server answers for (e.g. `post.example.com`); `localhost`, `PUBLIC_URL`'s host and the health probes always pass, and other names get 421. Recommended in `proxy` mode: it stops DNS rebinding from a web page. List the names your scripts use too (`publisher:8080` from another container) |
+| `PRIVATE_DESTINATIONS` | no | (none) | CSV of host names and private ranges (`mastodon.lan`, `192.168.1.0/24`, `100.64.0.0/10` for Tailscale) that accounts added in the app and relay sync may reach. Without it they reach public addresses only. See [Servers on your own network](#servers-on-your-own-network) |
 | `SETUP_TOKEN_FILE` | no | (log) | Write the first-run setup link to this file (mode 0600, deleted once used) instead of the log. Its directory must exist |
+| `SESSION_TTL` | no | `168h` | Server-side session lifetime (OIDC and local sign-in). Removing someone from the OIDC allowlist ends their sessions at once |
 | `OIDC_ISSUER` | no | (empty) | Issuer URL of the OpenID Provider (e.g. `https://auth.example.com`). Setting it signs you in with OIDC and makes the vars below required |
 | `OIDC_CLIENT_ID` | yes* | — | Confidential client ID registered with the provider |
 | `OIDC_CLIENT_SECRET` | yes* | — | Client secret (**secret**) |
@@ -577,12 +604,71 @@ reported at once. Boolean variables take `true/false`, `1/0`, `yes/no` or
 | `OIDC_ALLOWED_EMAILS` | yes*† | — | CSV of allowed email addresses. Only an email the provider marks verified (`email_verified`) matches; case doesn't matter. A provider that leaves the claim out (e.g. Entra ID) needs `OIDC_ALLOWED_SUBJECTS`; the refused login logs the subject to add |
 | `OIDC_SCOPES` | no | `openid profile email` | Requested scopes (space- or comma-separated) |
 | `OIDC_END_SESSION` | no | `true` | On logout, also end the provider session (RP-initiated logout) when the provider advertises `end_session_endpoint` |
-| `SESSION_TTL` | no | `168h` | Server-side session lifetime (OIDC and local sign-in). Removing someone from the OIDC allowlist ends their sessions at once |
-| `ALLOWED_HOSTS` | no | (empty) | CSV of host names the server answers for (e.g. `post.example.com`); `localhost`, `PUBLIC_URL`'s host and the health probes always pass, and other names get 421. Recommended in `proxy` mode: it stops DNS rebinding from a web page. List the names your scripts use too (`publisher:8080` from another container) |
-| `PRIVATE_DESTINATIONS` | no | (none) | CSV of host names and private ranges (`mastodon.lan`, `192.168.1.0/24`, `100.64.0.0/10` for Tailscale) that accounts added in the app and relay sync may reach. Without it they reach public addresses only. See [Servers on your own network](#servers-on-your-own-network) |
 
 \* Required only when `OIDC_ISSUER` is set.
 † At least one of `OIDC_ALLOWED_SUBJECTS` / `OIDC_ALLOWED_EMAILS` must be non-empty when OIDC is enabled.
+
+#### Settings you can make in the app
+
+Each of these is a setting in the web app too (*app*): leave the variable unset and set it there.
+
+| Var | Required | Default | Purpose |
+|---|---|---|---|
+| `BLOSSOM_URL` | no (*app*) | — | Blossom media server base URL, e.g. `https://blossom.example.com`; setting it chooses Blossom for media. Uploads are signed with the key made in Settings → Media, else with `NSEC_HEX`. Unset, and no store chosen in the app: posts carry no media, and the composer hides the attach button. Posts made while it was set still fetch their media for a retry |
+| `USER_LANGUAGES` | no (*app*) | — | CSV of the two-letter codes of the languages you write in (`en,fr`); the first is a new post's language |
+| `DEEPL_API_KEY` | no (*app*) | — | DeepL API key, for translating a post into your other languages (**secret**) |
+| `SCHEDULE_GRACE` | no (*app*) | `2h` | Grace window for firing overdue scheduled posts (must be positive) |
+| `AUTO_RETRY_ENABLED` | no (*app*) | `true` | Master switch for automatic retries (failed parts and relay deliveries). Off, a failed part waits for **Retry** by hand, including one already scheduled for a retry; first tries and retries by hand still go |
+| `AUTO_RETRY_MAX_ATTEMPTS` | no (*app*) | `6` | Attempts per part (and per relay) before giving up (at least 1; turn retries off with `AUTO_RETRY_ENABLED=false`) |
+| `ALERT_WEBHOOK_URL` | no (*app*) | — | Webhook posted to on scheduled-post failure |
+| `ALERT_WEBHOOK_USER` | no (*app*) | `alertmanager` | Basic-auth user for the alert webhook |
+| `ALERT_WEBHOOK_PASS` | no (*app*) | — | Basic-auth password for the alert webhook (**secret**) |
+| `PUBLIC_FEED_TOKEN` | no (*app*) | — | Bearer token gating `GET /v1/public/feed`; unset disables the endpoint (**secret**) |
+| `FEED_WEBHOOK_URL` | no (*app*) | — | Signal-only webhook POSTed when a feed-eligible post is published |
+| `FEED_WEBHOOK_TOKEN` | no (*app*) | — | Bearer token sent on the feed webhook so the receiver can verify it (**secret**) |
+
+#### Accounts from the environment
+
+One account per network, set by its variables (an alternative to adding it in the app). The Nostr ones also seed a Nostr account added in the app.
+
+| Var | Required | Default | Purpose |
+|---|---|---|---|
+| `NSEC_HEX` | for Nostr | — | Secret key as exactly 64 hex characters (**secret**). Convert `nsec1…` via `nak key decode`; if a tool printed it without its leading zeros, add them back |
+| `OWNER_PUBKEY` | no | (derived) | 64-char hex pubkey. Optional: it is derived from `NSEC_HEX`. If set, it must match, or the process refuses to start |
+| `NIP65_BOOTSTRAP_RELAY` | no | `wss://relay.damus.io` | The home relay: where the author's `kind:10002` relay list is read, and a relay every post also goes to (your own, or the one you use most) |
+| `FALLBACK_RELAYS` | no | `wss://nos.lol,wss://relay.damus.io,wss://relay.primal.net` | Used when NIP-65 returns no write-relays. Set it to a single space for none |
+| `PRIMARY_RELAYS` | no | the home relay | With `NOSTR_PRIMARY_FANOUT` on, the relays a post waits for (CSV); the others get it in the background |
+| `NOSTR_PRIMARY_FANOUT` | no | `false` | Answer as soon as the primary relays have a post |
+| `SYNC_RELAYS` | no | `wss://nos.lol,wss://relay.damus.io,wss://nostr.wine,wss://nostr.land,wss://relay.nostr.band,wss://purplepag.es,wss://relay.snort.social,wss://nostr.mom` | Default relay set for the relay-sync tool |
+| `POW_DIFFICULTY_DEFAULT` | no | `16` | Default leading-zero-bit PoW target; `0` turns proof of work off (a negative value stops startup) |
+| `POW_DIFFICULTY_MAX` | no | `28` | Hard cap on per-request PoW override (not negative) |
+| `MASTODON_TOKEN` | no | — | Mastodon access token (**secret**, enables Mastodon cross-post) |
+| `MASTODON_BASE_URL` | with the token | — | Mastodon instance URL, e.g. `https://mastodon.social` |
+| `BLUESKY_APP_PASSWORD` | no | — | Bluesky app password (**secret**, enables Bluesky cross-post) |
+| `BLUESKY_IDENTIFIER` | with the password | — | Bluesky handle, DID or email |
+| `BLUESKY_PDS_URL` | with the password | — | Bluesky PDS URL, e.g. `https://bsky.social` |
+| `THREADS_ACCESS_TOKEN` | no | — | Threads long-lived token (**secret**, enables Threads cross-post) |
+| `THREADS_USER_ID` | no | `me` | Threads user id |
+
+#### Tuning
+
+Rarely changed.
+
+| Var | Required | Default | Purpose |
+|---|---|---|---|
+| `PUBLISH_WORKERS` | no | `4` | Parts the background engine publishes at once (scheduled posts, retries) |
+| `PUBLISH_TIMEOUT` | no | `10s` | Per-relay connect+publish timeout |
+| `RELAY_CACHE_TTL` | no | `1h` | TTL for cached `kind:10002` lookups |
+| `POW_TIMEOUT` | no | `30s` | Per-publish mining timeout |
+| `AUTO_RETRY_BASE_DELAY` | no | `2m` | First backoff interval |
+| `AUTO_RETRY_MAX_DELAY` | no | `1h` | Backoff ceiling |
+| `RETRIER_TICK` | no | `60s` | Relay-retry loop cadence |
+| `FANOUT_TICK` | no | `5s` | How often the Nostr background fan-out is worked |
+| `PLC_DIRECTORY_URL` | no | `https://plc.directory` | did:plc resolver for Bluesky identity lookups |
+| `VERIFY_HTTP_TIMEOUT` | no | `10s` | Per-request timeout for verification fetches |
+| `FFMPEG_PATH` | no | `/usr/local/bin/ffmpeg` | ffmpeg for video; video uploads are off when it (or ffprobe) is missing. The image includes both |
+| `FFPROBE_PATH` | no | `/usr/local/bin/ffprobe` | ffprobe for video |
+| `VIDEO_WORKDIR` | no | `publisher-video` in the system's temporary directory | Where videos are staged and transcoded (emptied at each start) |
 
 > **Note:** `OWNER_PUBKEY` is optional. When it is set it must be the public
 > key derived from `NSEC_HEX`; the process exits at startup if they don't
@@ -592,21 +678,24 @@ reported at once. Boolean variables take `true/false`, `1/0`, `yes/no` or
 
 The image is published for `linux/amd64` and `linux/arm64` (Raspberry Pi 4/5
 on a 64-bit OS, Ampere/Graviton servers, Apple-silicon hosts); Docker pulls the
-right one automatically.
+right one automatically. Without compose, as in the
+[quick start](#quick-start):
 
 ```bash
 mkdir -p ./data
-docker run -d --name publisher --stop-timeout 30 \
+docker run -d --name publisher --restart unless-stopped --stop-timeout 30 \
   -p 127.0.0.1:8080:8080 \
   -v "$PWD/data:/data" \
-  -e NSEC_HEX=<64-char-hex-secret> \
-  -e BLOSSOM_URL=https://blossom.example.com \
-  -e NIP65_BOOTSTRAP_RELAY=wss://relay.example.com \
-  -e FALLBACK_RELAYS=wss://relay.damus.io,wss://nos.lol \
+  -v "$PWD/publisher_master_key:/run/secrets/publisher_master_key:ro" \
+  -e PUBLIC_URL=https://post.example.com \
+  -e PUBLISHER_MASTER_KEY_FILE=/run/secrets/publisher_master_key \
   ghcr.io/geofox/publisher:latest
 ```
 
-### Run with Docker Compose
+### A compose file with accounts from the environment
+
+The quick start's file, with accounts set by variables (as before 3.0),
+a Blossom server and the healthcheck spelled out:
 
 ```yaml
 services:
@@ -619,6 +708,7 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     environment:
+      - PUBLIC_URL=https://post.example.com
       # Encrypts the credentials of accounts you add in the web app; see
       # "Accounts and the master key". Leave it out to set accounts here only.
       - PUBLISHER_MASTER_KEY_FILE=/run/secrets/publisher_master_key
@@ -720,10 +810,8 @@ environment are as safe as your environment. The log, events and API
 answers never carry an account's credentials (except **Show key**, on
 purpose), and the log scrubs anything that looks like one.
 
-**Backups.** Back up the database and the key, separately. The
-credentials in a backup open only with the key that was set when it was
-taken: after changing the key, keep the old one as long as you keep
-older backups.
+**Backups.** Back up the database and the key, separately: see
+[Backups](#backups).
 With a key set, the first start of this version moves the Threads token
 from its plaintext row into the encrypted store; the database backups
 written by earlier upgrades (`publisher.db.pre-v*.bak`) still hold it in
@@ -857,7 +945,56 @@ The test in Settings → Media asks the Blossom server whether it answers
 (BUD-06), or writes a probe to the disk and reads it back (and fetches it
 at `PUBLIC_URL/media/` when served publicly).
 
-### Database upgrades and backups
+### Export and import
+
+**Settings → System → Export** makes a file of your setup, to move it to
+another Publisher or to keep a copy: the accounts added in the app with
+their credentials, what you chose for the accounts the environment sets
+(label, flags, defaults, relay-sync list), your account sets, and the
+settings saved in the app, the server's included. Not posts, drafts,
+media or API tokens. Publisher makes a passphrase of 24 words and shows
+it once: the file is sealed with it (AES-256-GCM under a key argon2id
+derives from it), and Publisher doesn't keep it. Without the passphrase
+the file can't be opened; with it, it opens every account, so keep the
+two apart (the passphrase in a password manager, say).
+
+**Settings → System → Import** reads such a file with its passphrase
+(any case and spacing) and shows what it would do before anything
+changes: each account and the server its credentials would go to, each
+account set and setting. Confirm within 10 minutes. It goes into a
+server with no accounts added in the app (a new one, or one whose
+accounts all come from the environment), so two setups are never
+merged, and what this server's environment sets stays: its accounts and
+settings win over the file's. Each account is checked as one added by
+hand (its addresses allowed here) and asked who it is before it is
+stored. One whose network refuses the credentials, or doesn't answer,
+is still added, marked as needing a look. Both steps ask you to confirm
+it's you, need a signed-in browser (not a token, not the proxy alone)
+and, for the import, the master key.
+
+### Backups
+
+Back up three things, each on its own:
+
+- **The database** (`data/publisher.db`): your posts, drafts, accounts
+  and settings, credentials encrypted. Stop the container and copy
+  `data/` (with `publisher.db-wal` and `publisher.db-shm` if they are
+  there), or, while it runs, use SQLite's online backup from the host:
+  `sqlite3 data/publisher.db ".backup 'publisher-backup.db'"`. Media on
+  this server's disk are in `data/media`.
+- **The master key**, apart from the database: a backup's credentials
+  open only with the key that was set when it was taken. After
+  [changing the key](#accounts-and-the-master-key), keep the old one as
+  long as you keep backups taken before.
+- **An export file**, if you like (see [Export and import](#export-and-import)):
+  your accounts and settings without the database, opened by its
+  passphrase rather than the key.
+
+To restore, stop the container, put the database back in `data/`
+(deleting any `publisher.db-wal` and `publisher.db-shm` left there), set
+the key it was taken with, and start.
+
+### Database upgrades
 
 The SQLite schema is versioned. On start, publisher applies any pending
 migrations (recorded in the `schema_migrations` table), each in its own
@@ -908,9 +1045,8 @@ rollback (they stay on the platforms).
 
 ### Upgrading from 2.x
 
-No environment variable was removed or renamed, and nothing needs to be
-set before starting. Read the [CHANGELOG](CHANGELOG.md) first; the changes
-that need action:
+To 3.0. No environment variable was removed or renamed. Read the
+[CHANGELOG](CHANGELOG.md) first; the changes that need action:
 
 1. **Sign-in.** An existing install without OIDC keeps running behind your
    proxy alone (`AUTH_MODE=proxy`), with a "Set up sign-in" banner; to
@@ -921,8 +1057,9 @@ that need action:
    you through your provider's login again: use Authelia 4.39 or later.
    A token can no longer create a token holding `admin`.
 
-2. **API callers that split threads with `---`** (an n8n flow, say) must
-   send `content.breaks` instead: `---` is plain text now.
+2. **From 2.0.x only: API callers that split threads with `---`** (an
+   n8n flow, say) must send `content.breaks` instead: `---` is plain
+   text since 2.1.0.
 3. **Monitors:** `/readyz?external=1` names its checks `account:<id>`
    instead of `nostr_relay`, `bluesky`, `mastodon` and `threads`. Alerts
    name the account ("Mastodon (@me@example.social)").
@@ -961,12 +1098,21 @@ that need action:
    `settings:write` (or `instance:admin` for the server's) by name:
    `admin` doesn't include them, and only a signed-in owner can grant
    them.
+9. **The Nostr relay defaults are public relays.** Unset,
+   `NIP65_BOOTSTRAP_RELAY` was `wss://relay.geoffrey.one` (this
+   project's author's relay) and is now `wss://relay.damus.io`;
+   `FALLBACK_RELAYS` was `wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io`
+   and is now `wss://nos.lol,wss://relay.damus.io,wss://relay.primal.net`.
+   `PRIMARY_RELAYS` follows the home relay. If your Nostr account comes
+   from the environment and relied on the old defaults, set them before
+   upgrading to keep them: every post goes to the home relay, and your
+   relay list is read there.
 
 Your accounts keep their ids (`acc_…` in `GET /v1/accounts`), so posts,
 drafts and API callers that name them keep working; the relay-sync list
 moves to your Nostr account. Before migrating, the first start writes a
 copy named after the first version it applies (`publisher.db.pre-v9.bak`
-from 2.0); see [Database upgrades and backups](#database-upgrades-and-backups).
+from 2.0); see [Database upgrades](#database-upgrades).
 
 ### Build from source
 
@@ -986,41 +1132,80 @@ docker build -t publisher:dev .
 docker buildx build --platform linux/amd64,linux/arm64 -t publisher:dev .
 ```
 
-### Security
+### Security model
 
-The service holds your `NSEC` and signs events on request. **Do not expose
-it directly to the internet.**
+Publisher holds the credentials of your accounts and signs Nostr posts
+itself: whoever operates it can post as you everywhere. Serve it over
+https behind sign-in, and **don't expose it to the internet without
+one**: with `AUTH_MODE=proxy` the reverse proxy is the only gate.
 
-Publisher signs you in one of three ways (`AUTH_MODE`); see
-[Sign-in](#sign-in). In every mode:
+**Who can do what.** Publisher signs you in one of three ways
+(`AUTH_MODE`; see [Sign-in](#sign-in)). In every mode:
 
 - Every `/v1` route takes either the browser session or a bearer token,
   and checks the token's scopes (see [the `/v1` API](#the-v1-api)).
   Tokens are created and revoked in the web app under **Settings →
-  Access**.
-  `GET /v1/openapi.json` is open.
-- `/healthz`, `/readyz`, `/metrics`, and the feed-token-gated `GET
-  /v1/public/feed` remain open (no session required). `/metrics` is
-  intentionally unauthenticated so a Prometheus scraper can reach it
-  without a session; restrict it at the network or proxy layer if that is
-  a concern in your deployment.
+  Access**. `GET /v1/openapi.json` is open.
+- `/healthz`, `/readyz`, `/metrics`, the feed-token-gated `GET
+  /v1/public/feed`, media at `/media/` (this server's disk) and the
+  networks' sign-in callback `/oauth/callback/` are open (no session).
+  `/metrics` is unauthenticated so a Prometheus scraper can reach it:
+  restrict it at the network or proxy if that matters to you.
 - Some operations need you to confirm it's you, just now, in the browser:
   adding or removing a passkey, setting the first password or removing
   it, creating an API token (a token outlives the session that made
-  it), deleting an account, and showing a Nostr key. Changing the
-  password takes the current one instead. A token holding `admin` or
+  it), deleting an account, showing a Nostr key, changing the server's
+  secret settings, and exporting or importing. Changing the password
+  takes the current one instead. A token holding `admin` or
   `accounts:write` can only be made this way: a token can't
   (`403 session_required`), and behind the proxy alone it is refused
-  (`403 sign_in_required`).
-- Credentials of accounts added in the app are encrypted with the master
-  key and never returned (a Nostr key only by **Show key**, which a
-  token can't do), and the addresses you set reach public servers only,
-  unless `PRIVATE_DESTINATIONS` lists yours; see
-  [Accounts and the master key](#accounts-and-the-master-key).
+  (`403 sign_in_required`). Credentials are shown, exported and imported
+  only from a signed-in browser; adding them takes a signed-in browser
+  or a token holding `accounts:write`.
 
-**Single-tenant caveat:** the app signs with one operator key and posts to
-the operator's own accounts. Sign-in gates who may operate it; it is not
-per-user data isolation.
+**Credentials at rest.** Those of accounts added in the app, the secret
+settings, and the Threads token Publisher renews are encrypted with the
+master key, each bound to its account (or setting) and to the server it
+is sent to: a copy of the database (a backup, a stolen disk) doesn't
+give them away, and a value moved to another account, or an account
+whose server address is changed in the database, fails to open rather
+than send its credentials elsewhere. They are never returned (a Nostr
+key only by **Show key**). Credentials set in the environment are as
+safe as your environment. An export file is sealed with its own
+passphrase, which Publisher shows once and doesn't keep. The log,
+events and API answers never carry an account's credentials, and the
+log scrubs anything that looks like one.
+
+**What it reaches.** An address you set in the app (an account's
+server, a relay, a webhook, a Blossom server) reaches public addresses
+only, unless `PRIVATE_DESTINATIONS` lists yours (see
+[Servers on your own network](#servers-on-your-own-network)); an
+address from content (a pasted link, a relay hint) reaches public
+addresses only. Loopback, link-local, clouds' metadata addresses and the
+server's own are never reached. Addresses set in the environment are
+yours, and trusted.
+
+**Signing in at a network.** Sign in only at Mastodon servers you trust.
+Mastodon doesn't say which server a sign-in answer comes from
+(RFC 9207's `iss`), so a hostile server you start a sign-in at could send
+you on to another server's sign-in, under its own app there, and receive
+that sign-in. The other server's consent screen names the app you'd be
+allowing: check it's `Publisher (<your host>)`. Each sign-in works once,
+within 10 minutes, from the browser that started it (or, from another
+browser, once you confirm the account in the first tab).
+
+**Behind a reverse proxy.** Set `TRUSTED_PROXIES` to your proxy's
+address, so wrong passwords are throttled by your visitors' addresses,
+and, with `AUTH_MODE=proxy`, `ALLOWED_HOSTS` to the names you reach
+Publisher by. A sign-in in front of Publisher (forward auth: Authelia,
+oauth2-proxy) must let through `/oauth/callback/` (a network's redirect
+may come from a browser not signed in there) and, to serve media
+publicly, `/media/` (see [Media](#media)).
+
+**What it doesn't protect against.** Someone who can run commands in
+the container, or read its secrets, has the master key and every
+credential. Sign-in gates who may operate Publisher; it is not per-user
+data isolation: there is one owner, who posts to their own accounts.
 
 ### Sign-in
 

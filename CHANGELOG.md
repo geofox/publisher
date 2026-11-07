@@ -3,18 +3,13 @@
 Notable changes to Publisher. Releases are tagged `vX.Y.Z`; `main` publishes
 the `edge` image.
 
-## Unreleased
+## 3.0.0 (unreleased)
+
+Settings and accounts in the web app. Read
+[Upgrading from 2.x](README.md#upgrading-from-2x) before you upgrade.
 
 ### Breaking
 
-- **Thread breaks are positions, not `---`.** A post's text is split
-  where `content.breaks` says (code point positions); `---` on its own
-  line is now ordinary text. A caller that relied on `---` (an n8n flow,
-  say) must send `breaks` instead, or leave the splitting to each
-  network's limit. Media go with the post that holds them
-  (`media[].at`); the old `media[].part` is refused with code `replaced`.
-  Each account can have its own breaks and media positions
-  (`targets[].thread`). Stored drafts are converted at the first start.
 - **`enabled` on an account is now only your switch.** It used to be
   false for a network whose variables weren't set; after the upgrade
   every account starts with `enabled: true`, and `status` says whether it
@@ -38,6 +33,17 @@ the `edge` image.
   Tailscale name) needs `PRIVATE_DESTINATIONS`, and loopback, link-local
   and the server's own addresses are never reached. The home relay is
   dialed as before.
+- **The Nostr relay defaults are public relays.** Unset,
+  `NIP65_BOOTSTRAP_RELAY` (the home relay: the relay list is read there,
+  and every post goes there too) is now `wss://relay.damus.io`, and
+  `FALLBACK_RELAYS` (used when the relay list can't be read or is empty)
+  is `wss://nos.lol,wss://relay.damus.io,wss://relay.primal.net`. Both
+  used to name this project's author's relay, `wss://relay.geoffrey.one`.
+  A Nostr account from the environment that relied on them gets its
+  relay list from relay.damus.io and posts there; to keep the old
+  behaviour, set `NIP65_BOOTSTRAP_RELAY=wss://relay.geoffrey.one` and
+  `FALLBACK_RELAYS=wss://relay.geoffrey.one,wss://nos.lol,wss://relay.damus.io`.
+  Accounts added in the app keep the relays they were saved with.
 
 ### Changed
 
@@ -45,13 +51,11 @@ the `edge` image.
   out with fetch: a form post from the app, whose `Referrer-Policy` is
   `no-referrer`, sends `Origin: null`, which the cross-site guard
   refused; that is why the old button was turned off.
-- The web app edits a thread per account: shared cards, a tab per
-  account with its own text and breaks, and a side-by-side comparison
-  (Alt+C).
 - The web app picks accounts, not networks. The composer lists each
   account (grouped by network, with its avatar and handle, and why one
-  can't be used); tabs, Compare columns, counts, limits and the preview
-  are per account; History names each post's accounts and filters by
+  can't be used); the thread editor's tabs (each with its own text and
+  breaks), Compare columns, counts, limits and the preview are per
+  account; History names each post's accounts and filters by
   account; Interact picks the account that replies when a network has
   several; Tools shows the relays of the Nostr account you pick. Alt+1 is
   Shared and Alt+2…Alt+9 the account tabs, and the arrow keys move along
@@ -60,23 +64,11 @@ the `edge` image.
   restored onto the account that stands for each network; one whose
   account can't post now comes back selected and says why (a network
   where you have no account is left out, saying so).
-- An OIDC email allowlist (`OIDC_ALLOWED_EMAILS`) matches only an email
-  the identity provider says is verified. Stored emails are cleared once,
-  so an unverified one stops passing; a refused sign-in logs the subject
-  to allow instead.
-- Automatic retries no longer resend a failure older than the retry
-  policy's whole span.
 - **Retries off** (`AUTO_RETRY_ENABLED=false`, or Settings → Publishing)
   now holds every waiting failure, including the retries scheduled
   before they were turned off: those wait for **Retry** by hand. First
   tries, posts waiting for an account and retries by hand still go.
   Turned on again, they go at their time, without a restart.
-- After a restart, an item that was being sent is resent only when it
-  never reached the network; otherwise it is marked unknown for you to
-  check.
-- Photos lose their EXIF, GPS and XMP metadata before upload, and a
-  rotated JPEG is stored upright.
-- Schedule times in the web app use the device's time zone.
 - Nothing is required to start. `NSEC_HEX` is needed only for a Nostr
   account; a server with only Bluesky, say, starts and posts text.
   Without a media store (Settings → Media, or `BLOSSOM_URL`), uploads
@@ -198,8 +190,6 @@ the `edge` image.
   `/v1/me/password`, `/v1/me/sessions` and `/v1/me/sign-in-events`, for a
   browser session only. `GET /v1/instance` reports `auth: local` and, in
   proxy mode, `sign_in_recommended`.
-- `ALLOWED_HOSTS`: the host names the server answers for (others get
-  `421`). Recommended when OIDC is off.
 - `PATCH /v1/accounts/{id}` changes an account's label, turns it off or
   on, and sets whether new posts select it and whether its posts go to the
   public feed. It needs the new `accounts:write` scope, which `admin`
@@ -301,6 +291,22 @@ the `edge` image.
   sign in, the master key, the health checks, and the variables the
   server started with; secrets only as set, and no user name, password,
   query or fragment from an address.
+- **Export and import** (Settings → System). An export is a file of the
+  accounts added in the app with their credentials, what you chose for
+  the accounts from the environment, your account sets, and the settings
+  saved in the app (the server's included), sealed with a passphrase of
+  24 words that Publisher makes, shows once and doesn't keep
+  (AES-256-GCM, the key from argon2id). An import reads the file with
+  its passphrase, shows what it would do (each account and the server
+  its credentials would go to, each set and setting), and does it once
+  you confirm, within 10 minutes. It goes only into a server without
+  accounts added in the app; what the environment sets there wins, and
+  each account is checked as one added by hand and asked who it is
+  (stored either way, marked when its network refused or didn't
+  answer). Both ask you to confirm it's you and need a signed-in
+  browser; the import needs the master key. API: `POST /v1/export`,
+  `POST /v1/import` and `POST /v1/import:confirm`; at most 5 exports or
+  files read a minute.
 
 ### Security
 
@@ -368,3 +374,47 @@ the `edge` image.
 - The composer sends each value its cards hold, an empty one too, so a
   default cleared on a post (a content warning, a visibility) isn't
   filled in again by the account's defaults.
+- An alert's `generatorURL` is this server's `PUBLIC_URL` (empty when
+  unset); it was a fixed address.
+- The composer's author is "You" until your accounts are read, and
+  Tools shows the home relay of the account it syncs; both named this
+  project's author.
+
+## 2.1.0 (2026-11-06)
+
+This changelog was started after 2.1.0; these are the changes of that
+release (#36) that 3.0's notes would otherwise repeat.
+
+### Breaking
+
+- **Thread breaks are positions, not `---`.** A post's text is split
+  where `content.breaks` says (code point positions); `---` on its own
+  line is now ordinary text. A caller that relied on `---` (an n8n flow,
+  say) must send `breaks` instead, or leave the splitting to each
+  network's limit. Media go with the post that holds them
+  (`media[].at`); the old `media[].part` is refused with code `replaced`.
+  Each account can have its own breaks and media positions
+  (`targets[].thread`). Stored drafts are converted at the first start.
+
+### Changed
+
+- The web app edits a thread per network: shared cards, a tab per
+  network with its own text and breaks, and a side-by-side comparison
+  (Alt+C).
+- An OIDC email allowlist (`OIDC_ALLOWED_EMAILS`) matches only an email
+  the identity provider says is verified. Stored emails are cleared once,
+  so an unverified one stops passing; a refused sign-in logs the subject
+  to allow instead.
+- Automatic retries no longer resend a failure older than the retry
+  policy's whole span.
+- After a restart, an item that was being sent is resent only when it
+  never reached the network; otherwise it is marked unknown for you to
+  check.
+- Photos lose their EXIF, GPS and XMP metadata before upload, and a
+  rotated JPEG is stored upright.
+- Schedule times in the web app use the device's time zone.
+
+### Added
+
+- `ALLOWED_HOSTS`: the host names the server answers for (others get
+  `421`). Recommended when OIDC is off.
