@@ -346,3 +346,40 @@ func TestCheckWritable(t *testing.T) {
 		t.Error("a directory under a file was writable")
 	}
 }
+
+// A link put in the directory under a stored object's name is never
+// followed; an upload's temporary files left by a stop are removed.
+func TestLocalNoLinksNoLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	l := &Local{Dir: filepath.Join(dir, "media"), Free: func(string) (uint64, uint64, error) { return 50 << 30, 100 << 30, nil }}
+	if err := os.MkdirAll(l.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(dir, "publisher.db")
+	if err := os.WriteFile(secret, []byte("\x89PNG\r\n\x1a\nsecret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	name := strings.Repeat("a", 64) + ".png"
+	if err := os.Symlink(secret, filepath.Join(l.Dir, name)); err != nil {
+		t.Fatal(err)
+	}
+	if f, _, _, err := l.Open(name); err == nil {
+		f.Close()
+		t.Fatal("a link was followed")
+	}
+	if l.Has(name) {
+		t.Fatal("a link counts as stored")
+	}
+	if err := os.WriteFile(filepath.Join(l.Dir, ".upload-123"), []byte("half"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := l.RemoveLeftovers(); err != nil || n != 1 {
+		t.Fatalf("leftovers: %d, %v", n, err)
+	}
+	if _, err := os.Stat(filepath.Join(l.Dir, ".upload-123")); !os.IsNotExist(err) {
+		t.Fatal("a leftover kept")
+	}
+	if n, err := (&Local{Dir: filepath.Join(dir, "none")}).RemoveLeftovers(); err != nil || n != 0 {
+		t.Fatalf("no directory: %d, %v", n, err)
+	}
+}

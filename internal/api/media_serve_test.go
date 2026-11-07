@@ -134,9 +134,16 @@ func TestServeDiskMedia(t *testing.T) {
 			t.Errorf("%s = %d", p, w.Code)
 		}
 	}
-	// The gate stays shut for the web app beside it.
-	if w := e.raw("GET", "/", nil); w.Code == 200 {
-		t.Errorf("GET / without a session = %d", w.Code)
+	// The gate stays shut for the web app beside it, however the path is
+	// spelled (the mux sends "/media%2Fx" to the web app).
+	gated := e.raw("GET", "/", nil).Code
+	if gated == 200 {
+		t.Fatalf("GET / without a session = %d", gated)
+	}
+	for _, p := range []string{"/media%2Findex.html", "/media%2F", "/v1%2F..%2Findex.html", "/auth%2Fx"} {
+		if w := e.raw("GET", p, nil); w.Code != gated {
+			t.Errorf("GET %s without a session = %d, want the gate's %d", p, w.Code, gated)
+		}
 	}
 }
 

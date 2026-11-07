@@ -100,6 +100,12 @@ func TestOwnBlobURL(t *testing.T) {
 			t.Errorf("own %v: %q, %v; want %q", own, got, err, want)
 		}
 	}
+	// A server set in the app, signed with the environment's key, is
+	// confined all the same.
+	b := &Blossom{URL: srv.URL, Key: nostr.Generate(), Confined: true, HTTP: srv.Client()}
+	if got, err := b.Upload(context.Background(), strings.NewReader("x"), 1, sha, "image/png"); err != nil || got != srv.URL+"/"+sha {
+		t.Errorf("confined: %q, %v", got, err)
+	}
 }
 
 // Without a store nothing is uploaded and the pipeline says so; a store
@@ -143,3 +149,31 @@ func TestPipelineFollowsTheStore(t *testing.T) {
 		t.Error("a nil pipeline is enabled")
 	}
 }
+
+// The environment's server is fetched with the trusted client; any other
+// address with the other one.
+func TestFetcherTrustsOneOrigin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("blob")) }))
+	defer srv.Close()
+	refused := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("refused")
+	})}
+	f := &Fetcher{HTTP: refused, TrustedOrigin: Origin(srv.URL + "/base/"), TrustedHTTP: srv.Client()}
+	if b, _, err := f.Fetch(context.Background(), srv.URL+"/abc"); err != nil || string(b) != "blob" {
+		t.Fatalf("trusted origin: %q, %v", b, err)
+	}
+	if _, _, err := f.Fetch(context.Background(), "http://other.example/abc"); err == nil {
+		t.Fatal("another origin used the trusted client")
+	}
+	f.TrustedOrigin = ""
+	if _, _, err := f.Fetch(context.Background(), srv.URL+"/abc"); err == nil {
+		t.Fatal("no trusted origin, but the trusted client was used")
+	}
+	if Origin("HTTPS://Blossom.Example:8443/x?y") != "https://blossom.example:8443" || Origin("/media/x") != "" {
+		t.Errorf("origin: %q %q", Origin("HTTPS://Blossom.Example:8443/x?y"), Origin("/media/x"))
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

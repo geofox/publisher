@@ -142,7 +142,9 @@ func (l *Local) Open(name string) (*os.File, string, bool, error) {
 	if !ok {
 		return nil, "", false, fs.ErrNotExist
 	}
-	f, err := os.Open(filepath.Join(l.Dir, name))
+	// A link put in the directory is never followed: only the files the
+	// store wrote are served.
+	f, err := os.OpenFile(filepath.Join(l.Dir, name), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	return f, mime, attach, err
 }
 
@@ -151,8 +153,31 @@ func (l *Local) Has(name string) bool {
 	if _, _, ok := TypeOf(name); !ok {
 		return false
 	}
-	fi, err := os.Stat(filepath.Join(l.Dir, name))
+	fi, err := os.Lstat(filepath.Join(l.Dir, name))
 	return err == nil && fi.Mode().IsRegular()
+}
+
+// RemoveLeftovers removes the temporary files of uploads a stop cut short
+// (none is in use before the server takes uploads).
+func (l *Local) RemoveLeftovers() (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entries, err := os.ReadDir(l.Dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".upload-") && e.Type().IsRegular() {
+			if err := os.Remove(filepath.Join(l.Dir, e.Name())); err == nil {
+				n++
+			}
+		}
+	}
+	return n, nil
 }
 
 // Reachable: an address of this store that a network fetching media by
@@ -208,7 +233,7 @@ func (l *Local) Upload(_ context.Context, body io.Reader, size int64, sha, mime 
 	if err := os.MkdirAll(l.Dir, 0o700); err != nil {
 		return "", err
 	}
-	if _, err := os.Stat(filepath.Join(l.Dir, name)); err == nil {
+	if fi, err := os.Lstat(filepath.Join(l.Dir, name)); err == nil && fi.Mode().IsRegular() {
 		return l.URL(name), nil // stored already: content-addressed
 	}
 	if err := l.room(size); err != nil {

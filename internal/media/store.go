@@ -54,6 +54,11 @@ type Blossom struct {
 	// answers must be its own. The environment's Nostr key signs as it
 	// always has, without the tag, for servers set before.
 	Own bool
+	// Confined: the address the server answers must be on its own origin,
+	// else its own address for the hash, so a server set in the app can't
+	// point posts, and the fetches that send them again, at another host.
+	// A server with the store's own key is always confined.
+	Confined bool
 	// HTTP carries the uploads (no overall timeout: a video is large).
 	HTTP *http.Client
 }
@@ -123,7 +128,7 @@ func (b *Blossom) Upload(ctx context.Context, body io.Reader, size int64, sha, m
 	if bd.URL == "" {
 		return b.URL + "/" + sha, nil
 	}
-	if b.Own {
+	if b.Own || b.Confined {
 		return ownBlobURL(base, bd.URL, sha), nil
 	}
 	return bd.URL, nil

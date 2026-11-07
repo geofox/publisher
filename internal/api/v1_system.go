@@ -32,22 +32,25 @@ func SystemValues(getenv func(string) string, vars []SystemVar) []SystemValue {
 		raw := strings.TrimSpace(getenv(v.Env))
 		sv := SystemValue{Env: v.Env, Set: raw != "", Secret: v.Secret}
 		if sv.Set && !v.Secret {
-			sv.Value = withoutUserinfo(raw)
+			sv.Value = shownAddresses(raw)
 		}
 		out = append(out, sv)
 	}
 	return out
 }
 
-// withoutUserinfo drops a user and password from each address in a value
-// (a list is comma-separated).
-func withoutUserinfo(raw string) string {
+// shownAddresses drops what may hold a secret from each address in a
+// value (a list is comma-separated): a user and password, the query and
+// the fragment.
+func shownAddresses(raw string) string {
 	parts := strings.Split(raw, ",")
 	for i, p := range parts {
-		if u, err := url.Parse(strings.TrimSpace(p)); err == nil && u.User != nil && u.Host != "" {
-			u.User = nil
+		u, err := url.Parse(strings.TrimSpace(p))
+		switch {
+		case err == nil && u.Host != "" && (u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != ""):
+			u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
 			parts[i] = u.String()
-		} else if err != nil && strings.Contains(p, "@") && strings.Contains(p, "://") {
+		case err != nil && strings.Contains(p, "://"):
 			parts[i] = "(an address that can't be shown)"
 		}
 	}

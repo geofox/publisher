@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -143,7 +144,34 @@ func newStreamClient() *http.Client {
 // Fetcher fetches stored media by URL: a retry re-reads what a post's
 // media were uploaded as. It needs no media store, so posts made while
 // one was configured still send after it is removed.
-type Fetcher struct{ HTTP *http.Client }
+type Fetcher struct {
+	HTTP *http.Client
+	// TrustedOrigin and TrustedHTTP: an address on this origin
+	// (scheme://host, the environment's Blossom server, the operator's)
+	// is fetched with TrustedHTTP, as before settings existed; any other
+	// with HTTP. "" trusts none.
+	TrustedOrigin string
+	TrustedHTTP   *http.Client
+}
+
+// client is the client that fetches raw.
+func (f *Fetcher) client(raw string) *http.Client {
+	if f.TrustedOrigin != "" && f.TrustedHTTP != nil {
+		if u, err := url.Parse(raw); err == nil && u.Host != "" && strings.EqualFold(u.Scheme+"://"+u.Host, f.TrustedOrigin) {
+			return f.TrustedHTTP
+		}
+	}
+	return f.HTTP
+}
+
+// Origin is raw's scheme://host ("" when it has none).
+func Origin(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host)
+}
 
 // NewFetcher returns a Fetcher on a streaming client.
 func NewFetcher() *Fetcher { return &Fetcher{HTTP: newStreamClient()} }
@@ -254,7 +282,7 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) ([]byte, string, error)
 	if err != nil {
 		return nil, "", err
 	}
-	resp, err := f.HTTP.Do(req)
+	resp, err := f.client(url).Do(req)
 	if err != nil {
 		return nil, "", err
 	}

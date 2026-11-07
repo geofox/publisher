@@ -102,6 +102,9 @@ func run(ctx context.Context, o runOptions) int {
 	for _, n := range settings.EnvNames(settings.Defs()) {
 		settingsEnv[n] = getenv(n)
 	}
+	// What Settings, System shows, read now: the credential variables
+	// are removed below.
+	system := api.SystemValues(getenv, systemVars)
 	startErrs := []error{cfgErr, envErr, keyErr}
 	// Every credential is in memory now: take them out of the environment.
 	// (The kernel's copy, /proc/<pid>/environ, keeps the values it started
@@ -183,7 +186,13 @@ func run(ctx context.Context, o runOptions) int {
 	disk := &media.Local{Dir: cfg.MediaDir, BaseURL: cfg.PublicURL,
 		Quota:    func() int64 { return int64(svc.Current().Int(settings.MediaLocalQuota)) << 20 },
 		IsPublic: func() bool { return svc.Current().Bool(settings.MediaPublic) }}
-	mp := media.New(liveMediaStore(svc, guard, mediaKey, haveSigner, disk))
+	if n, err := disk.RemoveLeftovers(); err != nil {
+		slog.Warn("media: removing unfinished uploads failed", "err", err)
+	} else if n > 0 {
+		slog.Info("media: removed unfinished uploads", "count", n)
+	}
+	guardedStream := guardedStreamClient(guard)
+	mp := media.New(liveMediaStore(svc, guardedStream, mediaKey, haveSigner, disk))
 	mp.Lookup = reuseStored(st.LookupMediaURL, disk, func() bool { return svc.Current().String(settings.MediaStore) == settings.StoreLocal })
 	// Webhooks set in the app reach what owner-set addresses may; those
 	// from the environment are the operator's, reached as before.
@@ -201,12 +210,12 @@ func run(ctx context.Context, o runOptions) int {
 		if u == "" {
 			return nil
 		}
-		return &notify.Webhook{URL: u, User: s.String(settings.AlertsWebhookUser), Pass: s.Secret(settings.AlertsWebhookPass),
+		return &notify.Webhook{URL: u, User: s.String(settings.AlertsWebhookUser), Pass: pairedSecret(s, settings.AlertsWebhookPass, settings.AlertsWebhookURL),
 			HTTP: webhookHTTP(s, settings.AlertsWebhookURL)}
 	}
 	feedWebhook := func() *feed.Webhook {
 		s := svc.Current()
-		return &feed.Webhook{URL: s.Secret(settings.FeedWebhookURL), Token: s.Secret(settings.FeedWebhookToken),
+		return &feed.Webhook{URL: s.Secret(settings.FeedWebhookURL), Token: pairedSecret(s, settings.FeedWebhookToken, settings.FeedWebhookURL),
 			HTTP: webhookHTTP(s, settings.FeedWebhookURL)}
 	}
 	notifier := &notify.Live{Webhook: alertWebhook}
@@ -242,8 +251,12 @@ func run(ctx context.Context, o runOptions) int {
 		Registry: reg,
 		Store:    st,
 		// A plain fetcher, never a nil *Pipeline inside the interface.
-		// Media on this server's disk are read from it, never over HTTP.
-		Fetcher:  media.LocalFirst{Local: disk, Next: media.NewFetcher()},
+		// Media on this server's disk are read from it, never over HTTP;
+		// those on the environment's Blossom server are reached as
+		// before; any other address (a server set in the app, or one it
+		// answered) as owner-set addresses are.
+		Fetcher: media.LocalFirst{Local: disk, Next: &media.Fetcher{HTTP: guardedStream,
+			TrustedOrigin: media.Origin(cfg.BlossomURL), TrustedHTTP: media.NewStreamClient()}},
 		Notify:   feed.Live{Webhook: feedWebhook},
 		Unfurler: uf,
 		Alerter:  notifier,
@@ -297,7 +310,7 @@ func run(ctx context.Context, o runOptions) int {
 		return 0, false, nil
 	}
 	a.DiskMedia = disk
-	a.System = func() []api.SystemValue { return api.SystemValues(os.Getenv, systemVars) }
+	a.System = func() []api.SystemValue { return system }
 	a.Version = version
 	// Drafts saved before /v1 get their /v1 shape, once, before requests.
 	a.ConvertOldDrafts(context.Background())
@@ -686,14 +699,35 @@ func appBaseURL(redirect string) string {
 	return ""
 }
 
+// pairedSecret is key's secret for the address at urlKey: one from the
+// environment goes only to an address from the environment, so an address
+// set in the app never receives the operator's password or token (the
+// settings refuse that pairing; this covers an address saved before the
+// variable was set).
+func pairedSecret(s *settings.Snapshot, key, urlKey string) string {
+	v, _ := s.Get(key)
+	u, _ := s.Get(urlKey)
+	if v.Source == settings.SourceEnv && u.Source != settings.SourceEnv {
+		return ""
+	}
+	return s.Secret(key)
+}
+
+// guardedStreamClient carries large bodies to and from owner-set
+// addresses: the owner-set guard on every connection and redirect, no
+// overall timeout, a bounded wait for the answer.
+func guardedStreamClient(guard netguard.Policy) *http.Client {
+	return &http.Client{Transport: destination.GuardedNet(guard.Allow).Transport(destination.TransportOptions{
+		ResponseHeaderTimeout: 60 * time.Second}), CheckRedirect: destination.GuardedRedirect}
+}
+
 // liveMediaStore is the media store the settings set now: none, or a
 // Blossom server, signed with the store's own key once one is set (and
 // then named in each authorization), else with the environment's Nostr
-// key. A server set in the app is reached as owner-set addresses are.
-func liveMediaStore(svc *settings.Service, guard netguard.Policy, envKey gonostr.SecretKey, haveEnvKey bool, disk *media.Local) func() (media.Store, error) {
+// key. A server set in the app is reached with guarded, as owner-set
+// addresses are, and the addresses it answers stay on its own origin.
+func liveMediaStore(svc *settings.Service, guarded *http.Client, envKey gonostr.SecretKey, haveEnvKey bool, disk *media.Local) func() (media.Store, error) {
 	trusted := media.NewStreamClient()
-	guarded := &http.Client{Transport: destination.GuardedNet(guard.Allow).Transport(destination.TransportOptions{
-		ResponseHeaderTimeout: 60 * time.Second}), CheckRedirect: destination.GuardedRedirect}
 	return func() (media.Store, error) {
 		s := svc.Current()
 		switch s.String(settings.MediaStore) {
@@ -702,19 +736,19 @@ func liveMediaStore(svc *settings.Service, guard netguard.Policy, envKey gonostr
 			if u == "" {
 				return nil, &media.UnusableError{Reason: "no Blossom server is set (Settings, Media)"}
 			}
-			cl := trusted
-			if v, _ := s.Get(settings.MediaBlossomURL); v.Source == settings.SourceSaved {
-				cl = guarded
+			cl, saved := trusted, false
+			if v, _ := s.Get(settings.MediaBlossomURL); v.Source != settings.SourceEnv {
+				cl, saved = guarded, true
 			}
 			if k := s.Secret(settings.MediaBlossomKey); k != "" {
 				sk, err := drivers.MediaSigningKey(k)
 				if err != nil {
 					return nil, &media.UnusableError{Reason: "the Blossom signing key isn't a Nostr key: make a new one in Settings, Media"}
 				}
-				return &media.Blossom{URL: u, Key: sk, Own: true, HTTP: cl}, nil
+				return &media.Blossom{URL: u, Key: sk, Own: true, Confined: true, HTTP: cl}, nil
 			}
 			if haveEnvKey {
-				return &media.Blossom{URL: u, Key: envKey, HTTP: cl}, nil
+				return &media.Blossom{URL: u, Key: envKey, Confined: saved, HTTP: cl}, nil
 			}
 			return nil, &media.UnusableError{Reason: "uploads to a Blossom server are signed: make a signing key in Settings, Media (or set NSEC_HEX)"}
 		case settings.StoreLocal:

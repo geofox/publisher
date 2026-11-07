@@ -179,7 +179,7 @@ func (s *Service) load(ctx context.Context) (*Snapshot, error) {
 	sort.SliceStable(order, func(i, j int) bool { return order[i].AudienceOf == "" && order[j].AudienceOf != "" })
 	for i := range order {
 		d := s.by[order[i].Key]
-		v := Value{Key: d.Key, Source: SourceDefault, Env: d.Env, def: d}
+		v := Value{Key: d.Key, Source: SourceDefault, Env: s.envName(d), def: d}
 		ev, fromEnv, err := d.envValue(s.o.Env)
 		if err != nil {
 			return nil, err
@@ -187,6 +187,9 @@ func (s *Service) load(ctx context.Context) (*Snapshot, error) {
 		switch {
 		case fromEnv:
 			v.Source, v.Locked = SourceEnv, true
+			_, savedRow := saved[d.Key]
+			_, savedSecret := sealed[d.Key]
+			v.Behind = savedRow || savedSecret
 			if d.Field.Secret {
 				v.Set = ev.(string) != ""
 				snap.secret[d.Key] = ev.(string)
@@ -279,7 +282,7 @@ func (s *Service) version(snap *Snapshot, scope Scope) string {
 		}
 		v := snap.vals[d.Key]
 		b, _ := json.Marshal(v.Value)
-		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%t\x00%s\x00%d\x00", d.Key, v.Source, b, v.Set, v.Broken, v.UpdatedAt.UnixNano())
+		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%t\x00%s\x00%d\x00%t\x00", d.Key, v.Source, b, v.Set, v.Broken, v.UpdatedAt.UnixNano(), v.Behind)
 	}
 	return `"` + hex.EncodeToString(h.Sum(nil)[:12]) + `"`
 }
@@ -332,7 +335,7 @@ func (s *Service) Apply(ctx context.Context, c Change) (*Snapshot, error) {
 			continue
 		}
 		if cur.vals[k].Locked {
-			return cur, &LockedError{Key: k, Env: d.Env}
+			return cur, &LockedError{Key: k, Env: s.envName(d)}
 		}
 		raw := c.Values[k]
 		if raw == nil {
@@ -378,6 +381,12 @@ func (s *Service) Apply(ctx context.Context, c Change) (*Snapshot, error) {
 		}
 		addr, changed := newSecret[d.AudienceOf]
 		if !changed || Origin(addr) == Origin(cur.secret[d.AudienceOf]) {
+			continue
+		}
+		if cur.vals[d.Key].Locked && addr != "" {
+			// The operator's secret goes only to the operator's address.
+			bad(d.AudienceOf, "locked", fmt.Sprintf("%s is set by %s, which goes only to an address from the environment: set %s there too, or remove %s",
+				d.Field.Label, d.Env, s.by[d.AudienceOf].Env, d.Env))
 			continue
 		}
 		if _, given := newSecret[d.Key]; given || cur.vals[d.Key].Locked || !cur.vals[d.Key].Set {
@@ -463,9 +472,18 @@ func (s *Service) reload(ctx context.Context) (*Snapshot, error) {
 	return snap, nil
 }
 
+// ErrNotFromEnv: a setting copied into the app isn't set by the
+// environment.
+var ErrNotFromEnv = errors.New("isn't set by the environment")
+
 // CopyFromEnv saves a key's environment value in the app, so the
 // variable can be removed without the setting going back to its default.
-// The setting stays locked while the variable is set.
+// The setting stays locked while the variable is set. What one variable
+// sets together is copied together (BLOSSOM_URL sets the store and its
+// address), and so are an address and the secret that goes with it, when
+// the environment sets both. Each value is checked as one typed in the app
+// is: a value the app would refuse is refused here too, rather than saved
+// and dropped at the next start.
 func (s *Service) CopyFromEnv(ctx context.Context, key, by string) (*Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -474,41 +492,109 @@ func (s *Service) CopyFromEnv(ctx context.Context, key, by string) (*Snapshot, e
 	if !ok {
 		return cur, &ValidationError{Fields: []destination.FieldError{{Key: key, Code: "unknown_field", Detail: "not a setting"}}}
 	}
-	v := cur.vals[key]
-	if v.Source != SourceEnv {
-		return cur, &ValidationError{Fields: []destination.FieldError{{Key: key, Code: "invalid", Detail: "isn't set by the environment"}}}
+	if cur.vals[key].Source != SourceEnv {
+		return cur, ErrNotFromEnv
 	}
 	ch := store.SettingsChange{Owner: s.ownerID(d.Scope), Put: map[string]string{}, By: by}
-	if d.Field.Secret {
-		if s.o.CanSeal != nil {
-			if err := s.o.CanSeal(); err != nil {
+	var fieldErrs []destination.FieldError
+	for _, k := range s.copiedWith(cur, key) {
+		d, v := s.by[k], cur.vals[k]
+		var raw any
+		if d.Field.Secret {
+			raw = cur.secret[k]
+		} else {
+			// As a saved value is read back: through JSON.
+			b, err := json.Marshal(v.Value)
+			if err != nil {
+				return cur, err
+			}
+			if err := json.Unmarshal(b, &raw); err != nil {
 				return cur, err
 			}
 		}
-		plain := cur.secret[key]
-		aud := ""
-		switch {
-		case d.Field.Type == destination.FieldURL:
-			aud = Origin(plain)
-		case d.AudienceOf != "":
-			aud = Origin(cur.secret[d.AudienceOf])
+		out, errs := destination.ValidateFields([]destination.FieldSpec{d.Field}, map[string]any{k: raw},
+			destination.FieldOptions{Partial: true, URL: s.o.URL})
+		if len(errs) > 0 {
+			for _, e := range errs {
+				e.Key = k
+				e.Detail = s.envName(d) + "'s value can't be kept in the app: " + e.Detail + ". Change the variable, then copy it again"
+				fieldErrs = append(fieldErrs, e)
+			}
+			continue
 		}
-		x, err := s.seal(d, aud, plain)
+		if out[k] == nil {
+			continue
+		}
+		if d.Field.Secret {
+			if s.o.CanSeal != nil {
+				if err := s.o.CanSeal(); err != nil {
+					return cur, err
+				}
+			}
+			plain := out[k].(string)
+			aud := ""
+			switch {
+			case d.Field.Type == destination.FieldURL:
+				aud = Origin(plain)
+			case d.AudienceOf != "":
+				aud = Origin(cur.secret[d.AudienceOf])
+			}
+			x, err := s.seal(d, aud, plain)
+			if err != nil {
+				return cur, err
+			}
+			ch.PutSecrets = append(ch.PutSecrets, x)
+			continue
+		}
+		b, err := json.Marshal(out[k])
 		if err != nil {
 			return cur, err
 		}
-		ch.PutSecrets = []store.SealedSecret{x}
-	} else {
-		b, err := json.Marshal(v.Value)
-		if err != nil {
-			return cur, err
-		}
-		ch.Put[key] = string(b)
+		ch.Put[k] = string(b)
+	}
+	if len(fieldErrs) > 0 {
+		return cur, &ValidationError{Fields: fieldErrs}
 	}
 	if err := s.o.Store.ApplySettings(ctx, ch); err != nil {
 		return cur, err
 	}
 	return s.reload(ctx)
+}
+
+// copiedWith is key and what is copied along with it, each set by the
+// environment: the settings one variable sets together, and an address
+// with the secret that goes with it.
+func (s *Service) copiedWith(cur *Snapshot, key string) []string {
+	d := s.by[key]
+	out := []string{key}
+	add := func(k string) {
+		if k != "" && !slices.Contains(out, k) && cur.vals[k].Source == SourceEnv {
+			out = append(out, k)
+		}
+	}
+	for _, o := range s.defs {
+		if o.Scope != d.Scope || o.Key == key {
+			continue
+		}
+		if (s.envName(d) != "" && s.envName(&o) == s.envName(d)) || o.AudienceOf == key {
+			add(o.Key)
+		}
+	}
+	add(d.AudienceOf)
+	sort.Strings(out[1:])
+	return out
+}
+
+// envName is the variable that sets d: its own, or the one its EnvFunc
+// reads (media.store follows BLOSSOM_URL).
+func (s *Service) envName(d *Def) string {
+	if d.Env != "" {
+		return d.Env
+	}
+	if d.EnvVar != "" {
+		return d.EnvVar
+	}
+	return ""
 }
 
 // Value is one setting as it stands.
@@ -522,7 +608,10 @@ type Value struct {
 	Set    bool
 	Origin string
 	// Broken says why a saved secret can't be used ("" when it can).
-	Broken    string
+	Broken string
+	// Behind: the environment sets it, and a value saved in the app
+	// waits behind, applying once the variable is removed.
+	Behind    bool
 	UpdatedAt time.Time
 	def       *Def
 }

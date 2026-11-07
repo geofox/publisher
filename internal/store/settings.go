@@ -143,6 +143,8 @@ var (
 	ErrAccountSetNotFound = errors.New("account set not found")
 	// ErrAccountSetName: the owner already has a set of that name.
 	ErrAccountSetName = errors.New("an account set of that name already exists")
+	// ErrAccountSetsFull: the owner has MaxAccountSets sets.
+	ErrAccountSetsFull = errors.New("at most 50 account sets; delete one first")
 	// ErrAccountSetConflict: the set changed since the caller read it.
 	ErrAccountSetConflict = errors.New("account set changed since it was read")
 )
@@ -201,6 +203,9 @@ type AccountSetChange struct {
 	IfUpdatedAt time.Time
 }
 
+// MaxAccountSets is how many account sets an owner may have.
+const MaxAccountSets = 50
+
 // CreateAccountSet stores a new account set; making it the default
 // clears the owner's other default.
 func (s *Store) CreateAccountSet(ctx context.Context, owner string, c AccountSetChange) (AccountSet, error) {
@@ -249,9 +254,49 @@ func (s *Store) writeAccountSet(ctx context.Context, a AccountSet, create bool, 
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Names differ in more than case, and the cap holds, checked in the
+	// write's own transaction (BEGIN IMMEDIATE), so two at once can't
+	// both pass.
+	rows, err := tx.QueryContext(ctx, `SELECT id, name FROM account_sets WHERE owner_id = ?`, a.Owner)
+	if err != nil {
+		return err
+	}
+	others := 0
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			rows.Close()
+			return err
+		}
+		if id == a.ID {
+			continue
+		}
+		others++
+		if strings.EqualFold(name, a.Name) {
+			rows.Close()
+			return ErrAccountSetName
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if create && others >= MaxAccountSets {
+		return ErrAccountSetsFull
+	}
 	if a.IsDefault {
-		if _, err := tx.ExecContext(ctx, `UPDATE account_sets SET is_default = 0 WHERE owner_id = ? AND id <> ? AND is_default = 1`,
-			a.Owner, a.ID); err != nil {
+		// The set that was the default changes too (its ETag with it).
+		var oldID string
+		var oldAt time.Time
+		err := tx.QueryRowContext(ctx, `SELECT id, updated_at FROM account_sets WHERE owner_id = ? AND id <> ? AND is_default = 1`,
+			a.Owner, a.ID).Scan(&oldID, &oldAt)
+		switch {
+		case err == nil:
+			if _, err := tx.ExecContext(ctx, `UPDATE account_sets SET is_default = 0, updated_at = ? WHERE owner_id = ? AND id = ?`,
+				nextUpdatedAt(oldAt), a.Owner, oldID); err != nil {
+				return err
+			}
+		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
 	}

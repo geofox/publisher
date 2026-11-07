@@ -227,8 +227,8 @@ func TestCopyFromEnvAndCanSeal(t *testing.T) {
 	if s2.Current().Secret(FeedToken) != "feedtok" || s2.Current().String(PublishingGrace) != "1h30m" {
 		t.Fatalf("copies: %q %q", s2.Current().Secret(FeedToken), s2.Current().String(PublishingGrace))
 	}
-	if _, err := s2.CopyFromEnv(ctx, FeedToken, "session"); err == nil {
-		t.Fatal("copied a value not set by env")
+	if _, err := s2.CopyFromEnv(ctx, FeedToken, "session"); !errors.Is(err, ErrNotFromEnv) {
+		t.Fatalf("copied a value not set by env: %v", err)
 	}
 	// No usable master key: secrets are refused, plain values aren't.
 	refuse := errors.New("no key")
@@ -295,5 +295,75 @@ func TestWebhookAddressRules(t *testing.T) {
 	}
 	if got := s.Current().Secret(AlertsWebhookURL); got != "https://hooks.example.com/a/b/?t=1" {
 		t.Fatalf("kept %q", got)
+	}
+}
+
+// A value the app would refuse isn't copied (it would be dropped at the
+// next start); a copy is marked behind the variable, and changes the
+// version.
+func TestCopyFromEnvChecksAndMarks(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	env := map[string]string{"SCHEDULE_GRACE": "30s", "AUTO_RETRY_MAX_ATTEMPTS": "50",
+		"ALERT_WEBHOOK_URL": "http://alertmanager-pushover:5001/alert", "AUTO_RETRY_ENABLED": "false"}
+	s := newService(t, st, env)
+	for key, envName := range map[string]string{PublishingGrace: "SCHEDULE_GRACE", PublishingMaxAttempts: "AUTO_RETRY_MAX_ATTEMPTS",
+		AlertsWebhookURL: "ALERT_WEBHOOK_URL"} {
+		_, err := s.CopyFromEnv(ctx, key, "session")
+		var ve *ValidationError
+		if !errors.As(err, &ve) || ve.Fields[0].Key != key || !strings.Contains(ve.Fields[0].Detail, envName) {
+			t.Errorf("%s copied: %v", key, err)
+		}
+	}
+	if rows, sec, _ := st.Settings(ctx, store.DefaultOwner); len(rows) != 0 || len(sec) != 0 {
+		t.Fatalf("a refused copy saved %d values, %d secrets", len(rows), len(sec))
+	}
+	v0 := s.Current().Version(Owner)
+	if v, _ := s.Current().Get(PublishingAutoRetry); v.Behind {
+		t.Fatal("behind before a copy")
+	}
+	if _, err := s.CopyFromEnv(ctx, PublishingAutoRetry, "session"); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := s.Current().Get(PublishingAutoRetry); !v.Behind || v.Source != SourceEnv || s.Current().Version(Owner) == v0 {
+		t.Fatalf("after the copy: %+v, version changed %v", v, s.Current().Version(Owner) != v0)
+	}
+}
+
+// What one variable sets together is copied together, and so are an
+// address and its secret.
+func TestCopyFromEnvTakesCompanions(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	s := newService(t, st, map[string]string{"BLOSSOM_URL": "https://blossom.example.com/",
+		"ALERT_WEBHOOK_URL": "https://am.example.com/hook", "ALERT_WEBHOOK_PASS": "pw"})
+	if _, err := s.CopyFromEnv(ctx, MediaBlossomURL, "session"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CopyFromEnv(ctx, AlertsWebhookURL, "session"); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := s.Current().Get(MediaStore); !v.Behind || v.Env != "BLOSSOM_URL" {
+		t.Fatalf("store not copied along: %+v", v)
+	}
+	s2 := newService(t, st, nil)
+	cur := s2.Current()
+	if cur.String(MediaStore) != StoreBlossom || cur.String(MediaBlossomURL) != "https://blossom.example.com" {
+		t.Fatalf("without BLOSSOM_URL: %q %q", cur.String(MediaStore), cur.String(MediaBlossomURL))
+	}
+	if cur.Secret(AlertsWebhookURL) != "https://am.example.com/hook" || cur.Secret(AlertsWebhookPass) != "pw" {
+		t.Fatalf("webhook: %q %q", cur.Secret(AlertsWebhookURL), cur.Secret(AlertsWebhookPass))
+	}
+}
+
+// The operator's secret goes only to the operator's address: an address
+// typed in the app while the environment sets its secret is refused.
+func TestEnvSecretStaysWithEnvAddress(t *testing.T) {
+	s := newService(t, openStore(t), map[string]string{"ALERT_WEBHOOK_PASS": "operator-pw"})
+	_, err := s.Apply(context.Background(), Change{Scope: Owner, Values: map[string]any{AlertsWebhookURL: "https://elsewhere.example.com/hook"}})
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Fields[0].Key != AlertsWebhookURL || ve.Fields[0].Code != "locked" ||
+		!strings.Contains(ve.Fields[0].Detail, "ALERT_WEBHOOK_URL") {
+		t.Fatalf("address set beside the operator's password: %v", err)
 	}
 }

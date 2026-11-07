@@ -48,6 +48,9 @@ type v1SettingLeaf struct {
 	UpdatedAt string `json:"updated_at,omitempty"`
 	// Problem says why a saved secret can't be used (typed again, it can).
 	Problem string `json:"problem,omitempty"`
+	// AlsoSaved: the environment sets it, and a value saved in the app
+	// (copied into it) applies once the variable is removed.
+	AlsoSaved bool `json:"also_saved,omitempty"`
 	// Generate: the server can make a value for it (:generate).
 	Generate bool                  `json:"generate,omitempty"`
 	Field    destination.FieldSpec `json:"field"`
@@ -83,11 +86,8 @@ func settingsBody(svc *settings.Service, snap *settings.Snapshot, scope settings
 	out := map[string]map[string]v1SettingLeaf{}
 	for _, d := range svc.Defs(scope) {
 		v, _ := snap.Get(d.Key)
-		leaf := v1SettingLeaf{Value: v.Value, Source: string(v.Source), Env: d.Env, Locked: v.Locked, Problem: v.Broken,
-			Generate: d.Generate, Field: d.Field}
-		if d.EnvFunc != nil && d.Env == "" {
-			leaf.Env = "BLOSSOM_URL" // media.store follows it
-		}
+		leaf := v1SettingLeaf{Value: v.Value, Source: string(v.Source), Env: v.Env, Locked: v.Locked, Problem: v.Broken,
+			AlsoSaved: v.Behind, Generate: d.Generate, Field: d.Field}
 		if !v.UpdatedAt.IsZero() {
 			leaf.UpdatedAt = v.UpdatedAt.UTC().Format(time.RFC3339)
 		}
@@ -334,9 +334,8 @@ func (a *API) copySettingFromEnv(w http.ResponseWriter, r *http.Request, svc *se
 	}
 	p, _ := principalFrom(r.Context())
 	snap, err := svc.CopyFromEnv(r.Context(), key, settingsActor(p))
-	var verr *settings.ValidationError
-	if errors.As(err, &verr) {
-		problem(w, r, http.StatusConflict, codeInvalidState, key+" "+verr.Fields[0].Detail)
+	if errors.Is(err, settings.ErrNotFromEnv) {
+		problem(w, r, http.StatusConflict, codeInvalidState, key+" "+err.Error())
 		return
 	}
 	if err != nil {

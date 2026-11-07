@@ -144,7 +144,7 @@ func (m envMap) get(k string) string { return m[k] }
 // set, an address without its user and password.
 func TestV1System(t *testing.T) {
 	e := newSettingsEnv(t, true, nil)
-	env := envMap{"PUBLIC_URL": " https://pub.example ", "OIDC_CLIENT_SECRET": "hunter2", "PLC_DIRECTORY_URL": "https://u:p@plc.example/x",
+	env := envMap{"PUBLIC_URL": " https://pub.example ", "OIDC_CLIENT_SECRET": "hunter2", "PLC_DIRECTORY_URL": "https://u:p@plc.example/x?token=s3cret#frag",
 		"ALLOWED_HOSTS": "a.example,b.example"}
 	e.api.System = func() []SystemValue {
 		return SystemValues(env.get, []SystemVar{{Env: "PUBLIC_URL"}, {Env: "LOG_LEVEL"}, {Env: "PLC_DIRECTORY_URL"},
@@ -152,7 +152,7 @@ func TestV1System(t *testing.T) {
 	}
 	r := e.do(req{method: "GET", path: "/v1/instance/system"})
 	wantStatus(t, r, 200)
-	if strings.Contains(r.Body.String(), "hunter2") || strings.Contains(r.Body.String(), "u:p@") {
+	if strings.Contains(r.Body.String(), "hunter2") || strings.Contains(r.Body.String(), "u:p@") || strings.Contains(r.Body.String(), "s3cret") {
 		t.Fatalf("a secret shown: %s", r.Body.String())
 	}
 	var got v1SystemBody

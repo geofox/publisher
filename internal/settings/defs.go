@@ -58,6 +58,9 @@ type Def struct {
 	// FromEnv reads the variable's value as the configuration does; nil
 	// reads it by the field's type.
 	FromEnv func(raw string) (any, error)
+	// EnvVar names the variable EnvFunc follows, for the owner (and so
+	// the two are copied into the app together).
+	EnvVar string
 	// EnvFunc, when set, decides the env value from every variable read
 	// (media.store follows BLOSSOM_URL); ok false: not set by env.
 	EnvFunc func(env map[string]string) (v any, ok bool)
@@ -149,7 +152,7 @@ func Defs() []Def {
 		{Key: AlertsWebhookPass, Scope: Owner, Env: "ALERT_WEBHOOK_PASS", AudienceOf: AlertsWebhookURL,
 			Field: destination.FieldSpec{Label: "Alert webhook password", Type: destination.FieldString, Secret: true, MaxLength: 500,
 				Help: "Basic-auth password. Without one, no Authorization is sent."}},
-		{Key: MediaStore, Scope: Instance,
+		{Key: MediaStore, Scope: Instance, EnvVar: "BLOSSOM_URL",
 			EnvFunc: func(env map[string]string) (any, bool) {
 				if strings.TrimSpace(env["BLOSSOM_URL"]) != "" {
 					return StoreBlossom, true

@@ -20,7 +20,7 @@ import (
 const (
 	maxAccountSetName     = 64
 	maxAccountSetAccounts = maxPostTargets
-	maxAccountSets        = 50
+	maxAccountSets        = store.MaxAccountSets
 )
 
 type v1AccountSetBody struct {
@@ -215,6 +215,8 @@ func (a *API) accountSetWriteOK(w http.ResponseWriter, r *http.Request, err erro
 		return true
 	case errors.Is(err, store.ErrAccountSetName):
 		invalid(w, r, []fieldError{errNameTaken})
+	case errors.Is(err, store.ErrAccountSetsFull):
+		problem(w, r, http.StatusConflict, codeInvalidState, err.Error())
 	case errors.Is(err, store.ErrAccountSetNotFound):
 		problem(w, r, http.StatusNotFound, codeNotFound, "no account set "+r.PathValue("id"))
 	default:
