@@ -75,7 +75,16 @@ jobs:
             publisher:ci
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8080/readyz; then
-              echo; docker exec smoke /publisher -healthcheck && exit 0
+              echo
+              # A new database signs in by itself: the API is closed, and
+              # setup is waiting for its link.
+              code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/instance)
+              curl -fsS http://127.0.0.1:8080/auth/methods | tee /dev/stderr | grep -q '"mode":"local".*"setup":true' && \
+                [ "$code" = 401 ] && \
+                docker exec smoke /publisher -healthcheck && exit 0
+              echo "/v1/instance answered $code"
+              docker logs smoke
+              exit 1
             fi
             sleep 1
           done
@@ -85,8 +94,11 @@ jobs:
       - name: Smoke run with no destinations and no media store
         run: |
           # Nothing is required: accounts and media can come later.
+          # AUTH_MODE=proxy only so that /v1/instance answers without a
+          # sign-in.
           docker run -d --name bare -p 8081:8080 \
             -e DB_PATH=/data/publisher.db \
+            -e AUTH_MODE=proxy \
             --tmpfs /data \
             publisher:ci
           for i in $(seq 1 30); do
