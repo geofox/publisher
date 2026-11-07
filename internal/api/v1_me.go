@@ -13,9 +13,10 @@ import (
 
 // /v1/me/…: the signed-in owner's ways of signing in, sessions and recent
 // sign-in events. Browser sessions only. Adding or removing a way to sign
-// in and setting the password need re-authentication; passkeys and the
-// password exist in local mode only (with OIDC, the identity provider
-// manages sign-in).
+// in and setting the first password need re-authentication (changing the
+// password takes the current one instead); passkeys and the password
+// exist in local mode only (with OIDC, the identity provider manages
+// sign-in).
 
 type v1PasskeyBody struct {
 	ID         string  `json:"id"`
@@ -25,11 +26,16 @@ type v1PasskeyBody struct {
 	// Synced: the passkey may be copied to the owner's other devices
 	// (backup eligible).
 	Synced bool `json:"synced"`
+	// Usable: made for this address. False: made for another one
+	// (PUBLIC_URL changed), so it can't sign in here (RPID says where).
+	Usable bool   `json:"usable"`
+	RPID   string `json:"rp_id"`
 }
 
-func v1Passkey(c store.WebAuthnCredential) v1PasskeyBody {
+func (a *API) v1Passkey(c store.WebAuthnCredential) v1PasskeyBody {
 	return v1PasskeyBody{ID: c.ID, Name: c.Name, CreatedAt: rfc3339(c.CreatedAt), LastUsedAt: rfc3339p(c.LastUsedAt),
-		Synced: c.Flags&0x08 != 0} // BE (backup eligible) is bit 3 of the authenticator flags
+		Synced: c.Flags&0x08 != 0, // BE (backup eligible) is bit 3 of the authenticator flags
+		Usable: c.RPID == a.Local.RPID(), RPID: c.RPID}
 }
 
 type v1PasswordBody struct {
@@ -69,7 +75,7 @@ func (a *API) v1SignIn(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, c := range list {
-			body.Passkeys = append(body.Passkeys, v1Passkey(c))
+			body.Passkeys = append(body.Passkeys, a.v1Passkey(c))
 		}
 		at, err := a.Store.PasswordSetAt(r.Context(), p.User.ID)
 		if err != nil {
@@ -82,11 +88,13 @@ func (a *API) v1SignIn(w http.ResponseWriter, r *http.Request) {
 	writeV1(w, http.StatusOK, body)
 }
 
-// v1BeginPasskey (POST /v1/me/passkeys:begin) starts adding a passkey; the
-// re-authentication for signin.add is spent here.
+// v1BeginPasskey (POST /v1/me/passkeys:begin) starts adding a passkey: the
+// re-authentication for signin.add is checked here and spent by
+// v1AddPasskey, so a passkey prompt the owner cancels can be tried again
+// without confirming again.
 func (a *API) v1BeginPasskey(w http.ResponseWriter, r *http.Request) {
 	p, ok := a.localOwner(w, r)
-	if !ok || !a.requireReauth(w, r, opSignInAdd, "") {
+	if !ok || !a.checkReauth(w, r, opSignInAdd, "") {
 		return
 	}
 	opts, id, err := a.Local.BeginRegister(r.Context(), a.clientAddr(r), localauth.PurposeRegister, p.Session.ID)
@@ -99,10 +107,11 @@ func (a *API) v1BeginPasskey(w http.ResponseWriter, r *http.Request) {
 }
 
 // v1AddPasskey (POST /v1/me/passkeys {name, credential}) finishes adding a
-// passkey begun by v1BeginPasskey in this session.
+// passkey begun by v1BeginPasskey in this session, with the same
+// re-authentication nonce, which it spends.
 func (a *API) v1AddPasskey(w http.ResponseWriter, r *http.Request) {
 	p, ok := a.localOwner(w, r)
-	if !ok {
+	if !ok || !a.checkReauth(w, r, opSignInAdd, "") {
 		return
 	}
 	req, ok := readPasskeyFinish(w, r)
@@ -110,12 +119,19 @@ func (a *API) v1AddPasskey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clearCeremonyCookie(w)
-	c, err := a.Local.FinishRegister(r.Context(), ceremonyID(r), localauth.PurposeRegister, p.Session.ID, req.Credential, req.Name)
+	c, err := a.Local.FinishRegister(r.Context(), a.clientAddr(r), ceremonyID(r), localauth.PurposeRegister, p.Session.ID, req.Credential, req.Name)
 	if err != nil {
 		a.answerPasskeyErr(w, r, err)
 		return
 	}
+	if !a.requireReauth(w, r, opSignInAdd, "") {
+		return
+	}
 	c, err = a.Store.AddWebAuthnCredential(r.Context(), p.User.ID, c)
+	if errors.Is(err, store.ErrDuplicatePasskey) {
+		problem(w, r, http.StatusConflict, codeInvalidState, err.Error())
+		return
+	}
 	if err != nil {
 		slog.ErrorContext(r.Context(), "v1: store passkey", "err", err)
 		problem(w, r, http.StatusInternalServerError, codeInternal, "saving the passkey failed")
@@ -123,7 +139,7 @@ func (a *API) v1AddPasskey(w http.ResponseWriter, r *http.Request) {
 	}
 	a.signInEvent(r.Context(), store.EventSignInAdded, store.EventData{Method: "passkey", Passkey: c.ID, Addr: a.clientAddr(r).String()})
 	w.Header().Set("Location", "/v1/me/passkeys/"+c.ID)
-	writeV1(w, http.StatusCreated, v1Passkey(c))
+	writeV1(w, http.StatusCreated, a.v1Passkey(c))
 }
 
 // answerPasskeyErr answers a failed attempt to add a passkey. The caller
@@ -140,6 +156,49 @@ func (a *API) answerPasskeyErr(w http.ResponseWriter, r *http.Request, err error
 	default:
 		a.answerLocalErr(w, r, err)
 	}
+}
+
+// canRemove answers 404 when the owner has no such passkey (id) or no
+// password (id ""), and 409 when it is the last usable way to sign in, so
+// the owner isn't asked to confirm for a removal that can't happen. The
+// store checks again when it removes.
+func (a *API) canRemove(w http.ResponseWriter, r *http.Request, p principal, id string) bool {
+	ctx := r.Context()
+	list, err := a.Store.WebAuthnCredentials(ctx, p.User.ID)
+	if err != nil {
+		a.answerMethodErr(w, r, err, "")
+		return false
+	}
+	at, err := a.Store.PasswordSetAt(ctx, p.User.ID)
+	if err != nil {
+		a.answerMethodErr(w, r, err, "")
+		return false
+	}
+	found, usableIt, others := false, !at.IsZero(), 0
+	if id == "" {
+		found = !at.IsZero()
+	} else if !at.IsZero() {
+		others++
+	}
+	for _, c := range list {
+		usable := c.RPID == a.Local.RPID() || a.Local.RPID() == ""
+		if c.ID == id {
+			found, usableIt = true, usable
+		} else if usable {
+			others++
+		}
+	}
+	switch {
+	case !found && id == "":
+		a.answerMethodErr(w, r, sql.ErrNoRows, "no password is set")
+	case !found:
+		a.answerMethodErr(w, r, sql.ErrNoRows, "no passkey "+id)
+	case usableIt && others == 0:
+		a.answerMethodErr(w, r, store.ErrLastSignInMethod, "")
+	default:
+		return true
+	}
+	return false
 }
 
 type v1RenamePasskeyReq struct {
@@ -168,7 +227,7 @@ func (a *API) v1RenamePasskey(w http.ResponseWriter, r *http.Request) {
 	list, _ := a.Store.WebAuthnCredentials(r.Context(), p.User.ID)
 	for _, c := range list {
 		if c.ID == id {
-			writeV1(w, http.StatusOK, v1Passkey(c))
+			writeV1(w, http.StatusOK, a.v1Passkey(c))
 			return
 		}
 	}
@@ -198,12 +257,12 @@ func (a *API) endOtherSessions(r *http.Request, p principal) {
 }
 
 func (a *API) v1RemovePasskey(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
 	p, ok := a.localOwner(w, r)
-	if !ok || !a.requireReauth(w, r, opSignInRemove, "") {
+	if !ok || !a.canRemove(w, r, p, id) || !a.requireReauth(w, r, opSignInRemove, "") {
 		return
 	}
-	id := r.PathValue("id")
-	if err := a.Store.RemoveWebAuthnCredential(r.Context(), p.User.ID, id); err != nil {
+	if err := a.Store.RemoveWebAuthnCredential(r.Context(), p.User.ID, id, a.Local.RPID()); err != nil {
 		a.answerMethodErr(w, r, err, "no passkey "+id)
 		return
 	}
@@ -217,9 +276,10 @@ type v1SetPasswordReq struct {
 	CurrentPassword *string `json:"current_password,omitempty"`
 }
 
-// v1SetPassword (PUT /v1/me/password) sets or changes the password:
-// re-authentication for password.set, and the current password when one
-// is set. Other sessions are ended.
+// v1SetPassword (PUT /v1/me/password) sets or changes the password. The
+// first one needs re-authentication for password.set; changing it needs
+// the current password, which is itself a fresh proof (the same check as
+// re-authenticating with it), so no nonce. Other sessions are ended.
 func (a *API) v1SetPassword(w http.ResponseWriter, r *http.Request) {
 	p, ok := a.localOwner(w, r)
 	if !ok {
@@ -243,11 +303,11 @@ func (a *API) v1SetPassword(w http.ResponseWriter, r *http.Request) {
 		invalid(w, r, []fieldError{{Pointer: "/current_password", Code: "required", Detail: "enter your current password to change it"}})
 		return
 	}
-	if !a.requireReauth(w, r, opPasswordSet, "") {
+	if !hasOne && !a.requireReauth(w, r, opPasswordSet, "") {
 		return
 	}
 	if hasOne {
-		if _, err := a.Local.CheckPassword(r.Context(), a.clientAddr(r), *req.CurrentPassword); err != nil {
+		if _, err := a.Local.CheckPassword(r.Context(), a.clientAddr(r), a.knownDevice(r), *req.CurrentPassword); err != nil {
 			a.failedSignIn(r, "password", err)
 			if errors.Is(err, localauth.ErrSignIn) {
 				invalid(w, r, []fieldError{{Pointer: "/current_password", Code: "wrong", Detail: "that isn't your current password"}})
@@ -277,10 +337,10 @@ func (a *API) v1SetPassword(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) v1RemovePassword(w http.ResponseWriter, r *http.Request) {
 	p, ok := a.localOwner(w, r)
-	if !ok || !a.requireReauth(w, r, opSignInRemove, "") {
+	if !ok || !a.canRemove(w, r, p, "") || !a.requireReauth(w, r, opSignInRemove, "") {
 		return
 	}
-	if err := a.Store.RemovePassword(r.Context(), p.User.ID); err != nil {
+	if err := a.Store.RemovePassword(r.Context(), p.User.ID, a.Local.RPID()); err != nil {
 		a.answerMethodErr(w, r, err, "no password is set")
 		return
 	}
@@ -350,13 +410,19 @@ type v1SignInEventBody struct {
 	Scopes    []string `json:"scopes,omitempty"`
 }
 
-const signInEventsShown = 50
+// Sign-in events shown: the newest 50 sign-ins and changes, and apart the
+// newest 20 failed attempts, so failures can't push the rest out.
+const (
+	signInEventsShown = 50
+	failedEventsShown = 20
+)
 
-// v1SignInEvents (GET /v1/me/sign-in-events) lists the last 50 sign-ins,
-// failed attempts and changes to sign-in methods and tokens.
+// v1SignInEvents (GET /v1/me/sign-in-events) lists the newest sign-ins
+// and changes to sign-in methods and tokens, and the newest failed
+// attempts, newest first.
 func (a *API) v1SignInEvents(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
-	evs, err := a.Store.SignInEvents(r.Context(), p.OwnerID, signInEventsShown)
+	evs, err := a.Store.SignInEvents(r.Context(), p.OwnerID, signInEventsShown, failedEventsShown)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "v1: sign-in events", "err", err)
 		problem(w, r, http.StatusInternalServerError, codeInternal, "reading the sign-in events failed")

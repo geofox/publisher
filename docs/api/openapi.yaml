@@ -290,9 +290,9 @@ paths:
       summary: How the owner signs in
       description: |
         A signed-in browser session only. In `local` mode: the owner's
-        passkeys and whether a password is set. With OIDC or behind the
-        proxy the lists are empty: the identity provider (or the proxy)
-        handles sign-in.
+        passkeys and whether a password is set. With OIDC the list is
+        empty: the identity provider handles sign-in. Behind the reverse
+        proxy alone there is no session: `403 sign_in_required`.
       security:
         - session: []
       responses:
@@ -315,12 +315,15 @@ paths:
       summary: Start adding a passkey
       description: |
         `local` mode, a signed-in browser session, re-authenticated for
-        `signin.add` (the nonce is spent here). Answers the options to pass
-        to `navigator.credentials.create()` and sets a short-lived
-        `publisher_ceremony` cookie; finish with `POST /v1/me/passkeys`
-        within five minutes. Needs `PUBLIC_URL` (`409 invalid_state`
-        without it). At most 20 starts a minute from one address (`429
-        rate_limited`).
+        `signin.add`: the nonce is checked here and spent by `POST
+        /v1/me/passkeys`, which takes the same one, so a passkey prompt
+        that was cancelled can be started again without confirming again.
+        Answers the options to pass to `navigator.credentials.create()` and
+        sets a short-lived `publisher_ceremony` cookie (the request,
+        sealed); finish within five minutes. Needs `PUBLIC_URL` (`409
+        invalid_state` without it); at most 20 passkeys (`409
+        invalid_state`). At most 20 starts a minute from one address,
+        failed finishes included (`429 rate_limited`).
       security:
         - session: []
       parameters:
@@ -348,14 +351,18 @@ paths:
       tags: [sign-in]
       summary: Finish adding a passkey
       description: |
-        `local` mode, the session that started it. `credential` is the
-        browser's `PublicKeyCredential` as JSON (`toJSON()`). A credential
-        that doesn't check out answers `422 validation_failed` on
+        `local` mode, the session that started it, with the `signin.add`
+        nonce it started with (spent here). `credential` is the browser's
+        `PublicKeyCredential` as JSON (`toJSON()`). A credential that
+        doesn't check out answers `422 validation_failed` on
         `/credential`, with no more detail; a request that is unknown,
-        expired or another session's, `409 invalid_state`. The passkey must
-        be discoverable and verify the user.
+        expired, used or another session's, or a passkey already added,
+        `409 invalid_state`. The passkey must be discoverable and verify
+        the user.
       security:
         - session: []
+      parameters:
+        - $ref: "#/components/parameters/Reauth"
       requestBody:
         required: true
         content:
@@ -443,8 +450,11 @@ paths:
       summary: Remove a passkey
       description: |
         `local` mode, re-authenticated for `signin.remove`. Every other
-        session is signed out. The last way to sign in can't be removed
-        (`409 last_sign_in_method`).
+        session is signed out. The last usable way to sign in can't be
+        removed (`409 last_sign_in_method`); a passkey made for another
+        address (`usable: false`) always can. An unknown passkey (`404`) or
+        the last way to sign in is answered before asking for
+        re-authentication.
       security:
         - session: []
       parameters:
@@ -468,10 +478,11 @@ paths:
       tags: [sign-in]
       summary: Set or change the password
       description: |
-        `local` mode, re-authenticated for `password.set`. Changing a
-        password also needs the current one (`current_password`; a wrong
-        one counts towards the password throttle). Every other session is
-        signed out.
+        `local` mode. Setting the first password needs re-authentication
+        for `password.set`. Changing it needs the current one instead
+        (`current_password`, which is the same proof: no nonce; a wrong
+        one answers `422` on `/current_password` and counts towards the
+        password throttle). Every other session is signed out.
       security:
         - session: []
       parameters:
@@ -515,8 +526,8 @@ paths:
       summary: Remove the password
       description: |
         `local` mode, re-authenticated for `signin.remove`. Only with a
-        passkey left (`409 last_sign_in_method`). Every other session is
-        signed out.
+        usable passkey left (`409 last_sign_in_method`, answered before
+        asking for re-authentication). Every other session is signed out.
       security:
         - session: []
       parameters:
@@ -539,7 +550,7 @@ paths:
       operationId: listSessions
       tags: [sign-in]
       summary: Where the owner is signed in
-      description: A signed-in browser session only. Newest first; `current` marks the caller's.
+      description: A signed-in browser session only. The most recently used first; `current` marks the caller's.
       security:
         - session: []
       responses:
@@ -596,10 +607,13 @@ paths:
       tags: [sign-in]
       summary: Recent sign-ins and changes to how you sign in
       description: |
-        A signed-in browser session only. The last 50, newest first:
-        sign-ins, failed attempts (at most 100 are recorded in ten
-        minutes), sign-in methods added, changed or removed, and tokens
-        created. They are not in the `/v1/events` stream.
+        A signed-in browser session only, newest first: the last 50
+        sign-ins, sign-in methods added, changed or removed, and tokens
+        created, and with them the last 20 failed attempts (counted apart,
+        so failures can't push the rest out). Failed attempts are recorded
+        at most 10 per address and 100 in all in ten minutes (all are
+        logged); an expired or unknown passkey request isn't one. They are
+        not in the `/v1/events` stream.
       security:
         - session: []
       responses:
@@ -673,9 +687,10 @@ paths:
 
         A token holding `admin` or `accounts:write` can be created only by
         the owner signed in in a browser, re-authenticated for
-        `token.create_privileged` (`Publisher-Reauth`): a token gets `403
+        `token.create` (`Publisher-Reauth`): a token gets `403
         session_required`, and behind the reverse proxy alone, `403
-        sign_in_required`.
+        sign_in_required`. A signed-in browser re-authenticates for any
+        token (a token outlives the session that made it).
 
         Not idempotent, deliberately: replaying the response would mean
         storing the secret. A retried create makes a second token; revoke
@@ -3573,7 +3588,7 @@ components:
             $ref: "#/components/schemas/FieldError"
         operation:
           type: string
-          description: "`reauth_required` only: the operation to re-authenticate for (`signin.add`, `signin.remove`, `password.set`, `token.create_privileged`)."
+          description: "`reauth_required` only: the operation to re-authenticate for (`signin.add`, `signin.remove`, `password.set`, `token.create`)."
     FieldError:
       type: object
       additionalProperties: false
@@ -4087,7 +4102,7 @@ components:
     Passkey:
       type: object
       additionalProperties: false
-      required: [id, name, created_at, last_used_at, synced]
+      required: [id, name, created_at, last_used_at, synced, usable, rp_id]
       properties:
         id:
           type: string
@@ -4101,6 +4116,15 @@ components:
         synced:
           type: boolean
           description: The passkey may be copied to the owner's other devices (backup eligible).
+        usable:
+          type: boolean
+          description: |
+            Made for this address. False: made for another one (`PUBLIC_URL`
+            changed since), so it can't sign in here; it doesn't count as a
+            way to sign in.
+        rp_id:
+          type: string
+          description: The host the passkey was made for.
     PasskeyOptions:
       type: object
       description: |

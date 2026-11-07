@@ -26,6 +26,10 @@ type Service struct {
 	Throttle   *Throttle
 	Ceremonies *Ceremonies
 	Setup      *SetupStates
+	// FailedEvents bounds the failed sign-ins recorded as events per
+	// address (all are still logged), so one address can't push the
+	// others out of the owner's view.
+	FailedEvents *Limiter
 
 	rp     *webauthn.WebAuthn // nil without PUBLIC_URL
 	origin string
@@ -39,10 +43,33 @@ var (
 	ErrNoPublicURL = errors.New("passkeys need PUBLIC_URL: set it to the https address you use for Publisher")
 	ErrNoPassword  = errors.New("no password is set")
 	ErrNoPasskey   = errors.New("you have no passkey here; use your password")
+	// ErrTooManyPasskeys: the owner has MaxPasskeys already.
+	ErrTooManyPasskeys = fmt.Errorf("you have %d passkeys, the most there can be: remove one first", MaxPasskeys)
 )
 
-// ErrThrottled: wait before trying a password again.
-type ErrThrottled struct{ Wait time.Duration }
+// MaxPasskeys bounds the owner's passkeys.
+const MaxPasskeys = 20
+
+// failedEventsPerAddr: at most this many failed sign-ins from one address
+// are recorded in ten minutes.
+const failedEventsPerAddr = 10
+
+// RPIDOf is the passkeys' relying party id for PUBLIC_URL: its host ("" when
+// unset or unusable).
+func RPIDOf(publicURL string) string {
+	u, err := url.Parse(publicURL)
+	if err != nil || publicURL == "" {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
+// ErrThrottled: wait before trying a password again. Everyone: the delay
+// is owner-wide (wrong passwords from many places), not this address's.
+type ErrThrottled struct {
+	Wait     time.Duration
+	Everyone bool
+}
 
 func (e *ErrThrottled) Error() string { return "too many wrong passwords; try again later" }
 
@@ -50,7 +77,8 @@ func (e *ErrThrottled) Error() string { return "too many wrong passwords; try ag
 // its host is the passkeys' relying party id and its origin the only one
 // accepted. Without it passkeys are refused (never derived from Host).
 func New(st *store.Store, publicURL string) (*Service, error) {
-	s := &Service{Store: st, Hasher: NewHasher(), Throttle: &Throttle{Store: st}, Ceremonies: NewCeremonies(), Setup: &SetupStates{}}
+	s := &Service{Store: st, Hasher: NewHasher(), Throttle: &Throttle{Store: st}, Ceremonies: NewCeremonies(), Setup: &SetupStates{},
+		FailedEvents: &Limiter{N: failedEventsPerAddr, Window: 10 * time.Minute}}
 	if publicURL == "" {
 		return s, nil
 	}
@@ -141,23 +169,42 @@ func (s *Service) BeginLogin(addr netip.Addr) (Options, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	id, err := s.Ceremonies.start(AddrKey(addr), ceremony{purpose: PurposeLogin, data: *data})
+	id, err := s.Ceremonies.start(AddrKey(addr), ceremony{Purpose: PurposeLogin, Data: *data})
 	return opts, id, err
 }
 
-// FinishLogin checks a sign-in assertion (the browser's JSON) against the
-// ceremony and returns the local owner.
-func (s *Service) FinishLogin(ctx context.Context, ceremonyID string, body []byte) (store.User, error) {
+// openCeremony opens a ceremony for a finish from addr: refused while the
+// address is over its limit; a bad one counts against it.
+func (s *Service) openCeremony(addr netip.Addr, sealed string, purpose Purpose, binding, op string) (ceremony, error) {
+	if err := s.Ceremonies.limited(AddrKey(addr)); err != nil {
+		return ceremony{}, err
+	}
+	cer, err := s.Ceremonies.open(sealed, purpose, binding, op)
+	if err != nil {
+		s.Ceremonies.failed(AddrKey(addr))
+	}
+	return cer, err
+}
+
+// rejected counts a response that didn't check out against addr.
+func (s *Service) rejected(addr netip.Addr) error {
+	s.Ceremonies.failed(AddrKey(addr))
+	return ErrSignIn
+}
+
+// FinishLogin checks a sign-in assertion (the browser's JSON) from addr
+// against the sealed ceremony and returns the local owner.
+func (s *Service) FinishLogin(ctx context.Context, addr netip.Addr, sealed string, body []byte) (store.User, error) {
 	if s.rp == nil {
 		return store.User{}, ErrNoPublicURL
 	}
-	cer, err := s.Ceremonies.take(ceremonyID, PurposeLogin, "", "")
+	cer, err := s.openCeremony(addr, sealed, PurposeLogin, "", "")
 	if err != nil {
 		return store.User{}, err
 	}
 	parsed, err := protocol.ParseCredentialRequestResponseBytes(body)
 	if err != nil {
-		return store.User{}, ErrSignIn
+		return store.User{}, s.rejected(addr)
 	}
 	var used store.WebAuthnCredential
 	var who store.User
@@ -173,9 +220,12 @@ func (s *Service) FinishLogin(ctx context.Context, ceremonyID string, body []byt
 		used, who = c, u
 		return owner{u: u, creds: []webauthn.Credential{toWebAuthn(c)}}, nil
 	}
-	_, cred, err := s.rp.ValidatePasskeyLogin(handler, cer.data, parsed)
+	_, cred, err := s.rp.ValidatePasskeyLogin(handler, cer.Data, parsed)
 	if err != nil {
-		return store.User{}, ErrSignIn
+		return store.User{}, s.rejected(addr)
+	}
+	if err := s.Ceremonies.spend(cer); err != nil {
+		return store.User{}, err
 	}
 	if err := s.recordUse(ctx, used, cred); err != nil {
 		return store.User{}, err
@@ -211,13 +261,18 @@ func (s *Service) BeginRegister(ctx context.Context, addr netip.Addr, purpose Pu
 	if err != nil {
 		return nil, "", err
 	}
+	if all, err := s.Store.WebAuthnCredentials(ctx, u.ID); err != nil {
+		return nil, "", err
+	} else if len(all) >= MaxPasskeys {
+		return nil, "", ErrTooManyPasskeys
+	}
 	opts, data, err := s.rp.BeginRegistration(o,
 		webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementRequired),
 		webauthn.WithExclusions(webauthn.Credentials(o.creds).CredentialDescriptors()))
 	if err != nil {
 		return nil, "", err
 	}
-	id, err := s.Ceremonies.start(AddrKey(addr), ceremony{purpose: purpose, binding: binding, data: *data})
+	id, err := s.Ceremonies.start(AddrKey(addr), ceremony{Purpose: purpose, Binding: binding, Data: *data})
 	return opts, id, err
 }
 
@@ -238,20 +293,20 @@ func CleanPasskeyName(name string) string {
 	return name
 }
 
-// FinishRegister checks a new passkey (the browser's JSON) and returns it,
-// ready to store; the caller stores it (store.CreateFirstPasskey during
-// setup, AddWebAuthnCredential after).
-func (s *Service) FinishRegister(ctx context.Context, ceremonyID string, purpose Purpose, binding string, body []byte, name string) (store.WebAuthnCredential, error) {
+// FinishRegister checks a new passkey (the browser's JSON, from addr)
+// and returns it, ready to store; the caller stores it
+// (store.CreateFirstPasskey during setup, AddWebAuthnCredential after).
+func (s *Service) FinishRegister(ctx context.Context, addr netip.Addr, sealed string, purpose Purpose, binding string, body []byte, name string) (store.WebAuthnCredential, error) {
 	if s.rp == nil {
 		return store.WebAuthnCredential{}, ErrNoPublicURL
 	}
-	cer, err := s.Ceremonies.take(ceremonyID, purpose, binding, "")
+	cer, err := s.openCeremony(addr, sealed, purpose, binding, "")
 	if err != nil {
 		return store.WebAuthnCredential{}, err
 	}
 	parsed, err := protocol.ParseCredentialCreationResponseBytes(body)
 	if err != nil {
-		return store.WebAuthnCredential{}, ErrSignIn
+		return store.WebAuthnCredential{}, s.rejected(addr)
 	}
 	u, err := s.Store.LocalUser(ctx)
 	if err != nil {
@@ -261,9 +316,12 @@ func (s *Service) FinishRegister(ctx context.Context, ceremonyID string, purpose
 	if err != nil {
 		return store.WebAuthnCredential{}, err
 	}
-	cred, err := s.rp.CreateCredential(o, cer.data, parsed)
+	cred, err := s.rp.CreateCredential(o, cer.Data, parsed)
 	if err != nil {
-		return store.WebAuthnCredential{}, ErrSignIn
+		return store.WebAuthnCredential{}, s.rejected(addr)
+	}
+	if err := s.Ceremonies.spend(cer); err != nil {
+		return store.WebAuthnCredential{}, err
 	}
 	if name = CleanPasskeyName(name); name == "" {
 		name = "Passkey"
@@ -296,49 +354,54 @@ func (s *Service) BeginReauth(ctx context.Context, addr netip.Addr, u store.User
 	if err != nil {
 		return nil, "", err
 	}
-	id, err := s.Ceremonies.start(AddrKey(addr), ceremony{purpose: PurposeReauth, binding: sessionHash, op: op, data: *data})
+	id, err := s.Ceremonies.start(AddrKey(addr), ceremony{Purpose: PurposeReauth, Binding: sessionHash, Op: op, Data: *data})
 	return opts, id, err
 }
 
-// FinishReauth checks the owner's assertion for the operation.
-func (s *Service) FinishReauth(ctx context.Context, ceremonyID string, u store.User, sessionHash, op string, body []byte) error {
+// FinishReauth checks the owner's assertion (from addr) for the
+// operation.
+func (s *Service) FinishReauth(ctx context.Context, addr netip.Addr, sealed string, u store.User, sessionHash, op string, body []byte) error {
 	if s.rp == nil {
 		return ErrNoPublicURL
 	}
-	cer, err := s.Ceremonies.take(ceremonyID, PurposeReauth, sessionHash, op)
+	cer, err := s.openCeremony(addr, sealed, PurposeReauth, sessionHash, op)
 	if err != nil {
 		return err
 	}
 	parsed, err := protocol.ParseCredentialRequestResponseBytes(body)
 	if err != nil {
-		return ErrSignIn
+		return s.rejected(addr)
 	}
 	o, mine, err := s.ownerWith(ctx, u)
 	if err != nil {
 		return err
 	}
-	cred, err := s.rp.ValidateLogin(o, cer.data, parsed)
+	cred, err := s.rp.ValidateLogin(o, cer.Data, parsed)
 	if err != nil {
-		return ErrSignIn
+		return s.rejected(addr)
 	}
 	for _, c := range mine {
 		if bytes.Equal(c.CredentialID, cred.ID) {
+			if err := s.Ceremonies.spend(cer); err != nil {
+				return err
+			}
 			return s.recordUse(ctx, c, cred)
 		}
 	}
-	return ErrSignIn
+	return s.rejected(addr)
 }
 
-// CheckPassword checks the local owner's password from addr, throttled:
-// ErrThrottled (wait), ErrBusy (hashing is busy), ErrNoPassword (none is
-// set) or ErrSignIn (wrong). It returns the owner.
-func (s *Service) CheckPassword(ctx context.Context, addr netip.Addr, pw string) (store.User, error) {
-	wait, err := s.Throttle.Wait(ctx, addr)
+// CheckPassword checks the local owner's password from addr (known: a
+// known browser, see KnownDevice), throttled: ErrThrottled (wait),
+// ErrBusy (hashing is busy), ErrNoPassword (none is set) or ErrSignIn
+// (wrong). It returns the owner.
+func (s *Service) CheckPassword(ctx context.Context, addr netip.Addr, known bool, pw string) (store.User, error) {
+	wait, everyone, err := s.Throttle.Wait(ctx, addr, known)
 	if err != nil {
 		return store.User{}, err
 	}
 	if wait > 0 {
-		return store.User{}, &ErrThrottled{Wait: wait}
+		return store.User{}, &ErrThrottled{Wait: wait, Everyone: everyone}
 	}
 	u, err := s.Store.LocalUser(ctx)
 	if errors.Is(err, sql.ErrNoRows) {

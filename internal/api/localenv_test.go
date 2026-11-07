@@ -238,18 +238,21 @@ func localConformance(t *testing.T) map[string]bool {
 		return r
 	}
 	call("GET /v1/me/sign-in", req{method: "GET", path: "/v1/me/sign-in"}, 200)
-	r := call("POST /v1/me/passkeys:begin", req{method: "POST", path: "/v1/me/passkeys:begin",
-		header: e.reauthPasskey(opSignInAdd)}, 200)
+	add := e.reauthPasskey(opSignInAdd) // checked at begin, spent at finish
+	r := call("POST /v1/me/passkeys:begin", req{method: "POST", path: "/v1/me/passkeys:begin", header: add}, 200)
 	cred, _, err := webauthntest.New(testPublicURL).Create(r.Body.Bytes()) // another device
 	if err != nil {
 		t.Fatal(err)
 	}
-	r = call("POST /v1/me/passkeys", req{method: "POST", path: "/v1/me/passkeys", body: finishBody("Phone", cred)}, 201)
+	r = call("POST /v1/me/passkeys", req{method: "POST", path: "/v1/me/passkeys", body: finishBody("Phone", cred), header: add}, 201)
 	var pk v1PasskeyBody
 	r.json(&pk)
 	call("PATCH /v1/me/passkeys/{id}", req{method: "PATCH", path: "/v1/me/passkeys/" + pk.ID, body: `{"name":"Work phone"}`}, 200)
 	call("PUT /v1/me/password", req{method: "PUT", path: "/v1/me/password", body: `{"password":"correct horse battery"}`,
 		header: e.reauthPasskey(opPasswordSet)}, 204)
+	// Changing it takes the current password instead of a nonce.
+	call("PUT /v1/me/password", req{method: "PUT", path: "/v1/me/password",
+		body: `{"password":"another horse battery","current_password":"correct horse battery"}`}, 204)
 	call("DELETE /v1/me/password", req{method: "DELETE", path: "/v1/me/password", header: e.reauthPasskey(opSignInRemove)}, 204)
 	call("DELETE /v1/me/passkeys/{id}", req{method: "DELETE", path: "/v1/me/passkeys/" + pk.ID,
 		header: e.reauthPasskey(opSignInRemove)}, 204)

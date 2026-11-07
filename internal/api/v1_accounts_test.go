@@ -180,7 +180,7 @@ func TestV1AccountsWriteScope(t *testing.T) {
 		t.Fatalf("errors = %+v", p.Errors)
 	}
 	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"settings","scopes":["accounts:write"]}`,
-		header: e.reauth(opTokenPrivileged)})
+		header: e.reauth(opTokenCreate)})
 	wantStatus(t, r, 201)
 	var tok v1CreatedTokenBody
 	r.json(&tok)
@@ -202,7 +202,7 @@ func TestV1AccountUpdatedEvent(t *testing.T) {
 	last, _ := e.st.LastEventID(context.Background())
 	after := "/v1/events?after=" + strconv64(last)
 	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"w","scopes":["accounts:write"]}`,
-		header: e.reauth(opTokenPrivileged)})
+		header: e.reauth(opTokenCreate)})
 	var tok v1CreatedTokenBody
 	r.json(&tok)
 	wantStatus(t, e.do(req{method: "PATCH", path: "/v1/accounts/" + bsky, auth: tok.Secret,

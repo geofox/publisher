@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"strconv"
 	"strings"
@@ -29,6 +30,8 @@ var (
 	ErrInvalidToken = errors.New("the token is unknown, used or expired")
 	// ErrCounterReplay: a passkey's signature counter didn't move forward.
 	ErrCounterReplay = errors.New("the passkey's signature counter went backwards")
+	// ErrDuplicatePasskey: that passkey (its credential id) is stored already.
+	ErrDuplicatePasskey = errors.New("that passkey is added already")
 )
 
 // WebAuthnCredential is a stored passkey.
@@ -100,30 +103,36 @@ func localUserTx(ctx context.Context, tx *sql.Tx, now time.Time) (User, error) {
 	return u, err
 }
 
-// localMethodsTx counts the local owner's passkeys and passwords.
+// localMethodsTx counts the local owner's ways to sign in: the password
+// and the passkeys for relying party rpID (a passkey made for another
+// host, before PUBLIC_URL changed, can't be used). With rpID "" (no
+// PUBLIC_URL, so no passkey can be used yet) every passkey counts.
 func localMethodsTx(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}) (int, error) {
+}, rpID string) (int, error) {
 	var n int
 	err := q.QueryRowContext(ctx, `SELECT
-		(SELECT COUNT(*) FROM webauthn_credentials w JOIN users u ON u.id = w.user_id WHERE u.source = 'local') +
-		(SELECT COUNT(*) FROM password_credentials p JOIN users u ON u.id = p.user_id WHERE u.source = 'local')`).Scan(&n)
+		(SELECT COUNT(*) FROM webauthn_credentials w JOIN users u ON u.id = w.user_id
+			WHERE u.source = 'local' AND (? = '' OR w.rp_id = ?)) +
+		(SELECT COUNT(*) FROM password_credentials p JOIN users u ON u.id = p.user_id WHERE u.source = 'local')`,
+		rpID, rpID).Scan(&n)
 	return n, err
 }
 
-// HasLocalCredential reports whether the local owner can sign in (setup
-// is done).
-func (s *Store) HasLocalCredential(ctx context.Context) (bool, error) {
-	n, err := localMethodsTx(ctx, s.sql)
+// HasLocalCredential reports whether the local owner can sign in with
+// relying party rpID (setup is done).
+func (s *Store) HasLocalCredential(ctx context.Context, rpID string) (bool, error) {
+	n, err := localMethodsTx(ctx, s.sql, rpID)
 	return n > 0, err
 }
 
-// CreateFirstPasskey stores the first local credential, a passkey, and
-// the local owner, in one transaction: ErrSetupDone when one exists, so
-// two setups finishing at once can't both win.
+// CreateFirstPasskey stores the first local credential (for its relying
+// party), a passkey, and the local owner, in one transaction:
+// ErrSetupDone when one exists, so two setups finishing at once can't
+// both win.
 func (s *Store) CreateFirstPasskey(ctx context.Context, c WebAuthnCredential) (User, WebAuthnCredential, error) {
 	var u User
-	err := s.firstCredential(ctx, func(tx *sql.Tx, now time.Time) error {
+	err := s.firstCredential(ctx, c.RPID, func(tx *sql.Tx, now time.Time) error {
 		var err error
 		if u, err = localUserTx(ctx, tx, now); err != nil {
 			return err
@@ -134,10 +143,11 @@ func (s *Store) CreateFirstPasskey(ctx context.Context, c WebAuthnCredential) (U
 	return u, c, err
 }
 
-// CreateFirstPassword is CreateFirstPasskey for a password (a PHC string).
-func (s *Store) CreateFirstPassword(ctx context.Context, phc string) (User, error) {
+// CreateFirstPassword is CreateFirstPasskey for a password (a PHC
+// string), with relying party rpID.
+func (s *Store) CreateFirstPassword(ctx context.Context, rpID, phc string) (User, error) {
 	var u User
-	err := s.firstCredential(ctx, func(tx *sql.Tx, now time.Time) error {
+	err := s.firstCredential(ctx, rpID, func(tx *sql.Tx, now time.Time) error {
 		var err error
 		if u, err = localUserTx(ctx, tx, now); err != nil {
 			return err
@@ -148,13 +158,13 @@ func (s *Store) CreateFirstPassword(ctx context.Context, phc string) (User, erro
 	return u, err
 }
 
-func (s *Store) firstCredential(ctx context.Context, insert func(*sql.Tx, time.Time) error) error {
+func (s *Store) firstCredential(ctx context.Context, rpID string, insert func(*sql.Tx, time.Time) error) error {
 	tx, err := s.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	n, err := localMethodsTx(ctx, tx)
+	n, err := localMethodsTx(ctx, tx, rpID)
 	if err != nil {
 		return err
 	}
@@ -177,6 +187,9 @@ func insertWebAuthnTx(ctx context.Context, tx *sql.Tx, userID string, c WebAuthn
 		flags, transports, aaguid, attestation_type, name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, userID, c.RPID, c.CredentialID, c.PublicKey, int64(c.SignCount), int64(c.Flags), strings.Join(c.Transports, " "),
 		c.AAGUID, c.AttestationType, c.Name, now)
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: webauthn_credentials.credential_id") {
+		err = ErrDuplicatePasskey
+	}
 	return c, err
 }
 
@@ -249,24 +262,31 @@ func (s *Store) RenameWebAuthnCredential(ctx context.Context, userID, id, name s
 }
 
 // RemoveWebAuthnCredential deletes one of a user's passkeys, unless it is
-// the last way to sign in (ErrLastSignInMethod); sql.ErrNoRows when the
-// user has no such passkey.
-func (s *Store) RemoveWebAuthnCredential(ctx context.Context, userID, id string) error {
-	return s.removeMethod(ctx, `DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?`, id, userID)
+// the last way to sign in with relying party rpID (ErrLastSignInMethod);
+// sql.ErrNoRows when the user has no such passkey.
+func (s *Store) RemoveWebAuthnCredential(ctx context.Context, userID, id, rpID string) error {
+	return s.removeMethod(ctx, rpID, `DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?`, id, userID)
 }
 
 // RemovePassword deletes a user's password, unless it is the last way to
 // sign in; sql.ErrNoRows when none is set.
-func (s *Store) RemovePassword(ctx context.Context, userID string) error {
-	return s.removeMethod(ctx, `DELETE FROM password_credentials WHERE user_id = ?`, userID)
+func (s *Store) RemovePassword(ctx context.Context, userID, rpID string) error {
+	return s.removeMethod(ctx, rpID, `DELETE FROM password_credentials WHERE user_id = ?`, userID)
 }
 
-func (s *Store) removeMethod(ctx context.Context, del string, args ...any) error {
+// removeMethod deletes a way to sign in, unless it was usable and no
+// other usable one is left (removing a passkey made for another host is
+// always allowed).
+func (s *Store) removeMethod(ctx context.Context, rpID, del string, args ...any) error {
 	tx, err := s.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	before, err := localMethodsTx(ctx, tx, rpID)
+	if err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, del, args...)
 	if err != nil {
 		return err
@@ -274,9 +294,9 @@ func (s *Store) removeMethod(ctx context.Context, del string, args ...any) error
 	if n, _ := res.RowsAffected(); n == 0 {
 		return sql.ErrNoRows
 	}
-	if n, err := localMethodsTx(ctx, tx); err != nil {
+	if after, err := localMethodsTx(ctx, tx, rpID); err != nil {
 		return err
-	} else if n == 0 {
+	} else if after == 0 && before > 0 {
 		return ErrLastSignInMethod
 	}
 	return tx.Commit()
@@ -341,6 +361,14 @@ func (s *Store) ConsumeSetupToken(ctx context.Context, raw string) error {
 	return nil
 }
 
+// SetupTokenCurrent reports whether raw is the newest setup token (used
+// or not): a newer one, reset-login or the end of setup deletes it.
+func (s *Store) SetupTokenCurrent(ctx context.Context, raw string) (bool, error) {
+	var n int
+	err := s.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM setup_tokens WHERE token_hash = ?`, hashToken(raw)).Scan(&n)
+	return n > 0, err
+}
+
 // RecordLoginFailure notes a failed password attempt from addr.
 func (s *Store) RecordLoginFailure(ctx context.Context, addr string, at time.Time) error {
 	_, err := s.sql.ExecContext(ctx, `INSERT INTO login_failures (addr, at) VALUES (?, ?)`, addr, at.UTC())
@@ -403,7 +431,9 @@ func (s *Store) CreateReauthNonce(ctx context.Context, sessionHash, operation, t
 // ConsumeReauthNonce uses a nonce once: ErrInvalidToken unless it is
 // unexpired and was minted for this session, operation and target. A
 // nonce presented for another operation or session is spent all the same.
-func (s *Store) ConsumeReauthNonce(ctx context.Context, raw, sessionHash, operation, target string) error {
+// With spend false a good nonce is only checked (kept for the
+// operation's last step).
+func (s *Store) ConsumeReauthNonce(ctx context.Context, raw, sessionHash, operation, target string, spend bool) error {
 	tx, err := s.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -420,13 +450,16 @@ func (s *Store) ConsumeReauthNonce(ctx context.Context, raw, sessionHash, operat
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM reauth_nonces WHERE nonce_hash = ?`, h); err != nil {
-		return err
+	good := sess == sessionHash && op == operation && tgt == target && exp.After(time.Now())
+	if spend || !good {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM reauth_nonces WHERE nonce_hash = ?`, h); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	if sess != sessionHash || op != operation || tgt != target || !exp.After(time.Now()) {
+	if !good {
 		return ErrInvalidToken
 	}
 	return nil
@@ -446,6 +479,7 @@ func (s *Store) ResetLocalLogin(ctx context.Context) error {
 		`DELETE FROM webauthn_credentials WHERE user_id IN (SELECT id FROM users WHERE source = 'local')`,
 		`DELETE FROM password_credentials WHERE user_id IN (SELECT id FROM users WHERE source = 'local')`,
 		`DELETE FROM setup_tokens`,
+		`DELETE FROM instance_meta WHERE key = 'device_key'`, // forget every known browser
 	} {
 		if _, err := tx.ExecContext(ctx, q); err != nil {
 			return err
@@ -463,4 +497,18 @@ func (s *Store) CreatedSchema(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return strconv.Atoi(v)
+}
+
+// InstanceKey is a random 32-byte key kept in instance_meta under name,
+// made on first use.
+func (s *Store) InstanceKey(ctx context.Context, name string) ([]byte, error) {
+	if _, err := s.sql.ExecContext(ctx, `INSERT INTO instance_meta (key, value) VALUES (?, lower(hex(randomblob(32))))
+		ON CONFLICT(key) DO NOTHING`, name); err != nil {
+		return nil, err
+	}
+	var v string
+	if err := s.sql.QueryRowContext(ctx, `SELECT value FROM instance_meta WHERE key = ?`, name).Scan(&v); err != nil {
+		return nil, err
+	}
+	return hex.DecodeString(v)
 }

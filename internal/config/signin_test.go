@@ -107,11 +107,11 @@ func TestAuthMode(t *testing.T) {
 }
 
 func TestTrustedProxies(t *testing.T) {
-	c, err := load(map[string]string{"TRUSTED_PROXIES": "172.16.0.0/12, 10.0.0.7 ,fd00::/8, ::ffff:192.0.2.9, 10.1.2.3/8"})
+	c, err := load(map[string]string{"TRUSTED_PROXIES": "172.16.0.0/12, 10.0.0.7 ,fd00::/8, ::ffff:192.0.2.9, 10.1.2.3/8, ::ffff:10.0.0.0/104"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"172.16.0.0/12", "10.0.0.7/32", "fd00::/8", "192.0.2.9/32", "10.0.0.0/8"}
+	want := []string{"172.16.0.0/12", "10.0.0.7/32", "fd00::/8", "192.0.2.9/32", "10.0.0.0/8", "10.0.0.0/8"}
 	if len(c.TrustedProxies) != len(want) {
 		t.Fatalf("got %v", c.TrustedProxies)
 	}

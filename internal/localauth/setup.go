@@ -34,7 +34,7 @@ func SetupURL(publicURL, token string) string { return publicURL + "/setup#" + t
 // operator where to open it: in the log, or written to tokenFile (0600)
 // with only the path logged. It does nothing once a credential exists.
 func AnnounceSetup(ctx context.Context, st *store.Store, publicURL, tokenFile string) error {
-	done, err := st.HasLocalCredential(ctx)
+	done, err := st.HasLocalCredential(ctx, RPIDOf(publicURL))
 	if err != nil || done {
 		if tokenFile != "" && done {
 			_ = os.Remove(tokenFile)
@@ -75,11 +75,17 @@ func writeSecretFile(path, s string) error {
 	return os.Rename(tmp, path)
 }
 
-// SetupStates are the setup pages that exchanged a token.
+// SetupStates are the setup pages that exchanged a token. Each remembers
+// its token, so a newer link (which deletes the older tokens) ends it.
 type SetupStates struct {
 	mu  sync.Mutex
-	m   map[string]time.Time
+	m   map[string]setupState
 	now func() time.Time
+}
+
+type setupState struct {
+	token   string
+	expires time.Time
 }
 
 func (s *SetupStates) clock() time.Time {
@@ -89,39 +95,44 @@ func (s *SetupStates) clock() time.Time {
 	return time.Now()
 }
 
-// Start returns a new setup state's id.
-func (s *SetupStates) Start() string {
+// Start returns the id of a new setup state for the setup token it was
+// exchanged for.
+func (s *SetupStates) Start(token string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.m == nil {
-		s.m = map[string]time.Time{}
+		s.m = map[string]setupState{}
 	}
 	now := s.clock()
-	for id, exp := range s.m {
-		if !now.Before(exp) {
+	for id, st := range s.m {
+		if !now.Before(st.expires) {
 			delete(s.m, id)
 		}
 	}
 	for len(s.m) >= maxSetupStates { // drop the oldest
 		var oldest string
-		for id, exp := range s.m {
-			if oldest == "" || exp.Before(s.m[oldest]) {
+		for id, st := range s.m {
+			if oldest == "" || st.expires.Before(s.m[oldest].expires) {
 				oldest = id
 			}
 		}
 		delete(s.m, oldest)
 	}
 	id := randomID()
-	s.m[id] = now.Add(SetupStateTTL)
+	s.m[id] = setupState{token: token, expires: now.Add(SetupStateTTL)}
 	return id
 }
 
-// Valid reports whether id is a live setup state.
-func (s *SetupStates) Valid(id string) bool {
+// Token is the setup token of live setup state id, if it is one; the
+// caller checks the token is still the current one (Store.SetupTokenCurrent).
+func (s *SetupStates) Token(id string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	exp, ok := s.m[id]
-	return ok && id != "" && s.clock().Before(exp)
+	st, ok := s.m[id]
+	if !ok || id == "" || !s.clock().Before(st.expires) {
+		return "", false
+	}
+	return st.token, true
 }
 
 // End forgets every setup state: setup is done.

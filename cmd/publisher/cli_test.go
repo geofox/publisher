@@ -105,7 +105,7 @@ func TestCLISetupURL(t *testing.T) {
 	if err := st.ConsumeSetupToken(ctx, second); err != nil {
 		t.Errorf("the new setup link: %v", err)
 	}
-	if _, err := st.CreateFirstPassword(ctx, "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0c2FsdA$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g"); err != nil {
+	if _, err := st.CreateFirstPassword(ctx, "post.example", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0c2FsdA$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g"); err != nil {
 		t.Fatal(err)
 	}
 	if code, _, errs := env.run(t, "setup-url"); code != 1 || !strings.Contains(errs, "reset-login") {
@@ -135,7 +135,7 @@ func TestCLIResetLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u, err := st.CreateFirstPassword(ctx, "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0c2FsdA$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g")
+	u, err := st.CreateFirstPassword(ctx, "post.example", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0c2FsdA$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestCLIResetLogin(t *testing.T) {
 	_ = st.Close()
 
 	code, out, errs := env.run(t, "owner", "reset-login")
-	if code != 0 || !strings.Contains(out, `"deploy bot"`) || strings.Contains(out, "n8n") || !linkRE.MatchString(out) {
+	if code != 0 || !strings.Contains(out, `"deploy bot"`) || !strings.Contains(out, `"n8n"`) || !linkRE.MatchString(out) {
 		t.Fatalf("reset-login = %d %q %q", code, out, errs)
 	}
 	st, err = store.Open(env["DB_PATH"])
@@ -156,7 +156,7 @@ func TestCLIResetLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if done, _ := st.HasLocalCredential(ctx); done {
+	if done, _ := st.HasLocalCredential(ctx, "post.example"); done {
 		t.Error("the password survived reset-login")
 	}
 	if _, _, err := st.SessionByRaw(raw); err == nil {
@@ -167,20 +167,30 @@ func TestCLIResetLogin(t *testing.T) {
 	}
 
 	code, out, _ = env.run(t, "owner", "reset-login", "--revoke-tokens")
-	if code != 0 || !strings.Contains(out, `Revoked token "deploy bot"`) {
+	if code != 0 || !strings.Contains(out, `Revoked token "deploy bot"`) || !strings.Contains(out, `Revoked token "n8n"`) {
 		t.Fatalf("reset-login --revoke-tokens = %d %q", code, out)
 	}
+	// Every token: a posting token outlives the sessions too.
 	if tok, _ := st.APIToken(strong.ID); !tok.Revoked {
 		t.Error("the admin token wasn't revoked")
 	}
-	if tok, _ := st.APIToken(weak.ID); tok.Revoked {
-		t.Error("a posts-only token was revoked")
+	if tok, _ := st.APIToken(weak.ID); !tok.Revoked {
+		t.Error("the posting token wasn't revoked")
 	}
-	evs, _ := st.SignInEvents(ctx, store.DefaultOwner, 10)
+	evs, _ := st.SignInEvents(ctx, store.DefaultOwner, 10, 10)
 	if len(evs) == 0 || evs[0].Data.Method != "reset-login" {
 		t.Errorf("events = %+v", evs)
 	}
 	if code, _, _ := env.run(t, "owner", "reset-login", "--nope"); code != 2 {
 		t.Errorf("an unknown flag = %d, want 2", code)
+	}
+}
+
+// The CLI refuses a PUBLIC_URL the server refuses (an IP address can't be
+// a passkey's relying party), rather than print a useless link.
+func TestCLIRefusesAnIPPublicURL(t *testing.T) {
+	env := cliEnv{"DB_PATH": filepath.Join(t.TempDir(), "p.db"), "PUBLIC_URL": "https://192.0.2.7"}
+	if code, out, errs := env.run(t, "setup-url"); code != 2 || out != "" || !strings.Contains(errs, "PUBLIC_URL") {
+		t.Errorf("setup-url = %d %q %q", code, out, errs)
 	}
 }

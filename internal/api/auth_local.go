@@ -26,6 +26,9 @@ import (
 const (
 	ceremonyCookie = "publisher_ceremony"
 	setupCookie    = "publisher_setup"
+	// deviceCookie marks a browser that signed in as the owner (see
+	// localauth.DeviceToken).
+	deviceCookie = "publisher_device"
 	// maxCredentialBody bounds a passkey response.
 	maxCredentialBody = 64 << 10
 )
@@ -41,6 +44,7 @@ func (a *API) mountLocal(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/reauth", a.localPost(a.handleReauth))
 
 	mux.HandleFunc("GET /setup", a.handleSetupPage)
+	mux.HandleFunc("GET /setup/state", a.handleSetupStateCheck)
 	mux.HandleFunc("POST /setup/exchange", a.setupPost(a.handleSetupExchange))
 	mux.HandleFunc("POST /setup/passkey/begin", a.setupPost(a.handleSetupPasskeyBegin))
 	mux.HandleFunc("POST /setup/passkey/finish", a.setupPost(a.handleSetupPasskeyFinish))
@@ -126,6 +130,9 @@ type methodsBody struct {
 	Passkeys bool `json:"passkeys"`
 	// Password: a password is set.
 	Password bool `json:"password"`
+	// HasPasskey: a passkey for this address exists (made in some
+	// browser or on some device).
+	HasPasskey bool `json:"has_passkey"`
 	// Setup: no way to sign in exists yet.
 	Setup bool `json:"setup"`
 }
@@ -134,7 +141,7 @@ type methodsBody struct {
 // could sign in, never anything about the owner's data.
 func (a *API) handleAuthMethods(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	done, err := a.Store.HasLocalCredential(ctx)
+	done, err := a.setupDone(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "auth: read methods", "err", err)
 		problem(w, r, http.StatusInternalServerError, codeInternal, "reading the sign-in methods failed")
@@ -144,6 +151,11 @@ func (a *API) handleAuthMethods(w http.ResponseWriter, r *http.Request) {
 	if u, err := a.Store.LocalUser(ctx); err == nil {
 		if _, err := a.Store.PasswordPHC(ctx, u.ID); err == nil {
 			body.Password = true
+		}
+		if list, err := a.Store.WebAuthnCredentials(ctx, u.ID); err == nil && a.Local.RPID() != "" {
+			for _, c := range list {
+				body.HasPasskey = body.HasPasskey || c.RPID == a.Local.RPID()
+			}
 		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -175,6 +187,9 @@ func (a *API) answerLocalErr(w http.ResponseWriter, r *http.Request, err error) 
 	switch {
 	case errors.As(err, &rl):
 		rateLimited(w, r, rl.Wait, "too many sign-in attempts; try again shortly")
+	case errors.As(err, &th) && th.Everyone:
+		rateLimited(w, r, th.Wait, "too many wrong passwords from many places: password sign-in is slowed down for a while; "+
+			"try again shortly, or use a passkey (a browser you signed in with before isn't slowed down)")
 	case errors.As(err, &th):
 		rateLimited(w, r, th.Wait, "too many wrong passwords from here; try again later, or use a passkey")
 	case errors.Is(err, localauth.ErrBusy):
@@ -182,7 +197,9 @@ func (a *API) answerLocalErr(w http.ResponseWriter, r *http.Request, err error) 
 	case errors.Is(err, localauth.ErrNoPublicURL):
 		problem(w, r, http.StatusServiceUnavailable, codeUnavailable, err.Error())
 	case errors.Is(err, localauth.ErrCeremony):
-		problem(w, r, http.StatusBadRequest, codeInvalidState, err.Error())
+		problem(w, r, http.StatusConflict, codeInvalidState, err.Error())
+	case errors.Is(err, localauth.ErrTooManyPasskeys):
+		problem(w, r, http.StatusConflict, codeInvalidState, err.Error())
 	case errors.Is(err, localauth.ErrSignIn), errors.Is(err, localauth.ErrNoPassword):
 		problem(w, r, http.StatusUnauthorized, codeUnauthenticated, "that didn't work: sign-in failed")
 	default:
@@ -198,19 +215,32 @@ func (a *API) signInEvent(ctx context.Context, typ string, d store.EventData) {
 	}
 }
 
-// failedSignIn logs and records a failed sign-in from r.
+// failedSignIn logs and records a failed sign-in from r: a wrong password
+// or a passkey that didn't check out (not an expired or unknown passkey
+// request, which anyone can send). At most 10 in ten minutes from one
+// address are recorded as events; all are logged.
 func (a *API) failedSignIn(r *http.Request, method string, err error) {
-	addr := a.clientAddr(r).String()
+	ip := a.clientAddr(r)
+	addr := ip.String()
 	var th *localauth.ErrThrottled
 	if errors.As(err, &th) {
-		slog.WarnContext(r.Context(), "auth: sign-in throttled", "method", method, "addr", addr)
+		slog.WarnContext(r.Context(), "auth: sign-in throttled", "method", method, "addr", addr, "owner_wide", th.Everyone)
 		return
 	}
-	if !errors.Is(err, localauth.ErrSignIn) && !errors.Is(err, localauth.ErrNoPassword) && !errors.Is(err, localauth.ErrCeremony) {
+	if !errors.Is(err, localauth.ErrSignIn) && !errors.Is(err, localauth.ErrNoPassword) {
 		return
 	}
 	slog.WarnContext(r.Context(), "auth: sign-in failed", "method", method, "addr", addr)
-	a.signInEvent(r.Context(), store.EventLoginFailed, store.EventData{Method: method, Addr: addr})
+	if a.Local.FailedEvents.Take(localauth.AddrKey(ip)) == 0 {
+		a.signInEvent(r.Context(), store.EventLoginFailed, store.EventData{Method: method, Addr: addr})
+	}
+}
+
+// knownDevice reports whether r comes from a browser that signed in as
+// the owner before (it skips the owner-wide password delay).
+func (a *API) knownDevice(r *http.Request) bool {
+	c, err := r.Cookie(deviceCookie)
+	return err == nil && a.Local.KnownDevice(r.Context(), c.Value)
 }
 
 // startSession signs u in: a new session (the cookie's old one, if any, is
@@ -225,6 +255,12 @@ func (a *API) startSession(w http.ResponseWriter, r *http.Request, u store.User,
 		return err
 	}
 	setSessionCookie(w, raw, a.sessionTTL())
+	if tok, err := a.Local.DeviceToken(r.Context()); err == nil {
+		http.SetCookie(w, &http.Cookie{Name: deviceCookie, Value: tok, Path: "/", HttpOnly: true, Secure: true,
+			SameSite: http.SameSiteStrictMode, MaxAge: int(localauth.DeviceTTL.Seconds())})
+	} else {
+		slog.WarnContext(r.Context(), "auth: make a known-browser token", "err", err)
+	}
 	a.signInEvent(r.Context(), store.EventLoginSucceeded, store.EventData{Method: method, Addr: a.clientAddr(r).String()})
 	return nil
 }
@@ -256,7 +292,7 @@ func (a *API) handlePasskeyFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clearCeremonyCookie(w)
-	u, err := a.Local.FinishLogin(r.Context(), ceremonyID(r), body)
+	u, err := a.Local.FinishLogin(r.Context(), a.clientAddr(r), ceremonyID(r), body)
 	if err != nil {
 		a.failedSignIn(r, "passkey", err)
 		a.answerLocalErr(w, r, err)
@@ -279,7 +315,7 @@ func (a *API) handlePasswordSignIn(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	u, err := a.Local.CheckPassword(r.Context(), a.clientAddr(r), req.Password)
+	u, err := a.Local.CheckPassword(r.Context(), a.clientAddr(r), a.knownDevice(r), req.Password)
 	if err != nil {
 		a.failedSignIn(r, "password", err)
 		a.answerLocalErr(w, r, err)
@@ -307,9 +343,11 @@ func servePage(w http.ResponseWriter, status int, body []byte) {
 
 // --- First-run setup --------------------------------------------------
 
-// setupDone reports whether a way to sign in exists (setup is closed).
+// setupDone reports whether a usable way to sign in exists (setup is
+// closed). Passkeys made for another host (PUBLIC_URL changed) don't
+// count: setup opens again, with a new link in the log.
 func (a *API) setupDone(ctx context.Context) (bool, error) {
-	return a.Store.HasLocalCredential(ctx)
+	return a.Store.HasLocalCredential(ctx, a.Local.RPID())
 }
 
 // handleSetupPage (GET /setup) is the setup page until setup is done,
@@ -357,21 +395,55 @@ func (a *API) setupPost(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// setupState is the request's live setup state id, or "".
-func (a *API) setupState(r *http.Request) string {
-	if c, err := r.Cookie(setupCookie); err == nil && a.Local.Setup.Valid(c.Value) {
-		return c.Value
+// setupState is the request's live setup state id, or "": its setup
+// link must still be the newest (a newer link ends it).
+func (a *API) setupState(r *http.Request) (string, error) {
+	c, err := r.Cookie(setupCookie)
+	if err != nil {
+		return "", nil
 	}
-	return ""
+	tok, ok := a.Local.Setup.Token(c.Value)
+	if !ok {
+		return "", nil
+	}
+	if cur, err := a.Store.SetupTokenCurrent(r.Context(), tok); err != nil || !cur {
+		return "", err
+	}
+	return c.Value, nil
 }
 
 func (a *API) needSetupState(w http.ResponseWriter, r *http.Request) (string, bool) {
-	id := a.setupState(r)
+	id, err := a.setupState(r)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "setup: read the setup state", "err", err)
+		problem(w, r, http.StatusInternalServerError, codeInternal, "reading the setup state failed")
+		return "", false
+	}
 	if id == "" {
 		problem(w, r, http.StatusUnauthorized, codeUnauthenticated,
-			"open the setup link again (this page's setup expired after 10 minutes): run `publisher setup-url` in the container for a new one")
+			"open the setup link again (this page's setup expired after 10 minutes, or a newer link replaced it): "+
+				"run `publisher setup-url` in the container for a new one")
 	}
 	return id, id != ""
+}
+
+// handleSetupStateCheck (GET /setup/state) answers 204 when this browser
+// holds a live setup state (it opened a setup link), else 401; 410 once
+// setup is done.
+func (a *API) handleSetupStateCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	done, err := a.setupDone(r.Context())
+	if err != nil {
+		problem(w, r, http.StatusInternalServerError, codeInternal, "reading the setup state failed")
+		return
+	}
+	if done {
+		problem(w, r, http.StatusGone, codeGone, "setup is done; sign in instead")
+		return
+	}
+	if _, ok := a.needSetupState(w, r); ok {
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 type setupExchangeReq struct {
@@ -399,7 +471,7 @@ func (a *API) handleSetupExchange(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, http.StatusUnauthorized, codeUnauthenticated, localauth.ErrSetupToken.Error())
 		return
 	}
-	id := a.Local.Setup.Start()
+	id := a.Local.Setup.Start(req.Token)
 	http.SetCookie(w, &http.Cookie{Name: setupCookie, Value: id, Path: "/setup", HttpOnly: true, Secure: true,
 		SameSite: http.SameSiteStrictMode, MaxAge: int(localauth.SetupStateTTL.Seconds())})
 	w.WriteHeader(http.StatusNoContent)
@@ -452,9 +524,9 @@ func (a *API) handleSetupPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clearCeremonyCookie(w)
-	c, err := a.Local.FinishRegister(r.Context(), ceremonyID(r), localauth.PurposeSetup, state, req.Credential, req.Name)
+	c, err := a.Local.FinishRegister(r.Context(), a.clientAddr(r), ceremonyID(r), localauth.PurposeSetup, state, req.Credential, req.Name)
 	if err != nil {
-		a.answerLocalErr(w, r, err)
+		a.answerPasskeyErr(w, r, err)
 		return
 	}
 	u, c, err := a.Store.CreateFirstPasskey(r.Context(), c)
@@ -478,7 +550,7 @@ func (a *API) handleSetupPassword(w http.ResponseWriter, r *http.Request) {
 		a.answerLocalErr(w, r, err)
 		return
 	}
-	u, err := a.Store.CreateFirstPassword(r.Context(), phc)
+	u, err := a.Store.CreateFirstPassword(r.Context(), a.Local.RPID(), phc)
 	a.finishSetup(w, r, u, err, store.EventData{Method: "password"})
 }
 

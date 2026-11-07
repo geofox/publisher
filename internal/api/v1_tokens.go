@@ -216,9 +216,12 @@ func (a *API) v1CreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A token that can make tokens or change accounts needs the owner to
-	// confirm it's them, just now, in a browser.
-	if slices.ContainsFunc(scopes, func(s string) bool { return slices.Contains(privilegedScopes, s) }) &&
-		!a.requireReauth(w, r, opTokenPrivileged, "") {
+	// confirm it's them, just now, in a browser (a token or the proxy
+	// can't); a signed-in browser confirms for any token, since a token
+	// outlives the session that made it.
+	caller, _ := principalFrom(r.Context())
+	privileged := slices.ContainsFunc(scopes, func(s string) bool { return slices.Contains(privilegedScopes, s) })
+	if (privileged || (caller.Kind == "session" && a.mode() != ModeProxy)) && !a.requireReauth(w, r, opTokenCreate, "") {
 		return
 	}
 	t, secret, err := a.Store.CreateScopedToken(name, scopes, expires)

@@ -88,6 +88,25 @@ CREATE TABLE instance_meta (
 	if !ok {
 		born = 0 // unknown: treated as an existing database
 	}
+	// A database at an older version that was never used is a new install
+	// whose first start stopped part-way (killed, or two processes
+	// migrating at once): it gets the new default too. Used means any
+	// user, session, token, account, post, draft, event or upload.
+	if born < localAuthVersion {
+		var used bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM users) OR EXISTS (SELECT 1 FROM sessions)
+			OR EXISTS (SELECT 1 FROM api_tokens) OR EXISTS (SELECT 1 FROM accounts) OR EXISTS (SELECT 1 FROM posts)
+			OR EXISTS (SELECT 1 FROM target_items) OR EXISTS (SELECT 1 FROM drafts) OR EXISTS (SELECT 1 FROM events)
+			OR EXISTS (SELECT 1 FROM media_objects) OR EXISTS (SELECT 1 FROM threads_token)`).Scan(&used); err != nil {
+			return err
+		}
+		if !used {
+			born = localAuthVersion
+		}
+	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO instance_meta (key, value) VALUES ('created_schema', ?)`, strconv.Itoa(born))
 	return err
 }
+
+// localAuthVersion is the migration that brings local sign-in (v12).
+const localAuthVersion = 12

@@ -257,10 +257,17 @@ func (s *Store) AddSignInEvent(ctx context.Context, owner, typ string, d EventDa
 	return err
 }
 
-// SignInEvents are the owner's newest sign-in events, newest first.
-func (s *Store) SignInEvents(ctx context.Context, owner string, limit int) ([]Event, error) {
-	rows, err := s.sql.QueryContext(ctx, `SELECT id, owner_id, COALESCE(post_id, ''), type, data, created_at FROM events
-		WHERE owner_id = ? AND type IN `+signInEventTypes+` ORDER BY id DESC LIMIT ?`, owner, limit)
+// SignInEvents are the owner's newest sign-in events, newest first: up to
+// limit sign-ins and changes, and apart up to failed login.failed events
+// (so failures, which anyone can cause, can't push the rest out).
+func (s *Store) SignInEvents(ctx context.Context, owner string, limit, failed int) ([]Event, error) {
+	const cols = `id, owner_id, COALESCE(post_id, '') AS post_id, type, data, created_at`
+	rows, err := s.sql.QueryContext(ctx, `SELECT * FROM (
+		SELECT * FROM (SELECT `+cols+` FROM events WHERE owner_id = ? AND type IN `+signInEventTypes+`
+			AND type != 'login.failed' ORDER BY id DESC LIMIT ?)
+		UNION ALL
+		SELECT * FROM (SELECT `+cols+` FROM events WHERE owner_id = ? AND type = 'login.failed' ORDER BY id DESC LIMIT ?)
+	) ORDER BY id DESC`, owner, limit, owner, failed)
 	if err != nil {
 		return nil, err
 	}

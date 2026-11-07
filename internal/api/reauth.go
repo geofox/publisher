@@ -26,13 +26,15 @@ import (
 // Operations that need re-authentication (a closed list; later parts add
 // theirs).
 const (
-	opSignInAdd       = "signin.add"
-	opSignInRemove    = "signin.remove"
-	opPasswordSet     = "password.set"
-	opTokenPrivileged = "token.create_privileged"
+	opSignInAdd    = "signin.add"
+	opSignInRemove = "signin.remove"
+	opPasswordSet  = "password.set"
+	// opTokenCreate: a token outlives the session, so a signed-in browser
+	// creating one confirms it's the owner (any scopes).
+	opTokenCreate = "token.create"
 )
 
-var reauthOps = []string{opSignInAdd, opSignInRemove, opPasswordSet, opTokenPrivileged}
+var reauthOps = []string{opSignInAdd, opSignInRemove, opPasswordSet, opTokenCreate}
 
 const (
 	reauthNonceTTL = 5 * time.Minute
@@ -49,6 +51,17 @@ const (
 // sign_in_required behind a proxy, session_required for a token,
 // reauth_required (naming the operation) without a valid nonce.
 func (a *API) requireReauth(w http.ResponseWriter, r *http.Request, op, target string) bool {
+	return a.reauthNonce(w, r, op, target, true)
+}
+
+// checkReauth is requireReauth without spending a good nonce: for the
+// first step of an operation whose last step spends it (adding a
+// passkey). A nonce for something else is spent all the same.
+func (a *API) checkReauth(w http.ResponseWriter, r *http.Request, op, target string) bool {
+	return a.reauthNonce(w, r, op, target, false)
+}
+
+func (a *API) reauthNonce(w http.ResponseWriter, r *http.Request, op, target string, spend bool) bool {
 	p, _ := principalFrom(r.Context())
 	switch {
 	case p.Kind == "proxy" || a.mode() == ModeProxy:
@@ -61,7 +74,7 @@ func (a *API) requireReauth(w http.ResponseWriter, r *http.Request, op, target s
 	}
 	nonce := r.Header.Get(reauthHeader)
 	if nonce != "" && len(nonce) <= 128 {
-		err := a.Store.ConsumeReauthNonce(r.Context(), nonce, p.Session.ID, op, target)
+		err := a.Store.ConsumeReauthNonce(r.Context(), nonce, p.Session.ID, op, target, spend)
 		if err == nil {
 			return true
 		}
@@ -170,13 +183,13 @@ func (a *API) handleReauth(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case len(req.Credential) > 0 && req.Password == nil:
 		clearCeremonyCookie(w)
-		if err := a.Local.FinishReauth(r.Context(), ceremonyID(r), u, s.ID, req.Operation, req.Credential); err != nil {
+		if err := a.Local.FinishReauth(r.Context(), a.clientAddr(r), ceremonyID(r), u, s.ID, req.Operation, req.Credential); err != nil {
 			a.failedSignIn(r, "passkey", err)
 			a.answerReauthErr(w, r, err, "/credential")
 			return
 		}
 	case req.Password != nil && len(req.Credential) == 0:
-		owner, err := a.Local.CheckPassword(r.Context(), a.clientAddr(r), *req.Password)
+		owner, err := a.Local.CheckPassword(r.Context(), a.clientAddr(r), a.knownDevice(r), *req.Password)
 		if err == nil && owner.ID != u.ID {
 			err = localauth.ErrSignIn
 		}

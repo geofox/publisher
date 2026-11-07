@@ -400,7 +400,8 @@ func TestV1Conformance(t *testing.T) {
 			header: map[string]string{"If-Match": "*"}, body: `{"label":"Work","default_selected":false}`}, 200},
 		{"GET /v1/me", req{method: "GET", path: "/v1/me"}, 200},
 		{"GET /v1/tokens", req{method: "GET", path: "/v1/tokens"}, 200},
-		{"POST /v1/tokens", req{method: "POST", path: "/v1/tokens", body: `{"name":"ci","scopes":["posts:read"],"expires_at":"2099-01-01T00:00:00Z"}`}, 201},
+		{"POST /v1/tokens", req{method: "POST", path: "/v1/tokens", body: `{"name":"ci","scopes":["posts:read"],"expires_at":"2099-01-01T00:00:00Z"}`,
+			header: e.reauth(opTokenCreate)}, 201},
 		{"GET /v1/tokens/{id}", req{method: "GET", path: "/v1/tokens/" + tokenID(tok.ID)}, 200},
 		{"DELETE /v1/tokens/{id}", req{method: "DELETE", path: "/v1/tokens/" + tokenID(tok.ID)}, 204},
 		{"GET /v1/posts", req{method: "GET", path: "/v1/posts"}, 200},
@@ -674,7 +675,8 @@ func TestV1DestinationsAndAccounts(t *testing.T) {
 
 func TestV1TokenLifecycle(t *testing.T) {
 	e := newV1Env(t, true)
-	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"  n8n  ","scopes":["media:write","posts:write","posts:write"]}`})
+	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"  n8n  ","scopes":["media:write","posts:write","posts:write"]}`,
+		header: e.reauth(opTokenCreate)})
 	wantStatus(t, r, 201)
 	var created v1CreatedTokenBody
 	r.json(&created)
@@ -721,7 +723,7 @@ func TestV1TokenExpiryAndStatus(t *testing.T) {
 	e := newV1Env(t, true)
 	exp := time.Now().Add(2 * time.Second).UTC().Format(time.RFC3339)
 	r := e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"short","scopes":["admin"],"expires_at":"` + exp + `"}`,
-		header: e.reauth(opTokenPrivileged)})
+		header: e.reauth(opTokenCreate)})
 	wantStatus(t, r, 201)
 	var c v1CreatedTokenBody
 	r.json(&c)
@@ -775,7 +777,7 @@ func TestV1TokenValidation(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			h := map[string]string{}
+			h := e.reauth(opTokenCreate)
 			switch c.ct {
 			case "":
 			case "-":
@@ -822,7 +824,7 @@ func TestV1TokenCantOutliveItsMaker(t *testing.T) {
 	}
 	// A session or a non-expiring token has no such limit.
 	wantStatus(t, e.do(req{method: "POST", path: "/v1/tokens", body: `{"name":"x","scopes":["admin"]}`,
-		header: e.reauth(opTokenPrivileged)}), 201)
+		header: e.reauth(opTokenCreate)}), 201)
 }
 
 func TestV1TokenListPages(t *testing.T) {

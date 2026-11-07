@@ -343,6 +343,11 @@ func (l *loader) prefixes(k string) []netip.Prefix {
 	var out []netip.Prefix
 	for _, s := range splitCSV(l.getenv(k)) {
 		if p, err := netip.ParsePrefix(s); err == nil {
+			// An IPv4-mapped IPv6 prefix (::ffff:10.0.0.0/104) means the
+			// IPv4 one: peers are compared unmapped.
+			if a := p.Addr(); a.Is4In6() && p.Bits() >= 96 {
+				p = netip.PrefixFrom(a.Unmap(), p.Bits()-96)
+			}
 			out = append(out, p.Masked())
 			continue
 		}

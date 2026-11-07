@@ -454,7 +454,6 @@ func setupLogger(level string) {
 	slog.SetDefault(slog.New(h))
 }
 
-// appBaseURL extracts scheme://host from the configured redirect URL.
 // setupSignIn picks how the owner signs in (AUTH_MODE, else OIDC when
 // configured, else local for a database this version created and proxy
 // for an older one) and wires it into the API. It returns an exit code,
@@ -550,6 +549,7 @@ func setupSignIn(ctx context.Context, cfg config.Config, st *store.Store, a *api
 	return 0
 }
 
+// appBaseURL extracts scheme://host from the configured redirect URL.
 func appBaseURL(redirect string) string {
 	if u, err := url.Parse(redirect); err == nil {
 		return u.Scheme + "://" + u.Host

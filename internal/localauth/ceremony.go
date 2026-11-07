@@ -1,8 +1,11 @@
 package localauth
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -22,14 +25,13 @@ const (
 	PurposeReauth   Purpose = "reauth"   // re-authenticate for one operation (a session)
 )
 
-// Ceremony limits: a ceremony lives 5 minutes; at most 1000 are kept (the
-// oldest dropped); an address may begin 20 a minute.
+// Ceremony limits: a ceremony lives 5 minutes; an address may begin 20 a
+// minute, and a failed sign-in counts as a begin.
 const (
-	CeremonyTTL         = 5 * time.Minute
-	maxCeremonies       = 1000
-	beginsPerMinute     = 20
-	beginRateWindow     = time.Minute
-	maxTrackedBeginners = 4096
+	CeremonyTTL      = 5 * time.Minute
+	beginsPerMinute  = 20
+	maxSealedLen     = 4096
+	spentSweepAtSize = 256
 )
 
 // ErrRateLimited: the address began too many ceremonies; Wait says when it
@@ -38,33 +40,45 @@ type ErrRateLimited struct{ Wait time.Duration }
 
 func (e *ErrRateLimited) Error() string { return "too many sign-in attempts; try again shortly" }
 
-// ErrCeremony: the ceremony is unknown, expired, or was begun for another
-// purpose, operation or session.
+// ErrCeremony: the ceremony is unknown, expired, used, or was begun for
+// another purpose, operation or session.
 var ErrCeremony = errors.New("this passkey request expired or doesn't match; start again")
 
-// ceremony is one passkey request in flight, held in memory: a restart
-// ends it, which only means starting again.
+// ceremony is one passkey request in flight.
 type ceremony struct {
-	purpose Purpose
-	binding string // the session hash (register, reauth) or setup state id (setup)
-	op      string // reauth: the operation
-	data    webauthn.SessionData
-	expires time.Time
+	Purpose Purpose              `json:"p"`
+	Binding string               `json:"b,omitempty"` // the session hash (register, reauth) or setup state id (setup)
+	Op      string               `json:"o,omitempty"` // reauth: the operation
+	Data    webauthn.SessionData `json:"d"`
+	Expires int64                `json:"e"` // unix seconds
 }
 
-// Ceremonies holds the ceremonies in flight, by a random id the browser
-// keeps in a cookie.
+// Ceremonies keeps each ceremony in the browser that began it, sealed
+// (AES-GCM, with a key made at start: a restart ends them, which only
+// means starting again), so no address can crowd out another's. A
+// ceremony is used once: the challenges of finished ones are remembered
+// until they expire. A failed finish doesn't use it (a signature can't be
+// guessed), but counts against the address's begins.
 type Ceremonies struct {
-	mu     sync.Mutex
-	m      map[string]*ceremony
-	order  []string
-	begins map[string][]time.Time
+	aead   cipher.AEAD
+	begins *Limiter
 	now    func() time.Time
+
+	mu    sync.Mutex
+	spent map[string]time.Time // challenge → when it expires
 }
 
-// NewCeremonies returns an empty set.
+// NewCeremonies returns an empty set with a fresh key.
 func NewCeremonies() *Ceremonies {
-	return &Ceremonies{m: map[string]*ceremony{}, begins: map[string][]time.Time{}, now: time.Now}
+	var key [32]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		panic(err) // crypto/rand doesn't fail on supported platforms
+	}
+	block, _ := aes.NewCipher(key[:])
+	aead, _ := cipher.NewGCM(block)
+	c := &Ceremonies{aead: aead, spent: map[string]time.Time{}, now: time.Now}
+	c.begins = &Limiter{N: beginsPerMinute, Window: time.Minute, Now: func() time.Time { return c.now() }}
+	return c
 }
 
 func randomID() string {
@@ -73,68 +87,88 @@ func randomID() string {
 	return base64.RawURLEncoding.EncodeToString(b[:])
 }
 
-// start keeps a new ceremony begun from addr (an AddrKey) and returns its
-// id.
+// start seals a new ceremony begun from addr (an AddrKey), for the
+// browser's cookie.
 func (c *Ceremonies) start(addr string, cer ceremony) (string, error) {
+	if w := c.begins.Take(addr); w > 0 {
+		return "", &ErrRateLimited{Wait: w}
+	}
+	cer.Expires = c.now().Add(CeremonyTTL).Unix()
+	plain, err := json.Marshal(cer)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, c.aead.NonceSize(), c.aead.NonceSize()+len(plain)+c.aead.Overhead())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	sealed := base64.RawURLEncoding.EncodeToString(c.aead.Seal(nonce, nonce, plain, nil))
+	if len(sealed) > maxSealedLen {
+		return "", errors.New("passkey request too large for a cookie")
+	}
+	return sealed, nil
+}
+
+// open returns the sealed ceremony, if it is alive, unused, and was begun
+// for purpose with this binding (and operation, for reauth). It doesn't
+// use it: spend does, once the response checks out.
+func (c *Ceremonies) open(sealed string, purpose Purpose, binding, op string) (ceremony, error) {
+	if sealed == "" || len(sealed) > maxSealedLen {
+		return ceremony{}, ErrCeremony
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(sealed)
+	n := c.aead.NonceSize()
+	if err != nil || len(raw) < n {
+		return ceremony{}, ErrCeremony
+	}
+	plain, err := c.aead.Open(nil, raw[:n], raw[n:], nil)
+	if err != nil {
+		return ceremony{}, ErrCeremony
+	}
+	var cer ceremony
+	if err := json.Unmarshal(plain, &cer); err != nil {
+		return ceremony{}, ErrCeremony
+	}
+	if !c.now().Before(time.Unix(cer.Expires, 0)) || cer.Purpose != purpose || cer.Binding != binding || cer.Op != op {
+		return ceremony{}, ErrCeremony
+	}
+	c.mu.Lock()
+	_, used := c.spent[cer.Data.Challenge]
+	c.mu.Unlock()
+	if used {
+		return ceremony{}, ErrCeremony
+	}
+	return cer, nil
+}
+
+// spend uses a ceremony: ErrCeremony when it already was (two finishes
+// racing with one response: only one wins).
+func (c *Ceremonies) spend(cer ceremony) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
-	recent := c.begins[addr][:0]
-	for _, t := range c.begins[addr] {
-		if now.Sub(t) < beginRateWindow {
-			recent = append(recent, t)
+	if len(c.spent) >= spentSweepAtSize {
+		for ch, exp := range c.spent {
+			if !now.Before(exp) {
+				delete(c.spent, ch)
+			}
 		}
 	}
-	if len(recent) >= beginsPerMinute {
-		c.begins[addr] = recent
-		return "", &ErrRateLimited{Wait: recent[0].Add(beginRateWindow).Sub(now).Truncate(time.Second) + time.Second}
+	if _, used := c.spent[cer.Data.Challenge]; used {
+		return ErrCeremony
 	}
-	if len(c.begins) >= maxTrackedBeginners {
-		c.pruneBegins(now)
-	}
-	c.begins[addr] = append(recent, now)
-	// Drop expired ceremonies, then the oldest while over the cap.
-	kept := c.order[:0]
-	for _, id := range c.order {
-		if x, ok := c.m[id]; ok && now.Before(x.expires) {
-			kept = append(kept, id)
-		} else {
-			delete(c.m, id)
-		}
-	}
-	c.order = kept
-	for len(c.order) >= maxCeremonies {
-		delete(c.m, c.order[0])
-		c.order = c.order[1:]
-	}
-	id := randomID()
-	cer.expires = now.Add(CeremonyTTL)
-	c.m[id] = &cer
-	c.order = append(c.order, id)
-	return id, nil
+	c.spent[cer.Data.Challenge] = time.Unix(cer.Expires, 0)
+	return nil
 }
 
-// pruneBegins forgets addresses with no begin in the window.
-func (c *Ceremonies) pruneBegins(now time.Time) {
-	for a, ts := range c.begins {
-		if len(ts) == 0 || now.Sub(ts[len(ts)-1]) >= beginRateWindow {
-			delete(c.begins, a)
-		}
-	}
-}
+// failed counts a failed finish from addr (an AddrKey) against its begins.
+func (c *Ceremonies) failed(addr string) { c.begins.Note(addr) }
 
-// take removes and returns a ceremony (once), if it is alive and was
-// begun for purpose with this binding (and operation, for reauth).
-func (c *Ceremonies) take(id string, purpose Purpose, binding, op string) (ceremony, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	x, ok := c.m[id]
-	if !ok {
-		return ceremony{}, ErrCeremony
+// limited refuses a finish from addr (an AddrKey) that failed or began
+// too often.
+func (c *Ceremonies) limited(addr string) error {
+	if w := c.begins.Wait(addr); w > 0 {
+		return &ErrRateLimited{Wait: w}
 	}
-	delete(c.m, id)
-	if !c.now().Before(x.expires) || x.purpose != purpose || x.binding != binding || x.op != op {
-		return ceremony{}, ErrCeremony
-	}
-	return *x, nil
+	return nil
 }

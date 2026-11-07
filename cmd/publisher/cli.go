@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"time"
 
 	"github.com/geofox/publisher/internal/config"
@@ -21,14 +20,10 @@ const cliUsage = `usage:
   publisher setup-url                         print a new first-run setup link
   publisher owner reset-login [--revoke-tokens]
                                               remove every passkey, the password and
-                                              every session, and print a setup link;
-                                              --revoke-tokens also revokes the tokens
-                                              that can make tokens or change accounts
+                                              every session, forget every known browser,
+                                              and print a setup link; it lists the active
+                                              API tokens, and --revoke-tokens revokes them
 `
-
-// privilegedTokenScopes are the scopes reset-login lists (and revokes):
-// a token holding one can make tokens or change accounts.
-var privilegedTokenScopes = []string{"admin", "accounts:write"}
 
 // runCLI runs the maintenance command args names. handled is false when
 // args name none (the server starts).
@@ -77,6 +72,11 @@ func cliOpen(ctx context.Context, getenv func(string) string, stderr io.Writer, 
 		fmt.Fprintf(stderr, "%s: sign-in here is AUTH_MODE=%s, not local; this command is for Publisher's own passkeys and password\n", cmd, mode)
 		return cfg, nil, 2
 	}
+	if err := cfg.CheckLocal(); err != nil { // the server refuses to start with it, so a link would be useless
+		_ = st.Close()
+		fmt.Fprintf(stderr, "%s: %v\n", cmd, err)
+		return cfg, nil, 2
+	}
 	return cfg, st, 0
 }
 
@@ -86,7 +86,7 @@ func cliSetupURL(ctx context.Context, getenv func(string) string, stdout, stderr
 		return code
 	}
 	defer st.Close()
-	done, err := st.HasLocalCredential(ctx)
+	done, err := st.HasLocalCredential(ctx, localauth.RPIDOf(cfg.PublicURL))
 	if err != nil {
 		fmt.Fprintln(stderr, "read the database:", err)
 		return 1
@@ -127,25 +127,26 @@ func cliResetLogin(ctx context.Context, getenv func(string) string, revoke bool,
 	}
 	fmt.Fprintln(stdout, "Removed every passkey, the password and every signed-in session.")
 
+	// Whoever got in may have made a token, which outlives the sessions:
+	// list every active one.
 	tokens, err := st.ListAPITokens()
 	if err != nil {
 		fmt.Fprintln(stderr, "list the API tokens:", err)
 		return 1
 	}
 	now := time.Now()
-	var strong []store.APIToken
+	var live []store.APIToken
 	for _, t := range tokens {
-		live := !t.Revoked && (t.ExpiresAt.IsZero() || t.ExpiresAt.After(now))
-		if live && slices.ContainsFunc(t.Scopes, func(s string) bool { return slices.Contains(privilegedTokenScopes, s) }) {
-			strong = append(strong, t)
+		if !t.Revoked && (t.ExpiresAt.IsZero() || t.ExpiresAt.After(now)) {
+			live = append(live, t)
 		}
 	}
 	switch {
-	case len(strong) == 0:
-		fmt.Fprintln(stdout, "No active API token can make tokens or change accounts.")
+	case len(live) == 0:
+		fmt.Fprintln(stdout, "No API token is active.")
 	case revoke:
 		var errs []error
-		for _, t := range strong {
+		for _, t := range live {
 			if err := st.RevokeAPIToken(t.ID); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", t.Name, err))
 				continue
@@ -157,8 +158,8 @@ func cliResetLogin(ctx context.Context, getenv func(string) string, revoke bool,
 			return 1
 		}
 	default:
-		fmt.Fprintln(stdout, "These active API tokens can make tokens or change accounts; if one may be in the wrong hands, run again with --revoke-tokens (or revoke it in the app):")
-		for _, t := range strong {
+		fmt.Fprintln(stdout, "These API tokens are active; if one may be in the wrong hands, revoke it in the app (or run again with --revoke-tokens to revoke them all):")
+		for _, t := range live {
 			fmt.Fprintf(stdout, "  %q %v, created %s\n", t.Name, t.Scopes, t.CreatedAt.Local().Format(time.DateOnly))
 		}
 	}

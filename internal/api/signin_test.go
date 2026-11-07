@@ -208,7 +208,7 @@ func TestPasskeyRefusals(t *testing.T) {
 	if code := finish(a); code != http.StatusUnauthorized {
 		t.Errorf("a counter that didn't move = %d, want 401", code)
 	}
-	evs, _ := e.st.SignInEvents(context.Background(), store.DefaultOwner, 50)
+	evs, _ := e.st.SignInEvents(context.Background(), store.DefaultOwner, 50, 20)
 	failed := 0
 	for _, ev := range evs {
 		if ev.Type == store.EventLoginFailed && ev.Data.Method == "passkey" {
@@ -302,14 +302,11 @@ func TestSetupToken(t *testing.T) {
 func TestSetupRaceMakesOneCredential(t *testing.T) {
 	e := newLocalEnv(t)
 	type browser struct{ jar map[string]*http.Cookie }
-	var bs []browser
-	for i := 0; i < 2; i++ {
-		e.jar = map[string]*http.Cookie{}
-		wantCode(t, e.exchange(e.setupLink()), http.StatusNoContent)
-		bs = append(bs, browser{jar: e.jar})
-	}
-	// The second exchange's link replaced the first's, but the first's
-	// setup state is already held: both may finish; only one may win.
+	// A newer link ends the setup a page opened with an older one, so
+	// only one setup state is ever live: the race is two requests from
+	// it (a double click, or two tabs).
+	wantCode(t, e.exchange(e.setupLink()), http.StatusNoContent)
+	bs := []browser{{jar: e.jar}, {jar: e.jar}}
 	codes := make([]int, len(bs))
 	var wg sync.WaitGroup
 	for i, b := range bs {
@@ -369,8 +366,23 @@ func TestReauthNonces(t *testing.T) {
 	if code := add(h); code != 200 {
 		t.Fatalf("with a nonce = %d", code)
 	}
+	// Beginning only checks the nonce (a cancelled passkey prompt can be
+	// tried again); finishing spends it.
+	if code := add(h); code != 200 {
+		t.Errorf("the nonce again at begin = %d, want 200", code)
+	}
+	cred, _, err := webauthntest.New(testPublicURL).Create(e.v1(req{method: "POST", path: "/v1/me/passkeys:begin", header: h}).Body.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fin := func() int {
+		return e.v1(req{method: "POST", path: "/v1/me/passkeys", body: finishBody("Phone", cred), header: h}).Code
+	}
+	if code := fin(); code != 201 {
+		t.Fatalf("finish with the nonce = %d", code)
+	}
 	if code := add(h); code != 403 {
-		t.Errorf("the nonce again = %d, want 403", code)
+		t.Errorf("the nonce after finishing = %d, want 403", code)
 	}
 	if code := add(e.reauthPasskey(opSignInRemove)); code != 403 {
 		t.Errorf("another operation's nonce = %d, want 403", code)
@@ -415,12 +427,14 @@ func TestPrivilegedTokens(t *testing.T) {
 	}
 	wantProblem(t, create(`"admin"`, nil, ""), 403, codeReauthRequired)
 	wantProblem(t, create(`"accounts:write"`, nil, ""), 403, codeReauthRequired)
-	wantStatus(t, create(`"posts:write"`, nil, ""), 201)
-	wantStatus(t, create(`"admin"`, e.reauthPasskey(opTokenPrivileged), ""), 201)
+	// A signed-in browser confirms for any token: it outlives the session.
+	wantProblem(t, create(`"posts:write"`, nil, ""), 403, codeReauthRequired)
+	wantStatus(t, create(`"posts:write"`, e.reauthPasskey(opTokenCreate), ""), 201)
+	wantStatus(t, create(`"admin"`, e.reauthPasskey(opTokenCreate), ""), 201)
 	admin := e.token("admin")
 	wantProblem(t, create(`"admin"`, nil, admin), 403, codeSessionRequired)
 	wantStatus(t, create(`"posts:read"`, nil, admin), 201)
-	evs, _ := e.st.SignInEvents(context.Background(), store.DefaultOwner, 50)
+	evs, _ := e.st.SignInEvents(context.Background(), store.DefaultOwner, 50, 20)
 	n := 0
 	for _, ev := range evs {
 		if ev.Type == store.EventTokenCreated {
@@ -562,7 +576,7 @@ func TestOIDCReauth(t *testing.T) {
 	// start answers the identity provider's URL; login completes it with
 	// the given claims.
 	start := func() url.Values {
-		rec := call("GET", "/auth/reauth/oidc?operation="+opTokenPrivileged, "")
+		rec := call("GET", "/auth/reauth/oidc?operation="+opTokenCreate, "")
 		if rec.Code != http.StatusFound {
 			t.Fatalf("start = %d %s", rec.Code, rec.Body.String())
 		}
@@ -583,7 +597,7 @@ func TestOIDCReauth(t *testing.T) {
 		return call("GET", "/auth/callback?code=x&state="+url.QueryEscape(q.Get("state")), "")
 	}
 	claim := func() *httptest.ResponseRecorder {
-		return call("POST", "/auth/reauth/claim", `{"operation":"`+opTokenPrivileged+`"}`)
+		return call("POST", "/auth/reauth/claim", `{"operation":"`+opTokenCreate+`"}`)
 	}
 	now := time.Now().Unix()
 	for _, c := range []struct {

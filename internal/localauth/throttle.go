@@ -13,8 +13,10 @@ import (
 // after a run of 5, each further attempt waits a doubling delay from the
 // last failure (1, 2, 4, 8, then 15 minutes, for as long as the run goes
 // on). For the owner, from any address: after a run of 20, a short
-// doubling delay (at most 30 seconds), never a block, so the owner can
-// always get in.
+// doubling delay (at most 30 seconds). Someone with many addresses could
+// keep that delay going for good, so it doesn't apply to a browser the
+// owner signed in with before (a known browser, see DeviceToken): only
+// its address's own limit does.
 const (
 	ThrottleWindow    = 30 * time.Minute
 	addrFreeFailures  = 5
@@ -57,23 +59,28 @@ func AddrKey(a netip.Addr) string {
 	return a.String()
 }
 
-// Wait is how long addr must wait before trying a password (0: now).
-func (t *Throttle) Wait(ctx context.Context, addr netip.Addr) (time.Duration, error) {
+// Wait is how long addr must wait before trying a password (0: now), and
+// whether that is the owner-wide delay (failures from everywhere) rather
+// than addr's own. A known browser skips the owner-wide delay.
+func (t *Throttle) Wait(ctx context.Context, addr netip.Addr, known bool) (time.Duration, bool, error) {
 	now := t.now()
 	since := now.Add(-24 * time.Hour)
 	mine, err := t.Store.LoginFailures(ctx, AddrKey(addr), since)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	wait := delayAfter(mine, addrFreeFailures, time.Minute, addrMaxDelay, now)
+	if known {
+		return wait, false, nil
+	}
 	all, err := t.Store.LoginFailures(ctx, "", since)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if w := delayAfter(all, ownerFreeFailures, time.Second, ownerMaxDelay, now); w > wait {
-		wait = w
+		return w, true, nil
 	}
-	return wait, nil
+	return wait, false, nil
 }
 
 // delayAfter: with a run of n failures (oldest first) and free of them
