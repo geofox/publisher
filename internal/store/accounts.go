@@ -79,7 +79,7 @@ type EnvAccount struct {
 // given label). It never changes an existing row: whether an env account
 // can be used is the account registry's call, and enabled is the owner's.
 // Rows of accounts added in the app are not touched. Returns the owner's
-// env rows, oldest first.
+// env rows, oldest first (deleted ones left out).
 func (s *Store) SeedEnvAccounts(ctx context.Context, owner string, configured []EnvAccount) ([]Account, error) {
 	tx, err := s.sql.BeginTx(ctx, nil)
 	if err != nil {
@@ -107,7 +107,7 @@ func (s *Store) SeedEnvAccounts(ctx context.Context, owner string, configured []
 		return nil, err
 	}
 	return s.queryAccounts(ctx, `SELECT `+accountColumns+` FROM accounts WHERE owner_id = ? AND source = 'env'
-		ORDER BY created_at, id`, owner)
+		AND deleted_at IS NULL ORDER BY created_at, id`, owner)
 }
 
 // InsertAccount adds an account row exactly as given (its id included). An

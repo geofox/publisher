@@ -295,10 +295,20 @@ func TestV1AccountWrites(t *testing.T) {
 	if p.Code != codeValidation || p.Errors[0].Pointer != "/credentials" || p.Errors[0].Code != "required" {
 		t.Fatalf("audience: %+v", p)
 	}
-	// Another network account: refused.
+	// Another identifier finds its server again, unless given: this one
+	// leads nowhere here.
 	p = w.do(req{method: "PATCH", path: path, body: `{"credentials":{"identifier":"bob.example","app_password":"wxyz-wxyz-wxyz-wxyz"}}`}).problem()
+	if p.Status != 422 || p.Errors[0].Pointer != "/credentials/identifier" || p.Errors[0].Code != "not_found" {
+		t.Fatalf("lookup: %+v", p)
+	}
+	// Another network account: refused.
+	p = w.do(req{method: "PATCH", path: path, body: `{"config":{"pds_url":"https://pds.example"},"credentials":{"identifier":"bob.example","app_password":"wxyz-wxyz-wxyz-wxyz"}}`}).problem()
 	if p.Status != 409 || p.Code != codeIdentityChanged {
 		t.Fatalf("identity: %+v", p)
+	}
+	// The same identifier with the saved password: nothing new to ask for.
+	if r := w.do(req{method: "PATCH", path: path, body: `{"credentials":{"identifier":"ada.example"}}`}); r.Code != 200 {
+		t.Fatalf("keep password: %d %s", r.Code, r.Body.String())
 	}
 	// With them, and a label in the same request.
 	var b v1AccountBody
@@ -320,6 +330,17 @@ func TestV1AccountWrites(t *testing.T) {
 	}
 	if p := w.do(req{method: "POST", path: "/v1/accounts/" + masto + ":reveal"}).problem(); p.Code != codeLockedByEnv {
 		t.Fatalf("env reveal: %+v", p)
+	}
+	// One whose variables are gone (not_configured) can be deleted.
+	threads := "acc_threads_gone"
+	if err := w.st.InsertAccount(context.Background(), store.Account{ID: threads, Type: "threads", EnvKey: "default", Label: "Threads"}); err != nil {
+		t.Fatal(err)
+	}
+	if p := w.do(req{method: "DELETE", path: "/v1/accounts/" + threads}).problem(); p.Code != codeReauthRequired {
+		t.Fatalf("unconfigured env delete: %+v", p)
+	}
+	if r := w.do(req{method: "DELETE", path: "/v1/accounts/" + threads, header: w.reauthFor(opAccountDelete, threads)}); r.Code != 204 {
+		t.Fatalf("unconfigured env delete: %d %s", r.Code, r.Body.String())
 	}
 	nonce := w.reauthFor(opAccountDelete, masto)
 	// Re-authentication names the account: one for another is refused.
@@ -418,6 +439,16 @@ func TestV1RevealAccount(t *testing.T) {
 	if r.Code != 200 || !strings.HasPrefix(out.Credentials["secret_key"], "nsec1") || r.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("reveal: %d %s", r.Code, r.Body.String())
 	}
+	// A key that can't open it is said before re-authenticating.
+	w.api.MasterKey = accounts.KeyState{Status: accounts.KeyMismatch}
+	if p := w.do(req{method: "POST", path: path}).problem(); p.Status != 409 || p.Code != codeMasterKeyMismatch {
+		t.Fatalf("mismatched key: %+v", p)
+	}
+	w.api.MasterKey = accounts.KeyState{Status: accounts.KeyMissing}
+	if p := w.do(req{method: "POST", path: path}).problem(); p.Status != 409 || p.Code != codeMasterKeyRequired {
+		t.Fatalf("missing key: %+v", p)
+	}
+	w.api.MasterKey = accounts.KeyState{Status: accounts.KeyOK}
 	// The create's stored answer has no key.
 	stored := w.idempotencyRows()
 	if bytes.Contains(stored, []byte("nsec1")) || bytes.Contains(stored, []byte(out.Credentials["secret_key"])) ||

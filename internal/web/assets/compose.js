@@ -234,11 +234,14 @@ function renderChips() {
         el("span", { class: "bad", text: say = "Couldn't read your accounts: " + accountsPhase.error }), again));
       if (hadFocus) again.focus({ preventScroll: true }); // the keyboard stays on Try again
     } else {
-      // Settings says how: added there, or from the server's environment.
+      // Settings says how: added there, or from the server's environment
+      // (the only way behind the reverse proxy alone).
       const open = el("button", { class: "ghost sm", type: "button", text: "Open Settings",
         onclick: () => document.dispatchEvent(new CustomEvent("open-settings", { detail: "accounts" })) });
       c.append(el("div", { class: "targets-empty" },
-        el("span", { class: "muted", text: say = "No accounts yet: add one in Settings." }), open));
+        el("span", { class: "muted", text: say = state.proxyAuth
+          ? "No accounts yet: set them in the server's environment, then restart it."
+          : "No accounts yet: add one in Settings." }), open));
     }
     if (hadFocus && !c.contains(document.activeElement)) { c.tabIndex = -1; c.focus({ preventScroll: true }); }
     live.textContent = say;

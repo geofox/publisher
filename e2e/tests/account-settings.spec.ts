@@ -170,7 +170,7 @@ test("Nostr: a new key is made, then shown once after confirming it's you", asyn
   await expect(shown).toHaveCount(0);
   // Shown again on request, after confirming again.
   const c = card(`Fresh ${RUN}`);
-  await c.getByRole("button", { name: /^Show the key of/ }).click();
+  await c.getByRole("button", { name: /^Show key: / }).click();
   await confirmWithPasskey();
   const again = page.getByRole("dialog", { name: /^The key of/ });
   await expect(again.getByLabel("Secret key")).toHaveValue(nsec);
@@ -247,6 +247,9 @@ test("delete asks to confirm it's you; cancelling keeps the account", async () =
   await page.locator(".modal.confirm").getByRole("button", { name: "Delete" }).click();
   await confirmWithPasskey();
   await expect(c).toHaveCount(0);
+  // The keyboard goes to Add an account; a screen reader hears it went.
+  await expect(panel().getByRole("button", { name: "Add an account" })).toBeFocused();
+  await expect(page.locator("[data-flash-live]")).toContainText("Deleted");
   // Gone from the composer too.
   await page.locator('.tab[data-view="compose"]').click();
   await expect(page.locator("#chips")).not.toContainText(`Alice ${RUN}`);
@@ -274,6 +277,7 @@ test("a new server starts with its first steps", async () => {
   await p.goto("/");
   const first = p.locator(".set-first");
   await expect(first).toBeVisible(); // Settings opened by itself
+  await expect(p.locator("#set-first-title")).toBeFocused();
   const key = await first.getByLabel("A new master key").inputValue();
   expect(Buffer.from(key, "base64")).toHaveLength(32);
   await expect(first).toContainText(`printf '%s' '${key}' > publisher_master_key`);
@@ -287,5 +291,51 @@ test("a new server starts with its first steps", async () => {
   await expect(p.locator("#chips")).toContainText("No accounts yet: add one in Settings.");
   await p.locator("#chips").getByRole("button", { name: "Open Settings" }).click();
   await expect(p.locator(".set-first")).toBeVisible();
+  await p.close();
+});
+
+test("a failed read of the accounts says so, with Try again, not the first steps", async () => {
+  const p = await context.newPage();
+  p.on("pageerror", e => errors.push(String(e)));
+  let fail = true;
+  await p.route("**/v1/accounts?*", r => fail
+    ? r.fulfill({ status: 503, contentType: "application/problem+json",
+      body: JSON.stringify({ title: "Unavailable", status: 503, detail: "the database is busy", code: "unavailable" }) })
+    : r.fallback());
+  await p.goto("/");
+  await expect(p.locator("#chips")).toContainText("Couldn't read your accounts");
+  await p.locator('.tab[data-view="settings"]').click();
+  await p.locator('.set-nav [data-set="accounts"]').click();
+  const box = p.locator("#set-accounts");
+  await expect(box).toContainText("Couldn't read your accounts: the database is busy");
+  await expect(box.locator(".set-first")).toHaveCount(0);
+  fail = false;
+  await box.getByRole("button", { name: "Try again" }).click();
+  await expect(box.locator(".acct-card").first()).toBeVisible();
+  await expect(box.locator(".set-note.bad")).toHaveCount(0);
+  await p.close();
+});
+
+test("an account from the environment whose variables are gone can be deleted, not moved", async () => {
+  const p = await context.newPage();
+  p.on("pageerror", e => errors.push(String(e)));
+  await p.route("**/v1/accounts?*", async r => {
+    const j = await (await r.fetch()).json();
+    const base = j.data.find((a: { source: string }) => a.source === "env") || j.data[0];
+    j.data.push({ ...base, id: "acc_gone_e2e", type: "threads", source: "env", status: "not_configured",
+      status_reason: "THREADS_ACCESS_TOKEN isn't set", label: "Gone threads", handle: "", profile_url: "", health: null });
+    await r.fulfill({ json: j });
+  });
+  await p.goto("/");
+  await expect(p.locator("#chips .target-row").first()).toBeVisible();
+  await p.locator('.tab[data-view="settings"]').click();
+  await p.locator('.set-nav [data-set="accounts"]').click();
+  const gone = p.locator('#set-accounts .acct-card[data-account="acc_gone_e2e"]');
+  await expect(gone.getByRole("button", { name: /^Delete/ })).toBeVisible();
+  await gone.getByRole("button", { name: /^Settings of/ }).click();
+  const d = p.locator(".acct-dlg");
+  await expect(d).toContainText("doesn't set it any more");
+  await expect(d.getByRole("button", { name: "Move into the app" })).toHaveCount(0);
+  await expect(d.getByRole("button", { name: "Delete" })).toBeVisible();
   await p.close();
 });

@@ -46,6 +46,9 @@ export const state = {
   translateTargets: [],
   // The server has no media store (features.media false): no attaching.
   mediaOff: false,
+  // The reverse proxy is the only gate (auth "proxy"): accounts come from
+  // the server's environment only.
+  proxyAuth: false,
   // Drafts integration
   activeDraftId: null, // id of the draft currently loaded into Compose, or null
   draftETag: "",       // its version as last read or saved, for If-Match

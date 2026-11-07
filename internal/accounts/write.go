@@ -16,6 +16,7 @@ import (
 	"github.com/geofox/publisher/internal/destination"
 	"github.com/geofox/publisher/internal/netguard"
 	"github.com/geofox/publisher/internal/redact"
+	"github.com/geofox/publisher/internal/secrets"
 	"github.com/geofox/publisher/internal/store"
 )
 
@@ -31,6 +32,7 @@ type AccountWriter interface {
 	ReplaceAccountCredentials(ctx context.Context, owner, id string, c store.CredentialChange) (store.Account, error)
 	AdoptAccount(ctx context.Context, owner, id string, c store.CredentialChange) (store.Account, error)
 	DeleteAccount(ctx context.Context, owner, id, actor, tokenID string) error
+	ForgetEnvAccount(ctx context.Context, owner, id, actor, tokenID string) error
 }
 
 // trialTimeout bounds opening an account with new credentials and asking
@@ -79,7 +81,11 @@ var (
 	ErrAlreadyInApp    = errors.New("the account is already managed in the app")
 	ErrNothingToAdopt  = errors.New("the environment doesn't configure this account now: there is nothing to adopt")
 	ErrNotRevealable   = errors.New("this account has no credential that can be shown")
-	errNoWriter        = errors.New("this server can't change accounts")
+	// ErrCredentialsUnreadable: an app-added account's stored credentials
+	// can't be opened with the master key (changed or moved in the
+	// database): connect it again.
+	ErrCredentialsUnreadable = errors.New("this account's stored credentials can't be opened (changed or moved in the database, or its server address was edited there): connect it again")
+	errNoWriter              = errors.New("this server can't change accounts")
 )
 
 // NewAccount is an account the owner adds in the app.
@@ -101,8 +107,9 @@ type CredentialUpdate struct {
 	// Config is a patch: the fields named are set, a null one goes back
 	// to its default.
 	Config map[string]any
-	// Credentials, when set, replace every credential; nil keeps them
-	// (but a new server address needs them again).
+	// Credentials, when set, replace the credentials; nil keeps them, and
+	// so does a secret left out with the same method (a new handle, the
+	// same app password). A new server address needs them again.
 	Credentials map[string]any
 	IfUpdatedAt time.Time
 	Actor       string
@@ -121,6 +128,18 @@ func (r *Registry) getenv(k string) string {
 		return r.opt.Getenv(k)
 	}
 	return os.Getenv(k)
+}
+
+// Manifest is a type's manifest as the owner's forms show it: its config
+// fields carry the operator's defaults for a new account (NOSTR_RELAYS).
+func (r *Registry) Manifest(typ string) (destination.Manifest, bool) {
+	d, ok := destination.Lookup(typ)
+	if !ok {
+		return destination.Manifest{}, false
+	}
+	m := d.Manifest()
+	m.Config = r.configSpecs(d)
+	return m, true
 }
 
 // configSpecs are the type's config fields with the operator's defaults
@@ -390,11 +409,13 @@ func (r *Registry) Create(ctx context.Context, n NewAccount) (Entry, error) {
 		return Entry{}, err
 	}
 	if r.opt.Seed != nil {
+		// Stored: what follows finishes even if the caller has gone.
+		ctx = context.WithoutCancel(ctx)
 		if err := r.opt.Seed(ctx, saved); err != nil {
 			r.log.Error("a new account's starting state wasn't set", "account", saved.ID, "type", saved.Type, "err", err)
 		}
 	}
-	return r.Add(ctx, saved)
+	return r.Add(context.WithoutCancel(ctx), saved)
 }
 
 // specKeys are the config keys a method's account keeps from the owner:
@@ -439,11 +460,25 @@ func (r *Registry) openSecrets(ctx context.Context, row store.Account, audience 
 		b.Audience = audience
 		v, err := r.opt.Keys.Open(b, s.Sealed)
 		if err != nil {
-			return nil, nil, errors.New(lockedReason(err))
+			return nil, nil, openSecretError(err)
 		}
 		plain[s.Name] = v
 	}
 	return plain, sealed, nil
+}
+
+// openSecretError says why a stored credential didn't open, as an error
+// the account API answers (409, not 500): no key, another key, or a sealed
+// value that doesn't open.
+func openSecretError(err error) error {
+	switch {
+	case errors.Is(err, secrets.ErrNoKey):
+		return ErrMasterKeyRequired
+	case errors.Is(err, secrets.ErrUnknownKey):
+		return ErrMasterKeyMismatch
+	default:
+		return ErrCredentialsUnreadable
+	}
 }
 
 // ChangeCredentials changes an app-added account's configuration or
@@ -490,17 +525,43 @@ func (r *Registry) ChangeCredentials(ctx context.Context, u CredentialUpdate) (E
 	if err != nil {
 		return Entry{}, err
 	}
-	patch, perrs := destination.ValidateFields(m.Config, u.Config, r.fieldOptions(true))
+	// null puts a field back to the operator's default, as for a new
+	// account.
+	patch, perrs := destination.ValidateFields(r.configSpecs(d), u.Config, r.fieldOptions(true))
 	var cerrs []destination.FieldError
 	var secrets map[string]string
+	// keep: saved secrets the owner left out of new credentials, with the
+	// same way of connecting (a new handle, the same app password); they
+	// are kept only while they go to the same server.
+	var keep []string
 	config := map[string]any{}
 	fields := slices.Sorted(maps.Keys(patch))
 	if u.Credentials != nil {
+		specs := slices.Clone(a.Fields)
+		if method == row.AuthMethod {
+			for i, f := range specs {
+				if _, given := u.Credentials[f.Key]; f.Secret && !given {
+					specs[i].Required = false
+					keep = append(keep, f.Key)
+				}
+			}
+		}
 		var creds map[string]any
-		creds, cerrs = destination.ValidateFields(a.Fields, u.Credentials, r.fieldOptions(false))
+		creds, cerrs = destination.ValidateFields(specs, u.Credentials, r.fieldOptions(false))
 		var more map[string]any
 		secrets, more = destination.SplitCredentials(a, creds)
+		// Another identity (a new handle) may live on another server: its
+		// address is found again unless the owner gives it.
+		moved := false
+		for _, f := range a.Fields {
+			if !f.Secret && !sameValue(more[f.Key], cur[f.Key]) {
+				moved = true
+			}
+		}
 		for _, f := range m.Config { // new credentials start their state afresh
+			if _, set := patch[f.Key]; moved && f.Audience && !set {
+				continue
+			}
 			if v, ok := cur[f.Key]; ok {
 				config[f.Key] = v
 			}
@@ -508,7 +569,7 @@ func (r *Registry) ChangeCredentials(ctx context.Context, u CredentialUpdate) (E
 		maps.Copy(config, more)
 		fields = append(fields, slices.Sorted(maps.Keys(creds))...)
 	} else {
-		config = cur
+		config = maps.Clone(cur)
 	}
 	if ps := append(problems("/config/", perrs), problems("/credentials/", cerrs)...); len(ps) > 0 {
 		return Entry{}, &InvalidError{Problems: ps}
@@ -528,7 +589,7 @@ func (r *Registry) ChangeCredentials(ctx context.Context, u CredentialUpdate) (E
 			owned[k] = v
 		}
 	}
-	checked, errs := destination.ValidateFields(slices.Concat(m.Config, nonSecret(a.Fields)), owned, r.fieldOptions(false))
+	checked, errs := destination.ValidateFields(slices.Concat(r.configSpecs(d), nonSecret(a.Fields)), owned, r.fieldOptions(false))
 	if len(errs) > 0 {
 		ps := make([]FieldProblem, 0, len(errs))
 		for _, e := range errs {
@@ -537,17 +598,36 @@ func (r *Registry) ChangeCredentials(ctx context.Context, u CredentialUpdate) (E
 		return Entry{}, &InvalidError{Problems: ps}
 	}
 	maps.Copy(config, checked)
-	oldAudience := destination.AudienceOf(m, mustConfig(row))
-	if secrets == nil {
-		if destination.AudienceOf(m, config) != oldAudience {
-			return Entry{}, invalid("/credentials", "required", "a new server address needs the credentials again, so they never go to a server they weren't given for")
-		}
-		if secrets, _, err = r.openSecrets(ctx, row, oldAudience); err != nil {
-			return Entry{}, err
+	// Nothing to change: answered without asking the network.
+	if u.Credentials == nil && method == row.AuthMethod && sameValue(config, cur) {
+		if en, ok := r.Get(row.ID); ok {
+			return en, nil
 		}
 	}
 	if config, err = r.discover(ctx, d, a, config); err != nil {
 		return Entry{}, err
+	}
+	oldAudience := destination.AudienceOf(m, mustConfig(row))
+	if u.Credentials == nil || len(keep) > 0 {
+		if destination.AudienceOf(m, config) != oldAudience {
+			ptr := "/credentials"
+			if len(keep) > 0 {
+				ptr += "/" + keep[0]
+			}
+			return Entry{}, invalid(ptr, "required", "a new server address needs the credentials again, so they never go to a server they weren't given for")
+		}
+		saved, _, err := r.openSecrets(ctx, row, oldAudience)
+		if err != nil {
+			return Entry{}, err
+		}
+		if u.Credentials == nil {
+			secrets = saved
+		}
+		for _, k := range keep {
+			if v, ok := saved[k]; ok {
+				secrets[k] = v
+			}
+		}
 	}
 	trialRow := row
 	trialRow.AuthMethod = a.ID
@@ -571,7 +651,7 @@ func (r *Registry) ChangeCredentials(ctx context.Context, u CredentialUpdate) (E
 	if err != nil {
 		return Entry{}, err
 	}
-	return r.ReopenWith(ctx, next)
+	return r.ReopenWith(context.WithoutCancel(ctx), next) // stored: finish even if the caller has gone
 }
 
 // envMethod is how an account from the environment connects: the one the
@@ -683,15 +763,32 @@ func (r *Registry) Adopt(ctx context.Context, owner, id, actor, tokenID string) 
 	if err != nil {
 		return Entry{}, err
 	}
-	return r.ReopenWith(ctx, next)
+	return r.ReopenWith(context.WithoutCancel(ctx), next) // stored: finish even if the caller has gone
 }
 
-// Delete deletes an app-added account (store.DeleteAccount) and closes it.
+// Delete deletes an app-added account (store.DeleteAccount), or one from
+// the environment whose variables are no longer set
+// (store.ForgetEnvAccount), and closes it. An environment account still
+// configured is store.ErrNotDBAccount.
 func (r *Registry) Delete(ctx context.Context, owner, id, actor, tokenID string) error {
 	if r.opt.Writes == nil {
 		return errNoWriter
 	}
-	if err := r.opt.Writes.DeleteAccount(ctx, owner, id, actor, tokenID); err != nil {
+	row, err := r.opt.Writes.Account(ctx, owner, id)
+	if err != nil {
+		return err
+	}
+	if row.Source == store.SourceEnv {
+		// One the environment no longer configures can go; one it still
+		// does is the environment's.
+		if r.EnvConfigured(row) {
+			return store.ErrNotDBAccount
+		}
+		err = r.opt.Writes.ForgetEnvAccount(ctx, owner, id, actor, tokenID)
+	} else {
+		err = r.opt.Writes.DeleteAccount(ctx, owner, id, actor, tokenID)
+	}
+	if err != nil {
 		return err
 	}
 	if err := r.Remove(id); err != nil && !errors.Is(err, ErrNoAccount) {
@@ -813,4 +910,12 @@ func (r *Registry) Details(ctx context.Context, row store.Account) (Details, err
 		slices.Sort(out.LockedFields)
 	}
 	return out, nil
+}
+
+// sameValue reports whether two config values are the same as JSON (a
+// stored value and one just typed).
+func sameValue(a, b any) bool {
+	x, err1 := json.Marshal(a)
+	y, err2 := json.Marshal(b)
+	return err1 == nil && err2 == nil && string(x) == string(y)
 }

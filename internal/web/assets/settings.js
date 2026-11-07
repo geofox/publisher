@@ -35,20 +35,29 @@ export function settingsShow(section) {
     if (b.dataset.set === s) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current");
   });
   for (const id of SECTIONS) { const p = $("#set-" + id); if (p) p.hidden = id !== s; }
+  showKeyBanner(s !== "accounts" || proxyMode); // Accounts says it in its own words (not behind the proxy alone)
   if (s === "accounts") accountsShow(); else accountsHide();
   if (s === "access") { accessShow(); tokensShow(); }
 }
 
 // settingsHidden tells the sections the tab went away.
-export function settingsHidden() { accountsHide(); }
+export function settingsHidden() { accountsHide(); showKeyBanner(true); }
 
 // keyBanner warns, on every tab, that saved credentials can't be opened
 // (the master key is missing or another one): those accounts' posts wait
 // until it is fixed.
+let keyBannerOn = false, proxyMode = false;
 function keyBanner(instance) {
+  proxyMode = !!instance && instance.auth === "proxy";
   const b = $("#key-banner");
   const s = instance && instance.secrets;
   if (!b || !s || (s.status !== "missing" && s.status !== "mismatch")) return;
   $("#key-banner-text").textContent = s.detail || "The master key needs fixing: accounts added in the app are locked.";
+  keyBannerOn = true;
   b.hidden = false;
+}
+
+function showKeyBanner(on) {
+  const b = $("#key-banner");
+  if (b && keyBannerOn) b.hidden = !on;
 }

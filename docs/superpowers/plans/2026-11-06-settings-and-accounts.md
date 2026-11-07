@@ -1765,6 +1765,70 @@ sandbox can't reach live hosts).
   `tokens` tab in the fixtures; `signin-proxy.spec.ts` checks the
   Accounts panel behind the proxy alone.
 
+### As built (C): review fixes
+
+Two QA reviews (server, web app) and a security review of part C. No
+finding lost data or leaked a credential; all were fixed except the two
+noted.
+
+- **Security:** (S1) the redirect rules drop `Referer` (Go sends the
+  previous address, query and all), and `GuardedRedirect` treats a token
+  in the address (a query parameter named like `token`, `key`, `secret`,
+  `pass`, `auth`, `sig`, `code`, `session`, or a user name) as a
+  credential that never leaves its origin. (S2) A listed private range
+  never opens `100.100.100.200` (Alibaba Cloud's metadata, in 100.64/10)
+  or `fd00:ec2::254` (AWS's IPv6 metadata, in fc00::/7);
+  `IsBlockedIP` adds `::/96` (IPv4-compatible), `192.0.0.0/24` (IETF
+  protocol assignments, not globally reachable) and `168.63.129.16`
+  (Azure's platform address). (S3) New credentials whose identifier
+  differs (a new Bluesky handle) don't keep the old server address: it
+  is found again unless the patch gives it, so a password never goes to
+  the previous identity's PDS.
+- **Server:** (Q1) a stored credential that doesn't open is `409`
+  (`master_key_required`, `master_key_mismatch`, or `invalid_state` with
+  `ErrCredentialsUnreadable`), not `500`; `:reveal` checks the key before
+  asking for re-authentication. (Q2) Two adopts at once: the second is
+  `409` (`store.ErrAlreadyAdopted`). (Q3) `GET /v1/destinations` shows
+  the operator's defaults for a new account (`Registry.Manifest`), and a
+  field put back to its default (`null`) gets the operator's default.
+  (Q4) A Threads account from the environment whose renewed token was
+  sealed with another key says to set that key (README too). (Q5) A
+  `PATCH` that changes nothing doesn't open the account. (Q6) Once
+  stored, the registry's reopen runs even if the caller has gone
+  (`context.WithoutCancel`). (Q7) An account from the environment whose
+  variables are gone (`not_configured`) can be deleted
+  (`store.ForgetEnvAccount`: soft delete, `env_key` cleared so setting
+  the variables again makes a new account); `SeedEnvAccounts` leaves
+  deleted rows out. (W3) New credentials with the same method may leave
+  a saved secret out (a new handle, the same app password): it is kept
+  while the server address stays the same, else `required` on it.
+  (Q9) Not changed: the idempotency fingerprint of a body holding
+  credentials stays a keyed MAC, since a plain hash would be guessable.
+- **Web app:** a failed read of the accounts shows the error with Try
+  again, not the first steps; toasts are announced (a persistent live
+  region); the master key shown in the panel and its open sections stay
+  across redraws; a flag that saved but whose reload failed says so
+  instead of undoing it; a number field holding text is refused in the
+  browser (it reads as empty); button names start with their visible
+  text (`Check now: …`, `Show key: …`, `Reconnect …`); checkbox focus
+  rings; 44 px touch targets on coarse pointers; the duplicate key
+  banner is hidden on Settings → Accounts (except behind the proxy
+  alone); readable contrast for faint text in Settings and for
+  `.tok-warning`; long npubs wrap; the fresh-key dialog has no ✕ (Done
+  only, after "I've saved it"); `not_configured` environment accounts
+  say so, offer Delete and no Move into the app; focus goes to "Get
+  started" when Settings opens by itself and after the last account is
+  deleted, to Add an account after another is deleted, and back to the
+  network or method picked when going back; errors from the last try
+  are cleared; the setup page says Settings → Access; the composer's
+  empty state behind the proxy says to use the environment; the compose
+  snippets use the README's list form and warn that `printf` keeps the
+  key in the shell history.
+- **Not done:** (W17) whether Chrome offers to save an app password
+  typed in the form (the fields are `autocomplete="off"`, with the
+  password managers' ignore attributes) wasn't verified in a real
+  Chrome profile; (Q8) see the deviation table.
+
 ---
 
 # PR D — Settings, account sets, media stores
@@ -2029,6 +2093,9 @@ Made by this plan; the spec is updated to match.
 | Plan C10: the accounts panel in `accounts.js` | In `settings-accounts.js`; `accounts.js` stays the data layer. |
 | §5.7: Bluesky `pds_url` optional everywhere | Optional for accounts added in the app (discovered); `BLUESKY_PDS_URL` stays required in the environment. |
 | Plan C4: environment addresses trusted | Relay sync's targets go through the guard for every account, the environment's too. |
+| §5.4: `422 credentials_required` when a new server address needs the credentials | `422 validation_failed` with `required` on `/credentials` (or the secret left out): one code for every field problem. |
+| §5.4: `credentials` replace all of them | A secret left out with the same method is kept while the server address stays the same (As built C, review fixes). |
+| §5.5: an environment account can't be deleted | One whose variables are gone (`not_configured`) can; its env key is let go. |
 
 ## Risks and how the plan handles them
 

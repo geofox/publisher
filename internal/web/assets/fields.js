@@ -116,6 +116,22 @@ export function field(spec, value, { locked = false, keep = false, warn = null }
   return { spec, row, input, read, setError, locked, focus: () => input.focus() };
 }
 
+// badInputs marks the number fields holding text that isn't a number (the
+// browser reads them as empty, which would mean "the default") and
+// answers the first, focused; null when there is none.
+export function badInputs(controls) {
+  let first = null;
+  for (const c of controls) {
+    if (c.input.validity && c.input.validity.badInput) {
+      c.setError("Enter a whole number.");
+      if (c.fold) c.fold.open = true;
+      first = first || c;
+    }
+  }
+  if (first) first.focus();
+  return first;
+}
+
 // fieldSet lays out fields: the plain ones, then the advanced ones folded
 // away ("Advanced"), which open by themselves when one gets an error.
 export function fieldSet(controls) {

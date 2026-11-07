@@ -92,6 +92,29 @@ func TestPolicyAllow(t *testing.T) {
 	}
 }
 
+// A listed range never opens a cloud's metadata address inside it.
+func TestPolicyAllowNeverMetadata(t *testing.T) {
+	p, err := ParsePrivateDestinations("meta.lan,100.64.0.0/10,fc00::/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		host, ip string
+		ok       bool
+	}{
+		{"pub.example", "100.100.100.200", false}, // Alibaba Cloud
+		{"meta.lan", "100.100.100.200", false},
+		{"pub.example", "fd00:ec2::254", false}, // AWS, IPv6
+		{"meta.lan", "fd00:ec2::254", false},
+		{"pub.example", "100.100.100.201", true}, // the range still works
+		{"pub.example", "fd00:ec2::253", true},
+	} {
+		if err := p.Allow(c.host, ip(c.ip)); (err == nil) != c.ok {
+			t.Errorf("Allow(%s, %s) = %v, want ok=%v", c.host, c.ip, err, c.ok)
+		}
+	}
+}
+
 func TestOwnerURL(t *testing.T) {
 	p, _ := ParsePrivateDestinations("mastodon.lan,10.1.0.0/16")
 	ok := map[string]string{

@@ -253,6 +253,10 @@ func (s *Store) ReplaceAccountCredentials(ctx context.Context, owner, id string,
 	return s.replaceCredentials(ctx, owner, id, c, false)
 }
 
+// ErrAlreadyAdopted: the account was moved into the app meanwhile (two
+// adopts at once).
+var ErrAlreadyAdopted = errors.New("the account is already managed in the app")
+
 // AdoptAccount moves an env account into the app: its configuration and
 // credentials (the environment's values, sealed) are stored and its
 // source becomes db, keeping its id, env key, flags and history. From then
@@ -280,7 +284,7 @@ func (s *Store) replaceCredentials(ctx context.Context, owner, id string, c Cred
 	}
 	switch {
 	case adopt && cur.Source != SourceEnv:
-		return cur, errors.New("the account is already in the app")
+		return cur, ErrAlreadyAdopted
 	case !adopt && cur.Source != SourceDB:
 		return cur, ErrNotDBAccount
 	case !c.IfUpdatedAt.IsZero() && !c.IfUpdatedAt.Equal(cur.UpdatedAt):
@@ -471,6 +475,21 @@ const AccountDeleteReason = "its account was deleted"
 // what it still had to send (scheduled posts, retries) is canceled with
 // the reason. History keeps its posts. An env account is ErrNotDBAccount.
 func (s *Store) DeleteAccount(ctx context.Context, owner, id, actor, tokenID string) error {
+	return s.deleteAccount(ctx, owner, id, actor, tokenID, SourceDB)
+}
+
+// ForgetEnvAccount deletes an environment account whose variables are no
+// longer set (the caller checks), as DeleteAccount does; its env key is
+// let go, so the environment configuring it again makes a new account. An
+// app-added account is ErrNotEnvAccount.
+func (s *Store) ForgetEnvAccount(ctx context.Context, owner, id, actor, tokenID string) error {
+	return s.deleteAccount(ctx, owner, id, actor, tokenID, SourceEnv)
+}
+
+// ErrNotEnvAccount: the account isn't one from the environment.
+var ErrNotEnvAccount = errors.New("the account isn't one from the environment")
+
+func (s *Store) deleteAccount(ctx context.Context, owner, id, actor, tokenID, source string) error {
 	tx, err := s.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -480,12 +499,16 @@ func (s *Store) DeleteAccount(ctx context.Context, owner, id, actor, tokenID str
 	if err != nil {
 		return err
 	}
-	if cur.Source != SourceDB {
+	switch {
+	case source == SourceDB && cur.Source != SourceDB:
 		return ErrNotDBAccount
+	case source == SourceEnv && cur.Source != SourceEnv:
+		return ErrNotEnvAccount
 	}
 	now := nextUpdatedAt(cur.UpdatedAt)
 	for _, q := range []string{
-		`UPDATE accounts SET deleted_at = ?1, enabled = 0, default_selected = 0, updated_at = ?1 WHERE id = ?2`,
+		`UPDATE accounts SET deleted_at = ?1, enabled = 0, default_selected = 0, updated_at = ?1,
+		  env_key = CASE WHEN source = 'env' THEN NULL ELSE env_key END WHERE id = ?2`,
 		`DELETE FROM secrets WHERE owner_id = ?3 AND scope = 'account' AND ref = ?2`,
 		`DELETE FROM nostr_sync_relays WHERE account_id = ?2`,
 		`DELETE FROM nostr_sync_relay_lists WHERE account_id = ?2`,

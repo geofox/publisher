@@ -639,7 +639,9 @@ container as a file (a Docker secret, as in the compose example above):
 printf '%s' '<the key>' > publisher_master_key && chmod 600 publisher_master_key
 ```
 
-or as `PUBLISHER_MASTER_KEY` (which `docker inspect` shows). Publisher
+(Typed like this, the key is kept in your shell's history: clear it from
+there, or write the file with an editor.) Or give it as
+`PUBLISHER_MASTER_KEY` (which `docker inspect` shows). Publisher
 reads it at startup, then removes it and the other credential variables
 from its own environment, so the tools it runs (ffmpeg) don't inherit
 them. A key file every user on the host can read gets a warning. If the container runs as another user than
@@ -652,6 +654,10 @@ tab, and nothing new can be saved until the key is back. A lost key
 means adding those accounts again. Accounts from the environment keep
 working without it (a Threads account goes back to
 `THREADS_ACCESS_TOKEN`, which may have expired since: set a fresh one).
+A *wrong* key (not the one they were saved with) locks a Threads account
+from the environment too, since the token it renewed is the one that
+works now: set the right key, or remove the key to go back to
+`THREADS_ACCESS_TOKEN`.
 
 **Changing the key.** Make a new one, set it as `PUBLISHER_MASTER_KEY`,
 set the old one as `PUBLISHER_MASTER_KEY_PREVIOUS` (or the `_FILE`
@@ -693,9 +699,11 @@ relay on Tailscale) needs `PRIVATE_DESTINATIONS`: a CSV of host names
 any private address; an address in a listed range may be reached by any
 name. Only private ranges can be listed (10/8, 172.16/12, 192.168/16,
 100.64/10, fc00::/7). Plain `http://` and `ws://` are accepted for a
-listed host name, or an address in a listed range. Loopback, link-local
-(cloud metadata) and the server's own addresses are never reached, and
-an error never says what a name resolved to. Addresses you set in the
+listed host name, or an address in a listed range. Loopback, link-local,
+clouds' metadata addresses (`169.254.169.254`, and `100.100.100.200` and
+`fd00:ec2::254` even inside a listed range) and the server's own
+addresses are never reached, and an error never says what a name
+resolved to. Addresses you set in the
 environment (`MASTODON_BASE_URL`, the relay variables) are yours and
 aren't checked, except the relays relay sync compares with your home
 relay.

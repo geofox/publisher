@@ -321,8 +321,11 @@ paths:
 
         An account added in the app (`source: db`) can also change its
         `config` (a merge patch: `null` puts a field back to its default),
-        `credentials` (all of the method's, replacing the stored ones) and
-        `method` (which needs its credentials). The result is opened and
+        `credentials` (the method's, replacing the stored ones; a secret
+        left out is kept when the method and the server address stay the
+        same, as for a new handle with the same app password) and
+        `method` (which needs its credentials). A new handle or other
+        identifier finds its server again unless `config` gives it. The result is opened and
         its network asked who it is first, as when adding it, and must be
         the same network account (`409 identity_changed`); a new server
         address needs the credentials again (`422` with `required` on
@@ -383,7 +386,7 @@ paths:
     delete:
       operationId: deleteAccount
       tags: [accounts]
-      summary: Delete an account added in the app
+      summary: Delete an account
       description: |
         Needs a signed-in browser session, re-authenticated for
         `account.delete` with this account as the `target`. The account is
@@ -391,10 +394,13 @@ paths:
         lists are deleted, and what it still had to send (scheduled posts,
         retries) is canceled with the reason; its posts stay in the
         history, and `GET /v1/accounts?include=deleted` still lists it. An
-        account from the environment can't be deleted (`409
-        locked_by_env`: unset its variables). An `account.deleted` event
-        is logged. An unknown account (`404`) or one from the environment
-        is answered before asking for re-authentication.
+        account from the environment can be deleted only once its
+        variables are no longer set (`status: not_configured`): setting
+        them again later makes a new account. While they are set it is
+        `409 locked_by_env` (unset them and restart). An
+        `account.deleted` event is logged. An unknown account (`404`) or
+        one the environment configures is answered before asking for
+        re-authentication.
       security:
         - session: []
       parameters:
@@ -467,7 +473,9 @@ paths:
         stored or cached (`Cache-Control: no-store`); not idempotent. An
         account whose credentials can't be shown is `409 invalid_state`;
         one from the environment is `409 locked_by_env` (read its
-        variables). Both are answered before asking for
+        variables). Both, and a master key that can't open the stored
+        credentials (`409 master_key_required` or
+        `master_key_mismatch`), are answered before asking for
         re-authentication.
       security:
         - session: []

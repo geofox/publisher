@@ -237,7 +237,14 @@ func (a *API) changeAccountCredentials(w http.ResponseWriter, r *http.Request, c
 	return en.Row, true
 }
 
-// v1DeleteAccount deletes an account added in the app (spec §5.5): its
+// envChecker says whether the environment configures an env account now
+// (accounts.Registry).
+type envChecker interface {
+	EnvConfigured(row store.Account) bool
+}
+
+// v1DeleteAccount deletes an account added in the app (spec §5.5), or one
+// from the environment whose variables are no longer set: its
 // credentials go, what it still had to send is canceled, its history
 // stays. It needs re-authentication for this account.
 func (a *API) v1DeleteAccount(w http.ResponseWriter, r *http.Request) {
@@ -245,12 +252,15 @@ func (a *API) v1DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if cur.Source != store.SourceDB {
-		problem(w, r, http.StatusConflict, codeLockedByEnv, "environment variables configure this account: unset them to remove it")
+	aw, ok := a.accountWriter(w, r)
+	if !ok {
 		return
 	}
-	aw, ok := a.accountWriter(w, r)
-	if !ok || !a.requireReauth(w, r, opAccountDelete, cur.ID) {
+	if ec, isEC := aw.(envChecker); cur.Source != store.SourceDB && (!isEC || ec.EnvConfigured(cur)) {
+		problem(w, r, http.StatusConflict, codeLockedByEnv, "environment variables configure this account: unset them (and restart) to remove it")
+		return
+	}
+	if !a.requireReauth(w, r, opAccountDelete, cur.ID) {
 		return
 	}
 	p, _ := principalFrom(r.Context())
@@ -361,7 +371,15 @@ func (a *API) v1RevealAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	aw, ok := a.accountWriter(w, r)
-	if !ok || !a.requireReauth(w, r, opAccountReveal, cur.ID) {
+	if !ok {
+		return
+	}
+	if err := a.MasterKey.WriteError(); err != nil {
+		// Before re-authenticating: the key can't open what's stored.
+		a.accountWriteError(w, r, "reading the credentials", err)
+		return
+	}
+	if !a.requireReauth(w, r, opAccountReveal, cur.ID) {
 		return
 	}
 	p, _ := principalFrom(r.Context())
@@ -423,7 +441,8 @@ func (a *API) accountWriteError(w http.ResponseWriter, r *http.Request, doing st
 		problem(w, r, http.StatusConflict, codeLockedByEnv, "environment variables configure this account: change them, or adopt it into the app first")
 	case errors.Is(err, accounts.ErrIdentityChanged):
 		problem(w, r, http.StatusConflict, codeIdentityChanged, err.Error())
-	case errors.Is(err, accounts.ErrAlreadyInApp), errors.Is(err, accounts.ErrNothingToAdopt), errors.Is(err, accounts.ErrNotRevealable):
+	case errors.Is(err, accounts.ErrAlreadyInApp), errors.Is(err, accounts.ErrNothingToAdopt), errors.Is(err, accounts.ErrNotRevealable),
+		errors.Is(err, accounts.ErrCredentialsUnreadable), errors.Is(err, store.ErrAlreadyAdopted):
 		problem(w, r, http.StatusConflict, codeInvalidState, err.Error())
 	case errors.Is(err, accounts.ErrMasterKeyRequired):
 		problem(w, r, http.StatusConflict, codeMasterKeyRequired, err.Error())

@@ -124,9 +124,42 @@ func TestGuardedRedirectCredentials(t *testing.T) {
 	if bHits.Load() != 0 {
 		t.Errorf("other server hit %d times", bHits.Load())
 	}
+	// A token in the address is a credential too.
+	if _, err := c.Get(a.URL + "/x?access_token=secret"); err == nil || !strings.Contains(err.Error(), "credential") {
+		t.Errorf("GET with a token in its query to another origin: %v", err)
+	}
+	if bHits.Load() != 0 {
+		t.Errorf("other server hit %d times", bHits.Load())
+	}
 	// Without a credential, a GET may change origin.
 	if _, err := c.Get(a.URL + "/x"); err != nil || bHits.Load() != 1 {
 		t.Errorf("plain GET: %v (hits %d)", err, bHits.Load())
+	}
+}
+
+// No Referer follows a redirect: it would carry the previous address's
+// query (a token in it).
+func TestRedirectsSendNoReferer(t *testing.T) {
+	for name, rule := range map[string]func(*http.Request, []*http.Request) error{"guarded": GuardedRedirect, "safe": SafeRedirect} {
+		t.Run(name, func(t *testing.T) {
+			var referer atomic.Value
+			referer.Store("")
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/next" {
+					referer.Store(r.Header.Get("Referer"))
+					return
+				}
+				http.Redirect(w, r, "/next", http.StatusFound)
+			}))
+			defer srv.Close()
+			c := &http.Client{CheckRedirect: rule}
+			if _, err := c.Get(srv.URL + "/first?q=1"); err != nil {
+				t.Fatal(err)
+			}
+			if got := referer.Load().(string); got != "" {
+				t.Errorf("Referer %q followed the redirect", got)
+			}
+		})
 	}
 }
 

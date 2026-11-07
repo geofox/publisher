@@ -182,7 +182,7 @@ func (p Policy) Allow(host string, ip net.IP) error {
 	if !IsBlockedIP(ip) {
 		return nil
 	}
-	if !isPrivate(a) {
+	if !isPrivate(a) || IsMetadataAddr(a) {
 		return ErrBlocked
 	}
 	if p.hostAllowed(host) {

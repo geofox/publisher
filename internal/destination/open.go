@@ -199,8 +199,11 @@ func TrustedNet() Net {
 // replays a request body (a 307 or 308) only to the first request's host
 // or one of its subdomains: the hosts Go itself keeps the Authorization
 // header for. A body sent anywhere else could carry a password (a
-// sign-in) to a host the operator never named.
+// sign-in) to a host the operator never named. No Referer is sent.
 func SafeRedirect(req *http.Request, via []*http.Request) error {
+	// Go sends the previous address as Referer, query and all (a token
+	// in it included): a server has no use for one.
+	req.Header.Del("Referer")
 	if len(via) >= 10 {
 		return errors.New("stopped after 10 redirects")
 	}
@@ -298,9 +301,11 @@ const maxGuardedRedirects = 5
 // GuardedRedirect is the redirect rule for owner-set and content
 // addresses: at most 5 redirects, never from https to http, never a
 // redirect of a request other than GET or HEAD (its body may hold a
-// password), and a request carrying a credential (Authorization, a
-// cookie, a body) never leaves its origin.
+// password), a request carrying a credential (Authorization, a cookie, a
+// body, a token in its address) never leaves its origin, and no Referer
+// is sent.
 func GuardedRedirect(req *http.Request, via []*http.Request) error {
+	req.Header.Del("Referer") // the previous address, a token in its query included
 	if len(via) >= maxGuardedRedirects {
 		return fmt.Errorf("stopped after %d redirects", maxGuardedRedirects)
 	}
@@ -312,11 +317,29 @@ func GuardedRedirect(req *http.Request, via []*http.Request) error {
 		return fmt.Errorf("refused to follow a redirect of a %s request", first.Method)
 	}
 	credential := first.Header.Get("Authorization") != "" || first.Header.Get("Cookie") != "" ||
-		first.GetBody != nil || first.ContentLength > 0
+		first.GetBody != nil || first.ContentLength > 0 || urlCredential(first.URL)
 	if credential && !sameOrigin(req.URL, first.URL) {
 		return errors.New("refused to send a credential to another server on a redirect")
 	}
 	return nil
+}
+
+// urlCredential reports whether an address carries a credential: a user
+// name or password, or a query parameter named like one (access_token,
+// api_key, secret, password, sig…).
+func urlCredential(u *url.URL) bool {
+	if u.User != nil {
+		return true
+	}
+	for k := range u.Query() {
+		k = strings.ToLower(k)
+		for _, w := range []string{"token", "key", "secret", "pass", "auth", "sig", "code", "session"} {
+			if strings.Contains(k, w) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // sameOrigin compares scheme, host and port (the default port spelled out

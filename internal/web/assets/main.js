@@ -6,6 +6,7 @@ import { loadAccounts, reloadAccounts, accounts, accountsLoaded, byId, identity,
 import { historyInit, loadHistory } from "./history.js";
 import { toolsInit, loadTools, relaySyncOff } from "./tools.js";
 import { verifyInit } from "./verify.js";
+import { focusFirstSteps } from "./settings-accounts.js";
 import { interactInit } from "./interact.js";
 import { installRecoveryAutosave } from "./drafts_recovery.js";
 import { installDraftsSidebar, populateTranslateMenu } from "./drafts.js";
@@ -33,6 +34,7 @@ async function loadConfig() {
     }
     if (data.features && data.features.media === false) noMediaStore();
     if (data.features && data.features.relay_sync === false) relaySyncOff();
+    state.proxyAuth = data.auth === "proxy";
     setReauthMode(data.auth);
     setAccessMode(data.auth);
     setTokensMode(data.auth);
@@ -127,6 +129,7 @@ function firstRun(list) {
     if (localStorage.getItem(FIRST_RUN_KEY)) return;
     localStorage.setItem(FIRST_RUN_KEY, "1");
   } catch (_) { return; }
+  focusFirstSteps(); // the keyboard starts at "Get started"
   switchTab("settings", "accounts");
 }
 

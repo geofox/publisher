@@ -327,6 +327,11 @@ func (r *Registry) build(ctx context.Context, row store.Account) (*lease, Status
 		var err error
 		if secrets, config, err = r.opt.State.Restore(ctx, row, secrets, config); err != nil {
 			r.log.Error("account state could not be restored", "account", row.ID, "type", row.Type, "err", err)
+			if errors.Is(err, errStateLocked) {
+				// Its renewed token is the one that works now: not the
+				// environment's older one.
+				return nil, Locked, "its saved state (a renewed token) was saved with another master key: set that key in PUBLISHER_MASTER_KEY (or rotate to a new one); its posts wait until then"
+			}
 			return nil, Locked, "its saved state could not be read; it is retried at the next start"
 		}
 	}
@@ -464,10 +469,16 @@ func (r *Registry) Remove(id string) error {
 	return nil
 }
 
+// EnvConfigured reports whether the environment configures an env row's
+// account now (its variables are set).
+func (r *Registry) EnvConfigured(row store.Account) bool {
+	return row.Source == store.SourceEnv && r.envFor(row) != nil
+}
+
 // envFor is the environment's account for an env row. The environment's
 // accounts are the operator's: another owner's row never opens with them.
 func (r *Registry) envFor(row store.Account) *EnvAccount {
-	if row.OwnerID != store.DefaultOwner {
+	if row.OwnerID != store.DefaultOwner || row.Source != store.SourceEnv || !row.DeletedAt.IsZero() {
 		return nil
 	}
 	key := row.EnvKey

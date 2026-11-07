@@ -99,10 +99,21 @@ func (a *API) v1Instance(w http.ResponseWriter, r *http.Request) {
 
 // GET /v1/destinations: the registered destination types.
 
+// manifester gives a type's manifest with the operator's defaults for a
+// new account (accounts.Registry).
+type manifester interface {
+	Manifest(typ string) (destination.Manifest, bool)
+}
+
 func (a *API) v1Destinations(w http.ResponseWriter, _ *http.Request) {
 	out := []destination.Manifest{}
+	mf, _ := a.Accounts.(manifester)
 	for _, t := range destination.Types() {
-		if d, ok := destination.Lookup(t); ok {
+		if mf != nil {
+			if m, ok := mf.Manifest(t); ok {
+				out = append(out, m)
+			}
+		} else if d, ok := destination.Lookup(t); ok {
 			out = append(out, d.Manifest())
 		}
 	}

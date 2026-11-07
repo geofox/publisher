@@ -499,8 +499,8 @@ A credential is only ever sent to the server it was entered for.
   (§4.1): Mastodon `instance_url`, Bluesky `pds_url`, a webhook URL, the
   Blossom URL, a future WordPress site URL.
 - Changing an audience field deletes the secrets bound to it and requires
-  them again in the same request; otherwise `422 credentials_required`
-  with a pointer to each missing field.
+  them again in the same request; otherwise `422 validation_failed` with
+  `required` on `/credentials` (or on each secret left out).
 - The audience's normalized origin is part of the secret's AAD, so a value
   copied or edited in the database file fails to open rather than going to
   a new server.
@@ -778,7 +778,11 @@ accounts), `ETag`. `?include=deleted` lists deleted accounts.
 - `config`, `credentials`: database accounts only (`409 locked_by_env`
   otherwise). Re-validated, re-opened and re-identified; a different
   `remote_id` is `409 identity_changed`; changing an audience field needs
-  the credentials again (§3.3).
+  the credentials again (§3.3). With the same method, a secret left out
+  of `credentials` is kept while the audience stays the same (a new
+  handle, the same app password). A new non-secret identifier (a
+  Bluesky handle) doesn't keep the old audience: it is discovered again
+  unless `config` gives it.
 - A metadata-only change goes through `Registry.Update`; a credential or
   connection change through `Reopen`.
 
@@ -787,7 +791,10 @@ accounts), `ETag`. `?include=deleted` lists deleted accounts.
 - `DELETE /v1/accounts/{id}`: soft delete (`deleted_at`, `enabled = 0`),
   secrets deleted, scheduled targets of the account canceled with the
   reason, drafts drop it when opened. Needs re-authentication. An env
-  account can't be deleted (`409 locked_by_env`; unset its variables).
+  account the environment still configures can't be deleted (`409
+  locked_by_env`; unset its variables); one it no longer configures
+  (`not_configured`) can, and its `env_key` is cleared so that setting the
+  variables again makes a new account.
 - `POST /v1/accounts/{id}:check`: authenticated `Check`, rate limited to
   one per 10 s per account.
 - `POST /v1/accounts/{id}:reveal`: Nostr keys only (the driver marks which

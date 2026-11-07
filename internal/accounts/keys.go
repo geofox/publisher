@@ -37,8 +37,8 @@ type KeyState struct {
 
 // Errors for a credential write the key status refuses.
 var (
-	ErrMasterKeyRequired = errors.New("set a master key (PUBLISHER_MASTER_KEY) to save credentials; `publisher keygen` makes one")
-	ErrMasterKeyMismatch = errors.New("the stored credentials were saved with another master key; fix PUBLISHER_MASTER_KEY before saving new ones, so the database never mixes keys")
+	ErrMasterKeyRequired = errors.New("set a master key (PUBLISHER_MASTER_KEY) to save or read credentials in the app; `publisher keygen` makes one")
+	ErrMasterKeyMismatch = errors.New("the stored credentials were saved with another master key: set that key in PUBLISHER_MASTER_KEY (or rotate to a new one); until then they can't be read, and new ones aren't saved, so the database never mixes keys")
 )
 
 // WriteError is the error a credential write gets under this status (nil

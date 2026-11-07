@@ -209,7 +209,7 @@ func TestCLIKeygen(t *testing.T) {
 	if _, err := secrets.ParseMasterKey(m[1]); err != nil {
 		t.Errorf("key doesn't parse: %v", err)
 	}
-	if !strings.Contains(out, "PUBLISHER_MASTER_KEY_FILE: /run/secrets/publisher_master_key") {
+	if !strings.Contains(out, "- PUBLISHER_MASTER_KEY_FILE=/run/secrets/publisher_master_key") {
 		t.Errorf("no compose snippet:\n%s", out)
 	}
 	_, out2, _ := cliEnv{}.run(t, "keygen")

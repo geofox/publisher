@@ -186,9 +186,20 @@ export function localInput(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// flash shows a short message, and has screen readers say it: a toast
+// added with its text isn't announced, so the words also go to a live
+// region that stays on the page.
+let flashLive = null;
 export function flash(msg, ms = 2600) {
-  const t = el("div", { class: "toast", text: msg });
+  const t = el("div", { class: "toast", text: msg, "aria-hidden": "true" });
   document.body.append(t);
+  if (!flashLive || !flashLive.isConnected) {
+    flashLive = el("div", { class: "sr-only", role: "status", "aria-live": "polite", "data-flash-live": "" });
+    document.body.append(flashLive);
+  }
+  const live = flashLive;
+  live.textContent = "";
+  setTimeout(() => { live.textContent = msg; }, 60);
   setTimeout(() => t.remove(), ms);
 }
 

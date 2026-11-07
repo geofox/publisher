@@ -876,7 +876,7 @@ textarea.master,.verify-input{}
   background:var(--card);border:.5px solid var(--line-2);border-radius:10px;
 }
 .tok-form input[type=text]:focus{outline:none;border-color:var(--indigo);box-shadow:0 0 0 3px var(--accent-dim)}
-.tok-warning{margin:4px 0 10px;font-size:13px;font-weight:600;color:var(--amber)}
+.tok-warning{margin:4px 0 10px;font-size:13px;font-weight:600;color:#9a5b12} /* amber dark enough to read (5.4:1) */
 .tok-secret-row{display:flex;gap:8px;align-items:center;margin-bottom:14px}
 .tok-secret-input{
   flex:1;font:13px/1.4 var(--mono);padding:9px 11px;color:var(--ink);
@@ -1057,6 +1057,8 @@ a.auth-link{color:#fff}
 .fld-warn{margin:0;font-size:12px;line-height:1.45;color:#9a5b12}
 .fld-warn:empty,.fld-err:empty{display:none}
 .fld-err{margin:0;font-size:12px;line-height:1.45;color:var(--red);font-weight:500}
+.fld input[type=checkbox]:focus{box-shadow:none}
+.fld input[type=checkbox]:focus-visible,.fld-check input:focus-visible,.acct-flag input:focus-visible{outline:2px solid var(--indigo);outline-offset:2px}
 .fld-check{display:flex;align-items:center;gap:8px;font-size:13.5px}
 .fld-check input{accent-color:var(--indigo);width:16px;height:16px;margin:0}
 .fld-check .fld-label{font-size:13.5px}
@@ -1066,6 +1068,18 @@ a.auth-link{color:#fff}
 .fld-adv summary{cursor:pointer;font-size:12.5px;font-weight:500;color:var(--indigo);margin-bottom:8px}
 @media (pointer: coarse){
   .fld input[type=text],.fld input[type=password],.fld input[type=url],.fld input[type=number],.fld select,.fld textarea{font-size:16px}
+}
+.set-reading{margin:14px 4px;font-size:13.5px;color:var(--ink-2)}
+.set-first-title:focus{outline:none}
+.set-first-title:focus-visible{outline:2px solid var(--indigo);outline-offset:3px;border-radius:4px}
+/* Faint text is too light on white for reading (2.5:1): the settings use
+   the secondary ink (6:1). */
+#settings .muted{color:var(--ink-2)}
+.acct-dlg .fld-help{overflow-wrap:anywhere}
+@media (pointer: coarse){
+  .acct-actions button,.acct-flag,.fld-peek,.set-nav button,.acct-dlg .confirm-actions button{min-height:44px}
+  .acct-flag input,.fld-check input{width:22px;height:22px}
+  .modal-x{min-width:44px;min-height:44px}
 }
 .set-step .tok-secret-row,.set-note .tok-secret-row{flex-wrap:wrap}
 .set-step .tok-secret-row input,.set-note .tok-secret-row input{flex:1 1 240px;min-width:0}

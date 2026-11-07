@@ -2,7 +2,7 @@
 import { el, v1, flash, relTime, confirmModal, inputDialog, asDialog } from "./common.js";
 import { accounts, reloadAccounts, byId, loadDestinations, networkName, customLabel, handleOf, nameOf } from "./accounts.js";
 import { accountTile, brandTile } from "./brands.js";
-import { field, fieldSet, showProblems, sameValue } from "./fields.js";
+import { field, fieldSet, showProblems, sameValue, badInputs } from "./fields.js";
 import { waitText } from "./webauthn.js";
 
 // Settings → Accounts: every account, grouped by network, with its status
@@ -59,13 +59,32 @@ let shown = false;
 // pendingFocus is the control to focus once the panel is drawn again (a
 // flag just changed, an account checked).
 let pendingFocus = "";
+// reading is how the last read of the accounts went: "loading", "error"
+// (readError says why) or "ok". Without accounts, only "ok" shows the
+// first steps: a failed read isn't an empty server.
+let reading = "ok", readError = "";
 
 // accountsShow draws the panel and reads the accounts and types afresh.
 export function accountsShow() {
   shown = true;
+  if (!accounts().length) reading = "loading";
   render();
   readTypes().then(render);
-  reloadAccounts().catch(e => flash("Couldn't read your accounts: " + e.message));
+  readAccounts();
+}
+
+function readAccounts() {
+  return reloadAccounts().then(() => { reading = "ok"; readError = ""; if (shown) render(); },
+    e => { reading = "error"; readError = e.message; if (shown) render(); });
+}
+
+// readNote stands for the list while it is read, or couldn't be.
+function readNote() {
+  if (reading === "loading") return el("p", { class: "set-reading", role: "status", text: "Reading your accounts…" });
+  const again = el("button", { class: "ghost sm", type: "button", text: "Try again", "data-focus-key": "acct-read-again",
+    onclick: () => { reading = "loading"; pendingFocus = "acct-read-again"; render(); readAccounts(); } });
+  return el("div", { class: "set-note bad", role: "alert" },
+    el("p", { text: "Couldn't read your accounts: " + readError }), again);
 }
 
 export function accountsHide() { shown = false; }
@@ -80,8 +99,9 @@ function render() {
   const key = pendingFocus || (box.contains(active) && active.dataset ? active.dataset.focusKey || "" : "");
   pendingFocus = "";
   const list = accounts();
-  // A new server shows its first steps instead of an empty list.
-  const first = list.length ? null : firstRun();
+  // A new server shows its first steps instead of an empty list (once the
+  // read says it is empty).
+  const first = list.length ? null : reading === "ok" ? firstRun() : readNote();
   box.replaceChildren(...[
     ...notes(list),
     first,
@@ -91,8 +111,20 @@ function render() {
   if (key) {
     const again = box.querySelector('[data-focus-key="' + CSS.escape(key) + '"]');
     if (again && !again.disabled) again.focus({ preventScroll: true });
+    else if (key === FIRST_TITLE) pendingFocus = key; // once the read says it's empty
+    else if (!box.contains(document.activeElement)) {
+      // What had the keyboard is gone (a deleted account): the section's
+      // tab has it.
+      const nav = document.querySelector('.set-nav [aria-current="true"]');
+      if (nav) nav.focus({ preventScroll: true });
+    }
   }
 }
+
+// The first steps' heading: where the keyboard starts when Settings opens
+// by itself on a new server, or after the last account was deleted.
+const FIRST_TITLE = "first-run-title";
+export function focusFirstSteps() { pendingFocus = FIRST_TITLE; }
 
 // notes are what the owner should know first: credentials can't be
 // managed behind the proxy alone; the master key needs fixing; where to
@@ -111,9 +143,11 @@ function notes(list) {
       el("p", { class: "set-note-title", text: ks === "missing" ? "The master key is missing" : "The master key doesn't match" }),
       el("p", { text: inst.secrets.detail || "" })));
   } else if (ks === "none" && list.length) {
-    out.push(el("details", { class: "set-note" },
+    const d = el("details", { class: "set-note", open: keyNoteOpen ? "" : false },
       el("summary", { text: "To add accounts here, set a master key" }),
-      ...keyHelp()));
+      ...keyHelp());
+    d.addEventListener("toggle", () => { keyNoteOpen = d.open; });
+    out.push(d);
   }
   return out;
 }
@@ -154,9 +188,13 @@ function firstRun() {
     el("p", { class: "set-step-note", text: blocked || "Bluesky, Mastodon, Threads or Nostr: one network at a time, as many accounts as you like." }),
     add);
   return el("section", { class: "set-first", "aria-labelledby": "set-first-title" },
-    el("h2", { id: "set-first-title", class: "set-first-title", text: "Get started" }),
+    el("h2", { id: "set-first-title", class: "set-first-title", text: "Get started", tabindex: "-1", "data-focus-key": FIRST_TITLE }),
     el("ol", { class: "set-steps" }, keyStep, addStep));
 }
+
+// The panel is drawn again on every read of the accounts: the key shown
+// and what is open stay as they were.
+let shownKey = "", keyNoteOpen = false, keyEnvOpen = false;
 
 // newKey makes a master key in this browser: 32 random bytes, base64 (as
 // `publisher keygen` prints). It is never sent anywhere.
@@ -171,11 +209,12 @@ function keyHelp() {
   const keyIn = el("input", { class: "tok-secret-input", readonly: "", "aria-label": "A new master key", spellcheck: "false" });
   const file = el("pre", { class: "auth-cmd" });
   const env = el("pre", { class: "auth-cmd" });
-  const fill = () => {
-    const k = newKey();
+  const fill = fresh => {
+    if (fresh || !shownKey) shownKey = newKey();
+    const k = shownKey;
     keyIn.value = k;
     file.textContent = "printf '%s' '" + k + "' > publisher_master_key && chmod 600 publisher_master_key";
-    env.textContent = "PUBLISHER_MASTER_KEY=" + k;
+    env.textContent = "- PUBLISHER_MASTER_KEY=" + k;
   };
   fill();
   keyIn.addEventListener("click", () => keyIn.select());
@@ -183,16 +222,19 @@ function keyHelp() {
   copy.addEventListener("click", () => navigator.clipboard.writeText(keyIn.value).then(
     () => { copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1800); },
     () => { keyIn.select(); flash("Select it and copy it"); }));
-  const again = el("button", { class: "ghost sm", type: "button", text: "Make another", onclick: fill });
+  const again = el("button", { class: "ghost sm", type: "button", text: "Make another", onclick: () => fill(true) });
+  const envMore = el("details", { class: "set-more", open: keyEnvOpen ? "" : false }, el("summary", { text: "Or as an environment variable" }), env);
+  envMore.addEventListener("toggle", () => { keyEnvOpen = envMore.open; });
   return [
     el("p", { class: "set-step-note", text: "Accounts added here keep their credentials encrypted with a master key that only the server has. Here is a new one, made in this browser and sent nowhere:" }),
     el("div", { class: "tok-secret-row" }, keyIn, copy, again),
     el("p", { class: "set-step-note", text: "Keep a copy somewhere safe, such as a password manager: without it, the credentials in a backup can't be read. Then, beside your compose file, save it as a file:" }),
     file,
     el("p", { class: "set-step-note", text: "and give it to Publisher as a Docker secret (docker inspect doesn't show it):" }),
-    el("pre", { class: "auth-cmd", text: "services:\n  publisher:\n    environment:\n      PUBLISHER_MASTER_KEY_FILE: /run/secrets/publisher_master_key\n    secrets: [publisher_master_key]\nsecrets:\n  publisher_master_key:\n    file: ./publisher_master_key" }),
+    el("p", { class: "set-step-note", text: "(Typed like this, the key is kept in your shell's history: clear it from there, or write the file with an editor.)" }),
+    el("pre", { class: "auth-cmd", text: "services:\n  publisher:\n    environment:\n      - PUBLISHER_MASTER_KEY_FILE=/run/secrets/publisher_master_key\n    secrets: [publisher_master_key]\nsecrets:\n  publisher_master_key:\n    file: ./publisher_master_key" }),
     el("p", { class: "set-step-note", text: "Restart Publisher (docker compose up -d), then reload this page." }),
-    el("details", { class: "set-more" }, el("summary", { text: "Or as an environment variable" }), env),
+    envMore,
   ];
 }
 
@@ -301,12 +343,18 @@ function flag(a, key, text, help) {
     busy = true;
     box.setAttribute("aria-busy", "true");
     pendingFocus = id;
+    let saved = false;
     try {
       await v1("/v1/accounts/" + enc(a.id), { method: "PATCH", body: { [key]: box.checked } });
-      await reloadAccounts();
+      saved = true;
     } catch (e) {
       box.checked = !box.checked;
       flash("Not changed: " + e.message);
+    }
+    try {
+      if (saved) await reloadAccounts();
+    } catch (e) {
+      flash("Changed, but the list couldn't be read again: " + e.message, 4000);
     } finally {
       busy = false;
       box.removeAttribute("aria-busy");
@@ -336,16 +384,21 @@ function actions(a) {
   const db = a.source === "db", env = a.source === "env";
   const out = [];
   if (a.status === "connected" || a.status === "needs_reconnect") {
-    const b = btn("Check now", "check-" + a.id, () => check(a, b), { "aria-label": "Check " + name });
+    const b = btn("Check now", "check-" + a.id, () => check(a, b), { "aria-label": "Check now: " + name });
     out.push(b);
   }
   out.push(btn("Rename", "rename-" + a.id, () => rename(a), { "aria-label": "Rename " + name }));
   if (db && !proxy()) {
-    out.push(btn(a.status === "needs_reconnect" ? "Reconnect" : "Settings", "edit-" + a.id, () => editAccount(a), { "aria-label": "Settings of " + name }));
-    if (revealable(a)) out.push(btn("Show key", "reveal-" + a.id, () => reveal(a, false), { "aria-label": "Show the key of " + name }));
+    const reconnect = a.status === "needs_reconnect";
+    out.push(btn(reconnect ? "Reconnect" : "Settings", "edit-" + a.id, () => editAccount(a), { "aria-label": (reconnect ? "Reconnect " : "Settings of ") + name }));
+    if (revealable(a)) out.push(btn("Show key", "reveal-" + a.id, () => reveal(a, false), { "aria-label": "Show key: " + name }));
     out.push(btn("Delete", "delete-" + a.id, () => del(a), { class: "ghost sm danger-text", "aria-label": "Delete " + name }));
   }
   if (env) out.push(btn("Settings", "edit-" + a.id, () => envSettings(a), { "aria-label": "Settings of " + name }));
+  // One whose variables are gone can go.
+  if (env && a.status === "not_configured" && !proxy()) {
+    out.push(btn("Delete", "delete-" + a.id, () => del(a), { class: "ghost sm danger-text", "aria-label": "Delete " + name }));
+  }
   return el("div", { class: "acct-actions" }, ...out);
 }
 
@@ -383,12 +436,17 @@ function del(a) {
   const name = nameOf(a.id);
   confirmModal({
     title: "Delete " + name + "?",
-    body: "Publisher erases its credentials and cancels what it still had to send to it. Its sent posts stay in History. To post as it again, add it again.",
+    body: a.source === "env"
+      ? "Its variables aren't set any more. Publisher forgets it and cancels what it still had to send to it. Its sent posts stay in History. Set its variables again and it comes back as a new account."
+      : "Publisher erases its credentials and cancels what it still had to send to it. Its sent posts stay in History. To post as it again, add it again.",
     confirmText: "Delete",
     onConfirm: async () => {
       try {
         await v1("/v1/accounts/" + enc(a.id), { method: "DELETE" });
         flash("Deleted " + name);
+        // The keyboard goes to Add an account (the first steps when it was
+        // the last).
+        pendingFocus = accounts().length <= 1 ? FIRST_TITLE : "acct-add";
         await reloadAccounts().catch(() => {});
         return true;
       } catch (e) {
@@ -404,7 +462,7 @@ function del(a) {
 
 // sheet is a dialog whose body the caller fills, step by step; show()
 // opens it, focusing focusEl. onClose runs when it closes (✕ or close()).
-function sheet(title, { escape = true, onClose = null } = {}) {
+function sheet(title, { escape = true, onClose = null, closable = true } = {}) {
   const bk = el("div", { class: "modal-bk" });
   let close = () => bk.remove();
   const titleEl = el("p", { class: "modal-title", text: title });
@@ -417,7 +475,7 @@ function sheet(title, { escape = true, onClose = null } = {}) {
     open: () => bk.isConnected,
   };
   const x = el("button", { class: "modal-x", type: "button", text: "✕", "aria-label": "Close", onclick: () => s.close() });
-  const card = el("div", { class: "modal acct-dlg" }, x, titleEl, body);
+  const card = el("div", { class: "modal acct-dlg" }, closable ? x : null, titleEl, body);
   return s;
 }
 
@@ -446,6 +504,7 @@ function collect(ctrls) {
 // problemText is what a failed write says, beyond the errors shown on the
 // fields.
 function problemText(e, m, byPointer) {
+  for (const c of byPointer.values()) c.setError(""); // the last try's
   switch (e.code) {
     case "duplicate_account": {
       const other = e.problem && e.problem.account_id && byId(e.problem.account_id);
@@ -475,31 +534,35 @@ async function addAccount() {
   s.show(first);
 }
 
-function pickNetwork(s) {
+// pickNetwork asks which network; back from a later step, the one picked
+// (from) has the focus again.
+function pickNetwork(s, from = "") {
   s.setTitle("Add an account");
   const list = types.filter(m => usable(m).length);
-  const buttons = list.map(m => el("button", { class: "acct-pick-btn", type: "button", onclick: () => pickMethod(s, m) },
+  const buttons = list.map(m => el("button", { class: "acct-pick-btn", type: "button", "data-type": m.type, onclick: () => pickMethod(s, m) },
     brandTile(m.type, { size: 28 }), el("span", { text: m.name })));
   s.body.replaceChildren(
     el("p", { class: "acct-dlg-lead", text: "Which network?" }),
     el("div", { class: "acct-pick" }, ...buttons));
-  if (s.open() && buttons[0]) buttons[0].focus();
-  return buttons[0];
+  const focus = buttons.find(b => b.dataset.type === from) || buttons[0];
+  if (s.open() && focus) focus.focus();
+  return focus;
 }
 
-function pickMethod(s, m) {
+function pickMethod(s, m, from = "") {
   const ms = usable(m);
-  if (ms.length === 1) return form(s, m, ms[0], () => pickNetwork(s));
+  if (ms.length === 1) return form(s, m, ms[0], () => pickNetwork(s, m.type));
   s.setTitle("Add a " + m.name + " account");
-  const buttons = ms.map(a => el("button", { class: "acct-method", type: "button", onclick: () => form(s, m, a, () => pickMethod(s, m)) },
+  const buttons = ms.map(a => el("button", { class: "acct-method", type: "button", "data-method": a.id, onclick: () => form(s, m, a, () => pickMethod(s, m, a.id)) },
     el("span", { class: "acct-method-name", text: a.label }),
     a.help ? el("span", { class: "acct-method-help", text: a.help }) : null));
   s.body.replaceChildren(
     el("p", { class: "acct-dlg-lead", text: "How does it connect?" }),
     el("div", { class: "acct-methods" }, ...buttons),
-    el("div", { class: "confirm-actions" }, el("button", { class: "ghost sm", type: "button", text: "Back", onclick: () => pickNetwork(s) })));
-  buttons[0].focus();
-  return buttons[0];
+    el("div", { class: "confirm-actions" }, el("button", { class: "ghost sm", type: "button", text: "Back", onclick: () => pickNetwork(s, m.type) })));
+  const focus = buttons.find(b => b.dataset.method === from) || buttons[0];
+  focus.focus();
+  return focus;
 }
 
 // howTo is a way of connecting's help and where to get the credential.
@@ -529,6 +592,7 @@ function form(s, m, a, back) {
   f.addEventListener("submit", async ev => {
     ev.preventDefault();
     if (busy) return;
+    if (badInputs([...conf, ...creds])) { status.className = "acct-dlg-status err"; status.textContent = "Fix the field marked above."; return; }
     busy = true;
     submit.disabled = true;
     status.className = "acct-dlg-status";
@@ -612,6 +676,7 @@ async function editAccount(a) {
   f.addEventListener("submit", async ev => {
     ev.preventDefault();
     if (busy) return;
+    if (badInputs([...conf, ...creds])) { status.className = "acct-dlg-status err"; status.textContent = "Fix the field marked above."; return; }
     const body = {};
     if (method.id !== a.auth_method) body.method = method.id;
     const typedSecret = creds.some(c => c.spec.secret && c.read() !== undefined);
@@ -658,7 +723,10 @@ async function envSettings(a) {
   const m = manifest(a.type);
   const s = sheet("Settings of " + nameOf(a.id));
   const method = m && (m.auth || []).find(x => x.id === a.auth_method);
-  const parts = [el("p", { class: "fld-help", text: "This account comes from the server's environment, which sets everything below." })];
+  const gone = a.status === "not_configured";
+  const parts = [el("p", { class: "fld-help", text: gone
+    ? "This account came from the server's environment, which doesn't set it any more, so it isn't used. Set its variables again and restart Publisher, or delete it here (its sent posts stay in History)."
+    : "This account comes from the server's environment, which sets everything below." })];
   if (method) {
     parts.push(el("p", { class: "acct-sect", text: "Credentials: " + method.label }));
     for (const f of method.fields || []) {
@@ -675,7 +743,9 @@ async function envSettings(a) {
   }
   const done = el("button", { class: "ghost sm", type: "button", text: "Close", onclick: () => s.close() });
   const acts = [done];
-  if (!proxy()) {
+  if (gone && !proxy()) {
+    acts.push(el("button", { class: "ghost sm danger-text", type: "button", text: "Delete", onclick: () => { s.close(); del(a); } }));
+  } else if (!proxy()) {
     const blocked = writeBlocked();
     parts.push(el("p", { class: "acct-sect", text: "Manage it here" }),
       el("p", { class: "fld-help", text: "Move it into the app to change these here: Publisher copies its settings and credentials into its database, encrypted with the master key, and ignores its variables from then on (remove them from the environment)." }),
@@ -727,7 +797,8 @@ async function reveal(a, fresh) {
   const specOf = k => m && (m.auth || []).flatMap(x => x.fields || []).find(f => f.key === k);
   const inputs = [];
   // Closing (Done or ✕: it can be shown again) clears the key from the page.
-  const s = sheet(fresh ? "Keep a copy of the new key" : "The key of " + nameOf(a.id), { escape: false,
+  // Just made, it closes only once the owner says they kept a copy.
+  const s = sheet(fresh ? "Keep a copy of the new key" : "The key of " + nameOf(a.id), { escape: false, closable: !fresh,
     onClose: () => { for (const i of inputs) i.value = ""; } });
   const rows = values.map(([k, v]) => {
     const spec = specOf(k);

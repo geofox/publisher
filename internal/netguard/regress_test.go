@@ -23,7 +23,9 @@ func TestNAT64Bypass(t *testing.T) {
 
 func TestIsBlockedIPReservedAndTranslated(t *testing.T) {
 	for _, s := range []string{"0.1.2.3", "198.18.0.1", "240.0.0.1", "255.255.255.255",
-		"64:ff9b:1:7f00:0:100:808:808", "::ffff:0:7f00:1", "2002:7f00:1::1", "2002:a00:1::1"} {
+		"64:ff9b:1:7f00:0:100:808:808", "::ffff:0:7f00:1", "2002:7f00:1::1", "2002:a00:1::1",
+		"::7f00:1", "::a9fe:a9fe", "::808:808", // IPv4-compatible (::/96)
+		"192.0.0.192", "168.63.129.16"} {
 		if !IsBlockedIP(net.ParseIP(s)) {
 			t.Errorf("%s not blocked", s)
 		}

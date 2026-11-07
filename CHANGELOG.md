@@ -196,11 +196,15 @@ the `edge` image.
   field with the network's own words, and the same network account can't
   be added twice. Accounts added in the app can change their settings
   and credentials (`PATCH`; a new server address needs the credentials
-  again), be checked now (`:check`) and be deleted (re-authenticated;
-  their scheduled posts are canceled, their history stays). An account
-  from the environment can be moved into the app (`:adopt`); its
-  variables are then ignored, and a startup warning names them while
-  they are set. `GET /v1/accounts` adds `auth_method`, `config`, which
+  again; a new handle with the same app password keeps the saved
+  password while the server stays the same, and finds its server again
+  unless you give it), be checked now (`:check`) and be deleted
+  (re-authenticated; their scheduled posts are canceled, their history
+  stays). An account from the environment can be moved into the app
+  (`:adopt`); its variables are then ignored, and a startup warning
+  names them while they are set. One whose variables are gone (`status:
+  not_configured`) can be deleted; setting them again later makes a new
+  account. `GET /v1/accounts` adds `auth_method`, `config`, which
   `credentials` are set (never their values), `locked_fields`, `health`,
   and `?include=deleted`. At most 10 accounts added or changed a minute.
   Behind the reverse proxy alone (`AUTH_MODE=proxy`) none of this is
@@ -213,7 +217,8 @@ the `edge` image.
   check now, show a Nostr key or delete it. A Nostr key made for you is
   shown right away, after confirming it's you, and the dialog stays
   until you tick that you saved it. An account from the environment
-  shows its settings read-only, with **Move into the app**. When saved
+  shows its settings read-only, with **Move into the app** (or Delete,
+  once its variables are gone). When saved
   credentials can't be opened (the master key is missing or another
   one), every tab says so. A new server opens Settings by itself, once:
   a master key made in the browser with the commands to give it to the
@@ -237,6 +242,14 @@ the `edge` image.
 - A Nostr account's relays (publishing, the NIP-65 lookup, relay sync's
   home relay) are dialed through the account's network policy, as every
   other network request is; they used the Nostr library's own client.
+- No request follows a redirect with a `Referer` (Go sends the previous
+  address, a token in its query included), and a request to an address
+  you set in the app that carries a token in its address doesn't follow
+  a redirect to another server. Clouds' metadata addresses are never
+  reached, even inside a range `PRIVATE_DESTINATIONS` lists
+  (`100.100.100.200`, `fd00:ec2::254`), and IPv4-compatible IPv6
+  addresses (`::a.b.c.d`), `192.0.0.0/24` and Azure's `168.63.129.16`
+  count as private.
 - A connection refused because of its address no longer says what the
   name resolved to ("dial tcp: refused to connect to a private or local
   address"): the error can reach the owner, and the server's internal
@@ -258,7 +271,10 @@ the `edge` image.
   or with a key that doesn't match what is stored, accounts from the
   environment work as before; `GET /v1/instance` reports `secrets.status`
   (`none`, `ok`, `missing`, `mismatch`) and `/readyz` a non-critical
-  `secrets` check.
+  `secrets` check. One exception: a Threads account from the
+  environment whose renewed token was saved with another key is locked
+  until that key is set (or the key is removed, to go back to
+  `THREADS_ACCESS_TOKEN`), and says so.
 - The log scrubs credentials from every string and error it prints (a
   token in a failed request's URL, an `nsec1` key, a Bluesky app
   password), not only where a caller remembered to. Alerts are scrubbed

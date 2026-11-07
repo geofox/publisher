@@ -684,3 +684,186 @@ func TestCreateDuplicateRace(t *testing.T) {
 		t.Fatalf("%d stored, %d duplicates, %d rows", ok, dups, w.count())
 	}
 }
+
+// A new handle with the same app password keeps the saved password while
+// the server stays the same; another identity's server is found again
+// (an email can't be looked up, so it needs the address), and a new
+// server needs the password again.
+func TestChangeIdentifierKeepsPasswordForSameServer(t *testing.T) {
+	w := newWriteEnv(t, false)
+	ctx := context.Background()
+	en, err := w.r.Create(ctx, bsky("pw1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := en.Row.ID
+	change := func(u CredentialUpdate) (Entry, error) {
+		u.Owner, u.ID = store.DefaultOwner, id
+		return w.r.ChangeCredentials(ctx, u)
+	}
+	// The old server isn't assumed for another identity.
+	_, err = change(CredentialUpdate{Credentials: map[string]any{"identifier": "ada@example.com"}})
+	pointers("/config/pds_url")(t, err)
+	// Given the same server: the saved password goes with it.
+	en, err = change(CredentialUpdate{Config: map[string]any{"pds_url": "https://pds.example"},
+		Credentials: map[string]any{"identifier": "ada@example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req := w.o.last(); req.Secrets["app_password"] != "pw1" || req.Config["identifier"] != "ada@example.com" {
+		t.Fatalf("opened with %+v", req)
+	}
+	if got := w.secretsOf(id, "https://pds.example"); got["app_password"] != "pw1" {
+		t.Fatalf("secrets = %v", got)
+	}
+	// Another server: the password is needed again, and nothing changes.
+	opens := w.o.count()
+	_, err = change(CredentialUpdate{Config: map[string]any{"pds_url": "https://other.example"},
+		Credentials: map[string]any{"identifier": "ada@example.com"}})
+	pointers("/credentials/app_password")(t, err)
+	if w.o.count() != opens {
+		t.Fatal("opened anyway")
+	}
+	if got := w.secretsOf(id, "https://pds.example"); got["app_password"] != "pw1" {
+		t.Fatalf("secrets = %v", got)
+	}
+}
+
+// A change that changes nothing is answered without asking the network.
+func TestChangeNothingOpensNothing(t *testing.T) {
+	w := newWriteEnv(t, false)
+	ctx := context.Background()
+	en, err := w.r.Create(ctx, mastodon("tok1", "https://one.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opens := w.o.count()
+	for _, cfg := range []map[string]any{{}, {"instance_url": "https://one.example"}} {
+		got, err := w.r.ChangeCredentials(ctx, CredentialUpdate{Owner: store.DefaultOwner, ID: en.Row.ID, Config: cfg})
+		if err != nil || got.Row.UpdatedAt != en.Row.UpdatedAt {
+			t.Fatalf("%v: %+v, %v", cfg, got.Row, err)
+		}
+	}
+	if w.o.count() != opens {
+		t.Fatalf("opened %d times", w.o.count()-opens)
+	}
+}
+
+// Credentials that don't open say why, as errors the API answers with
+// 409: no key, another key, or a sealed value that was changed.
+func TestOpenSecretsErrors(t *testing.T) {
+	w := newWriteEnv(t, false)
+	ctx := context.Background()
+	key, err := w.r.Create(ctx, NewAccount{Owner: store.DefaultOwner, Type: "nostr", Method: "secret_key",
+		Config: map[string]any{"bootstrap_relay": "wss://r.example"}, Credentials: map[string]any{"secret_key": strings.Repeat("1", 64)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := key.Row.ID
+	keys := w.r.opt.Keys
+	t.Cleanup(func() { w.r.opt.Keys = keys })
+	w.r.opt.Keys = secrets.Keyring{}
+	if _, err := w.r.Reveal(ctx, store.DefaultOwner, id); !errors.Is(err, ErrMasterKeyRequired) {
+		t.Fatalf("no key: %v", err)
+	}
+	w.r.opt.Keys = secrets.Keyring{Current: testKey(t, 9)}
+	if _, err := w.r.Reveal(ctx, store.DefaultOwner, id); !errors.Is(err, ErrMasterKeyMismatch) {
+		t.Fatalf("another key: %v", err)
+	}
+	w.r.opt.Keys = keys
+	// Sealed for another account: it doesn't open here.
+	put := sealFor(t, keys, store.DefaultOwner, "acc_other", "", map[string]string{"secret_key": strings.Repeat("2", 64)})
+	for i := range put {
+		put[i].Ref = id
+	}
+	if err := w.st.SaveAccountState(ctx, store.DefaultOwner, id, nil, put, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.r.Reveal(ctx, store.DefaultOwner, id); !errors.Is(err, ErrCredentialsUnreadable) {
+		t.Fatalf("moved: %v", err)
+	}
+}
+
+// An account from the environment can be deleted once its variables are
+// gone; set again, they make a new account.
+func TestDeleteEnvAccountNoLongerConfigured(t *testing.T) {
+	envAcct := EnvAccount{Type: "mastodon", EnvAccount: destination.EnvAccount{Key: "default",
+		Config: map[string]any{"instance_url": "https://m.example"}, Secrets: map[string]string{"access_token": "t"}}}
+	w := newWriteEnv(t, false, envAcct)
+	ctx := context.Background()
+	rows, _ := w.st.Accounts(ctx, store.DefaultOwner)
+	if err := w.r.Delete(ctx, store.DefaultOwner, rows[0].ID, "session", ""); !errors.Is(err, store.ErrNotDBAccount) {
+		t.Fatalf("configured: %v", err)
+	}
+	if err := w.st.InsertAccount(ctx, store.Account{ID: "acc_gone", Type: "bluesky", EnvKey: "default", Label: "Gone"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.r.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if en, _ := w.r.Get("acc_gone"); en.Status != NotConfigured {
+		t.Fatalf("status = %s", en.Status)
+	}
+	if err := w.r.Delete(ctx, store.DefaultOwner, "acc_gone", "session", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := w.r.Get("acc_gone"); ok {
+		t.Fatal("still listed")
+	}
+	got, err := w.st.Account(ctx, store.DefaultOwner, "acc_gone")
+	if err != nil || got.DeletedAt.IsZero() || got.EnvKey != "" {
+		t.Fatalf("row = %+v, %v", got, err)
+	}
+	seeded, err := w.st.SeedEnvAccounts(ctx, store.DefaultOwner, []store.EnvAccount{{Type: "bluesky", Key: "default", Label: "Back"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back []string
+	for _, r := range seeded {
+		if r.Type == "bluesky" {
+			back = append(back, r.ID)
+		}
+	}
+	if len(back) != 1 || back[0] == "acc_gone" {
+		t.Fatalf("seeded bluesky rows = %v", back)
+	}
+}
+
+// The operator's defaults for a new account (FALLBACK_RELAYS,
+// POW_DIFFICULTY_DEFAULT) are the forms' defaults, and what a field put
+// back to its default gets.
+func TestOperatorDefaults(t *testing.T) {
+	w := newWriteEnv(t, false)
+	w.r.opt.Getenv = func(k string) string {
+		return map[string]string{"POW_DIFFICULTY_DEFAULT": "12", "FALLBACK_RELAYS": "wss://fb.example"}[k]
+	}
+	m, ok := w.r.Manifest("nostr")
+	if !ok {
+		t.Fatal("no nostr manifest")
+	}
+	defaults := map[string]any{}
+	for _, f := range m.Config {
+		defaults[f.Key] = f.Default
+	}
+	if defaults["pow_default"] != 12 || !sameValue(defaults["fallback_relays"], []string{"wss://fb.example"}) {
+		t.Fatalf("defaults = %v", defaults)
+	}
+	if _, ok := w.r.Manifest("nope"); ok {
+		t.Fatal("an unknown type has a manifest")
+	}
+	ctx := context.Background()
+	key, err := w.r.Create(ctx, NewAccount{Owner: store.DefaultOwner, Type: "nostr", Method: "secret_key",
+		Config: map[string]any{"bootstrap_relay": "wss://r.example", "pow_default": 5}, Credentials: map[string]any{"secret_key": strings.Repeat("1", 64)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	en, err := w.r.ChangeCredentials(ctx, CredentialUpdate{Owner: store.DefaultOwner, ID: key.Row.ID, Config: map[string]any{"pow_default": nil}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	_ = json.Unmarshal([]byte(en.Row.Config), &cfg)
+	if cfg["pow_default"] != float64(12) {
+		t.Fatalf("config = %v", cfg)
+	}
+}

@@ -35,7 +35,7 @@ test("Accounts behind the proxy alone: renaming and switching only, no credentia
   await expect(panel.getByRole("button", { name: "Add an account" })).toHaveCount(0);
   await expect(panel.getByRole("button", { name: /^Rename / }).first()).toBeVisible();
   await expect(panel.getByRole("button", { name: /^Delete / })).toHaveCount(0);
-  await expect(panel.getByRole("button", { name: /^Show the key of / })).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: /^Show key: / })).toHaveCount(0);
   // An account from the environment shows its settings, read-only, and can't be moved into the app here.
   await panel.getByRole("button", { name: /^Settings of / }).first().click();
   const dlg = page.locator(".acct-dlg");

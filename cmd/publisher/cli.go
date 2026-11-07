@@ -70,10 +70,13 @@ Recommended, as a Docker secret file (not shown by docker inspect):
 
   printf '%%s' '%s' > publisher_master_key && chmod 600 publisher_master_key
 
+(Typed like this, the key is kept in your shell's history: clear it from
+there, or write the file with an editor.) Then, in your compose file:
+
   services:
     publisher:
       environment:
-        PUBLISHER_MASTER_KEY_FILE: /run/secrets/publisher_master_key
+        - PUBLISHER_MASTER_KEY_FILE=/run/secrets/publisher_master_key
       secrets: [publisher_master_key]
   secrets:
     publisher_master_key:
