@@ -41,7 +41,7 @@ the `edge` image.
 
 ### Changed
 
-- The web app has a **Sign out** button again (under Access). It signs
+- The web app has a **Sign out** button again (under Settings → Access). It signs
   out with fetch: a form post from the app, whose `Referrer-Policy` is
   `no-referrer`, sends `Origin: null`, which the cross-site guard
   refused; that is why the old button was turned off.
@@ -165,10 +165,12 @@ the `edge` image.
 - **Confirm it's you:** adding or removing a way to sign in, setting the
   first password and creating an API token from the browser need a fresh
   passkey, password or OIDC login (a `Publisher-Reauth` nonce, single
-  use, five minutes; `403 reauth_required` names the operation).
+  use, five minutes; `403 reauth_required` names the operation, and the
+  account (`target`) when deleting an account or showing its key, which
+  need it too).
   Changing the password takes the current one instead.
-- The **Access** tab (was Tokens): passkeys, password, the browsers
-  you're signed in on (sign any out), recent sign-ins and failed
+- **Settings → Access** (was the Tokens tab): passkeys, password, the
+  browsers you're signed in on (sign any out), recent sign-ins and failed
   attempts, and API tokens. `/v1/me/sign-in`, `/v1/me/passkeys`,
   `/v1/me/password`, `/v1/me/sessions` and `/v1/me/sign-in-events`, for a
   browser session only. `GET /v1/instance` reports `auth: local` and, in
@@ -203,6 +205,26 @@ the `edge` image.
   and `?include=deleted`. At most 10 accounts added or changed a minute.
   Behind the reverse proxy alone (`AUTH_MODE=proxy`) none of this is
   allowed; labels and flags still are.
+- **Settings → Accounts** in the web app: your accounts by network, with
+  their status, last check and why one can't be used; add one (network,
+  then how it connects, then a form built from the network's fields,
+  with the less common ones under Advanced), and rename, turn off, pick
+  for new posts or the public feed, change settings and credentials,
+  check now, show a Nostr key or delete it. A Nostr key made for you is
+  shown right away, after confirming it's you, and the dialog stays
+  until you tick that you saved it. An account from the environment
+  shows its settings read-only, with **Move into the app**. When saved
+  credentials can't be opened (the master key is missing or another
+  one), every tab says so. A new server opens Settings by itself, once:
+  a master key made in the browser with the commands to give it to the
+  container (skippable), then the first account. The composer with no
+  account points to Settings.
+- `publisher keygen` prints a new master key and the compose snippet to
+  set it as a Docker secret.
+- `PRIVATE_DESTINATIONS`: host names and private ranges that accounts
+  added in the app (and relay sync) may reach; without it they reach
+  public addresses only, and loopback, link-local and the server's own
+  addresses never.
 
 ### Security
 

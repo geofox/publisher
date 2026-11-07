@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -44,26 +45,27 @@ const (
 )
 
 // accountLimits are the account writes' rate limits (per owner, and per
-// account for checks).
+// account for checks), set up at first use.
 type accountLimits struct {
+	once           sync.Once
 	writes, checks localauth.Limiter
 }
 
-func (a *API) accountWriteWait(owner string) time.Duration {
-	l := &a.acctLimits.writes
-	if l.N == 0 {
-		l.N, l.Window = accountWritesPerMinute, time.Minute
-	}
-	return l.Take(owner)
+func (a *API) limits() *accountLimits {
+	l := &a.acctLimits
+	l.once.Do(func() {
+		l.writes.N, l.writes.Window = accountWritesPerMinute, time.Minute
+		if a.AccountWritesPerMinute > 0 {
+			l.writes.N = a.AccountWritesPerMinute
+		}
+		l.checks.N, l.checks.Window = 1, accountCheckEvery
+	})
+	return l
 }
 
-func (a *API) accountCheckWait(id string) time.Duration {
-	l := &a.acctLimits.checks
-	if l.N == 0 {
-		l.N, l.Window = 1, accountCheckEvery
-	}
-	return l.Take(id)
-}
+func (a *API) accountWriteWait(owner string) time.Duration { return a.limits().writes.Take(owner) }
+
+func (a *API) accountCheckWait(id string) time.Duration { return a.limits().checks.Take(id) }
 
 // accountCreatePrint is what POST /v1/accounts's idempotency fingerprint
 // covers: a keyed MAC of the body (which holds credentials), so the

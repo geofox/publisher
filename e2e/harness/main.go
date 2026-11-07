@@ -36,6 +36,7 @@ import (
 	"github.com/geofox/publisher/internal/mastodon"
 	"github.com/geofox/publisher/internal/media"
 	"github.com/geofox/publisher/internal/nostr"
+	"github.com/geofox/publisher/internal/secrets"
 	"github.com/geofox/publisher/internal/store"
 	"github.com/geofox/publisher/internal/threads"
 )
@@ -84,12 +85,28 @@ func run() error {
 		return err
 	}
 
+	// The local-auth harness has a master key, so accounts can be added in
+	// the app (the proxy one can't: credentials need sign-in).
+	local := os.Getenv("E2E_AUTH") == "local"
+	var keys secrets.Keyring
+	if local {
+		k, err := secrets.NewKey([]byte("e2e-harness-master-key-32-bytes!"))
+		if err != nil {
+			return err
+		}
+		keys = secrets.Keyring{Current: k}
+	}
+	keyState, err := accounts.PrepareKeys(context.Background(), st, keys)
+	if err != nil {
+		return err
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	eng, err := newEngine(ctx, func(ctx context.Context) (*accounts.Registry, *dispatch.Dispatcher, error) {
-		reg := accounts.New(accounts.Options{Store: st, Env: env,
+		reg := accounts.New(accounts.Options{Store: st, Env: env, Secrets: st, Writes: st, Keys: keys, KeyState: keyState,
 			Open: func(_ context.Context, typ string, req destination.OpenRequest) (destination.Account, error) {
-				return newFake(rec, typ, req.AccountID, req.Config)
+				return newFake(rec, typ, req)
 			}})
 		if err := reg.Load(ctx); err != nil {
 			return nil, nil, err
@@ -113,12 +130,15 @@ func run() error {
 	a.Sync = fakeSyncer{}
 	a.UserLanguages = []string{"en", "fr"}
 	a.Ready = &health.Checker{Local: []health.Check{health.Database(st, store.LatestSchemaVersion())}}
+	a.MasterKey, a.IdemMAC = keyState, keys.MAC
+	// The account specs add many accounts in a row; the limit has its own Go test.
+	a.AccountWritesPerMinute = 1000
 	// E2E_AUTH=local: the owner signs in with passkeys or a password at
 	// http://localhost:<port> (a secure context for Chromium); otherwise
 	// no sign-in, as behind a reverse proxy.
 	a.Mode = api.ModeProxy
 	mux := http.NewServeMux()
-	if os.Getenv("E2E_AUTH") == "local" {
+	if local {
 		publicURL := "http://localhost:" + port
 		svc, err := localauth.New(st, publicURL)
 		if err != nil {

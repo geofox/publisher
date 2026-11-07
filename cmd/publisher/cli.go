@@ -55,8 +55,9 @@ func runCLI(ctx context.Context, args []string, getenv func(string) string, stdo
 }
 
 // cliKeygen prints a new master key and how to set it. It needs no
-// configuration or database: run it anywhere (docker run --rm <image>
-// /publisher keygen).
+// configuration or database: run it anywhere (`docker run --rm <image>
+// keygen`, the image's entrypoint being /publisher; or `docker exec
+// publisher /publisher keygen`).
 func cliKeygen(stdout io.Writer) {
 	key := secrets.Generate()
 	fmt.Fprintf(stdout, `A new master key. Keep it secret, and keep a copy somewhere safe: without

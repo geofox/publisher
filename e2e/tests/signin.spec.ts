@@ -64,7 +64,8 @@ const confirmDialog = () => page.getByRole("dialog", { name: "Confirm it's you" 
 const access = () => page.locator("#access");
 
 async function openAccess() {
-  await page.locator('.tab[data-view="tokens"]').click();
+  await page.locator('.tab[data-view="settings"]').click();
+  await page.locator(".set-nav").getByRole("button", { name: "Access" }).click();
   await expect(access().getByText("where you're signed in")).toBeVisible();
 }
 
@@ -134,7 +135,7 @@ test("Access lists the passkey and the session; setting a password asks to confi
   await openAccess();
   await expect(access().getByText("Test laptop")).toBeVisible();
   await expect(access().getByText("this browser")).toBeVisible();
-  await expect(access().getByText("Signed in with setup")).toBeVisible();
+  await expect(access().getByText("Signed in with setup").first()).toBeVisible();
   // The only way to sign in can't be removed: said up front.
   await expect(access().getByRole("button", { name: /Remove Test laptop.*last way to sign in/ })).toBeDisabled();
 

@@ -117,3 +117,28 @@ func (e *engine) Acquire(id string) (destination.Account, func(), error) {
 	return e.registry().Acquire(id)
 }
 func (e *engine) Update(id string, row store.Account) error { return e.registry().Update(id, row) }
+
+// The api.AccountWriter methods (adding, changing and deleting accounts
+// in the app) reach the current registry too.
+
+func (e *engine) Create(ctx context.Context, n accounts.NewAccount) (accounts.Entry, error) {
+	return e.registry().Create(ctx, n)
+}
+func (e *engine) ChangeCredentials(ctx context.Context, u accounts.CredentialUpdate) (accounts.Entry, error) {
+	return e.registry().ChangeCredentials(ctx, u)
+}
+func (e *engine) Adopt(ctx context.Context, owner, id, actor, tokenID string) (accounts.Entry, error) {
+	return e.registry().Adopt(ctx, owner, id, actor, tokenID)
+}
+func (e *engine) Delete(ctx context.Context, owner, id, actor, tokenID string) error {
+	return e.registry().Delete(ctx, owner, id, actor, tokenID)
+}
+func (e *engine) Reveal(ctx context.Context, owner, id string) (map[string]string, error) {
+	return e.registry().Reveal(ctx, owner, id)
+}
+func (e *engine) Details(ctx context.Context, row store.Account) (accounts.Details, error) {
+	return e.registry().Details(ctx, row)
+}
+func (e *engine) CheckNow(ctx context.Context, id string) (destination.Health, bool) {
+	return e.registry().CheckNow(ctx, id)
+}

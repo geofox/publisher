@@ -131,6 +131,10 @@ type API struct {
 	idemKeyOnce sync.Once
 	// acctLimits rate-limit account writes and checks.
 	acctLimits accountLimits
+	// AccountWritesPerMinute overrides the owner's limit on account
+	// creates and credential changes (0: 10 a minute). For tests that add
+	// many accounts in a row.
+	AccountWritesPerMinute int
 	// Guard is who owner-set addresses may reach (PRIVATE_DESTINATIONS
 	// and the server's own addresses): relay sync's targets go through
 	// it. The zero value allows public addresses only.

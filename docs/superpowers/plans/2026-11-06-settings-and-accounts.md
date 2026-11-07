@@ -1464,17 +1464,17 @@ Spec §3, §4.1, §4.4 (Threads token move), §5, §10.2, §12 (C).
 **Files:** new `internal/secrets/{keyring,seal}.go`, `cmd/publisher/cli.go`
 (`keygen`), `internal/config`, tests.
 
-- [ ] Master key variables (spec §3.1): 32 bytes in any base64 alphabet,
+- [x] Master key variables (spec §3.1): 32 bytes in any base64 alphabet,
   padded or not; both forms of one set, or malformed, is a startup error;
   `_FILE` read once and trimmed (a warning when it is world-readable;
   Docker secrets are 0444 by default, so not an error).
-- [ ] After reading, `os.Unsetenv` the master key variables, `NSEC_HEX`,
+- [x] After reading, `os.Unsetenv` the master key variables, `NSEC_HEX`,
   `OIDC_CLIENT_SECRET` and the other credential variables, and
   subprocesses (ffmpeg, ffprobe) run with a minimal environment.
-- [ ] HKDF derivation (encryption key, key id, and an `idempotency v1`
+- [x] HKDF derivation (encryption key, key id, and an `idempotency v1`
   HMAC key for C9); `Seal`/`Open` with the spec's AAD and format.
-- [ ] `publisher keygen` prints a key and a compose snippet.
-- [ ] Tests: round trip; each AAD field; unknown key id; tampering;
+- [x] `publisher keygen` prints a key and a compose snippet.
+- [x] Tests: round trip; each AAD field; unknown key id; tampering;
   previous key opens; base64 variants; known-answer derivation; subprocess
   environment has no secret.
 
@@ -1483,17 +1483,17 @@ Spec §3, §4.1, §4.4 (Threads token move), §5, §10.2, §12 (C).
 **Files:** `internal/store/{migrations,secrets,scrub}.go`, `store.go`
 (pragma), tests, golden schema.
 
-- [ ] v13: `secrets` with `idx_secrets_key`; `accounts.deleted_at`,
+- [x] v13: `secrets` with `idx_secrets_key`; `accounts.deleted_at`,
   `accounts.auth_method`; partial unique index `(owner_id, type,
   remote_id) WHERE deleted_at IS NULL AND remote_id IS NOT NULL`.
-- [ ] `PRAGMA secure_delete = ON` on every connection.
-- [ ] Store methods take sealed values and run their own transactions:
+- [x] `PRAGMA secure_delete = ON` on every connection.
+- [x] Store methods take sealed values and run their own transactions:
   `CreateAccountWithSecrets`, `ReplaceAccountSecrets`,
   `DeleteAccount` (soft delete, secrets gone, scheduled targets canceled),
   `Secrets(owner, scope, ref)`, `SecretKeyIDs`, `Reseal(fn)`.
-- [ ] Scrubber (spec §3.2) plus bare `nsec1…` strings and URLs inside
+- [x] Scrubber (spec §3.2) plus bare `nsec1…` strings and URLs inside
   `url.Error` messages.
-- [ ] Migration test from a v12 fixture.
+- [x] Migration test from a v12 fixture.
 
 ### Task C4: the network guard everywhere owner-set addresses are reached
 
@@ -1501,27 +1501,27 @@ Spec §3, §4.1, §4.4 (Threads token move), §5, §10.2, §12 (C).
 (`PRIVATE_DESTINATIONS`), `internal/accounts/state.go`, each driver's
 tests, tests.
 
-- [ ] `netguard.Policy` from `PRIVATE_DESTINATIONS` (hostnames and CIDRs);
+- [x] `netguard.Policy` from `PRIVATE_DESTINATIONS` (hostnames and CIDRs);
   entries overlapping loopback, link-local or unspecified ranges, or a /0,
   are startup errors.
-- [ ] Dialer: a `DialContext` wrapper checks the hostname (allowlisted
+- [x] Dialer: a `DialContext` wrapper checks the hostname (allowlisted
   private hosts) and a `Control` function checks the connected address with
   `netguard.IsBlockedIP` (which already covers 0/8, 198.18/15, 240/4,
   NAT64, 6to4, SIIT, loopback, link-local and metadata addresses), after
   `Unmap()`, with a carve-out only for allowed private ranges and never for
   the server's own listen addresses. No proxy from the environment.
-- [ ] Redirects: at most 5, each dialed through the guard; a request that
+- [x] Redirects: at most 5, each dialed through the guard; a request that
   carries a credential (Authorization, a password or secret in the body)
   refuses cross-origin redirects, https→http, and any redirect of a POST.
-- [ ] `netguard.OwnerURL(raw, schemes)`: https (and `wss` for relay
+- [x] `netguard.OwnerURL(raw, schemes)`: https (and `wss` for relay
   fields), http/ws only for allowed private hosts; no userinfo, query or
   fragment; normalized origin.
-- [ ] The host decides the policy: every transport of a `source = 'db'`
+- [x] The host decides the policy: every transport of a `source = 'db'`
   account, and every saved setting's address, is guarded whatever the
   driver asks; env-configured addresses stay trusted. Adopted accounts and
   copy-from-env values become owner-set and are validated with `OwnerURL`
   when copied.
-- [ ] Tests: each blocked range and IPv4-mapped forms; DNS rebinding;
+- [x] Tests: each blocked range and IPv4-mapped forms; DNS rebinding;
   redirects (to a blocked address, cross-origin with Authorization, POST);
   per driver, a database account pointed at `127.0.0.1` or
   `169.254.169.254` never dials (HTTP and WebSocket).
@@ -1530,14 +1530,14 @@ tests, tests.
 
 **Files:** `internal/destination/fields.go`, driver manifests, tests.
 
-- [ ] `AuthMethod`, `FieldSpec` (+ `Revealable`), `EnumValue`,
+- [x] `AuthMethod`, `FieldSpec` (+ `Revealable`), `EnumValue`,
   `Manifest.Auth/Config/InstanceConfig`; `ValidateFields` (types,
   required, pattern, enum, bounds, `MaxLength` default 4096, unknown keys,
   URLs through `OwnerURL`).
-- [ ] Manifests per spec §5.7; the Nostr key accepts `nsec1…` or hex; the
+- [x] Manifests per spec §5.7; the Nostr key accepts `nsec1…` or hex; the
   relay defaults offered for a new Nostr account are the env values when
   set, else a neutral list (never this instance's relay).
-- [ ] Contract test: no `Secret` in `Config`; `Audience` fields are URLs;
+- [x] Contract test: no `Secret` in `Config`; `Audience` fields are URLs;
   defaults validate.
 
 ### Task C6: database accounts, key status, rotation, the Threads token move
@@ -1545,21 +1545,21 @@ tests, tests.
 **Files:** `internal/accounts/{registry,state,keys}.go`, `main.go`,
 `internal/health`, `internal/api/v1_resources.go`, tests.
 
-- [ ] Startup: store → keyring → rotation (reseal everything under the
+- [x] Startup: store → keyring → rotation (reseal everything under the
   previous key in one transaction; any failure changes nothing) → registry.
-- [ ] Key status `none | ok | missing | mismatch`; affected accounts
+- [x] Key status `none | ok | missing | mismatch`; affected accounts
   `locked` (their items wait, A2.3); secret writes refused
   (`master_key_required` / `master_key_mismatch`); non-critical `secrets`
   readiness check; `/v1/instance.secrets`; an error at startup.
-- [ ] Database accounts open with decrypted secrets; `Host.Save` reseals
+- [x] Database accounts open with decrypted secrets; `Host.Save` reseals
   and writes secrets and config in one store call.
-- [ ] Env accounts with a key: state moves to `secrets`. The Threads
+- [x] Env accounts with a key: state moves to `secrets`. The Threads
   token moves from `threads_token` at startup (overwrite, delete, then
   `wal_checkpoint(TRUNCATE)`, checking the result and retrying while busy);
   the seed hash goes to the account's config. A warning names the
   `.pre-vN.bak` files that still hold the plaintext token; the README says
   to delete them once the upgrade is confirmed.
-- [ ] Tests: each status; rotation success and rollback; a locked
+- [x] Tests: each status; rotation success and rollback; a locked
   account's item goes out after the key is fixed; the move (then grep the
   database, WAL and backups made afterwards for the token).
 
@@ -1579,10 +1579,10 @@ tests, tests.
 **Files:** `cmd/publisher/main.go` (`setupLogger`), `internal/logging`,
 `internal/notify`, tests.
 
-- [ ] The slog handler scrubs every string and error attribute
+- [x] The slog handler scrubs every string and error attribute
   (`ReplaceAttr`); alert bodies are scrubbed; Blossom and other upstream
   error bodies are no longer echoed verbatim.
-- [ ] Test: logging a URL error with `access_token=` and an `nsec1`
+- [x] Test: logging a URL error with `access_token=` and an `nsec1`
   string prints neither.
 
 ### Task C9: the account write API
@@ -1621,31 +1621,149 @@ tests, tests.
 **Files:** new `settings.js`, `fields.js`; `accounts.js`, `access.js`,
 `tokens.js`, `index.html`, `main.js`, `app.css`.
 
-- [ ] Settings tab with Accounts and Access (passkeys, password, sessions,
+- [x] Settings tab with Accounts and Access (passkeys, password, sessions,
   API tokens moved here, sign-in events). D adds the rest.
-- [ ] Accounts: grouped list with status and health; add (network → method
+- [x] Accounts: grouped list with status and health; add (network → method
   → form from the manifest); Nostr generate then reveal once; import a key
   (`nsec1…`); check; adopt; enable/disable; default selection; public feed;
   rename; delete (re-authentication); change credentials. Remote profile
   fields rendered with `textContent`; only http(s) profile links.
-- [ ] Banners: master key missing or mismatched (with the fix), proxy mode.
-- [ ] First-run steps 2 (master key: generated in the browser, shown with
+- [x] Banners: master key missing or mismatched (with the fix), proxy mode.
+- [x] First-run steps 2 (master key: generated in the browser, shown with
   the compose snippet; skippable) and 3 (first account).
 
 ### Task C11: e2e, docs, PR
 
-- [ ] The account specs run in the local-auth project (B11's fixtures).
+- [x] The account specs run in the local-auth project (B11's fixtures).
   The harness has a master key; its fakes declare the real auth methods
   and accept credentials by a simple rule (`bad` is rejected).
-- [ ] `account-settings.spec.ts`: add Bluesky (app password), Mastodon
+- [x] `account-settings.spec.ts`: add Bluesky (app password), Mastodon
   (token), Threads (token), Nostr (generate and reveal; import `nsec1`);
   duplicate refused; rejected credentials on the field; rename, disable,
   delete with re-authentication; the new account in the composer, not
   selected by default.
-- [ ] README: the master key (Docker secret file), adding accounts,
+- [x] README: the master key (Docker secret file), adding accounts,
   `PRIVATE_DESTINATIONS`, what encryption protects, backups after the token
   move; upgrade notes for C.
 - [ ] Open PR C; 2 QA + 1 security reviews; fix; hand over.
+
+### As built (C)
+
+Commits: C2 keyring (`c3a69c8`), C3 migration v13 and secret store
+(`66e5c1a`), C4 network guard (`96b648e`), C4b Nostr relays through the
+guard (`b9aebe5`), C5 field specs (`d097224`), C6 sealed state, key
+status, Threads token move (`02be864`), C7 PDS discovery (`dde1169`), C8
+log scrubbing (`8527621`), C9 account write API (`e797e98`), C10 and C11
+in the commits after. Hashes before the rebase onto `main`. C1's
+research was recorded from the specs and the reference PDS source (the
+sandbox can't reach live hosts).
+
+- **Keyring (C2):** the standard library's `crypto/hkdf` (same RFC 5869)
+  instead of `x/crypto/hkdf`. `Keyring.Open` with no key at all answers
+  `ErrNoKey`, so a locked account's reason names
+  `PUBLISHER_MASTER_KEY`. Credential variables are unset once read
+  (`runOptions.Unsetenv`).
+- **Guard (C4, C4b):** Nostr relays (publishing, the NIP-65 lookup) dial
+  through Publisher's own relay pool (`internal/nostr/pool.go`), since
+  the library's pool can't take an `http.Client`; every relay goes
+  through `Host.Net(NetAccount)`. Relay sync dials the home relay with
+  the account's client and its targets (NIP-65 and secondary relays)
+  through the guard for every account, the environment's too: a private
+  sync relay needs `PRIVATE_DESTINATIONS` (CHANGELOG, Breaking). A
+  refused dial no longer names the resolved address, for content
+  addresses too (a leak since step 2's `ContentNet`).
+- **Field specs (C5):** `FieldType` adds `url_list`; `FieldSpec` adds
+  `revealable`, `max_items` (default 64) and `url` (`URLRule{secure,
+  plain, path}`); `Manifest.auth` is always present. Optional driver
+  interfaces `ConfigDefaulter` (Nostr: the environment's relays and proof
+  of work when set, never the built-in defaults), `CredentialGenerator`
+  (Nostr generate) and `SecretFormatter` (Nostr: `nsec1`). `FieldError`
+  codes `unknown_field`, `required`, `invalid`, `too_long`, `too_many`,
+  `out_of_range`, `not_allowed`, and C7's `not_found`. `ValidateFields`
+  trims, refuses control characters (text allows `\n\t\r`), dedupes
+  lists, and has a partial mode for `PATCH` (null or empty: back to the
+  default; a required field without a default can't be cleared). Nostr's
+  `ParseKey` takes `nsec1` or hex for keys typed in the app (`NSEC_HEX`
+  stays hex only); generated keys are stored hex. A new Nostr account's
+  fallback relays default to `wss://nos.lol` and `wss://relay.damus.io`;
+  the home relay has no default. The Mastodon token help lists the scopes
+  the driver's calls need (`read:accounts read:search read:statuses
+  write:media write:statuses`).
+- **Key status and state (C6):** `accounts.PrepareKeys` (rotation all or
+  nothing; status `none|ok|missing|mismatch`) runs in
+  `cmd/publisher/secrets.go` before the registry. Environment accounts
+  keep their state in `LegacyState` without a key, else `SealedState`
+  (except while a 2.x `threads_token` row is still there under a key
+  that isn't `ok`, so the token keeps being used). `SealedState` keeps a
+  `_state_seed` (length-prefixed SHA-256 over the environment's secrets
+  and audience): saved state applies only while it matches, and stale or
+  damaged state is forgotten (never under a key that isn't `ok`). A
+  database account's `Host.Save` seals for its audience; a `Save` that
+  changes the audience key is refused. `store.Checkpoint` uses its own
+  connection with a 100 ms busy timeout (a `TRUNCATE` waits in the busy
+  handler, which a context can't interrupt). A duplicate identity found
+  at open saves the handle, not the remote id, and is warned once per
+  duplicate. Threads' `Open` records a provisional expiry (11 days)
+  through `Host.Save` when the expiry is unknown. `/readyz` has a
+  non-critical `secrets` check and `/v1/instance` `secrets{status,
+  detail}`.
+- **PDS discovery (C7):** `destination.ConfigDiscoverer`; Bluesky always
+  returns the identifier normalized (lowercase, a leading `@` dropped)
+  and finds `pds_url` only when it is empty; an email without `pds_url`
+  is `required` on `pds_url`; failures are `not_found` on the
+  identifier. Its own resolver (injectable TXT lookup, 2 KiB and 64 KiB
+  body limits, the spec's service rule: first `#atproto_pds` *and*
+  `AtprotoPersonalDataServer`, where indigo takes the last by id).
+  `BLUESKY_PDS_URL` stays required for the environment's account (`Open`
+  does no I/O).
+- **Scrubbing (C8):** new package `internal/redact` (`store.Scrub`
+  delegates); adds `secret_key=` in queries, `"master_key"` in JSON and
+  the Bluesky app-password shape anywhere. `redact.Upstream`: one line,
+  scrubbed, at most 300 bytes, "(an HTML page)" for HTML.
+  `logging.ScrubAttr` is the JSON handler's `ReplaceAttr`.
+- **Write API (C9):** `accounts/write.go` (`Create`, `ChangeCredentials`,
+  `Adopt`, `Delete`, `Reveal`, `Details`); a trial open (15 s) on a host
+  that collects `Save`s, so Threads' provisional expiry is stored with
+  the new account; upstream detail cleaned (the network's own error
+  field, submitted secrets removed, scrubbed, 200 bytes). The method may
+  be left out when the type has one. Route flags `NoProxy`,
+  `ReturnsSecret`, `ActionRules`, `IdemPrint` (a keyed MAC of the body);
+  in proxy mode `NoProxy` refuses tokens too. Re-authentication nonces
+  for `account.delete` and `account.reveal` carry the account
+  (`target`), and so does their `reauth_required` problem. Problem codes
+  `credentials_rejected`, `duplicate_account` (with `account_id`),
+  `locked_by_env`, `identity_changed`, `master_key_required`,
+  `master_key_mismatch`. 10 writes a minute per owner
+  (`API.AccountWritesPerMinute` overrides it for the e2e harness); the
+  limiters are set up once (`sync.Once`), not lazily per request.
+- **C9 deviations:** scopes `settings:read`, `settings:write` and
+  `instance:admin` move to D, where they are used. A `PATCH` with a label
+  and credentials applies the credentials, then the label (not one
+  transaction). A reveal is logged at Info (no event type for it). New
+  Nostr accounts get their sync relays from `SYNC_RELAYS`
+  (`drivers.NewAccountSeeder`); a startup warning names an adopted
+  account's variables while they are set (keep `NSEC_HEX` while
+  `BLOSSOM_URL` is set: it signs uploads).
+- **Settings tab (C10):** `data-view="settings"`, sections Accounts and
+  Access (the last one shown is remembered in the browser). Files
+  `settings.js` (the shell and the key banner), `settings-accounts.js`
+  (the panel and its dialogs) and `fields.js` (forms from field specs:
+  one control per type, advanced ones folded, errors placed by JSON
+  pointer, Show/Hide on secrets, hints that warn without refusing).
+  `inputDialog` moved to `common.js`, `accountTile` to `brands.js`,
+  `loadDestinations` to `accounts.js`. Deviation: the panel lives in
+  `settings-accounts.js`, not `accounts.js` (which stays the data
+  layer). A Bluesky password that doesn't look like an app password is
+  warned about in the form, not refused. The first-run steps open once
+  per browser when there are no accounts (not in proxy mode); the master
+  key step is made in the browser (`crypto.getRandomValues`, 32 bytes)
+  and can be skipped (remembered).
+- **e2e (C11):** the local-auth harness has a fixed test master key and
+  the registry's write side; its fakes identify accounts added in the
+  app from their credentials (`bad…` refused, `down…` unreachable, a
+  token `<user>:…` belongs to `<user>`). `openSettings` replaces the old
+  `tokens` tab in the fixtures; `signin-proxy.spec.ts` checks the
+  Accounts panel behind the proxy alone.
 
 ---
 
@@ -1906,7 +2024,11 @@ Made by this plan; the spec is updated to match.
 | §8.2: per-owner delay after 20 failures | Skipped by a browser the owner signed in with before (`publisher_device`). |
 | §8.3: setup closes for good once a credential exists | Once a *usable* one exists: a `PUBLIC_URL` host change with no password opens it again. |
 | Plan B9: sign-in events "from events and failures" | From `events` only (each failure is an event, capped); not in the `/v1/events` stream. |
-| Plan B10: Access panel in Tools | In the Access tab (was Tokens), above the API tokens. |
+| Plan B10: Access panel in Tools | In Settings → Access (was the Tokens tab), above the API tokens. |
+| Plan C9: scopes `settings:read`, `settings:write`, `instance:admin` | Added in D, where they are used (As built C). |
+| Plan C10: the accounts panel in `accounts.js` | In `settings-accounts.js`; `accounts.js` stays the data layer. |
+| §5.7: Bluesky `pds_url` optional everywhere | Optional for accounts added in the app (discovered); `BLUESKY_PDS_URL` stays required in the environment. |
+| Plan C4: environment addresses trusted | Relay sync's targets go through the guard for every account, the environment's too. |
 
 ## Risks and how the plan handles them
 
