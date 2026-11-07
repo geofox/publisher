@@ -220,6 +220,12 @@ the `edge` image.
   environment work as before; `GET /v1/instance` reports `secrets.status`
   (`none`, `ok`, `missing`, `mismatch`) and `/readyz` a non-critical
   `secrets` check.
+- The log scrubs credentials from every string and error it prints (a
+  token in a failed request's URL, an `nsec1` key, a Bluesky app
+  password), not only where a caller remembered to. Alerts are scrubbed
+  before they are sent. An upstream server's error answer is quoted in
+  errors on one line and at most 300 bytes, and an HTML error page is
+  named rather than copied.
 
 ### Other changes
 

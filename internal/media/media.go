@@ -21,6 +21,7 @@ import (
 
 	"fiatjaf.com/nostr"
 	"github.com/buckket/go-blurhash"
+	"github.com/geofox/publisher/internal/redact"
 	"github.com/geofox/publisher/internal/transcode"
 	_ "golang.org/x/image/webp"
 )
@@ -202,7 +203,7 @@ func (p *Pipeline) blossomUploadStream(ctx context.Context, body io.Reader, size
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
-		return "", fmt.Errorf("blossom %d: %s", resp.StatusCode, string(rb))
+		return "", fmt.Errorf("blossom %d: %s", resp.StatusCode, redact.Upstream(string(rb)))
 	}
 	var bd struct {
 		URL string `json:"url"`

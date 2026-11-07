@@ -3,8 +3,10 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -65,5 +67,25 @@ func TestWebhookNoOpWhenUnconfigured(t *testing.T) {
 	wh := NewWebhook("", "alertmanager", "secret")
 	if err := wh.Alert(context.Background(), "s", "b"); err != nil {
 		t.Errorf("unconfigured Alert should be a no-op, got %v", err)
+	}
+}
+
+// An alert often carries an upstream error: its credentials are scrubbed
+// before it leaves, and a failing relay's answer is shortened.
+func TestWebhookAlertScrubs(t *testing.T) {
+	var raw []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("<html>" + strings.Repeat("x", 5000) + "</html>"))
+	}))
+	defer srv.Close()
+	err := NewWebhook(srv.URL, "", "").Alert(context.Background(), "token for nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5",
+		`refresh: Get "https://graph.example.com/x?access_token=THAASECRET": timeout`)
+	if strings.Contains(string(raw), "THAASECRET") || strings.Contains(string(raw), "vl029mgpspedva04") || !strings.Contains(string(raw), "timeout") {
+		t.Errorf("sent %s", raw)
+	}
+	if err == nil || strings.Contains(err.Error(), "xxxx") {
+		t.Errorf("err = %v", err)
 	}
 }

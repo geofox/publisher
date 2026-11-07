@@ -7,7 +7,11 @@ package logging
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
+
+	"github.com/geofox/publisher/internal/redact"
 )
 
 type ctxKey struct{}
@@ -31,4 +35,36 @@ func (h ContextHandler) Handle(ctx context.Context, r slog.Record) error {
 		r.AddAttrs(attrs...)
 	}
 	return h.Handler.Handle(ctx, r)
+}
+
+// ScrubAttr is a slog ReplaceAttr that redacts credentials from every
+// string, error, Stringer (that isn't a json.Marshaler) and string list
+// the log prints, the message included (the handler passes the built-in
+// "msg" through it too). Other values are printed as before: log a
+// credential-bearing struct and it isn't caught, so don't.
+func ScrubAttr(_ []string, a slog.Attr) slog.Attr {
+	switch a.Value.Kind() {
+	case slog.KindString:
+		if s := a.Value.String(); s != "" {
+			a.Value = slog.StringValue(redact.Scrub(s))
+		}
+	case slog.KindAny:
+		switch v := a.Value.Any().(type) {
+		case error:
+			if v != nil {
+				a.Value = slog.StringValue(redact.Scrub(v.Error()))
+			}
+		case json.Marshaler:
+			// printed as its JSON, as before
+		case fmt.Stringer:
+			a.Value = slog.StringValue(redact.Scrub(v.String()))
+		case []string:
+			out := make([]string, len(v))
+			for i, s := range v {
+				out[i] = redact.Scrub(s)
+			}
+			a.Value = slog.AnyValue(out)
+		}
+	}
+	return a
 }

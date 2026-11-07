@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -201,5 +205,19 @@ func TestRunMasterKeyStatus(t *testing.T) {
 		if code := stop(); code != 0 {
 			t.Fatalf("exit code %d", code)
 		}
+	}
+}
+
+// The server's log scrubs credentials from what it prints: a transport
+// error carrying a token in its URL, an nsec1 key in the message.
+func TestLoggerScrubs(t *testing.T) {
+	old := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(old) })
+	var buf bytes.Buffer
+	setupLogger("info", &buf)
+	err := &url.Error{Op: "Post", URL: "https://graph.example.com/x?access_token=THAATOKEN123", Err: errors.New("timeout")}
+	slog.Error("refresh failed for nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5", "err", err)
+	if out := buf.String(); strings.Contains(out, "THAATOKEN123") || strings.Contains(out, "vl029mgpspedva04") || !strings.Contains(out, "timeout") {
+		t.Errorf("log: %s", out)
 	}
 }

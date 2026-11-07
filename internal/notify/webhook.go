@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/geofox/publisher/internal/redact"
 )
 
 // Webhook POSTs an Alertmanager-format webhook to the alertmanager-pushover
@@ -29,7 +31,10 @@ func NewWebhook(url, user, pass string) *Webhook {
 	return &Webhook{URL: url, User: user, Pass: pass, HTTP: &http.Client{Timeout: 10 * time.Second}}
 }
 
+// Alert sends one alert. Its summary and body are scrubbed of credentials
+// first: they often carry an upstream error.
 func (w *Webhook) Alert(ctx context.Context, summary, body string) error {
+	summary, body = redact.Scrub(summary), redact.Scrub(body)
 	if w.URL == "" {
 		w.warnOnce.Do(func() {
 			slog.Warn("alert webhook not configured; alerts go to logs only")
@@ -73,7 +78,7 @@ func (w *Webhook) Alert(ctx context.Context, summary, body string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-		return fmt.Errorf("alert webhook: status %d: %s", resp.StatusCode, string(b))
+		return fmt.Errorf("alert webhook: status %d: %s", resp.StatusCode, redact.Upstream(string(b)))
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -113,5 +114,25 @@ func TestRetryable(t *testing.T) {
 	}
 	if !ClassUnknownOutcome.Retryable(IdempotentKey) || !ClassUnknownOutcome.Retryable(IdempotentNatural) {
 		t.Error("unknown outcome on an idempotent destination may retry")
+	}
+}
+
+// An HTTPError's message keeps the start of the answer, on one line and
+// without credentials or HTML; Body stays whole for the driver.
+func TestHTTPErrorMessage(t *testing.T) {
+	body := "{\"error\":\"InvalidToken\",\n\"message\":\"token THAA is bad\",\"access_token\":\"THAASECRET\"}" + strings.Repeat(" pad", 200)
+	e := &HTTPError{Op: "refresh", StatusCode: 400, Body: body}
+	msg := e.Error()
+	if !strings.HasPrefix(msg, `refresh returned 400: {"error":"InvalidToken", "message"`) || strings.Contains(msg, "THAASECRET") || len(msg) > 400 {
+		t.Errorf("message %q", msg)
+	}
+	if e.Body != body {
+		t.Error("Body changed")
+	}
+	if got := (&HTTPError{Op: "x", StatusCode: 502, Body: "<html>proxy</html>"}).Error(); got != "x returned 502: (an HTML page)" {
+		t.Errorf("html: %q", got)
+	}
+	if got := (&HTTPError{Op: "x", StatusCode: 500}).Error(); got != "x returned 500" {
+		t.Errorf("empty: %q", got)
 	}
 }

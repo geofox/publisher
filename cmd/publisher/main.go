@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -112,7 +113,7 @@ func run(ctx context.Context, o runOptions) int {
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		return 2
 	}
-	setupLogger(cfg.LogLevel)
+	setupLogger(cfg.LogLevel, os.Stdout)
 	metrics.SetBuildInfo(version, commit)
 	for _, w := range keyWarnings {
 		slog.Warn("master key: " + w)
@@ -484,7 +485,7 @@ func runHealthcheck() {
 	}
 }
 
-func setupLogger(level string) {
+func setupLogger(level string, w io.Writer) {
 	var l slog.Level
 	switch strings.ToLower(level) {
 	case "debug":
@@ -496,7 +497,9 @@ func setupLogger(level string) {
 	default:
 		l = slog.LevelInfo
 	}
-	h := logging.ContextHandler{Handler: slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: l})}
+	// Every string and error the log prints is scrubbed of credentials
+	// (an upstream error that echoes a token, a URL with access_token=).
+	h := logging.ContextHandler{Handler: slog.NewJSONHandler(w, &slog.HandlerOptions{Level: l, ReplaceAttr: logging.ScrubAttr})}
 	slog.SetDefault(slog.New(h))
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/repo"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/geofox/publisher/internal/redact"
 )
 
 // BlueskyVerifier verifies an ATProto record by fetching the signed commit + MST
@@ -150,7 +151,7 @@ func (bv *BlueskyVerifier) fetchCAR(ctx context.Context, pds, did, collection, r
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("PDS returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("PDS returned %d: %s", resp.StatusCode, redact.Upstream(string(body)))
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 }

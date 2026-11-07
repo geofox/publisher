@@ -4,13 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/geofox/publisher/internal/destination"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/geofox/publisher/internal/destination"
+	"github.com/geofox/publisher/internal/redact"
 )
 
 // Image represents a single image to attach to a Threads post.
@@ -338,7 +340,7 @@ func (c *Client) RefreshToken(ctx context.Context, current string) (string, time
 	if resp.StatusCode != http.StatusOK {
 		// Threads can echo the access_token (query param) back in error bodies;
 		// this error is logged + sent in alerts, so scrub the token first.
-		msg := scrubToken(strings.TrimSpace(string(body)), current)
+		msg := redact.Upstream(scrubToken(string(body), current))
 		return "", 0, fmt.Errorf("threads refresh: status %d: %s", resp.StatusCode, msg)
 	}
 	var out struct {
