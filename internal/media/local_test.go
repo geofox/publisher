@@ -8,6 +8,7 @@ import (
 	"errors"
 	"image"
 	"image/png"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -135,13 +136,26 @@ func TestLocalNames(t *testing.T) {
 			t.Errorf("%s: %q %v %v", name, mime, attach, ok)
 		}
 	}
+	l := &Local{Dir: t.TempDir(), BaseURL: "https://pub.example"}
+	// A file outside Dir that a name climbing out of it would reach.
+	if err := os.WriteFile(filepath.Join(filepath.Dir(l.Dir), sha+".png"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, bad := range []string{"", sha, sha + ".", sha + ".PNG", strings.ToUpper(sha) + ".png", sha + ".html", sha + ".svg",
 		sha + ".png/x", "../" + sha + ".png", sha[:63] + ".png", sha + "0.png", sha + ".png.bin", ".upload-1"} {
 		if _, _, ok := TypeOf(bad); ok {
 			t.Errorf("%q taken", bad)
 		}
+		if f, _, _, err := l.Open(bad); !errors.Is(err, fs.ErrNotExist) {
+			if f != nil {
+				f.Close()
+			}
+			t.Errorf("%q opened: %v", bad, err)
+		}
+		if l.Has(bad) {
+			t.Errorf("%q found", bad)
+		}
 	}
-	l := &Local{Dir: t.TempDir(), BaseURL: "https://pub.example"}
 	for raw, want := range map[string]bool{
 		"https://pub.example/media/" + sha + ".png":       true,
 		"https://PUB.example/media/" + sha + ".png":       true,
