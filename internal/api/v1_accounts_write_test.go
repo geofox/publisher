@@ -326,7 +326,8 @@ func TestV1AccountWrites(t *testing.T) {
 	if p := w.do(req{method: "DELETE", path: path, header: nonce}).problem(); p.Code != codeReauthRequired || p.Operation != opAccountDelete {
 		t.Fatalf("other nonce: %+v", p)
 	}
-	if p := w.do(req{method: "DELETE", path: path}).problem(); p.Code != codeReauthRequired {
+	// The problem names the account, for the web app's dialog.
+	if p := w.do(req{method: "DELETE", path: path}).problem(); p.Code != codeReauthRequired || p.Target != a.ID {
 		t.Fatalf("no nonce: %+v", p)
 	}
 	// Check: once per 10 seconds.
@@ -404,7 +405,7 @@ func TestV1RevealAccount(t *testing.T) {
 		t.Fatalf("created = %+v", k)
 	}
 	path := "/v1/accounts/" + k.ID + ":reveal"
-	if p := w.do(req{method: "POST", path: path}).problem(); p.Code != codeReauthRequired || p.Operation != opAccountReveal {
+	if p := w.do(req{method: "POST", path: path}).problem(); p.Code != codeReauthRequired || p.Operation != opAccountReveal || p.Target != k.ID {
 		t.Fatalf("no nonce: %+v", p)
 	}
 	tok := w.token(scopeAccountsWrite)

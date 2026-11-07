@@ -223,7 +223,7 @@ export async function v1(path, { method = "GET", body, headers = {}, signal, rea
     const ra = Number(r.headers.get("Retry-After"));
     if (ra > 0) err.retryAfter = ra;
     if (reauth && attempt === 0 && err.code === "reauth_required" && reauthHandler && data && data.operation) {
-      const nonce = await reauthHandler(data.operation);
+      const nonce = await reauthHandler(data.operation, data.target || "");
       if (nonce) { opts.headers["Publisher-Reauth"] = nonce; continue; }
       err.message = "Cancelled: you didn't confirm it's you.";
       err.cancelled = true;
@@ -233,8 +233,8 @@ export async function v1(path, { method = "GET", body, headers = {}, signal, rea
 }
 
 // setReauthHandler sets what v1 asks for a re-authentication nonce: a
-// function of the operation answering the nonce, or null when the owner
-// cancelled.
+// function of the operation (and, for an operation on one account, its
+// id) answering the nonce, or null when the owner cancelled.
 let reauthHandler = null;
 export function setReauthHandler(fn) { reauthHandler = fn; }
 
@@ -291,4 +291,35 @@ export function confirmModal({ title, body, confirmText, onConfirm }) {
   bk.append(card);
   document.body.append(bk);
   close = asDialog(bk, card, close, cancel); // Cancel first: Enter must not confirm by accident
+}
+
+// inputDialog asks for one value (or a few: fields); onSubmit gets the
+// values and a function that says something under them, and answers true
+// to close.
+export function inputDialog({ title, label, value = "", type = "text", maxlength, fields, submitText, onSubmit }) {
+  const bk = el("div", { class: "modal-bk" });
+  let close = () => bk.remove();
+  const err = el("p", { class: "reauth-status", role: "status", "aria-live": "polite" });
+  const inputs = (fields || [{ label, value, type, maxlength }]).map((f, i) => {
+    const id = "dlg-in-" + i;
+    return { label: el("label", { for: id, text: f.label }), input: el("input", { id, type: f.type || "text", value: f.value || "", autocomplete: f.autocomplete || "off", maxlength: f.maxlength || false }) };
+  });
+  const ok = el("button", { class: "primary sm", type: "submit", text: submitText || "Save" });
+  const form = el("form", { class: "reauth" },
+    ...inputs.flatMap(x => [x.label, x.input]), err,
+    el("div", { class: "confirm-actions" }, el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: () => close() }), ok));
+  form.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    if (ok.disabled) return; // one at a time
+    ok.disabled = true;
+    try {
+      if (await onSubmit(inputs.map(x => x.input.value), m => { err.textContent = m; })) close();
+    } finally {
+      ok.disabled = false;
+    }
+  });
+  const card = el("div", { class: "modal reauth" }, el("p", { class: "modal-title", text: title }), form);
+  bk.append(card);
+  document.body.append(bk);
+  close = asDialog(bk, card, close, inputs[0].input);
 }

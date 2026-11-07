@@ -207,3 +207,12 @@ export function identity() {
 // loadInstance reads GET /v1/instance: languages, translate targets, features
 // and limits.
 export function loadInstance() { return v1("/v1/instance"); }
+
+// loadDestinations reads the network types this server has (GET
+// /v1/destinations): how each connects and what it is configured with,
+// for the Settings forms. Read once; a failure isn't kept.
+let types = null;
+export function loadDestinations() {
+  if (!types) types = v1All("/v1/destinations").catch(e => { types = null; throw e; });
+  return types;
+}

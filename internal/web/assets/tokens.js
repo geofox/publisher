@@ -13,7 +13,7 @@ const SCOPES = [
   ["drafts:read", "read drafts", false],
   ["drafts:write", "write drafts", false],
   ["accounts:read", "see accounts", false],
-  ["accounts:write", "change account settings (not part of admin)", false],
+  ["accounts:write", "add accounts and change their settings and credentials (not part of admin)", false],
   ["admin", "everything else, including tokens and relays", false],
 ];
 const PRIVILEGED = ["admin", "accounts:write"];

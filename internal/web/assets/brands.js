@@ -7,7 +7,7 @@
 //   brandTile()    — the rounded, tinted tile with the mark centered
 //   icon()         — a stroke UI glyph (compose, history, calendar, thread, …)
 
-import { META } from "./common.js";
+import { META, el } from "./common.js";
 
 const SVGNS = "http://www.w3.org/2000/svg";
 
@@ -107,3 +107,17 @@ export function icon(name, { size = 24, color = "currentColor", sw = 1.7 } = {})
 
 // platformLabel is a tiny convenience over META.
 export function platformLabel(id) { return (META[id] && META[id].label) || id; }
+
+// accountTile is the account's avatar with its network's mark, or the
+// network's tile when it has no avatar.
+export function accountTile(a, size = 29) {
+  if (!a.avatar) return brandTile(a.type, { size });
+  const tile = el("span", { class: "acct-tile" });
+  const img = el("img", { class: "acct-av", src: a.avatar, alt: "", width: String(size), height: String(size),
+    referrerpolicy: "no-referrer", loading: "lazy" });
+  img.addEventListener("error", () => tile.replaceWith(brandTile(a.type, { size })));
+  const mark = brandTile(a.type, { size: 14, r: 4 });
+  mark.classList.add("acct-mark");
+  tile.append(img, mark);
+  return tile;
+}

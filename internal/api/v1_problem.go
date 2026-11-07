@@ -111,6 +111,9 @@ type problemBody struct {
 	Errors   []fieldError `json:"errors,omitempty"`
 	// Operation names what to re-authenticate for (reauth_required).
 	Operation string `json:"operation,omitempty"`
+	// Target names what the operation acts on, for an operation on one
+	// account (reauth_required): re-authenticate for it.
+	Target string `json:"target,omitempty"`
 	// AccountID names the account a duplicate_account is the same as.
 	AccountID string `json:"account_id,omitempty"`
 }

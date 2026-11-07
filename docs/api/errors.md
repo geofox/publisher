@@ -65,7 +65,7 @@ showing an account's key. Re-authenticate with `POST /auth/reauth`
 `/auth/reauth/oidc`), then send the nonce it returns in the
 `Publisher-Reauth` header. The problem's `operation` names what to
 re-authenticate for; `account.delete` and `account.reveal` also take the
-account's id as `target`. A nonce is good once, for five minutes, for
+account's id as `target`, which the problem names too. A nonce is good once, for five minutes, for
 that operation (and target) and that browser session.
 
 ## session_required

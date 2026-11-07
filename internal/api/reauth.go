@@ -95,7 +95,7 @@ func (a *API) reauthNonce(w http.ResponseWriter, r *http.Request, op, target str
 			return false
 		}
 	}
-	writeProblem(w, r, problemBody{Status: http.StatusForbidden, Code: codeReauthRequired, Operation: op,
+	writeProblem(w, r, problemBody{Status: http.StatusForbidden, Code: codeReauthRequired, Operation: op, Target: target,
 		Detail: "confirm it's you first: re-authenticate for " + op + " and send the nonce in " + reauthHeader})
 	return false
 }

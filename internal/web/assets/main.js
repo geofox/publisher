@@ -9,18 +9,21 @@ import { verifyInit } from "./verify.js";
 import { interactInit } from "./interact.js";
 import { installRecoveryAutosave } from "./drafts_recovery.js";
 import { installDraftsSidebar, populateTranslateMenu } from "./drafts.js";
-import { tokensInit, tokensShow, setTokensMode } from "./tokens.js";
+import { tokensInit, setTokensMode } from "./tokens.js";
 import { setReauthHandler } from "./common.js";
 import { reauth, setReauthMode } from "./reauth.js";
-import { accessShow, setAccessMode } from "./access.js";
+import { setAccessMode } from "./access.js";
+import { settingsInit, settingsShow, settingsHidden } from "./settings.js";
 
 // loadConfig reads the instance (GET /v1/instance): the operator's languages
 // (the Bluesky/Mastodon language fields default to the first) and the
 // languages DeepL can translate into. A failure keeps the "en" default and
-// hides translation.
+// hides translation. It answers the instance (null on a failure).
+let instance = null;
 async function loadConfig() {
   try {
     const data = await loadInstance();
+    instance = data;
     if (Array.isArray(data.user_languages) && data.user_languages.length) {
       state.userLanguages = data.user_languages;
       state.ov = byKey(); // each account's settings start from these languages
@@ -35,6 +38,7 @@ async function loadConfig() {
     setTokensMode(data.auth);
     if (data.sign_in_recommended) signInBanner();
   } catch (_) { /* keep the "en" defaults; translate button stays hidden */ }
+  return instance;
 }
 
 // signInBanner suggests setting up sign-in on a server with none of its
@@ -105,12 +109,25 @@ function readAccounts(read = loadAccounts) {
 // Tab routing
 // ---------------------------------------------------------------------------
 
-function switchTab(view) {
+function switchTab(view, section) {
   document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.view === view));
   document.querySelectorAll(".view").forEach(s => { s.hidden = s.id !== view; });
   if (view === "history") loadHistory(true);
   if (view === "tools")   loadTools();
-  if (view === "tokens")  { accessShow(); tokensShow(); }
+  if (view === "settings") settingsShow(section); else settingsHidden();
+}
+
+// firstRun opens Settings → Accounts once, in this browser, on a server
+// with no account yet (and where they can be added: not behind the proxy
+// alone), so a new instance starts with its setup.
+const FIRST_RUN_KEY = "publisher.firstRunShown";
+function firstRun(list) {
+  if (!Array.isArray(list) || list.length || !instance || instance.auth === "proxy") return;
+  try {
+    if (localStorage.getItem(FIRST_RUN_KEY)) return;
+    localStorage.setItem(FIRST_RUN_KEY, "1");
+  } catch (_) { return; }
+  switchTab("settings", "accounts");
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +138,7 @@ async function init() {
   // An operation that needs the owner to confirm it's them asks here.
   setReauthHandler(reauth);
   await loadConfig();
+  settingsInit(instance);
   // Every successful read of the accounts (here, a Post, a draft, a
   // restore) is applied as it arrives.
   document.addEventListener("accounts", applyAccounts);
@@ -128,6 +146,7 @@ async function init() {
   // the composer starts with them; if they are slower, it takes them on
   // arrival.
   const first = readAccounts().catch(() => { /* shown in the composer; tried again */ });
+  first.then(firstRun);
   await Promise.race([first, new Promise(r => setTimeout(r, 1500))]);
   composeInit();
   composed = true;
@@ -145,6 +164,10 @@ async function init() {
   populateTranslateMenu(); // re-populate after the instance resolves (idempotent)
   document.querySelectorAll(".tab").forEach(b =>
     b.addEventListener("click", () => switchTab(b.dataset.view)));
+  // The composer's "no accounts" and the master key banner lead to them.
+  document.addEventListener("open-settings", e => switchTab("settings", e.detail));
+  const go = $("#key-banner-go");
+  if (go) go.addEventListener("click", () => switchTab("settings", "accounts"));
 }
 
 document.addEventListener("DOMContentLoaded", init);

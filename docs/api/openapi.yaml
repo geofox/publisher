@@ -3873,6 +3873,9 @@ components:
         operation:
           type: string
           description: "`reauth_required` only: the operation to re-authenticate for (`signin.add`, `signin.remove`, `password.set`, `token.create`, `account.delete`, `account.reveal`)."
+        target:
+          type: string
+          description: "`reauth_required` only, for an operation on one account (`account.delete`, `account.reveal`): its id, to re-authenticate for as `target`."
         account_id:
           type: string
           description: "`duplicate_account` only: the account you already have."

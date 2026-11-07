@@ -6,7 +6,7 @@ import { openDetail } from "./history.js";
 import { accounts, byId, typeOf, isConnected, defaultTargets, accountsLoaded, networkName, nameOf, accessibleName,
   handleOf, customLabel, isOpaque, shortId, fitHandle } from "./accounts.js";
 import { followPost } from "./follow.js";
-import { brandTile, icon } from "./brands.js";
+import { icon, accountTile } from "./brands.js";
 import { planFor, lastPlanFor, planError } from "./plan.js";
 import { editorInit, renderEditor, setTab } from "./editor.js";
 import { fromMarkers, toLF } from "./textpos.js";
@@ -138,20 +138,6 @@ function barredWhy(a) {
   return "";
 }
 
-// accountTile is the account's avatar with its network's mark, or the
-// network's tile when it has no avatar.
-function accountTile(a, size = 29) {
-  if (!a.avatar) return brandTile(a.type, { size });
-  const tile = el("span", { class: "acct-tile" });
-  const img = el("img", { class: "acct-av", src: a.avatar, alt: "", width: String(size), height: String(size),
-    referrerpolicy: "no-referrer", loading: "lazy" });
-  img.addEventListener("error", () => tile.replaceWith(brandTile(a.type, { size })));
-  const mark = brandTile(a.type, { size: 14, r: 4 });
-  mark.classList.add("acct-mark");
-  tile.append(img, mark);
-  return tile;
-}
-
 // toggled redraws what a change of selection touches and tells the drafts
 // autosave (it listens for change events in the composer).
 function toggled(focusId) {
@@ -248,8 +234,11 @@ function renderChips() {
         el("span", { class: "bad", text: say = "Couldn't read your accounts: " + accountsPhase.error }), again));
       if (hadFocus) again.focus({ preventScroll: true }); // the keyboard stays on Try again
     } else {
-      c.append(el("p", { class: "targets-empty muted",
-        text: say = "No accounts yet: set them in the server's environment (see the README), then restart it." }));
+      // Settings says how: added there, or from the server's environment.
+      const open = el("button", { class: "ghost sm", type: "button", text: "Open Settings",
+        onclick: () => document.dispatchEvent(new CustomEvent("open-settings", { detail: "accounts" })) });
+      c.append(el("div", { class: "targets-empty" },
+        el("span", { class: "muted", text: say = "No accounts yet: add one in Settings." }), open));
     }
     if (hadFocus && !c.contains(document.activeElement)) { c.tabIndex = -1; c.focus({ preventScroll: true }); }
     live.textContent = say;
