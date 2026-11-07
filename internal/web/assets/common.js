@@ -49,9 +49,43 @@ export function pressable(n, role = "button") {
   return n;
 }
 
+// The dialogs on screen, the newest last: only the top one answers Escape
+// and keeps Tab inside it.
+const dialogs = [];
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]):not([type="hidden"]):not([hidden]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function topDialog() {
+  while (dialogs.length && !dialogs[dialogs.length - 1].bk.isConnected) dialogs.pop();
+  return dialogs[dialogs.length - 1];
+}
+
+// restoreFocus puts focus back on the element a dialog was opened from:
+// once it is enabled again (a button disabled while its request runs), or
+// on its replacement (an element with the same data-focus-key, else its
+// data-focus-fallback) when the list it was in was redrawn. It gives up
+// when something else takes focus.
+export function restoreFocus(before) {
+  if (!before) return;
+  const key = before.dataset ? before.dataset.focusKey : "";
+  const fallback = before.dataset ? before.dataset.focusFallback : "";
+  const byKey = k => k ? document.querySelector('[data-focus-key="' + CSS.escape(k) + '"]') : null;
+  let tries = 0;
+  const go = () => {
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== before) return;
+    let t = before.isConnected ? before : byKey(key) || byKey(fallback);
+    if (t && t.disabled && !before.isConnected && byKey(fallback)) t = byKey(fallback);
+    if (t && !t.disabled && typeof t.focus === "function") { t.focus(); return; }
+    if (tries++ < 60) setTimeout(go, 50);
+  };
+  go();
+}
+
 // asDialog gives a modal its dialog semantics: role and aria-modal on the
-// card, focus moved into it (focusEl), Escape calls close, and focus goes
-// back where it was once the backdrop leaves the page. It answers close
+// card, a label (its title) and a description (.modal-desc), focus moved
+// into it (focusEl, unless something in it already has focus), Escape
+// calls close (the top dialog's only), Tab stays inside, and focus goes
+// back where it was (see restoreFocus) once it closes. It answers close
 // wrapped to do that cleanup. escape: false leaves Escape alone (a dialog
 // whose content can't be shown again).
 export function asDialog(bk, card, close, focusEl, { escape = true } = {}) {
@@ -60,14 +94,38 @@ export function asDialog(bk, card, close, focusEl, { escape = true } = {}) {
   card.setAttribute("aria-modal", "true");
   const title = card.querySelector(".modal-title, .pm-title");
   if (title) { title.id = title.id || "dlg-" + Math.random().toString(36).slice(2, 9); card.setAttribute("aria-labelledby", title.id); }
-  const onKey = e => { if (escape && e.key === "Escape" && bk.isConnected) { e.preventDefault(); done(); } };
+  const desc = card.querySelector(".modal-desc");
+  if (desc) { desc.id = desc.id || "dlg-" + Math.random().toString(36).slice(2, 9); card.setAttribute("aria-describedby", desc.id); }
+  const me = { bk };
+  dialogs.push(me);
+  const onKey = e => {
+    if (!bk.isConnected) { document.removeEventListener("keydown", onKey); return; }
+    if (topDialog() !== me) return;
+    if (escape && e.key === "Escape") { e.preventDefault(); done(); return; }
+    if (e.key !== "Tab") return;
+    const fs = [...card.querySelectorAll(FOCUSABLE)].filter(n => n.offsetParent !== null || n === document.activeElement);
+    if (!fs.length) { e.preventDefault(); return; }
+    const first = fs[0], last = fs[fs.length - 1];
+    if (!card.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  let closed = false;
   const done = () => {
+    if (closed) return;
+    closed = true;
     document.removeEventListener("keydown", onKey);
+    const i = dialogs.indexOf(me);
+    if (i >= 0) dialogs.splice(i, 1);
     close();
-    if (before && before.isConnected && typeof before.focus === "function") before.focus();
+    restoreFocus(before);
   };
   document.addEventListener("keydown", onKey);
-  queueMicrotask(() => { const f = focusEl || card.querySelector("button, input, select, textarea"); if (f) f.focus(); });
+  queueMicrotask(() => {
+    if (card.contains(document.activeElement)) return;
+    const f = focusEl || card.querySelector(FOCUSABLE);
+    if (f) f.focus();
+  });
   return done;
 }
 
@@ -149,8 +207,9 @@ export async function api(path, opts = {}) {
 //
 // An operation that needs the owner to confirm it's them (403
 // reauth_required) goes through the re-authentication dialog (see
-// setReauthHandler) and is sent once more with its nonce.
-export async function v1(path, { method = "GET", body, headers = {}, signal } = {}) {
+// setReauthHandler) and is sent once more with its nonce, unless reauth is
+// false (the caller passes a nonce it got itself).
+export async function v1(path, { method = "GET", body, headers = {}, signal, reauth = true } = {}) {
   const opts = { method, credentials: "same-origin", headers: { ...headers }, signal };
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
@@ -161,7 +220,9 @@ export async function v1(path, { method = "GET", body, headers = {}, signal } = 
     const data = r.status === 204 ? null : await r.json().catch(() => null);
     if (r.ok) return data;
     const err = problemError(r.status, data);
-    if (attempt === 0 && err.code === "reauth_required" && reauthHandler && data && data.operation) {
+    const ra = Number(r.headers.get("Retry-After"));
+    if (ra > 0) err.retryAfter = ra;
+    if (reauth && attempt === 0 && err.code === "reauth_required" && reauthHandler && data && data.operation) {
       const nonce = await reauthHandler(data.operation);
       if (nonce) { opts.headers["Publisher-Reauth"] = nonce; continue; }
       err.message = "Cancelled: you didn't confirm it's you.";

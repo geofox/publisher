@@ -1,6 +1,7 @@
 "use strict";
-import { el, v1, flash, relTime, confirmModal, asDialog } from "./common.js";
+import { el, v1, flash, relTime, confirmModal, asDialog, restoreFocus } from "./common.js";
 import { passkeysSupported, createPasskey, passkeyError } from "./webauthn.js";
+import { reauth } from "./reauth.js";
 
 // Access: how the owner signs in (passkeys and the password, in local
 // mode), where they are signed in, and recent sign-in activity. Lives in
@@ -61,50 +62,67 @@ export async function accessShow() {
 
 // ── sign-in methods ─────────────────────────────────────────────────────
 
+// Buttons carry data-focus-key, so focus comes back to the same button
+// after the panel is redrawn behind a dialog (data-focus-fallback when the
+// button itself is gone, such as a removed passkey's).
+function btn(text, key, onclick, more = {}) {
+  return el("button", { class: "ghost sm", type: "button", text, onclick, "data-focus-key": key, ...more });
+}
+
 function signInSection(si) {
   if (si.mode !== "local") {
     return section("sign-in", "",
-      el("p", { class: "acc-note", text: "You sign in with your identity provider (OIDC); passkeys and passwords are managed there." }),
-      el("div", { class: "acc-actions-row" }, el("button", { class: "ghost sm", type: "button", text: "Sign out", onclick: signOut })));
+      el("p", { class: "acc-note", text: "You sign in with your identity provider (OIDC); passkeys and passwords are managed there. To sign out, use this browser's row below." }));
   }
-  const rows = si.passkeys.map(passkeyRow);
+  // The last usable way to sign in can't be removed: say so up front
+  // rather than after the owner confirmed it's them.
+  const usable = si.passkeys.filter(p => p.usable).length + (si.password.set ? 1 : 0);
+  const rows = si.passkeys.map(p => passkeyRow(p, si, p.usable && usable === 1));
   if (!rows.length) rows.push(el("p", { class: "acc-note", text: "No passkey yet." }));
   const canAdd = si.passkeys_available && passkeysSupported();
-  const add = el("button", { class: "primary sm", type: "button", text: "Add a passkey", onclick: addPasskey, disabled: canAdd ? false : "" });
+  const add = el("button", { class: "primary sm", type: "button", text: "Add a passkey", onclick: () => addPasskey(si), disabled: canAdd ? false : "", "data-focus-key": "pk-add" });
   const pw = si.password;
+  const pwLast = pw.set && usable === 1;
   const pwRow = el("div", { class: "acc-row" },
     el("div", { class: "acc-info" },
       el("span", { class: "acc-name", text: "Password" }),
       el("span", { class: "meta", text: pw.set ? "set " + relTime(pw.updated_at) : "not set" })),
     el("div", { class: "acc-actions" },
-      el("button", { class: "ghost sm", type: "button", text: pw.set ? "Change" : "Set a password", onclick: () => passwordDialog(pw.set) }),
-      pw.set ? el("button", { class: "ghost sm", type: "button", text: "Remove", onclick: removePassword }) : null));
+      btn(pw.set ? "Change" : "Set a password", "pw-set", () => passwordDialog(pw.set)),
+      pw.set ? btn("Remove", "pw-remove", removePassword, lastAttrs(pwLast, "Remove the password", "pk-add")) : null));
   return section("sign-in", "passkeys and password",
     ...rows,
     el("div", { class: "acc-actions-row" }, add,
       canAdd ? null : el("span", { class: "muted", text: si.passkeys_available ? "this browser can't make passkeys here" : "passkeys need PUBLIC_URL" })),
-    pwRow,
-    el("div", { class: "acc-actions-row" }, el("button", { class: "ghost sm", type: "button", text: "Sign out", onclick: signOut })));
+    pwRow);
 }
 
-function passkeyRow(p) {
-  return el("div", { class: "acc-row" },
+// lastAttrs disables a Remove button for the last usable way to sign in.
+function lastAttrs(last, label, fallback) {
+  return last
+    ? { disabled: "", title: "Your last way to sign in: add another first", "aria-label": label + " (your last way to sign in: add another first)", "data-focus-fallback": fallback }
+    : { "aria-label": label, "data-focus-fallback": fallback };
+}
+
+function passkeyRow(p, si, last) {
+  return el("div", { class: "acc-row" + (p.usable ? "" : " acc-unusable") },
     el("div", { class: "acc-info" },
       el("span", { class: "acc-name", text: p.name }),
       p.synced ? el("span", { class: "acc-tag", text: "synced" }) : null,
+      p.usable ? null : el("span", { class: "acc-tag warn", text: "made for " + p.rp_id + ": can't sign in here" }),
       el("span", { class: "meta", text: "added " + relTime(p.created_at) }),
       el("span", { class: "meta", text: p.last_used_at ? "used " + relTime(p.last_used_at) : "never used" })),
     el("div", { class: "acc-actions" },
-      el("button", { class: "ghost sm", type: "button", text: "Rename", "aria-label": "Rename " + p.name, onclick: () => renamePasskey(p) }),
-      el("button", { class: "ghost sm", type: "button", text: "Remove", "aria-label": "Remove " + p.name, onclick: () => removePasskey(p) })));
+      btn("Rename", "pk-rename-" + p.id, () => renamePasskey(p), { "aria-label": "Rename " + p.name }),
+      btn("Remove", "pk-remove-" + p.id, () => removePasskey(p), lastAttrs(last, "Remove " + p.name, "pk-add"))));
 }
 
 // inputDialog asks for one value; onSubmit answers true to close.
-function inputDialog({ title, label, value = "", type = "text", fields, submitText, onSubmit }) {
+function inputDialog({ title, label, value = "", type = "text", maxlength, fields, submitText, onSubmit }) {
   const bk = el("div", { class: "modal-bk" });
   let close = () => bk.remove();
   const err = el("p", { class: "reauth-status", role: "status", "aria-live": "polite" });
-  const inputs = (fields || [{ label, value, type }]).map((f, i) => {
+  const inputs = (fields || [{ label, value, type, maxlength }]).map((f, i) => {
     const id = "dlg-in-" + i;
     return { label: el("label", { for: id, text: f.label }), input: el("input", { id, type: f.type || "text", value: f.value || "", autocomplete: f.autocomplete || "off", maxlength: f.maxlength || false }) };
   });
@@ -114,6 +132,7 @@ function inputDialog({ title, label, value = "", type = "text", fields, submitTe
     el("div", { class: "confirm-actions" }, el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: () => close() }), ok));
   form.addEventListener("submit", async ev => {
     ev.preventDefault();
+    if (ok.disabled) return; // one at a time
     ok.disabled = true;
     try {
       if (await onSubmit(inputs.map(x => x.input.value), m => { err.textContent = m; })) close();
@@ -127,41 +146,66 @@ function inputDialog({ title, label, value = "", type = "text", fields, submitTe
   close = asDialog(bk, card, close, inputs[0].input);
 }
 
-function deviceName() {
+// deviceName suggests a name for a new passkey, unlike the ones taken.
+function deviceName(taken) {
   const ua = navigator.userAgent;
   const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android"
     : /Mac OS X/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "";
-  return os ? "Passkey on " + os : "Passkey";
+  const base = os ? "Passkey on " + os : "Passkey";
+  const names = new Set(taken);
+  let name = base;
+  for (let i = 2; names.has(name); i++) name = base + " " + i;
+  return name;
 }
 
-function addPasskey() {
+// The signin.add nonce: checked when a passkey is begun, spent when it is
+// added, so a passkey prompt that was closed can be tried again without
+// confirming again (for a little under its five minutes).
+let addNonce = null;
+async function nonceForAdd() {
+  if (addNonce && Date.now() < addNonce.until) return addNonce.nonce;
+  const n = await reauth("signin.add");
+  addNonce = n ? { nonce: n, until: Date.now() + 4 * 60e3 } : null;
+  return n;
+}
+
+function addPasskey(si) {
   inputDialog({
-    title: "Add a passkey", label: "Name it (to tell it apart later)", value: deviceName(), submitText: "Create",
+    title: "Add a passkey", label: "Name it (to tell it apart later)", value: deviceName(si.passkeys.map(p => p.name)), maxlength: 60, submitText: "Create",
     onSubmit: async ([name], say) => {
-      try {
-        const opts = await v1("/v1/me/passkeys:begin", { method: "POST" });
-        say("Waiting for your device…");
-        let cred;
-        try { cred = await createPasskey(opts); } catch (e) { say(passkeyError(e)); return false; }
-        await v1("/v1/me/passkeys", { method: "POST", body: { name: name.trim(), credential: cred } });
-        flash("Passkey added");
-        accessShow();
-        return true;
-      } catch (e) {
-        say(e.message);
-        return false;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const nonce = await nonceForAdd();
+        if (!nonce) { say("Not added: you didn't confirm it's you."); return false; }
+        const headers = { "Publisher-Reauth": nonce };
+        try {
+          const opts = await v1("/v1/me/passkeys:begin", { method: "POST", headers, reauth: false });
+          say("Waiting for your device…");
+          let cred;
+          try { cred = await createPasskey(opts); } catch (e) { say(passkeyError(e) || "No passkey was made. Try again when you're ready."); return false; }
+          await v1("/v1/me/passkeys", { method: "POST", body: { name: name.trim(), credential: cred }, headers, reauth: false });
+          addNonce = null; // spent
+          flash("Passkey added");
+          await accessShow();
+          return true;
+        } catch (e) {
+          if (e.code === "reauth_required" && attempt === 0) { addNonce = null; continue; } // expired or spent: confirm again
+          if (e.status === 401) { say("Your session ended: reload and sign in again."); return false; }
+          say(e.status === 422 ? "That passkey didn't work. Try again." : e.message);
+          return false;
+        }
       }
+      return false;
     },
   });
 }
 
 function renamePasskey(p) {
   inputDialog({
-    title: "Rename passkey", label: "Name", value: p.name,
+    title: "Rename passkey", label: "Name", value: p.name, maxlength: 60,
     onSubmit: async ([name], say) => {
       try {
         await v1("/v1/me/passkeys/" + encodeURIComponent(p.id), { method: "PATCH", body: { name } });
-        accessShow();
+        await accessShow();
         return true;
       } catch (e) { say(e.message); return false; }
     },
@@ -181,7 +225,7 @@ function removePasskey(p) {
       try {
         await v1("/v1/me/passkeys/" + encodeURIComponent(p.id), { method: "DELETE" });
         flash("Passkey removed");
-        accessShow();
+        await accessShow();
         return true;
       } catch (e) {
         if (!e.cancelled) flash(lastMethod(e));
@@ -206,7 +250,7 @@ function passwordDialog(isSet) {
       try {
         await v1("/v1/me/password", { method: "PUT", body });
         flash(isSet ? "Password changed; other browsers are signed out" : "Password set");
-        accessShow();
+        await accessShow();
         return true;
       } catch (e) { say(e.message); return false; }
     },
@@ -222,7 +266,7 @@ function removePassword() {
       try {
         await v1("/v1/me/password", { method: "DELETE" });
         flash("Password removed");
-        accessShow();
+        await accessShow();
         return true;
       } catch (e) {
         if (!e.cancelled) flash(lastMethod(e));
@@ -248,7 +292,8 @@ export function uaText(ua) {
 }
 
 function sessionRow(s) {
-  const end = el("button", { class: "ghost sm", type: "button", text: "Sign out" });
+  const end = el("button", { class: "ghost sm", type: "button", text: "Sign out", "data-focus-key": "ses-" + s.id, "data-focus-fallback": "ses-current" });
+  if (s.current) end.dataset.focusKey = "ses-current";
   wireSignOut(end, s);
   return el("div", { class: "acc-row" },
     el("div", { class: "acc-info" },
@@ -267,7 +312,8 @@ function wireSignOut(end, s) {
     try {
       await v1("/v1/me/sessions/" + encodeURIComponent(s.id), { method: "DELETE" }).catch(e => { if (e.status !== 404) throw e; });
       flash("Signed out");
-      accessShow();
+      await accessShow();
+      restoreFocus(end); // its row is gone: this browser's Sign out
     } catch (e) {
       flash("Sign-out failed: " + e.message);
       end.disabled = false;

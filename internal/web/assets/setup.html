@@ -26,7 +26,7 @@
     <div id="setup-choose" hidden>
       <p>You're the owner of this Publisher. Choose how you'll sign in. You can add more ways later, under Access.</p>
       <label class="auth-label" for="pk-name">Name this passkey</label>
-      <input id="pk-name" type="text" maxlength="60" autocomplete="off">
+      <input id="pk-name" type="text" maxlength="60" autocomplete="off" spellcheck="false">
       <button id="setup-passkey" class="primary auth-wide" type="button">Create a passkey</button>
       <p class="auth-or"><span>or</span></p>
       <form id="setup-pw-form" class="auth-form">
@@ -42,7 +42,7 @@
 
     <div id="setup-expired" hidden>
       <p id="setup-expired-text">This setup link expired or was already used.</p>
-      <p class="muted">Make a new one in the container, and open it here within the hour:</p>
+      <p class="muted">Make a new one in the container (it's printed, and written to <code>SETUP_TOKEN_FILE</code> if you set it), and open it here within the hour:</p>
       <pre class="auth-cmd">docker exec publisher /publisher setup-url</pre>
     </div>
 

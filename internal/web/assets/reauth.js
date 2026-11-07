@@ -14,7 +14,7 @@ const WHY = {
   "signin.add": "add a way to sign in",
   "signin.remove": "remove a way to sign in",
   "password.set": "set your password",
-  "token.create_privileged": "create a token that can make tokens or change accounts",
+  "token.create": "create a token",
 };
 
 let mode = "";
@@ -34,7 +34,13 @@ function show(op) {
     const bk = el("div", { class: "modal-bk" });
     const card = el("div", { class: "modal reauth" });
     const statusLine = el("p", { class: "reauth-status", role: "status", "aria-live": "polite" });
-    const say = t => { statusLine.textContent = t || ""; };
+    const say = t => { statusLine.replaceChildren(t || ""); };
+    // The session ended while the dialog was open (it expired, or it was
+    // signed out elsewhere): nothing here can work; say so.
+    const signedOut = () => {
+      say("Your session ended: sign in again, then try once more.");
+      body.replaceChildren(el("button", { class: "primary sm", type: "button", text: "Reload", onclick: () => location.reload() }));
+    };
     let settled = false;
     let close = () => bk.remove();
     const finish = nonce => {
@@ -48,7 +54,7 @@ function show(op) {
     const body = el("div", { class: "reauth-body" }, el("p", { class: "muted", text: "Checking how you sign in…" }));
     card.append(
       el("p", { class: "modal-title", text: "Confirm it's you" }),
-      el("p", { class: "reauth-why", text: "To " + (WHY[op] || op) + ", confirm it's you." }),
+      el("p", { class: "reauth-why modal-desc", text: "To " + (WHY[op] || op) + ", confirm it's you." }),
       body, statusLine,
       el("div", { class: "confirm-actions" }, cancel),
     );
@@ -64,7 +70,10 @@ function show(op) {
         const n = await postJSON("/auth/reauth/claim", { operation: op });
         finish(n.nonce);
       } catch (e) {
-        say(e.code === "reauth_required" ? "Not confirmed yet: sign in again in the other window first." : e.message);
+        if (e.status === 401) { signedOut(); return; }
+        say(e.code === "reauth_required"
+          ? "Not confirmed yet: finish signing in again in the other window first. If your identity provider didn't ask you to sign in again, it can't confirm (Authelia needs version 4.39 or later)."
+          : e.message);
       }
     };
     const onMessage = ev => {
@@ -77,10 +86,14 @@ function show(op) {
         const url = "/auth/reauth/oidc?operation=" + encodeURIComponent(op);
         const go = el("button", { class: "primary sm", type: "button", text: "Sign in again" });
         const done = el("button", { class: "ghost sm", type: "button", text: "I've signed in", onclick: claim });
+        let fallback = null;
         go.addEventListener("click", () => {
           const w = window.open(url, "publisher-reauth", "popup,width=520,height=680");
-          say(w ? "Sign in again in the window that opened." : "The window was blocked: allow pop-ups, or open the link in a new tab, then come back.");
-          if (!w) body.append(el("p", {}, el("a", { href: url, target: "_blank", rel: "opener", text: "Open the sign-in page" })));
+          say(w ? "Sign in again in the window that opened, then come back here." : "The window was blocked: allow pop-ups, or open the sign-in page in a new tab; then come back and press \u201cI've signed in\u201d.");
+          if (!w && !fallback) {
+            fallback = el("p", {}, el("a", { href: url, target: "_blank", rel: "opener", text: "Open the sign-in page" }));
+            body.append(fallback);
+          }
         });
         body.replaceChildren(
           el("p", { class: "muted", text: "Your identity provider will ask you to sign in again." }),
@@ -92,23 +105,32 @@ function show(op) {
       try {
         si = await v1("/v1/me/sign-in");
       } catch (e) {
+        if (e.status === 401) { signedOut(); return; }
         body.replaceChildren(el("p", { class: "err", text: "Couldn't read how you sign in: " + e.message }));
         return;
       }
+      const hasPassword = !!(si.password && si.password.set);
       const parts = [];
       let first = null;
-      if (si.passkeys.length && si.passkeys_available && passkeysSupported()) {
+      if (si.passkeys.some(p => p.usable) && si.passkeys_available && passkeysSupported()) {
         const b = el("button", { class: "primary sm", type: "button", text: "Use your passkey" });
         b.addEventListener("click", async () => {
+          if (b.disabled) return;
           b.disabled = true;
           say("Waiting for your passkey…");
           try {
             const opts = await postJSON("/auth/reauth/begin", { operation: op });
             let cred;
-            try { cred = await getPasskey(opts); } catch (e) { say(passkeyError(e)); return; }
+            try {
+              cred = await getPasskey(opts);
+            } catch (e) {
+              say(passkeyError(e) || (hasPassword ? "No passkey was used. You can confirm with your password instead." : ""));
+              return;
+            }
             const n = await postJSON("/auth/reauth", { operation: op, credential: cred });
             finish(n.nonce);
           } catch (e) {
+            if (e.status === 401) { signedOut(); return; }
             say(e.status === 422 ? "That passkey didn't work. Try again." : (e.message + (e.retryAfter ? " " + waitText(e.retryAfter) : "")));
           } finally {
             b.disabled = false;
@@ -117,22 +139,27 @@ function show(op) {
         parts.push(b);
         first = b;
       }
-      if (si.password && si.password.set) {
+      if (hasPassword) {
         if (parts.length) parts.push(el("p", { class: "auth-or" }, el("span", { text: "or" })));
         const input = el("input", { type: "password", id: "reauth-pw", autocomplete: "current-password", required: "" });
-        const f = el("form", {},
+        const submit = el("button", { class: "ghost sm", type: "submit", text: "Confirm with your password" });
+        const f = el("form", { class: "reauth-pw-form" },
           el("input", { type: "text", name: "username", value: "owner", autocomplete: "username", hidden: "" }),
-          el("label", { for: "reauth-pw", text: "Your password" }), input,
-          el("button", { class: "ghost sm", type: "submit", text: "Confirm with your password" }));
+          el("label", { for: "reauth-pw", text: "Your password" }), input, submit);
         f.addEventListener("submit", async ev => {
           ev.preventDefault();
+          if (submit.disabled) return; // one check at a time
+          submit.disabled = true;
           say("Checking…");
           try {
             const n = await postJSON("/auth/reauth", { operation: op, password: input.value });
             finish(n.nonce);
           } catch (e) {
+            if (e.status === 401) { signedOut(); return; }
             input.select();
             say(e.status === 422 ? "That isn't your password." : (e.message + (e.retryAfter ? " " + waitText(e.retryAfter) : "")));
+          } finally {
+            submit.disabled = false;
           }
         });
         parts.push(f);

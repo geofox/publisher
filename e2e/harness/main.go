@@ -135,6 +135,15 @@ func run() error {
 			}
 			_, _ = w.Write([]byte(localauth.SetupURL(publicURL, raw)))
 		})
+		// What `publisher owner reset-login` does, so a run can start from
+		// "sign-in isn't set up" on a reused server.
+		mux.HandleFunc("POST /__e2e/reset-login", func(w http.ResponseWriter, r *http.Request) {
+			if err := st.ResetLocalLogin(r.Context()); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
 	}
 
 	mux.Handle("/__e2e/", rec.handler())

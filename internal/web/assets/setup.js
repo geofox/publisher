@@ -11,9 +11,17 @@ const $ = s => document.querySelector(s);
 const status = msg => { $("#auth-status").textContent = msg || ""; };
 const show = id => { for (const s of ["#setup-https", "#setup-choose", "#setup-expired"]) $(s).hidden = s !== id; };
 
-function warn(msg) {
+// warn says why this page can't set up sign-in here; link, when given, is
+// where it can.
+function warn(msg, link) {
   const w = $("#auth-warn");
-  w.textContent = msg;
+  w.replaceChildren(msg);
+  if (link) {
+    const a = document.createElement("a");
+    a.href = link;
+    a.textContent = "Open the setup there";
+    w.append(" ", a);
+  }
   w.hidden = !msg;
 }
 
@@ -23,11 +31,16 @@ function expired(text) {
   status("");
 }
 
-// failed answers a failed setup step: an expired setup (401) or a closed
-// one (410) changes the page; anything else is said.
+// failed answers a failed setup step: an expired or replaced setup (401)
+// or a closed one (410) changes the page; a passkey that didn't check out
+// (422) can be tried again; anything else is said.
 function failed(e) {
   if (e.status === 410) { location.replace("/"); return; }
-  if (e.status === 401) { expired("This setup expired (it lasts 10 minutes after the link is opened)."); return; }
+  if (e.status === 401) { expired("This setup expired (it lasts 10 minutes after the link is opened), or a newer setup link replaced it."); return; }
+  if (e.status === 422 && e.problem && (e.problem.errors || []).some(x => x.pointer === "/credential")) {
+    status("That passkey didn't work. Try again, or use a password.");
+    return;
+  }
   if (e.retryAfter || e.code === "rate_limited") { status((e.message || "Too many attempts.") + " " + waitText(e.retryAfter)); return; }
   status(e.message || "That didn't work.");
 }
@@ -39,7 +52,11 @@ function defaultName() {
   return os ? "Passkey on " + os : "Passkey";
 }
 
+let busy = false; // one step at a time (a double click, Enter twice)
+
 async function withPasskey() {
+  if (busy) return;
+  busy = true;
   const btn = $("#setup-passkey");
   btn.disabled = true;
   status("Waiting for your device…");
@@ -55,13 +72,16 @@ async function withPasskey() {
     failed(e);
   } finally {
     btn.disabled = false;
+    busy = false;
   }
 }
 
 async function withPassword(ev) {
   ev.preventDefault();
+  if (busy) return;
   const a = $("#setup-pw"), b = $("#setup-pw2");
   if (a.value !== b.value) { status("The two passwords differ."); b.focus(); return; }
+  busy = true;
   const btn = $("#setup-pw-btn");
   btn.disabled = true;
   status("Saving…");
@@ -73,6 +93,7 @@ async function withPassword(ev) {
     failed(e);
   } finally {
     btn.disabled = false;
+    busy = false;
   }
 }
 
@@ -80,6 +101,9 @@ async function init() {
   // Take the token out of the address bar (and history) first.
   const token = location.hash.slice(1);
   if (location.hash) history.replaceState(null, "", location.pathname);
+  // A newer setup link opened in this tab changes only the fragment: start
+  // over with it.
+  window.addEventListener("hashchange", () => location.reload());
   let m;
   try {
     const r = await fetch("/auth/methods", { credentials: "same-origin" });
@@ -93,7 +117,9 @@ async function init() {
   if (!m.setup) { location.replace("/"); return; }
   if (!m.public_url) { show("#setup-https"); return; }
   if (location.origin !== m.public_url) {
-    warn("Open the setup link at " + m.public_url + " (Publisher's address, PUBLIC_URL). This page is at " + location.origin + ", where sign-in can't work.");
+    // The link is good (it hasn't been used): hand it to the right address.
+    warn("Set up sign-in at " + m.public_url + " (Publisher's address, PUBLIC_URL): this page is at " + location.origin + ", where sign-in can't work.",
+      token ? m.public_url + "/setup#" + token : "");
     return;
   }
   if (!window.isSecureContext) { show("#setup-https"); return; }
@@ -105,9 +131,16 @@ async function init() {
       failed(e);
       return;
     }
+  } else {
+    // No token in the address: a setup this browser opened in the last
+    // 10 minutes may still be live (a reload); else, open the link.
+    const r = await fetch("/setup/state", { credentials: "same-origin" }).catch(() => null);
+    if (r && r.status === 410) { location.replace("/"); return; }
+    if (!r || r.status !== 204) {
+      expired("Open the setup link from the server's log (or SETUP_TOKEN_FILE) in this browser.");
+      return;
+    }
   }
-  // Without a token in the address, a setup opened in the last 10 minutes
-  // may still be valid here: offer the choices; a step answers 401 if not.
   show("#setup-choose");
   $("#pk-name").value = defaultName();
   const pk = passkeysSupported();

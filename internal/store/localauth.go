@@ -466,7 +466,8 @@ func (s *Store) ConsumeReauthNonce(ctx context.Context, raw, sessionHash, operat
 }
 
 // ResetLocalLogin removes every local credential, the local owner's
-// sessions and nonces, and setup tokens (the recovery command).
+// sessions and nonces, setup tokens, the known browsers and the failed
+// password attempts (the recovery command).
 func (s *Store) ResetLocalLogin(ctx context.Context) error {
 	tx, err := s.sql.BeginTx(ctx, nil)
 	if err != nil {
@@ -480,6 +481,7 @@ func (s *Store) ResetLocalLogin(ctx context.Context) error {
 		`DELETE FROM password_credentials WHERE user_id IN (SELECT id FROM users WHERE source = 'local')`,
 		`DELETE FROM setup_tokens`,
 		`DELETE FROM instance_meta WHERE key = 'device_key'`, // forget every known browser
+		`DELETE FROM login_failures`,                         // the owner gets in at once
 	} {
 		if _, err := tx.ExecContext(ctx, q); err != nil {
 			return err

@@ -916,7 +916,7 @@ body.auth-page{height:auto;min-height:100vh;min-height:100dvh;overflow:auto;disp
 a.auth-link{color:#fff}
 .auth-form{display:flex;flex-direction:column;gap:6px;margin:0}
 .auth-form label,.auth-label{font-size:12px;color:var(--ink-2);margin-top:4px}
-.auth-card input[type=password],.auth-card input[type=text],.reauth input[type=password]{font:inherit;font-size:15px;padding:9px 11px;border:.5px solid var(--line-2);border-radius:10px;background:var(--surface);color:var(--ink);width:100%;margin-bottom:6px}
+.auth-card input[type=password],.auth-card input[type=text],.reauth input[type=password],.reauth input[type=text]{font:inherit;font-size:15px;padding:9px 11px;border:.5px solid var(--line-2);border-radius:10px;background:var(--surface);color:var(--ink);width:100%;margin-bottom:6px}
 .auth-card input:focus,.reauth input:focus{outline:none;border-color:var(--indigo);box-shadow:0 0 0 3px var(--accent-dim)}
 .auth-form button{margin-top:4px}
 .auth-or{display:flex;align-items:center;gap:10px;margin:14px 0 8px !important;font-size:12px;color:var(--faint) !important}
@@ -950,3 +950,12 @@ a.auth-link{color:#fff}
 .acc-events li{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;padding:7px 4px;border-bottom:.5px solid var(--line);font-size:13px}
 .acc-events li .bad{font-weight:600}
 .acc-events .when{font-family:var(--mono);font-size:11px;color:var(--faint);min-width:5.5em}
+/* Sign-in fields: 16px on touch screens, so iOS doesn't zoom into them. */
+@media (pointer: coarse){
+  .auth-card input[type=password],.auth-card input[type=text],.reauth input[type=password],.reauth input[type=text]{font-size:16px}
+}
+.acc-tag.warn{background:color-mix(in srgb,var(--amber) 16%,transparent);color:var(--ink-2)}
+.acc-row.acc-unusable .acc-name{color:var(--ink-2)}
+.acc-row button[disabled]{opacity:.5;cursor:not-allowed}
+.tok-scopes label.off{opacity:.55}
+.tok-note{flex-basis:100%;margin:4px 0 0;font-size:12px}

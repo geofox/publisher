@@ -9,7 +9,7 @@ import { verifyInit } from "./verify.js";
 import { interactInit } from "./interact.js";
 import { installRecoveryAutosave } from "./drafts_recovery.js";
 import { installDraftsSidebar, populateTranslateMenu } from "./drafts.js";
-import { tokensInit, tokensShow, loadUserChip } from "./tokens.js";
+import { tokensInit, tokensShow, setTokensMode } from "./tokens.js";
 import { setReauthHandler } from "./common.js";
 import { reauth, setReauthMode } from "./reauth.js";
 import { accessShow, setAccessMode } from "./access.js";
@@ -32,6 +32,7 @@ async function loadConfig() {
     if (data.features && data.features.relay_sync === false) relaySyncOff();
     setReauthMode(data.auth);
     setAccessMode(data.auth);
+    setTokensMode(data.auth);
     if (data.sign_in_recommended) signInBanner();
   } catch (_) { /* keep the "en" defaults; translate button stays hidden */ }
 }
@@ -138,10 +139,7 @@ async function init() {
   verifyInit();
   interactInit();
   tokensInit();
-  // User chip (identity + sign-out) disabled: sign-out POST is CSRF-blocked
-  // behind the proxy and the chip only surfaced the raw OIDC subject (UUID),
-  // not a name/email. Re-enable once the cross-origin logout is resolved.
-  // loadUserChip();
+  // Signing out is in Access (this browser's session row).
   installRecoveryAutosave();
   installDraftsSidebar();
   populateTranslateMenu(); // re-populate after the instance resolves (idempotent)

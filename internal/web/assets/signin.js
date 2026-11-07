@@ -7,9 +7,15 @@ import { passkeysSupported, getPasskey, passkeyError, postJSON, waitText } from 
 const $ = s => document.querySelector(s);
 const status = msg => { $("#auth-status").textContent = msg || ""; };
 
-function warn(msg) {
+function warn(msg, link) {
   const w = $("#auth-warn");
-  w.textContent = msg;
+  w.replaceChildren(msg || "");
+  if (link) {
+    const a = document.createElement("a");
+    a.href = link;
+    a.textContent = "Go there";
+    w.append(" ", a);
+  }
   w.hidden = !msg;
 }
 
@@ -17,14 +23,16 @@ function warn(msg) {
 // cookie can work: PUBLIC_URL unset, another address, or plain http.
 function placeWarning(m) {
   if (!m.public_url) {
-    return "Publisher's address isn't set (PUBLIC_URL), so nobody can sign in. Set PUBLIC_URL to the https address you use for Publisher and restart it.";
+    return ["Publisher's address isn't set (PUBLIC_URL), so nobody can sign in. Set PUBLIC_URL to the https address you use for Publisher and restart it."];
   }
   if (location.origin !== m.public_url) {
-    return "Sign in at " + m.public_url + " (Publisher's address): this page was opened at " + location.origin + ", where sign-in can't work.";
+    return ["Sign in at " + m.public_url + " (Publisher's address): this page was opened at " + location.origin + ", where sign-in can't work.", m.public_url + "/"];
   }
-  if (!window.isSecureContext) return "This page isn't on https, so passkeys and sign-in can't work here.";
-  return "";
+  if (!window.isSecureContext) return ["This page isn't on https, so passkeys and sign-in can't work here."];
+  return [""];
 }
+
+let methods = {};
 
 function failed(e, what) {
   if (e.retryAfter || e.code === "rate_limited") {
@@ -49,7 +57,14 @@ async function signInWithPasskey() {
   try {
     const opts = await postJSON("/auth/passkey/begin");
     let cred;
-    try { cred = await getPasskey(opts); } catch (e) { status(passkeyError(e)); return; }
+    try {
+      cred = await getPasskey(opts);
+    } catch (e) {
+      // Closed, or no passkey for Publisher on this device: point to the
+      // password when there is one.
+      status(passkeyError(e) || (methods.password ? "No passkey was used. You can sign in with your password instead." : ""));
+      return;
+    }
     status("Checking…");
     await postJSON("/auth/passkey/finish", cred);
     status("Signed in.");
@@ -64,7 +79,7 @@ async function signInWithPasskey() {
 async function signInWithPassword(ev) {
   ev.preventDefault();
   const btn = $("#pw-btn"), input = $("#pw-input");
-  if (!input.value) return;
+  if (!input.value || btn.disabled) return;
   btn.disabled = true;
   status("Checking…");
   try {
@@ -90,13 +105,16 @@ async function init() {
     return;
   }
   $("#auth-loading").hidden = true;
-  warn(placeWarning(m));
+  methods = m;
+  warn(...placeWarning(m));
   if (m.setup) {
     $("#auth-setup").hidden = false;
     return;
   }
   $("#auth-methods").hidden = false;
-  const pk = m.passkeys && passkeysSupported();
+  // A passkey button only when one exists for this address (or none and
+  // no password either, so the page isn't empty).
+  const pk = m.passkeys && passkeysSupported() && (m.has_passkey || !m.password);
   $("#passkey-btn").hidden = !pk;
   $("#pw-form").hidden = !m.password;
   $("#pw-or").hidden = !(pk && m.password);
