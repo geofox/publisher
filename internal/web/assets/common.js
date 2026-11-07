@@ -203,6 +203,21 @@ export function flash(msg, ms = 2600) {
   setTimeout(() => t.remove(), ms);
 }
 
+// copyText puts text on the clipboard and says so (aloud too, which a
+// button's changed text under an aria-label isn't). Where the browser
+// won't (a page served over plain http has no clipboard), it selects the
+// text in from, an input or any element, for the owner to copy.
+export function copyText(text, from, said = "Copied") {
+  const fail = () => {
+    if (from && typeof from.select === "function") from.select();
+    else if (from) { const r = document.createRange(); r.selectNodeContents(from); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+    flash("Select it and copy it");
+  };
+  let p;
+  try { p = navigator.clipboard.writeText(text); } catch (_) { fail(); return; }
+  p.then(() => flash(said), fail);
+}
+
 // api wraps fetch with same-origin creds + JSON parse; throws Error(data.error||HTTP n) on !ok.
 export async function api(path, opts = {}) {
   const r = await fetch(path, { credentials: "same-origin", ...opts });

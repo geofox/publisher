@@ -62,6 +62,9 @@ func (a *API) limits() *accountLimits {
 		l.checks.N, l.checks.Window = 1, accountCheckEvery
 		l.tests.N, l.tests.Window = 1, settingsTestEvery
 		l.connects.N, l.connects.Window = connectStartsPerMinute, time.Minute
+		if a.AccountWritesPerMinute > 0 {
+			l.connects.N = a.AccountWritesPerMinute
+		}
 	})
 	return l
 }

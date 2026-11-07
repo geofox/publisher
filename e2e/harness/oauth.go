@@ -33,7 +33,8 @@ import (
 //
 // A Mastodon code is the token it is exchanged for, "<user>:<anything>"
 // (the fake accounts' identity); a code starting "bad" is refused. A
-// Graph code becomes "<code>~short", then the long-lived "<code>".
+// Graph code becomes "<code>~short", then the long-lived "<code>". A
+// name starting "none-" is no Mastodon server: every path is not found.
 type fakeSignIn struct {
 	srv   *httptest.Server
 	roots *x509.CertPool
@@ -131,6 +132,11 @@ func (f *fakeSignIn) serve(w http.ResponseWriter, r *http.Request) {
 	host := hostOnly(r.Host)
 	origin := "https://" + host
 	_ = r.ParseForm()
+	if strings.HasPrefix(host, "none-") {
+		f.record(r, r.Form)
+		http.NotFound(w, r)
+		return
+	}
 	switch {
 	case host == "graph.e2e.invalid" && r.Method == http.MethodPost && r.URL.Path == "/oauth/access_token":
 		f.record(r, r.PostForm)

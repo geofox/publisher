@@ -1,5 +1,5 @@
 "use strict";
-import { el, v1, flash, relTime, confirmModal, inputDialog, asDialog } from "./common.js";
+import { el, v1, flash, relTime, confirmModal, inputDialog, asDialog, copyText } from "./common.js";
 import { accounts, reloadAccounts, byId, loadDestinations, networkName, customLabel, handleOf, nameOf } from "./accounts.js";
 import { accountTile, brandTile } from "./brands.js";
 import { field, fieldSet, showProblems, sameValue, badInputs } from "./fields.js";
@@ -51,9 +51,14 @@ const methodOf = a => { const m = manifest(a.type); return (m && (m.auth || []).
 const signedIn = a => { const x = methodOf(a); return !!x && x.flow === "redirect"; };
 
 // readTypes reads them afresh: whether a sign-in can start depends on
-// the server's settings now (the Threads app).
+// the server's settings now (the Threads app). The latest read wins (or
+// any, while there are none yet).
+let typesSeq = 0;
 function readTypes() {
-  return loadDestinations(true).then(list => { types = list; typesError = ""; }, e => { typesError = e.message; });
+  const n = ++typesSeq;
+  return loadDestinations(true).then(
+    list => { if (n === typesSeq || !types) { types = list; typesError = ""; } },
+    e => { if (n === typesSeq) typesError = e.message; });
 }
 
 // Hints, not refusals: shown under a field as the owner types.
@@ -239,9 +244,7 @@ function keyHelp() {
   fill();
   keyIn.addEventListener("click", () => keyIn.select());
   const copy = el("button", { class: "ghost sm", type: "button", text: "Copy" });
-  copy.addEventListener("click", () => navigator.clipboard.writeText(keyIn.value).then(
-    () => { copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1800); },
-    () => { keyIn.select(); flash("Select it and copy it"); }));
+  copy.addEventListener("click", () => copyText(keyIn.value, keyIn, "Master key copied"));
   const again = el("button", { class: "ghost sm", type: "button", text: "Make another", onclick: () => fill(true) });
   const envMore = el("details", { class: "set-more", open: keyEnvOpen ? "" : false }, el("summary", { text: "Or as an environment variable" }), env);
   envMore.addEventListener("toggle", () => { keyEnvOpen = envMore.open; });
@@ -307,7 +310,8 @@ function healthLine(a) {
     cls = "ok";
     // The network's grant ends then, whatever renewing does.
     if (h.reconnect_by) {
-      text += ". " + networkName(a.type) + "'s permission lasts until " + dateText(h.reconnect_by) + ": sign in again before then";
+      text += ". Its access at " + networkName(a.type) + " lasts until " + dateText(h.reconnect_by)
+        + (signedIn(a) ? ": sign in again before then" : ": give it a new token before then");
       if (Date.parse(h.reconnect_by) - Date.now() < 7 * 86400e3) cls = "warn";
     }
   } else if (!h.reachable) {
@@ -492,17 +496,20 @@ function del(a) {
 // ── dialogs ─────────────────────────────────────────────────────────────
 
 // sheet is a dialog whose body the caller fills, step by step; show()
-// opens it, focusing focusEl. onClose runs when it closes (✕ or close()).
+// opens it, focusing focusEl. onClose, and what whenClosed(fn) adds, run
+// once when it closes, however it closes (✕, Escape or close()).
 function sheet(title, { escape = true, onClose = null, closable = true } = {}) {
   const bk = el("div", { class: "modal-bk" });
-  let close = () => bk.remove();
+  const closers = onClose ? [onClose] : [];
+  let close = () => { bk.remove(); for (const fn of closers.splice(0)) fn(); };
   const titleEl = el("p", { class: "modal-title", text: title });
   const body = el("div", { class: "acct-dlg-body" });
   const s = {
     body,
     setTitle: t => { titleEl.textContent = t; },
     show: focusEl => { bk.append(card); document.body.append(bk); close = asDialog(bk, card, close, focusEl, { escape }); },
-    close: () => { if (onClose) onClose(); close(); },
+    close: () => close(),
+    whenClosed: fn => { closers.push(fn); },
     open: () => bk.isConnected,
   };
   const x = el("button", { class: "modal-x", type: "button", text: "✕", "aria-label": "Close", onclick: () => s.close() });
@@ -587,7 +594,7 @@ function pickMethod(s, m, from = "") {
   const buttons = ms.map(a => el("button", { class: "acct-method", type: "button", "data-method": a.id, onclick: () => form(s, m, a, () => pickMethod(s, m, a.id)) },
     el("span", { class: "acct-method-name", text: a.label }),
     a.help ? el("span", { class: "acct-method-help", text: a.help }) : null,
-    a.unavailable ? el("span", { class: "acct-method-help warn", text: "Not yet: " + a.unavailable + "." }) : null));
+    a.unavailable ? el("span", { class: "acct-method-help warn", text: "Unavailable: " + a.unavailable + "." }) : null));
   s.body.replaceChildren(
     el("p", { class: "acct-dlg-lead", text: "How does it connect?" }),
     el("div", { class: "acct-methods" }, ...buttons),
@@ -602,7 +609,9 @@ function howTo(m, a) {
   if (!a.help && !a.help_url) return null;
   return el("div", { class: "acct-how" },
     a.help ? el("p", { text: a.help }) : null,
-    a.help_url && /^https:\/\//i.test(a.help_url) ? el("a", { href: a.help_url, target: "_blank", rel: "noopener noreferrer", text: "Open it on " + m.name }) : null);
+    a.help_url && /^https:\/\//i.test(a.help_url) ? el("a", { href: a.help_url, target: "_blank", rel: "noopener noreferrer",
+      // A sign-in's link is a guide; a credential's is where to make it.
+      text: a.flow === "redirect" ? "Open the guide" : "Open it on " + m.name }) : null);
 }
 
 function form(s, m, a, back) {
@@ -657,84 +666,148 @@ function form(s, m, a, back) {
 
 // ── signing in at the network ───────────────────────────────────────────
 
+// say sets a status line, leaving it alone when it already says that (a
+// live region read again for nothing).
+function say(status, text, cls = "") {
+  const c = "acct-dlg-status" + (cls ? " " + cls : "");
+  if (status.className !== c) status.className = c;
+  if (status.textContent !== text) status.textContent = text;
+}
+
 // connectForm asks what signing in needs (a Mastodon server's address)
 // and a label, then opens the network's sign-in in a new tab; this dialog
-// follows the flow until it ends there.
-function connectForm(s, m, a, back) {
+// follows the flow until it ends there. prev is what the owner typed the
+// time before, when starting again.
+function connectForm(s, m, a, back, prev = {}) {
   s.setTitle("Add a " + m.name + " account");
   const byPointer = new Map();
-  const conf = controls(m.config, "/config/", null, byPointer);
+  const conf = controls(m.config, "/config/", prev.config || null, byPointer);
   const label = field({ key: "label", label: "Label", type: "string", max_length: 64, placeholder: m.name,
-    help: "What you call it here. When left empty: " + m.name + "." }, undefined);
+    help: "What you call it here. When left empty: " + m.name + "." }, prev.label);
   byPointer.set("/label", label);
   const status = el("p", { class: "acct-dlg-status", role: "status", "aria-live": "polite" });
-  const submit = el("button", { class: "primary sm", type: "submit", text: "Sign in at " + m.name });
+  // A sign-in that can't start now isn't offered (the note says why).
+  const submit = el("button", { class: "primary sm", type: "submit", text: "Sign in at " + m.name, disabled: a.unavailable ? "" : false });
+  let busy = false;
+  const backBtn = el("button", { class: "ghost sm", type: "button", text: "Back", onclick: () => { if (!busy) back(); } });
+  const note = a.unavailable ? unavailableNote(s, m, a) : null;
   const f = el("form", { class: "acct-form", novalidate: "" },
     howTo(m, a),
-    a.unavailable ? unavailableNote(s, a) : null,
+    note,
     ...fieldSet([...conf, label]),
     status,
-    el("div", { class: "confirm-actions" }, el("button", { class: "ghost sm", type: "button", text: "Back", onclick: back }), submit));
-  let busy = false;
+    el("div", { class: "confirm-actions" }, backBtn, submit));
   f.addEventListener("submit", async ev => {
     ev.preventDefault();
-    if (busy) return;
-    if (badInputs(conf)) { status.className = "acct-dlg-status err"; status.textContent = "Fix the field marked above."; return; }
+    if (busy || a.unavailable) return;
+    // Checked before the tab opens, so a typo doesn't flash one open.
+    if (badInputs(conf) || unfilled(conf)) { say(status, "Fix the field marked above.", "err"); return; }
     // The tab opens now, while the click still counts as the owner's (a
     // browser blocks one opened after the server answers).
-    const tab = openTab();
+    const tab = openTab(m);
     busy = true;
-    submit.disabled = true;
-    status.className = "acct-dlg-status";
-    status.textContent = "Preparing the sign-in at " + m.name + "…";
+    submit.disabled = backBtn.disabled = true;
+    say(status, "Preparing the sign-in at " + m.name + "…");
     const body = { type: m.type, method: a.id, config: collect(conf) };
     const l = label.read();
     if (l) body.label = l;
+    let started;
     try {
-      const started = await v1("/v1/accounts:connect", { method: "POST", body });
-      follow(s, m, started, tab, () => connectForm(s, m, a, back), null);
+      started = await v1("/v1/accounts:connect", { method: "POST", body });
     } catch (e) {
       if (tab) tab.close();
-      status.textContent = connectProblem(e, m, byPointer);
-      status.className = "acct-dlg-status err";
       busy = false;
-      submit.disabled = false;
+      submit.disabled = backBtn.disabled = false;
+      if (f.isConnected) say(status, connectProblem(e, m, byPointer), "err");
+      return;
     }
+    // Closed meanwhile: the flow just expires.
+    if (!f.isConnected) { if (tab) tab.close(); return; }
+    follow(s, m, started, tab, () => connectForm(s, m, a, back, { config: body.config, label: l }), null);
   });
   s.body.replaceChildren(f);
-  const first = conf.find(c => !c.spec.advanced && !c.locked) || label;
+  const go = note && note.querySelector("button");
+  const first = go ? { input: go, focus: () => go.focus() } : conf.find(c => !c.spec.advanced && !c.locked) || label;
   if (s.open()) first.focus();
   return first.input;
 }
 
+// unfilled marks the fields a sign-in can't start without (empty, or not
+// a full address) and answers the first, focused; null when there is
+// none. The server checks them again.
+function unfilled(ctrls) {
+  let first = null;
+  for (const c of ctrls) {
+    if (c.locked) continue;
+    if (c.spec.required && c.read() === undefined) c.setError("Needed to sign in.");
+    else if (c.spec.type === "url" && c.input.validity && c.input.validity.typeMismatch) {
+      c.setError("Enter a full address, such as " + ((c.spec.url && c.spec.url.secure) || "https") + "://example.com.");
+    } else continue;
+    if (c.fold) c.fold.open = true;
+    first = first || c;
+  }
+  if (first) first.focus();
+  return first;
+}
+
 // unavailableNote says why a sign-in can't start yet, with the way to the
 // server setting it needs.
-function unavailableNote(s, a) {
-  const go = /Integrations/.test(a.unavailable)
-    ? el("button", { class: "ghost sm", type: "button", text: "Open Settings, Integrations", onclick: () => {
-      s.close();
-      const nav = document.querySelector('.set-nav [data-set="integrations"]');
-      if (nav) { nav.click(); nav.focus(); }
-    } })
+function unavailableNote(s, m, a) {
+  const go = (a.needs_instance_config || []).length
+    ? el("button", { class: "ghost sm", type: "button", text: "Open Settings, Integrations", onclick: () => { s.close(); openIntegrations(m.name + " app"); } })
     : null;
-  return el("div", { class: "set-note warn" }, el("p", { text: "Not yet: " + a.unavailable + "." }), go);
+  return el("div", { class: "set-note warn" }, el("p", { text: "Unavailable: " + a.unavailable + "." }), go);
+}
+
+// openIntegrations shows Settings, Integrations, with the keyboard on the
+// section titled title when there is one.
+function openIntegrations(title) {
+  const nav = document.querySelector('.set-nav [data-set="integrations"]');
+  if (!nav) return;
+  nav.click();
+  const sect = [...document.querySelectorAll("#set-integrations .set-sect")]
+    .find(x => { const t = x.querySelector(".set-sect-title"); return t && t.textContent === title; });
+  if (!sect) { nav.focus(); return; }
+  sect.setAttribute("tabindex", "-1");
+  sect.setAttribute("aria-label", title);
+  sect.focus();
 }
 
 // connectProblem is what a refused start says, beyond the fields.
 function connectProblem(e, m, byPointer) {
+  for (const c of byPointer.values()) c.setError(""); // the last try's
   switch (e.code) {
     case "rate_limited": return "Too many sign-ins started in a minute. " + waitText(e.retryAfter);
-    case "connect_failed": return m.name + " couldn't be prepared: " + e.message + ".";
+    case "connect_failed": {
+      // The address the owner typed didn't answer as the network's
+      // server would (a typo, another kind of server).
+      const where = (m.config || []).find(x => x.audience);
+      const c = where && byPointer.get("/config/" + where.key);
+      if (c && !c.locked && e.problem && e.problem.connect_error === "exchange_failed") {
+        c.setError("No " + m.name + " server answered as expected here.");
+        if (c.fold) c.fold.open = true;
+        c.focus();
+        return "No " + m.name + " server answered as expected at that address: check it.";
+      }
+      return m.name + " couldn't be prepared: " + e.message + ".";
+    }
   }
-  return showProblems(e, byPointer).join(" ");
+  return showProblems(e, byPointer).join(" ") || "Fix the field marked above.";
 }
 
-// openTab opens an empty tab for the sign-in, cut off from this page, or
-// answers null when the browser refused it.
-function openTab() {
+// openTab opens a tab for the sign-in, cut off from this page, saying
+// what it waits for; null when the browser refused it.
+function openTab(m) {
   let w = null;
   try { w = window.open("", "_blank"); } catch (_) { w = null; }
-  if (w) { try { w.opener = null; } catch (_) { /* not ours to change */ } }
+  if (!w) return null;
+  try { w.opener = null; } catch (_) { /* not ours to change */ }
+  try {
+    w.document.title = "Signing in at " + m.name;
+    w.document.body.style.font = "16px system-ui, sans-serif";
+    w.document.body.style.margin = "2em";
+    w.document.body.textContent = "Preparing the sign-in at " + m.name + "…";
+  } catch (_) { /* a browser that keeps it from this page */ }
   return w;
 }
 
@@ -743,28 +816,32 @@ function openTab() {
 const signInURL = u => typeof u === "string" && /^https?:\/\//i.test(u) ? u : "";
 
 // follow sends the tab to the network's sign-in and reads the flow until
-// it ends: connected, failed, or several accounts to choose from. again
+// it ends: connected, failed, or an account to choose or confirm. again
 // starts over; a is the account being reconnected (null: a new one).
+//
+// Closing the dialog before the end doesn't stop the sign-in in its tab
+// (once there, the tab is the network's: cut off from this page, it can't
+// be closed from here). Finished there after all, the account is added,
+// so the flow is read again on each return to this page until it ends.
 function follow(s, m, started, tab, again, a) {
   // Closed while the server prepared it: the flow just expires.
   if (!s.open()) { if (tab) tab.close(); return; }
   const url = signInURL(started.authorize_url);
   if (tab && url) tab.location.replace(url);
-  else if (tab) tab.close();
+  else if (tab) { tab.close(); tab = null; }
   const id = started.flow;
   s.setTitle(a ? "Sign in to " + nameOf(a.id) + " again" : "Sign in at " + m.name);
-  const status = el("p", { class: "acct-dlg-status", role: "status", "aria-live": "polite", text: "Waiting for " + m.name + "…" });
+  const lead = el("p", { class: "acct-dlg-lead", id: "lead-" + id, text: tab
+    ? "Sign in at " + m.name + " in the new tab and allow Publisher. This finishes by itself when you're back."
+    : "Your browser didn't open a new tab: open the sign-in at " + m.name + ", allow Publisher, then come back here." });
+  const status = el("p", { class: "acct-dlg-status", role: "status", "aria-live": "polite" });
   const link = url ? el("a", { class: tab ? "ghost sm" : "primary sm", href: url, target: "_blank", rel: "noopener noreferrer",
-    text: tab ? "Open the sign-in again" : "Open the sign-in at " + m.name }) : null;
-  const cancel = el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: () => s.close() });
-  s.body.replaceChildren(
-    el("p", { class: "acct-dlg-lead", text: tab
-      ? "Sign in at " + m.name + " in the new tab and allow Publisher. This finishes by itself when you're back."
-      : "Your browser didn't open a new tab: open the sign-in at " + m.name + " below, allow Publisher, then come back here." }),
-    link ? el("p", {}, link) : null,
-    status,
-    el("div", { class: "confirm-actions" }, cancel));
+    "aria-describedby": lead.id, text: tab ? "Open the sign-in again" : "Open the sign-in at " + m.name }) : null;
+  const cancel = el("button", { class: "ghost sm", type: "button", text: "Close", onclick: () => s.close() });
+  s.body.replaceChildren(lead, status, el("div", { class: "confirm-actions" }, cancel, link));
   (link || cancel).focus();
+  // Filled a moment after it is drawn, so that it is announced.
+  setTimeout(() => { if (!over && !status.textContent) say(status, "Waiting for " + m.name + "…"); }, 60);
 
   let timer = 0, reading = false, over = false;
   const schedule = ms => { clearTimeout(timer); timer = setTimeout(read, ms); };
@@ -778,9 +855,13 @@ function follow(s, m, started, tab, again, a) {
     document.removeEventListener("visibilitychange", now);
     window.removeEventListener("focus", now);
   };
+  s.whenClosed(() => {
+    if (over) return;
+    end();
+    afterClose();
+  });
   async function read() {
     if (over) return;
-    if (!s.open()) { end(); return; }
     if (reading) { schedule(500); return; }
     reading = true;
     let f;
@@ -788,63 +869,110 @@ function follow(s, m, started, tab, again, a) {
       f = await v1("/v1/connect-flows/" + enc(id));
     } catch (e) {
       reading = false;
-      if (!s.open()) { end(); return; }
-      status.textContent = "Couldn't read how the sign-in is going (" + e.message + "); trying again…";
+      if (over) return;
+      // Signed out of Publisher, or the flow is gone: reading again won't
+      // help.
+      if (e.status === 401 || e.status === 403 || e.status === 404) { end(); lost(e); return; }
+      say(status, "Couldn't read how the sign-in is going (" + e.message + "); trying again…", "warn");
       schedule(5000);
       return;
     }
     reading = false;
-    if (!s.open()) { end(); return; }
-    outcome(f);
+    if (!over) outcome(f);
   }
   function outcome(f) {
     switch (f.status) {
-      case "pending": schedule(2000); return;
-      case "choose": end(); choose(s, m, f, outcome); return;
+      case "pending": say(status, "Waiting for " + m.name + "…"); schedule(2000); return;
+      case "choose": end(); choose(s, m, f, outcome, a); return;
       case "completed": end(); connected(s, m, f, a); return;
-      default: end(); notConnected(s, m, f, again);
+      default: end(); notConnected(s, m.name + ": " + (f.error_detail || "the sign-in didn't finish") + ".", again);
     }
+  }
+  // afterClose watches, without the dialog, for the flow to end in its
+  // tab: when it is connected, the list shows it.
+  function afterClose() {
+    const until = Date.parse(started.expires_at) || Date.now() + 10 * 60e3;
+    let busy = false;
+    const stop = () => {
+      document.removeEventListener("visibilitychange", back);
+      window.removeEventListener("focus", back);
+    };
+    async function back() {
+      if (busy || document.visibilityState !== "visible") return;
+      if (Date.now() > until) { stop(); return; }
+      busy = true;
+      let f = null;
+      try { f = await v1("/v1/connect-flows/" + enc(id)); } catch (e) { if (e.status === 401 || e.status === 403 || e.status === 404) stop(); }
+      busy = false;
+      if (!f || f.status === "pending") return;
+      stop();
+      if (f.status !== "completed") return;
+      await reloadAccounts().catch(() => {});
+      flash(a ? "Signed in to " + nameOf(a.id) + " again" : "Connected " + (f.account ? nameOf(f.account) : m.name));
+    }
+    document.addEventListener("visibilitychange", back);
+    window.addEventListener("focus", back);
+  }
+  function lost(e) {
+    if (e.status === 401) notConnected(s, "You were signed out of Publisher: reload the page and sign in, then check Accounts.", null);
+    else if (e.status === 404) notConnected(s, "This sign-in isn't known here any more (it expired): start again.", again);
+    else notConnected(s, "This sign-in can't be followed here: " + e.message + ".", again);
   }
   schedule(2000);
 }
 
-// choose asks which of the accounts the network offered to add.
-function choose(s, m, f, outcome) {
-  s.setTitle("Which " + m.name + " account?");
+// choose asks which of the accounts the network offered to add. With one,
+// it asks to confirm it: the sign-in finished in a browser that isn't
+// signed in to Publisher (another device, say), and only this tab can say
+// it is the owner's.
+function choose(s, m, f, outcome, a) {
+  const cands = f.candidates || [];
+  const one = cands.length === 1;
+  s.setTitle(one ? "Confirm the account" : "Which " + m.name + " account?");
   const name = "cand-" + f.id;
-  const opts = (f.candidates || []).map((c, i) => {
-    const id = name + "-" + i;
-    const r = el("input", { type: "radio", name, id, value: String(i), checked: i === 0 ? "" : false });
-    return el("div", { class: "fld-check" }, r, el("label", { for: id },
-      el("span", { text: c.display_name || c.handle || "Account " + (i + 1) }),
-      c.display_name && c.handle ? el("span", { class: "muted", text: " " + c.handle }) : null));
-  });
+  const shown = (c, i) => [c.display_name || c.handle || "Account " + (i + 1), c.display_name && c.handle ? c.handle : ""];
+  let pick;
+  if (one) {
+    const [main, sub] = shown(cands[0], 0);
+    pick = el("div", {},
+      el("p", { class: "acct-dlg-lead", text: "The sign-in at " + m.name + " finished in a browser that isn't signed in to Publisher, as this account:" }),
+      el("p", { class: "acct-cand" }, el("strong", { text: main }), sub ? el("span", { class: "muted", text: " " + sub }) : null),
+      el("p", { class: "fld-help", text: a ? "Confirm it only if it is " + nameOf(a.id) + "." : "Add it only if it is yours and you just signed in with it." }));
+  } else {
+    pick = el("fieldset", { class: "set-pick" }, el("legend", { text: m.name + " offered these accounts" }), ...cands.map((c, i) => {
+      const id = name + "-" + i;
+      const [main, sub] = shown(c, i);
+      const r = el("input", { type: "radio", name, id, value: String(i), checked: i === 0 ? "" : false });
+      return el("div", { class: "fld-check" }, r, el("label", { for: id },
+        el("span", { text: main }), sub ? el("span", { class: "muted", text: " " + sub }) : null));
+    }));
+  }
   const status = el("p", { class: "acct-dlg-status", role: "status", "aria-live": "polite" });
-  const add = el("button", { class: "primary sm", type: "submit", text: "Add this one" });
+  const add = el("button", { class: "primary sm", type: "submit", text: one ? (a ? "Confirm" : "Add it") : "Add this one" });
   const form = el("form", { class: "acct-form", novalidate: "" },
-    el("fieldset", { class: "set-pick" }, el("legend", { text: m.name + " offered these accounts" }), ...opts),
+    pick,
     status,
     el("div", { class: "confirm-actions" }, el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: () => s.close() }), add));
   form.addEventListener("submit", async ev => {
     ev.preventDefault();
     if (add.disabled) return;
-    const picked = form.querySelector("input[type=radio]:checked");
+    const picked = one ? { value: "0" } : form.querySelector("input[type=radio]:checked");
     if (!picked) return;
     add.disabled = true;
-    status.className = "acct-dlg-status";
-    status.textContent = "Adding it…";
+    say(status, "Adding it…");
+    let next;
     try {
-      const next = await v1("/v1/connect-flows/" + enc(f.id) + ":choose", { method: "POST", body: { candidate: Number(picked.value) } });
-      outcome(next);
+      next = await v1("/v1/connect-flows/" + enc(f.id) + ":choose", { method: "POST", body: { candidate: Number(picked.value) } });
     } catch (e) {
-      status.className = "acct-dlg-status err";
-      status.textContent = e.message;
       add.disabled = false;
+      if (form.isConnected) say(status, e.message, "err");
+      return;
     }
+    if (form.isConnected) outcome(next);
+    else reloadAccounts().catch(() => {});
   });
   s.body.replaceChildren(form);
-  const first = form.querySelector("input[type=radio]");
-  if (first) first.focus();
+  (one ? add : form.querySelector("input[type=radio]") || add).focus();
 }
 
 // connected closes the dialog once the account is in.
@@ -856,45 +984,54 @@ async function connected(s, m, f, a) {
   flash(a ? "Signed in to " + nameOf(a.id) + " again" : "Connected " + (f.account ? nameOf(f.account) : m.name));
 }
 
-// notConnected says why, in the server's fixed words, and offers to start
-// over.
-function notConnected(s, m, f, again) {
+// notConnected says why, and offers to start over (when again is given).
+function notConnected(s, text, again) {
   s.setTitle("Not connected");
-  const why = f.error_detail || "the sign-in didn't finish";
-  const retry = el("button", { class: "primary sm", type: "button", text: "Start again", onclick: again });
+  const close = el("button", { class: "ghost sm", type: "button", text: "Close", onclick: () => s.close() });
+  const retry = again ? el("button", { class: "primary sm", type: "button", text: "Start again", onclick: again }) : null;
   s.body.replaceChildren(
-    el("p", { class: "acct-dlg-status err", role: "alert", text: m.name + ": " + why + "." }),
-    el("div", { class: "confirm-actions" }, el("button", { class: "ghost sm", type: "button", text: "Close", onclick: () => s.close() }), retry));
-  retry.focus();
+    el("p", { class: "acct-dlg-status err", role: "alert", text }),
+    el("div", { class: "confirm-actions" }, close, retry));
+  (retry || close).focus();
 }
 
 // reconnect signs in to an account's network again (a renewal, or a new
-// server: config holds the settings the owner changed).
-async function reconnect(a, config = {}) {
+// server: config holds the settings the owner changed). From the
+// account's Settings, from is its dialog, status line and fields: the
+// sign-in starts there, and a refused start leaves the settings as they
+// were, saying why. It answers whether the sign-in started.
+async function reconnect(a, config = {}, from = null) {
   const m = manifest(a.type);
-  if (!m) { flash("Couldn't read how " + networkName(a.type) + " accounts connect" + (typesError ? ": " + typesError : "")); return; }
-  const why = writeBlocked();
-  if (why) { flash(why); return; }
-  const tab = openTab();
-  const s = sheet("Sign in to " + nameOf(a.id) + " again");
-  const status = el("p", { class: "acct-dlg-status", role: "status", "aria-live": "polite", text: "Preparing the sign-in at " + m.name + "…" });
-  const cancel = el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: () => s.close() });
-  s.body.replaceChildren(status, el("div", { class: "confirm-actions" }, cancel));
-  s.show(cancel);
-  const start = async () => {
-    try {
-      const body = Object.keys(config || {}).length ? { config } : {};
-      return await v1("/v1/accounts/" + enc(a.id) + ":reconnect", { method: "POST", body });
-    } catch (e) {
-      if (tab) tab.close();
-      status.className = "acct-dlg-status err";
-      status.textContent = "Couldn't start signing in: " + (e.code === "connect_failed" ? m.name + " couldn't be prepared: " : "") + e.message + ".";
-      return null;
+  const why = !m ? "Couldn't read how " + networkName(a.type) + " accounts connect" + (typesError ? ": " + typesError : "") : writeBlocked();
+  if (why) { if (from) say(from.status, why, "err"); else flash(why); return false; }
+  const tab = openTab(m);
+  let s, status;
+  if (from) {
+    ({ s, status } = from);
+    say(status, "Preparing the sign-in at " + m.name + "…");
+  } else {
+    s = sheet("Sign in to " + nameOf(a.id) + " again");
+    status = el("p", { class: "acct-dlg-status", role: "status", "aria-live": "polite" });
+    const cancel = el("button", { class: "ghost sm", type: "button", text: "Cancel", onclick: () => s.close() });
+    s.body.replaceChildren(status, el("div", { class: "confirm-actions" }, cancel));
+    s.show(cancel);
+    setTimeout(() => { if (!status.textContent) say(status, "Preparing the sign-in at " + m.name + "…"); }, 60);
+  }
+  let started;
+  try {
+    const body = Object.keys(config || {}).length ? { config } : {};
+    started = await v1("/v1/accounts/" + enc(a.id) + ":reconnect", { method: "POST", body });
+  } catch (e) {
+    if (tab) tab.close();
+    if (s.open()) {
+      const t = connectProblem(e, m, from ? from.byPointer : new Map());
+      say(status, /^[A-Z]/.test(t) ? "Couldn't start signing in. " + t : "Couldn't start signing in: " + t + (/[.!?]$/.test(t) ? "" : "."), "err");
     }
-  };
-  const started = await start();
-  if (!started || !s.open()) { if (started && tab) tab.close(); return; }
+    return false;
+  }
+  if (!s.open()) { if (tab) tab.close(); return false; }
   follow(s, m, started, tab, () => { s.close(); reconnect(a, config); }, a);
+  return true;
 }
 
 // ── an account's settings ───────────────────────────────────────────────
@@ -925,10 +1062,21 @@ async function editAccount(a) {
     if (method.flow === "redirect") {
       // Signed in at the network: what it saved can only be renewed by
       // signing in again (with the settings below, a new server too).
+      // It starts here: a refused start leaves the settings as they are.
+      const again = el("button", { class: "ghost sm", type: "button", text: "Sign in again", "data-focus-key": "signin-again-" + a.id,
+        onclick: async () => {
+          if (busy) return;
+          busy = true;
+          submit.disabled = again.disabled = true;
+          const cfg = changedConfig();
+          if (!await reconnect(a, cfg, { s, status, byPointer })) {
+            busy = false;
+            submit.disabled = again.disabled = false;
+          }
+        } });
       credBox.replaceChildren(
         el("p", { class: "fld-help", text: "Connected by signing in at " + m.name + ". Sign in again to renew it, or after changing its server below." }),
-        el("button", { class: "ghost sm", type: "button", text: "Sign in again", "data-focus-key": "signin-again-" + a.id,
-          onclick: () => { const cfg = changedConfig(); s.close(); reconnect(a, cfg); } }));
+        again);
       return;
     }
     credBox.replaceChildren(
@@ -991,10 +1139,10 @@ async function editAccount(a) {
     } catch (e) {
       let text = problemText(e, m, byPointer);
       if (e.code === "validation_failed" && !body.credentials && e.problem && (e.problem.errors || []).some(x => x.pointer === "/credentials")) {
-        text = method.flow === "redirect" ? "A new server address needs signing in again: use Sign in again above."
+        text = method.flow === "redirect" ? "A new server address needs signing in again there: use Sign in again above."
           : "A new server address needs the credentials again: type them above.";
-        const secret = creds.find(c => c.spec.secret);
-        if (secret) secret.focus();
+        const to = method.flow === "redirect" ? credBox.querySelector("button") : creds.find(c => c.spec.secret);
+        if (to) to.focus();
       }
       status.textContent = text;
       status.className = "acct-dlg-status err";
@@ -1099,9 +1247,7 @@ async function reveal(a, fresh) {
     input.addEventListener("click", () => input.select());
     inputs.push(input);
     const copy = el("button", { class: "ghost sm", type: "button", text: "Copy" });
-    copy.addEventListener("click", () => navigator.clipboard.writeText(v).then(
-      () => { copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1800); },
-      () => { input.select(); flash("Select it and copy it"); }));
+    copy.addEventListener("click", () => copyText(v, input));
     return el("div", { class: "fld" }, el("span", { class: "fld-label", text: (spec && spec.label) || k }), el("div", { class: "tok-secret-row" }, input, copy));
   });
   const done = el("button", { class: "primary sm", type: "button", text: "Done" });

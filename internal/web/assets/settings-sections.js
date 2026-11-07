@@ -1,5 +1,5 @@
 "use strict";
-import { el, v1, flash } from "./common.js";
+import { el, v1, flash, copyText } from "./common.js";
 import { loadDestinations } from "./accounts.js";
 import { settingsForm, readSettings } from "./settings-config.js";
 import { setsSection, defaultsSection } from "./settings-sets.js";
@@ -82,12 +82,11 @@ function threadsIntro() {
       where.replaceChildren("Set PUBLIC_URL first, at an https address: Meta sends you back to it, at ", code("/oauth/callback/threads"), ".");
       return;
     }
+    const shown = el("code", { class: "set-uri", text: uri });
     const copy = el("button", { class: "ghost sm", type: "button", text: "Copy", "aria-label": "Copy the redirect URI" });
-    copy.addEventListener("click", () => navigator.clipboard.writeText(uri).then(
-      () => { copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1800); },
-      () => flash("Select it and copy it")));
+    copy.addEventListener("click", () => copyText(uri, shown, "Redirect URI copied"));
     where.replaceChildren("Add this address to the app's valid OAuth redirect URIs, exactly (Meta compares it character by character): ",
-      code(uri), " ", copy);
+      shown, " ", copy);
     if (!/^https:\/\//i.test(uri)) {
       where.append(el("span", { class: "fld-warn", text: " Meta takes only https: set PUBLIC_URL to Publisher's https address." }));
     }

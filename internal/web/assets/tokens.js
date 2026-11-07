@@ -1,5 +1,5 @@
 "use strict";
-import { el, v1, v1All, flash, relTime, confirmModal, asDialog } from "./common.js";
+import { el, v1, v1All, flash, relTime, confirmModal, asDialog, copyText } from "./common.js";
 
 // API tokens on /v1/tokens: each with scopes and an optional expiry.
 
@@ -180,12 +180,7 @@ function showNewTokenSecret(token, name) {
     type: "button",
     text: "Copy",
   });
-  copyBtn.addEventListener("click", () => {
-    navigator.clipboard.writeText(token).then(
-      () => { copyBtn.textContent = "Copied!"; setTimeout(() => { copyBtn.textContent = "Copy"; }, 1800); },
-      () => { secretInput.select(); flash("Select and copy manually"); },
-    );
-  });
+  copyBtn.addEventListener("click", () => copyText(token, secretInput));
 
   const card = el("div", { class: "modal" });
   card.append(

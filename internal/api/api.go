@@ -133,8 +133,8 @@ type API struct {
 	// acctLimits rate-limit account writes and checks.
 	acctLimits accountLimits
 	// AccountWritesPerMinute overrides the owner's limit on account
-	// creates and credential changes (0: 10 a minute). For tests that add
-	// many accounts in a row.
+	// creates and credential changes, and on sign-ins started (0: 10 a
+	// minute each). For tests that add many accounts in a row.
 	AccountWritesPerMinute int
 	// Guard is who owner-set addresses may reach (PRIVATE_DESTINATIONS
 	// and the server's own addresses): relay sync's targets go through

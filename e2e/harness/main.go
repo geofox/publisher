@@ -218,7 +218,8 @@ func run() error {
 	}
 	a.Ready = &health.Checker{Local: []health.Check{health.Database(st, store.LatestSchemaVersion())}}
 	a.MasterKey, a.IdemMAC = keyState, keys.MAC
-	// The account specs add many accounts in a row; the limit has its own Go test.
+	// The account specs add many accounts, and start many sign-ins, in a
+	// row; the limits have their own Go tests.
 	a.AccountWritesPerMinute = 1000
 	// E2E_AUTH=local: the owner signs in with passkeys or a password at
 	// http://localhost:<port> (a secure context for Chromium); otherwise

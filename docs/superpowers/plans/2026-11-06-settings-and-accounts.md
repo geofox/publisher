@@ -2289,6 +2289,87 @@ tokens and permissions, long-lived tokens, create replies; and the
   pre-4.3, declined then started again (one app per server), signing in
   again as the same account and as another (refused), and Threads from
   a missing app through Settings to a connected account.
+
+### As built (E): review fixes
+
+Two QA reviews (server, web) and a security review (nothing high or
+medium); every finding fixed except the decisions at the end.
+
+- **A callback without a session** no longer adds the account: the flow
+  is identified (`r.trial`) and parked as `choose` with its one
+  candidate, for the owner to confirm in the tab that started it (the
+  callback page says so). A leaked sign-in link can't add a stranger's
+  account unseen. With a session (the owner's), it completes at once.
+- **Stuck flows:** a claimed flow with no outcome after `claimTimeout`
+  (2 minutes: a restart mid-exchange) reads as failed, `interrupted`
+  ("check Accounts, and start again if the account isn't there"). The
+  outcome's write is tried again once; when that fails too, the callback
+  still answers with the account that was stored.
+- **One account per flow:** `Choose` holds `chooseMu`; a second choice
+  answers the flow as the first left it.
+- **Mastodon:** a flow seals its own `client_id` and `client_secret`, so
+  two first sign-ins at one server can't undo each other's app; an
+  `invalid_client` forgets the saved app only when it is still that one
+  (`ForgetClient(issuer, clientID)`).
+- **Readiness** (`unavailable`) says what starting would: no master key
+  (`KeyState.WriteError`), the server's app missing, or a redirect
+  address the network won't take (`RedirectChecker`; Threads: Meta takes
+  only https, not localhost).
+- **Save on a signed-in account** kept failing (`/method` not allowed):
+  a config-only change keeps the row's redirect method; a new server
+  address answers `/credentials` required, "needs signing in again
+  there".
+- **API:** connect events name `session` as their actor; Publisher's own
+  store errors aren't reported as the network's (`localError`); the
+  callback answers only GET (405 otherwise: a link preview's HEAD can't
+  use the sign-in); `:choose` failures are `connect_failed` like the
+  start's; the e2e write-limit override lifts the sign-in start limit
+  too. `cmd/publisher/hooks_test.go` checks the server never sets the
+  test hooks (`ConnectNet`, `ConnectBaseURL`, `TLSClientConfig`, the
+  Threads URL variables).
+- **Web:** the fields a sign-in needs are checked before the tab opens
+  (required, a full address); the submit is off while the method is
+  unavailable, with Settings, Integrations focused on the app's section;
+  Back is off while a start runs; Start again keeps what was typed;
+  Sign in again starts inside the account's Settings, so a refused start
+  leaves them as they were (an address that isn't the network's server
+  is marked on the field). The blank tab says what it waits for. While
+  following: status lines are filled after they are drawn and rewritten
+  only when they change; a 401, 403 or 404 ends it with what to do; the
+  fallback link sits with the actions and is described by the lead.
+  `sheet()` runs its closers however it closes (Escape bypassed
+  `onClose` before). Closing the dialog doesn't stop the sign-in in its
+  tab (once at the network, the tab is cut off from the page and can't be
+  closed from it; the button says Close), so the page reads the flow
+  again on each return until it ends, and shows the account. One
+  candidate asks to confirm it, by who it is. The health line says
+  "access", and "sign in again" only for signed-in accounts. Types: the
+  latest read wins; `loadDestinations`' failure clears only its own
+  read. `copyText` (common.js) everywhere a Copy button was: over plain
+  http there's no clipboard, so it selects the text and says so, aloud
+  too.
+- **Tests:** Go: no-session confirm, interrupted and the retried write,
+  the choice race, the actor, readiness without a master key and with an
+  http address, Save on signed-in accounts, concurrent first Mastodon
+  starts, callback GET only. e2e (`connect.spec.ts`, 10 steps): the tab
+  opens before the start is asked for (a page-side log), checks before
+  the tab, a blocked pop-up, the dialog closed mid-sign-in, the confirm
+  from another browser context, several candidates (the flow's answers
+  are the test's), Save and a new server address on a signed-in
+  account, Threads' user id saved without signing in again.
+- **Decided, not changed:** the tab isn't closed after a success (the
+  owner may be reading it; it says to go back). A Threads app token
+  (`app_id|app_secret`) for the grant-end check isn't needed: the owner
+  is the app's developer. A registry-level Threads expiry test is left
+  to the driver's. Recorded for the security notes (F's README):
+  Mastodon servers share one redirect URI per type and send no `iss`
+  (RFC 9207), so a mix-up stays possible for a sign-in the owner starts
+  at a hostile server: it can send them on to another server's sign-in
+  under its own app there and receive that code at its token endpoint.
+  The other server's consent screen names that app; sign in only at
+  servers you trust. The callback has no rate limit of its own (each
+  needs a live state, 256 bits, claimed once).
+
 - [ ] Open PR E; 2 QA + 1 security reviews; fix; hand over.
 
 ---

@@ -1,5 +1,5 @@
 "use strict";
-import { el, v1, flash, relTime, confirmModal, restoreFocus } from "./common.js";
+import { el, v1, flash, relTime, confirmModal, restoreFocus, copyText } from "./common.js";
 import { field, showProblems, sameValue, badInputs } from "./fields.js";
 import { state } from "./state.js";
 
@@ -150,8 +150,7 @@ function secretControl(scope, key, L, say, noSecrets) {
     pub.addEventListener("click", () => pub.select());
     const copy = el("button", { class: "ghost xs", type: "button", text: "Copy", "aria-label": "Copy its public key",
       "data-focus-key": "pub-" + key });
-    copy.addEventListener("click", () => navigator.clipboard.writeText(sv.public_key).then(
-      () => flash("Public key copied"), () => { pub.select(); flash("Select it and copy it"); }));
+    copy.addEventListener("click", () => copyText(sv.public_key, pub, "Public key copied"));
     c.row.insertBefore(el("div", { class: "fld-pub" },
       el("p", { class: "fld-help", text: "Its public key, to allow on your Blossom server:" }),
       el("div", { class: "tok-secret-row" }, pub, copy)), c.row.querySelector(".fld-help"));
@@ -211,8 +210,7 @@ function shownOnce(key, label, done) {
   input.addEventListener("click", () => input.select());
   const copy = el("button", { class: "ghost xs", type: "button", text: "Copy", "aria-label": "Copy the new " + label,
     "data-focus-key": "once-copy-" + key });
-  copy.addEventListener("click", () => navigator.clipboard.writeText(v).then(
-    () => flash("Copied"), () => { input.select(); flash("Select it and copy it"); }));
+  copy.addEventListener("click", () => copyText(v, input));
   const ok = el("button", { class: "ghost xs", type: "button", text: "Done, I copied it", "data-focus-key": "once-done-" + key });
   ok.addEventListener("click", () => {
     shown.delete(key);
