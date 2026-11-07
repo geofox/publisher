@@ -59,8 +59,9 @@ token holding it.
 
 **403.** The operation needs a fresh sign-in: adding or removing a way to
 sign in, setting the first password, creating a token from a browser
-session (any token: it outlives the session), deleting an account, or
-showing an account's key. Re-authenticate with `POST /auth/reauth`
+session (any token: it outlives the session), deleting an account,
+showing an account's key, or changing the server's secret settings
+(`instance.secrets`). Re-authenticate with `POST /auth/reauth`
 (a passkey or the password; with OIDC, a fresh login through
 `/auth/reauth/oidc`), then send the nonce it returns in the
 `Publisher-Reauth` header. The problem's `operation` names what to

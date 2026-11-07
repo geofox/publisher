@@ -29,12 +29,15 @@ const (
 	scopeDraftsWrite   = "drafts:write"
 	scopeAccountsRead  = "accounts:read"
 	scopeAccountsWrite = "accounts:write"
+	scopeSettingsRead  = "settings:read"
+	scopeSettingsWrite = "settings:write"
+	scopeInstanceAdmin = "instance:admin"
 	scopeAdmin         = "admin"
 )
 
 // v1Scopes are the scopes a token can hold, in documentation order.
 var v1Scopes = []string{scopePostsRead, scopePostsWrite, scopeMediaWrite, scopeDraftsRead, scopeDraftsWrite,
-	scopeAccountsRead, scopeAccountsWrite, scopeAdmin}
+	scopeAccountsRead, scopeAccountsWrite, scopeSettingsRead, scopeSettingsWrite, scopeInstanceAdmin, scopeAdmin}
 
 // adminImplies are the scopes admin includes: those that existed before
 // accounts could be changed. A scope added since (accounts:write) must be
@@ -45,12 +48,12 @@ var adminImplies = []string{scopePostsRead, scopePostsWrite, scopeMediaWrite, sc
 // privilegedScopes are the scopes a new token can only get with the
 // owner's fresh re-authentication (token.create_privileged): admin, and
 // every scope added since step 4.
-var privilegedScopes = []string{scopeAdmin, scopeAccountsWrite}
+var privilegedScopes = []string{scopeAdmin, scopeAccountsWrite, scopeSettingsWrite, scopeInstanceAdmin}
 
 // sessionOnlyScopes are the scopes only a signed-in owner (a session, or
 // the reverse proxy when sign-in is off) may grant to a new token: a
 // token, admin included, can't hand them out.
-var sessionOnlyScopes = []string{scopeAccountsWrite}
+var sessionOnlyScopes = []string{scopeAccountsWrite, scopeSettingsWrite, scopeInstanceAdmin}
 
 // principal is who is calling: the owner in a browser session, a token, or
 // (in proxy mode) whoever the reverse proxy let through.
@@ -68,8 +71,10 @@ type principal struct {
 // proxyScopes are what the reverse proxy's callers may do (proxy mode):
 // the scopes from before step 4's settings, named one by one, so a scope
 // added later is never granted to whoever reaches the proxy.
+// The owner's settings are allowed (their secrets are refused by the
+// handlers); the server's (instance:admin) never are.
 var proxyScopes = []string{scopePostsRead, scopePostsWrite, scopeMediaWrite, scopeDraftsRead, scopeDraftsWrite,
-	scopeAccountsRead, scopeAccountsWrite, scopeAdmin}
+	scopeAccountsRead, scopeAccountsWrite, scopeSettingsRead, scopeSettingsWrite, scopeAdmin}
 
 // key identifies the principal for per-caller state (idempotency keys).
 func (p principal) key() string { return p.Kind + ":" + p.ID }
@@ -154,6 +159,28 @@ func (a *API) v1Routes() []v1Route {
 				"reveal": {SessionOnly: true, NoProxy: true, ReturnsSecret: true},
 				"adopt":  {SessionOnly: true, NoProxy: true},
 			}, Handler: a.v1AccountAction},
+		// Account sets: selections of accounts the composer starts from.
+		{Method: "GET", Path: "/v1/account-sets", Scope: scopeAccountsRead, Handler: a.v1AccountSets},
+		{Method: "POST", Path: "/v1/account-sets", Scope: scopeAccountsWrite, Handler: a.v1CreateAccountSet},
+		{Method: "GET", Path: "/v1/account-sets/{id}", Scope: scopeAccountsRead, Handler: a.v1AccountSet},
+		{Method: "PATCH", Path: "/v1/account-sets/{id}", Scope: scopeAccountsWrite, Handler: a.v1PatchAccountSet},
+		{Method: "DELETE", Path: "/v1/account-sets/{id}", Scope: scopeAccountsWrite, Handler: a.v1DeleteAccountSet},
+		// Settings (spec §7.4). Secret settings behind the proxy alone, and
+		// instance secrets without re-authentication, are refused by the
+		// handlers.
+		{Method: "GET", Path: "/v1/settings", Scope: scopeSettingsRead, Handler: a.v1GetSettings},
+		{Method: "PATCH", Path: "/v1/settings", Scope: scopeSettingsWrite, Handler: a.v1PatchSettings},
+		{Method: "POST", Path: "/v1/settings/{id}", Scope: scopeSettingsWrite, Actions: []string{"copy-from-env", "generate", "test"},
+			ActionRules: map[string]v1ActionRule{
+				// The answer is the new value, shown once.
+				"generate": {NoProxy: true, ReturnsSecret: true},
+			}, Handler: a.v1SettingAction},
+		{Method: "GET", Path: "/v1/instance/settings", Scope: scopeInstanceAdmin, NoProxy: true, Handler: a.v1GetInstanceSettings},
+		{Method: "PATCH", Path: "/v1/instance/settings", Scope: scopeInstanceAdmin, NoProxy: true, Handler: a.v1PatchInstanceSettings},
+		{Method: "POST", Path: "/v1/instance/settings/{id}", Scope: scopeInstanceAdmin, NoProxy: true,
+			Actions: []string{"copy-from-env", "generate", "test"}, ActionRules: map[string]v1ActionRule{
+				"generate": {NoProxy: true, ReturnsSecret: true},
+			}, Handler: a.v1InstanceSettingAction},
 		{Method: "GET", Path: "/v1/me", Handler: a.v1Me},
 		// The signed-in owner's ways of signing in and sessions.
 		{Method: "GET", Path: "/v1/me/sign-in", SessionOnly: true, Handler: a.v1SignIn},

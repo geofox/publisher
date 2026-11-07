@@ -84,3 +84,18 @@ func isHex(s string) bool {
 	}
 	return s != ""
 }
+
+// NewSigningKey is a new secret key, as hex, and its public key as npub1….
+func NewSigningKey() (secretHex, npub string) {
+	sk := gonostr.Generate()
+	return hex.EncodeToString(sk[:]), nip19.EncodeNpub(gonostr.GetPublicKey(sk))
+}
+
+// Npub is a secret key's public key as npub1… ("" when s isn't a key).
+func Npub(s string) string {
+	sk, err := ParseKey(s)
+	if err != nil {
+		return ""
+	}
+	return nip19.EncodeNpub(gonostr.GetPublicKey(sk))
+}

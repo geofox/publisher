@@ -47,8 +47,8 @@ const (
 // accountLimits are the account writes' rate limits (per owner, and per
 // account for checks), set up at first use.
 type accountLimits struct {
-	once           sync.Once
-	writes, checks localauth.Limiter
+	once                  sync.Once
+	writes, checks, tests localauth.Limiter
 }
 
 func (a *API) limits() *accountLimits {
@@ -59,6 +59,7 @@ func (a *API) limits() *accountLimits {
 			l.writes.N = a.AccountWritesPerMinute
 		}
 		l.checks.N, l.checks.Window = 1, accountCheckEvery
+		l.tests.N, l.tests.Window = 1, settingsTestEvery
 	})
 	return l
 }

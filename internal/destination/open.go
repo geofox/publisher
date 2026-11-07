@@ -205,14 +205,14 @@ func SafeRedirect(req *http.Request, via []*http.Request) error {
 	// in it included): a server has no use for one.
 	req.Header.Del("Referer")
 	if len(via) >= 10 {
-		return errors.New("stopped after 10 redirects")
+		return redirectRefused("stopped after 10 redirects")
 	}
 	prev := via[len(via)-1]
 	if prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
-		return fmt.Errorf("refused a redirect from https to %s", req.URL.Scheme)
+		return redirectRefused("refused a redirect from https to " + req.URL.Scheme)
 	}
 	if req.GetBody != nil && req.ContentLength != 0 && !sameSite(req.URL.Hostname(), via[0].URL.Hostname()) {
-		return errors.New("refused to send a request body to another host on a redirect")
+		return redirectRefused("refused to send a request body to another host on a redirect")
 	}
 	return nil
 }
@@ -307,19 +307,19 @@ const maxGuardedRedirects = 5
 func GuardedRedirect(req *http.Request, via []*http.Request) error {
 	req.Header.Del("Referer") // the previous address, a token in its query included
 	if len(via) >= maxGuardedRedirects {
-		return fmt.Errorf("stopped after %d redirects", maxGuardedRedirects)
+		return redirectRefused(fmt.Sprintf("stopped after %d redirects", maxGuardedRedirects))
 	}
 	first, prev := via[0], via[len(via)-1]
 	if prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
-		return fmt.Errorf("refused a redirect from https to %s", req.URL.Scheme)
+		return redirectRefused("refused a redirect from https to " + req.URL.Scheme)
 	}
 	if first.Method != http.MethodGet && first.Method != http.MethodHead {
-		return fmt.Errorf("refused to follow a redirect of a %s request", first.Method)
+		return redirectRefused("refused to follow a redirect of a " + first.Method + " request")
 	}
 	credential := first.Header.Get("Authorization") != "" || first.Header.Get("Cookie") != "" ||
 		first.GetBody != nil || first.ContentLength > 0 || urlCredential(first.URL)
 	if credential && !sameOrigin(req.URL, first.URL) {
-		return errors.New("refused to send a credential to another server on a redirect")
+		return redirectRefused("refused to send a credential to another server on a redirect")
 	}
 	return nil
 }
@@ -341,6 +341,14 @@ func urlCredential(u *url.URL) bool {
 	}
 	return false
 }
+
+// ErrRedirectRefused: a redirect rule refused to follow (errors.Is).
+var ErrRedirectRefused = errors.New("redirect refused")
+
+type redirectRefused string
+
+func (e redirectRefused) Error() string        { return string(e) }
+func (e redirectRefused) Is(target error) bool { return target == ErrRedirectRefused }
 
 // sameOrigin compares scheme, host and port (the default port spelled out
 // or not).

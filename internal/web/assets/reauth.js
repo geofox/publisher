@@ -19,6 +19,7 @@ const WHY = {
   "token.create": "create a token",
   "account.delete": "delete this account",
   "account.reveal": "show this account's key",
+  "instance.secrets": "change the server's secret settings",
 };
 
 let mode = "";

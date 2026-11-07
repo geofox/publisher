@@ -5,16 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/geofox/publisher/internal/redact"
 	"github.com/geofox/publisher/internal/store"
 )
 
 // Webhook POSTs a signal-only ping to an external consumer (the homepage build)
 // when a feed-eligible post is published. The payload carries no post content;
-// the receiver re-fetches GET /api/public/feed. Delivery is best-effort and
+// the receiver re-fetches GET /v1/public/feed. Delivery is best-effort and
 // never blocks the caller. An empty URL makes it a no-op.
 type Webhook struct {
 	URL   string
@@ -61,7 +64,7 @@ func (w *Webhook) deliver(body []byte, postID string) {
 	for attempt := 1; attempt <= 3; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.URL, bytes.NewReader(body))
 		if err != nil {
-			lastErr = err
+			lastErr = redact.URLError(err)
 			break
 		}
 		req.Header.Set("Content-Type", "application/json")
@@ -76,13 +79,33 @@ func (w *Webhook) deliver(body []byte, postID string) {
 			}
 			lastErr = fmt.Errorf("status %d", resp.StatusCode)
 		} else {
-			lastErr = err
+			lastErr = redact.URLError(err) // the address may hold a credential
 		}
 		if attempt < 3 {
 			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 		}
 	}
 	slog.Warn("feed webhook delivery failed", "post_id", postID, "err", lastErr)
+}
+
+// Test POSTs {"event":"test"} once (Settings, Integrations) and returns
+// the status the consumer answered, or the transport's error.
+func (w *Webhook) Test(ctx context.Context) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.URL, strings.NewReader(`{"event":"test"}`))
+	if err != nil {
+		return 0, redact.URLError(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if w.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+w.Token)
+	}
+	resp, err := w.HTTP.Do(req)
+	if err != nil {
+		return 0, redact.URLError(err) // the address may hold a credential
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	resp.Body.Close()
+	return resp.StatusCode, nil
 }
 
 // Live pings the webhook set at that moment (the owner's settings).

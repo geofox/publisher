@@ -195,7 +195,7 @@ func run(ctx context.Context, o runOptions) int {
 		}
 		return trustedHTTP
 	}
-	notifier := &notify.Live{Webhook: func() *notify.Webhook {
+	alertWebhook := func() *notify.Webhook {
 		s := svc.Current()
 		u := s.Secret(settings.AlertsWebhookURL)
 		if u == "" {
@@ -203,7 +203,13 @@ func run(ctx context.Context, o runOptions) int {
 		}
 		return &notify.Webhook{URL: u, User: s.String(settings.AlertsWebhookUser), Pass: s.Secret(settings.AlertsWebhookPass),
 			HTTP: webhookHTTP(s, settings.AlertsWebhookURL)}
-	}}
+	}
+	feedWebhook := func() *feed.Webhook {
+		s := svc.Current()
+		return &feed.Webhook{URL: s.Secret(settings.FeedWebhookURL), Token: s.Secret(settings.FeedWebhookToken),
+			HTTP: webhookHTTP(s, settings.FeedWebhookURL)}
+	}
+	notifier := &notify.Live{Webhook: alertWebhook}
 	reg := accounts.New(accounts.Options{
 		Store:    st,
 		Env:      regEnv,
@@ -236,12 +242,8 @@ func run(ctx context.Context, o runOptions) int {
 		Registry: reg,
 		Store:    st,
 		// A plain fetcher, never a nil *Pipeline inside the interface.
-		Fetcher: media.NewFetcher(),
-		Notify: feed.Live{Webhook: func() *feed.Webhook {
-			s := svc.Current()
-			return &feed.Webhook{URL: s.Secret(settings.FeedWebhookURL), Token: s.Secret(settings.FeedWebhookToken),
-				HTTP: webhookHTTP(s, settings.FeedWebhookURL)}
-		}},
+		Fetcher:  media.NewFetcher(),
+		Notify:   feed.Live{Webhook: feedWebhook},
 		Unfurler: uf,
 		Alerter:  notifier,
 		Policy: dispatch.RetryPolicy{Enabled: cfg.AutoRetryEnabled, MaxAttempts: cfg.AutoRetryMaxAttempts,
@@ -274,6 +276,23 @@ func run(ctx context.Context, o runOptions) int {
 	a.Locator = d
 	a.Unfurl = uf
 	a.Settings = svc
+	// Settings' test buttons send through the same webhooks and clients
+	// as the real calls (media's test is the store's own).
+	a.TestSettings = func(ctx context.Context, group string) (int, bool, error) {
+		switch group {
+		case "alerts":
+			if w := alertWebhook(); w != nil {
+				status, err := w.Test(ctx)
+				return status, true, err
+			}
+		case "feed":
+			if w := feedWebhook(); w.URL != "" {
+				status, err := w.Test(ctx)
+				return status, true, err
+			}
+		}
+		return 0, false, nil
+	}
 	a.Version = version
 	// Drafts saved before /v1 get their /v1 shape, once, before requests.
 	a.ConvertOldDrafts(context.Background())

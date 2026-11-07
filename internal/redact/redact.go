@@ -3,6 +3,8 @@
 package redact
 
 import (
+	"errors"
+	"net/url"
 	"regexp"
 	"strings"
 	"unicode"
@@ -76,3 +78,22 @@ func Upstream(body string) string {
 	}
 	return s[:cut] + "…"
 }
+
+// URLError is err without the address a *url.Error quotes (a webhook's
+// address can carry a credential, in its path as well as its query); the
+// error underneath stays reachable to errors.Is and errors.As.
+func URLError(err error) error {
+	var ue *url.Error
+	if err == nil || !errors.As(err, &ue) {
+		return err
+	}
+	return &noURL{op: ue.Op, err: ue.Err}
+}
+
+type noURL struct {
+	op  string
+	err error
+}
+
+func (e *noURL) Error() string { return e.op + ": " + e.err.Error() }
+func (e *noURL) Unwrap() error { return e.err }

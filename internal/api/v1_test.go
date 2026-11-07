@@ -450,6 +450,12 @@ func TestV1Conformance(t *testing.T) {
 	for p := range accountConformance(t) {
 		seen[p] = true
 	}
+	for p := range settingsConformance(t) {
+		seen[p] = true
+	}
+	for p := range accountSetConformance(t) {
+		seen[p] = true
+	}
 	for _, rt := range e.api.v1Routes() {
 		patterns := []string{rt.Method + " " + rt.Path}
 		if len(rt.Actions) > 0 {
@@ -548,7 +554,7 @@ func TestV1AuthProxyMode(t *testing.T) {
 	wantStatus(t, r, 200)
 	var me v1MeBody
 	r.json(&me)
-	if me.Kind != "proxy" || !slices.Equal(me.Scopes, v1Scopes) {
+	if me.Kind != "proxy" || !slices.Equal(me.Scopes, proxyScopes) || slices.Contains(me.Scopes, scopeInstanceAdmin) {
 		t.Errorf("me = %+v", me)
 	}
 	// A token sent with OIDC off is still checked.

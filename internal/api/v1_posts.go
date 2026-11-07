@@ -148,6 +148,9 @@ type v1TargetBody struct {
 	// there, [] when empty), not in lists.
 	Items    *[]v1ItemBody    `json:"items,omitempty"`
 	Attempts *[]v1AttemptBody `json:"attempts,omitempty"`
+	// Warnings, in the answer to POST /v1/posts only: what the account
+	// ignores of the request, and the account's defaults it took.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type v1PostBody struct {

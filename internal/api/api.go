@@ -164,6 +164,9 @@ type API struct {
 	// the languages, the translation key and the feed token are read from
 	// it at each request (in place of the three fields above).
 	Settings *settings.Service
+	// TestSettings sends a settings group's test (POST
+	// /v1/settings/{group}:test); nil: no tests.
+	TestSettings SettingsTester
 	// NewTranslator makes a translator for a key (nil: DeepL).
 	NewTranslator func(key string) Translator
 	deepl         atomic.Pointer[deeplFor]

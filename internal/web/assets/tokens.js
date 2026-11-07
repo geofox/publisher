@@ -14,9 +14,12 @@ const SCOPES = [
   ["drafts:write", "write drafts", false],
   ["accounts:read", "see accounts", false],
   ["accounts:write", "add accounts and change their settings and credentials (not part of admin)", false],
-  ["admin", "everything else, including tokens and relays", false],
+  ["settings:read", "read your settings (never a secret's value)", false],
+  ["settings:write", "change your settings, webhooks and keys included (not part of admin)", false],
+  ["instance:admin", "change the server's settings, such as where media go (not part of admin)", false],
+  ["admin", "tokens and relays, and every scope above but the last four", false],
 ];
-const PRIVILEGED = ["admin", "accounts:write"];
+const PRIVILEGED = ["admin", "accounts:write", "settings:write", "instance:admin"];
 
 let mode = "";
 // setTokensMode tells the form how the owner signs in (GET /v1/instance's
@@ -144,7 +147,7 @@ function installNewTokenForm() {
       await loadTokens();
     } catch (e) {
       flash(e.cancelled ? "Not created: you didn't confirm it's you."
-        : e.code === "sign_in_required" ? "A token with admin or accounts:write needs sign-in set up (AUTH_MODE=local or OIDC)."
+        : e.code === "sign_in_required" ? "A token with admin, accounts:write, settings:write or instance:admin needs sign-in set up (AUTH_MODE=local or OIDC)."
         : "Create failed: " + e.message);
     } finally {
       createBtn.disabled = false;

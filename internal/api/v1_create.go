@@ -154,8 +154,11 @@ type plannedTarget struct {
 	ov      dispatch.Overrides
 	// layout is the target's breaks and media positions in text.
 	layout thread.Layout
-	// warnings are notes about request fields the account ignores.
+	// warnings are notes about request fields the account ignores, and
+	// the account's defaults applied.
 	warnings []string
+	// defaults are the account's defaults the target took.
+	defaults v1AccountDefaults
 }
 
 // optionFields maps a destination option key onto the override field the
@@ -370,6 +373,10 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 				langs = c.Languages
 			}
 		}
+		opts := t.Options
+		if action, _, _ := req.interaction(); action != "repost" { // a repost carries nothing of its own
+			opts, pt.defaults = a.applyDefaults(drv.Manifest(), caps, accountDefaults(ac), &cw, &langs, t.Options, &pt)
+		}
 		if cw != nil && *cw != "" {
 			ov.ContentWarning = *cw
 			if !caps.ContentWarning {
@@ -391,7 +398,7 @@ func (a *API) planCreate(ctx context.Context, owner string, req *v1CreatePostReq
 				pt.warnings = append(pt.warnings, name+" takes "+strconv.Itoa(caps.Languages)+" language(s); the rest are left out")
 			}
 		}
-		a.planOptions(drv.Manifest(), caps, t.Options, ptr+"/options", &ov, add)
+		a.planOptions(drv.Manifest(), caps, opts, ptr+"/options", &ov, add)
 		if action, _, _ := req.interaction(); strings.TrimSpace(pt.text) == "" && len(req.Content.Media) == 0 &&
 			!own && !sharedEmpty && action != "quote" && action != "repost" {
 			sharedEmpty = true
@@ -644,7 +651,17 @@ func (a *API) v1CreatePost(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.WarnContext(r.Context(), "v1: reload created post", "post_id", p.ID, "err", err)
 	}
-	writeV1(w, status, v1Post(*p, true))
+	body := v1Post(*p, true)
+	// What each account ignores of the request, and the defaults it
+	// took: said once, in this answer.
+	for i := range body.Targets {
+		for _, pt := range plan.targets {
+			if pt.account.ID == body.Targets[i].Account && len(pt.warnings) > 0 {
+				body.Targets[i].Warnings = pt.warnings
+			}
+		}
+	}
+	writeV1(w, status, body)
 }
 
 // preferWait reads a wait preference (RFC 7240 §4.3) from Prefer headers,
@@ -713,6 +730,9 @@ type v1PreviewTarget struct {
 	LinkCard *v1PreviewCard  `json:"link_card"`
 	Warnings []string        `json:"warnings"`
 	Media    []v1PreviewNote `json:"media_notes"`
+	// DefaultsApplied are the account's defaults the post takes (those
+	// it didn't set itself).
+	DefaultsApplied v1AccountDefaults `json:"defaults_applied"`
 }
 
 type v1PreviewItem struct {
@@ -795,7 +815,8 @@ func (a *API) v1PreviewPost(w http.ResponseWriter, r *http.Request) {
 			Number: plan.spec.Number, ContentWarning: pt.ov.ContentWarning})
 		vt := v1PreviewTarget{Account: pt.account.ID, Type: pt.account.Type, Role: "post", Items: []v1PreviewItem{},
 			Text: cp.Text, Limit: dispatch.Rules(pt.caps, plan.spec.Number, pt.ov.ContentWarning).Limit,
-			Warnings: append(append([]string{}, pt.warnings...), cp.Warnings...), Media: []v1PreviewNote{}}
+			Warnings: append(append([]string{}, pt.warnings...), cp.Warnings...), Media: []v1PreviewNote{},
+			DefaultsApplied: pt.defaults}
 		if ix := plan.ix; ix != nil {
 			vt.Role = ix.Action
 			if pt.account.Type != ix.SourcePlatform {

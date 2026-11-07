@@ -46,6 +46,9 @@ type v1AccountBody struct {
 	Order           int  `json:"order"`
 	DefaultSelected bool `json:"default_selected"`
 	PublicFeed      bool `json:"public_feed"`
+	// Defaults are what a post to the account gets when it says nothing
+	// of them.
+	Defaults v1AccountDefaults `json:"defaults"`
 	// Capabilities is absent when no driver for the type is registered
 	// (an account kept for its history after its driver went away).
 	Capabilities *destination.Capabilities `json:"capabilities,omitempty"`
@@ -92,7 +95,7 @@ func (a *API) v1AccountViews(r *http.Request, accts []store.Account) []v1Account
 	for _, ac := range accts {
 		v := v1AccountBody{
 			ID: ac.ID, Type: ac.Type, Label: ac.Label, Handle: ac.Handle, RemoteID: ac.RemoteID, Source: ac.Source,
-			Enabled: ac.Enabled, DefaultSelected: ac.DefaultSelected, PublicFeed: ac.PublicFeed,
+			Enabled: ac.Enabled, DefaultSelected: ac.DefaultSelected, PublicFeed: ac.PublicFeed, Defaults: accountDefaults(ac),
 			Config: map[string]any{}, Credentials: map[string]accounts.CredentialInfo{},
 			CreatedAt: rfc3339(ac.CreatedAt), UpdatedAt: rfc3339(ac.UpdatedAt),
 		}
@@ -231,6 +234,8 @@ type v1AccountPatchIn struct {
 	Enabled         json.RawMessage `json:"enabled"`
 	DefaultSelected json.RawMessage `json:"default_selected"`
 	PublicFeed      json.RawMessage `json:"public_feed"`
+	// Defaults replaces the account's defaults ({} clears them).
+	Defaults json.RawMessage `json:"defaults"`
 	// Method, Config and Credentials reconnect an account added in the
 	// app (checkCredentialPatch).
 	Method      json.RawMessage `json:"method"`
@@ -309,7 +314,14 @@ func (a *API) v1PatchAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	m, errs := checkAccountPatch(in)
 	creds, cerrs := checkCredentialPatch(in)
-	if errs = append(errs, cerrs...); len(errs) > 0 {
+	errs = append(errs, cerrs...)
+	if in.Defaults != nil && cur.DeletedAt.IsZero() {
+		d, derrs := a.checkAccountDefaults(r.Context(), cur, in.Defaults)
+		if errs = append(errs, derrs...); len(derrs) == 0 && d != cur.Defaults {
+			m.Defaults = &d
+		}
+	}
+	if len(errs) > 0 {
 		invalid(w, r, errs)
 		return
 	}
