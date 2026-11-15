@@ -18,8 +18,8 @@ import (
 // Re-authentication: some operations need the owner to prove again, just
 // now, that they are the owner (someone at an unlocked browser isn't
 // enough). A fresh passkey assertion or the password (local mode), or a
-// fresh OIDC login (prompt=login, max_age=0, auth_time after the request
-// started), gives a nonce good once, for five minutes, for one operation,
+// fresh OIDC login (prompt=login, auth_time after the request started),
+// gives a nonce good once, for five minutes, for one operation,
 // in this browser session. The operation's request carries it in the
 // Publisher-Reauth header.
 

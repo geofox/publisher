@@ -3,6 +3,20 @@
 Notable changes to Publisher. Releases are tagged `vX.Y.Z`; `main` publishes
 the `edge` image.
 
+## 3.0.1 (unreleased)
+
+### Fixed
+
+- **Confirming it's you works with Authelia.** The fresh OIDC login now
+  sends only `prompt=login`, no longer `max_age=0`. Authelia (4.39.28,
+  and its main branch) counts no login as recent enough for
+  `max_age=0`, so its consent page took the password, then answered
+  "Failed to confirm your identity", and with OIDC nothing that needs
+  re-authentication could be done: creating a token, revealing or
+  deleting an account, instance secret settings, export and import,
+  adding or removing a sign-in method. Publisher still checks the ID
+  token's `auth_time`, so the login must still have just happened.
+
 ## 3.0.0 (unreleased)
 
 Settings and accounts in the web app. Read

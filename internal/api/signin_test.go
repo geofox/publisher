@@ -605,8 +605,11 @@ func TestOIDCReauth(t *testing.T) {
 		}
 		loc, _ := url.Parse(rec.Header().Get("Location"))
 		q := loc.Query()
-		if q.Get("prompt") != "login" || q.Get("max_age") != "0" {
+		if q.Get("prompt") != "login" {
 			t.Errorf("the login isn't forced fresh: %s", loc)
+		}
+		if q.Has("max_age") {
+			t.Errorf("max_age is sent (Authelia never lets a max_age=0 login through): %s", loc)
 		}
 		return q
 	}
