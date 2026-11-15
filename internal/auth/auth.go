@@ -119,14 +119,19 @@ func (a *Authenticator) AuthCodeURL(state, nonce, pkceVerifier string) string {
 }
 
 // AuthCodeURLFresh is AuthCodeURL asking for a fresh login whatever the
-// provider's session: prompt=login and max_age=0 (re-authentication; the
-// ID token's auth_time then says when it happened).
+// provider's session: prompt=login (re-authentication; the ID token's
+// auth_time then says when it happened, and the caller checks it).
+//
+// No max_age=0, although OIDC Core makes it equivalent to prompt=login:
+// Authelia (4.39.28, and its main branch) counts no login as recent
+// enough for max_age=0, so its consent page takes the password, asks
+// again whether a login is needed, gets yes, and answers "Failed to
+// confirm your identity", whatever the password.
 func (a *Authenticator) AuthCodeURLFresh(state, nonce, pkceVerifier string) string {
 	return a.oauth2.AuthCodeURL(state,
 		oidc.Nonce(nonce),
 		oauth2.S256ChallengeOption(pkceVerifier),
-		oauth2.SetAuthURLParam("prompt", "login"),
-		oauth2.SetAuthURLParam("max_age", "0"))
+		oauth2.SetAuthURLParam("prompt", "login"))
 }
 
 // Exchange swaps the code for tokens, verifies the ID token signature/claims,

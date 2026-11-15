@@ -1277,10 +1277,13 @@ the container already controls Publisher, so these need no password.
    `PUBLIC_URL`. Add your own OIDC subject and/or email to
    `OIDC_ALLOWED_SUBJECTS` / `OIDC_ALLOWED_EMAILS`.
 3. To confirm it's you, Publisher sends you through your provider's login
-   again (`prompt=login`, `max_age=0`) in a small window, and checks the
-   ID token's `auth_time`. The provider must honour both: **Authelia 4.39
-   or later** does (4.38 accepts `prompt=login` but doesn't ask again, so
-   the confirmation fails).
+   again (`prompt=login`) in a small window, and checks the ID token's
+   `auth_time`. The provider must honour `prompt=login` and put
+   `auth_time` in the ID token: **Authelia 4.39 or later** does (4.38
+   accepts `prompt=login` but doesn't ask again, so the confirmation
+   fails). Publisher doesn't send `max_age=0`: Authelia counts no login
+   as recent enough for it, so it would take your password and still
+   answer "Failed to confirm your identity".
 4. For machine callers (e.g. an automation workflow), open the web app
    under **Settings → Access**, create a token, and configure the caller to send
    `Authorization: Bearer <token>` on its `/v1` requests (see
